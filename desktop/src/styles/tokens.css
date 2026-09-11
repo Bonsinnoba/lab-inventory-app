@@ -1,0 +1,346 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Color tokens - these will be set by ThemeContext */
+  --color-bg: #14161A;
+  --color-surface: #1C1F26;
+  --color-surface-raised: #23262F;
+  --color-border: #2E323C;
+  --color-text-primary: #ECEEF1;
+  --color-text-secondary: #8B909C;
+
+  --color-accent: #4FD1C5;
+  --color-accent-dim: #2C7A72;
+
+  --color-status-ok: #4ADE80;
+  --color-status-warn: #FBBF24;
+  --color-status-danger: #F87171;
+  --color-status-neutral: #8B909C;
+
+  /* Typography */
+  --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Consolas', 'Monaco', monospace;
+
+  /* Type scale */
+  --text-caption: 12px;
+  --text-body: 14px;
+  --text-ui: 16px;
+  --text-section-header: 20px;
+  --text-page-title: 28px;
+
+  /* Layout */
+  --border-radius-sm: 6px;
+  --border-radius-md: 10px;
+  --content-max-width: 1400px;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--font-ui);
+  font-size: var(--text-body);
+  color: var(--color-text-primary);
+  background: var(--color-bg);
+  line-height: 1.5;
+}
+
+button, a, input, select {
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+input, button, select {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+/* Custom scrollbars — default OS scrollbars look jarring against a
+   custom dark theme. Thin, token-colored, works in both Chromium
+   (WebView2 on Windows) and WebKit (macOS/Linux webviews). */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 5px;
+  border: 2px solid var(--color-bg);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-secondary);
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+/* Subtle page/panel transition — fade + slight upward slide, per the
+   design system's motion spec. Respects prefers-reduced-motion. */
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-fade-in {
+  animation: fade-in-up 180ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-in {
+    animation: none;
+  }
+}
+
+/* Skeleton loading shimmer — used instead of plain "Loading…" text so
+   the page's eventual layout is hinted at while data is still fetching. */
+@keyframes skeleton-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--color-surface-raised) 25%,
+    var(--color-border) 50%,
+    var(--color-surface-raised) 75%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+    background: var(--color-surface-raised);
+  }
+}
+/* Briefly scales + glows brighter when its status changes, so the
+   person gets visible confirmation an update actually happened. */
+@keyframes status-pulse {
+  0% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+  40% {
+    transform: scale(1.6);
+    filter: brightness(1.6);
+  }
+  100% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+}
+.status-led-pulse {
+  animation: status-pulse 500ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-led-pulse {
+    animation: none;
+  }
+}
+
+/* ------------------------------------------------------------------
+   Responsive LabOS client
+   Desktop remains the full laboratory workstation. At compact widths
+   the same React application becomes a touch-friendly web/PWA client.
+   ------------------------------------------------------------------ */
+.mobile-header,
+.mobile-bottom-nav,
+.mobile-drawer,
+.mobile-drawer-backdrop {
+  display: none;
+}
+
+.pb-safe { padding-bottom: 0; }
+
+@media (max-width: 900px) {
+  body { overflow: hidden; }
+
+  .desktop-sidebar,
+  .desktop-topbar,
+  .desktop-activity-rail { display: none !important; }
+
+  .mobile-header {
+    display: flex;
+    align-items: center;
+    min-height: 58px;
+    height: 58px;
+    padding: 0 12px;
+    gap: 10px;
+    background: var(--color-surface);
+    border-bottom: 1px solid var(--color-border);
+    flex-shrink: 0;
+    position: relative;
+    z-index: 20;
+  }
+
+  .mobile-header-title {
+    min-width: 0;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    line-height: 1.1;
+  }
+
+  .mobile-brand {
+    color: var(--color-accent);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: .12em;
+    font-weight: 700;
+  }
+
+  .mobile-page-title {
+    color: var(--color-text-primary);
+    font-size: 15px;
+    font-weight: 600;
+    margin-top: 3px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .mobile-header-actions { display: flex; gap: 5px; }
+
+  .mobile-icon-button {
+    width: 38px;
+    height: 38px;
+    border: 1px solid transparent;
+    border-radius: var(--border-radius-sm);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--color-text-secondary);
+    background: transparent;
+  }
+  .mobile-icon-button:active,
+  .mobile-icon-button:hover { background: var(--color-surface-raised); color: var(--color-text-primary); }
+  .mobile-icon-button.accent-button { color: var(--color-accent); border-color: var(--color-border); }
+
+  .app-main {
+    padding-bottom: 68px !important;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .app-main .p-6 { padding: 16px !important; }
+  .app-main .grid-cols-4,
+  .app-main .grid-cols-3 { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+  .app-main .grid-cols-2 { grid-template-columns: minmax(0, 1fr) !important; }
+  .app-main .gap-6 { gap: 12px !important; }
+  .app-main .gap-4 { gap: 10px !important; }
+  .app-main .text-page-title { font-size: 23px; }
+  .app-main table { min-width: 620px; }
+  .app-main [class*="overflow-x-auto"] { -webkit-overflow-scrolling: touch; }
+
+  .mobile-bottom-nav {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    position: fixed;
+    z-index: 30;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 64px;
+    padding: 5px 6px calc(5px + env(safe-area-inset-bottom));
+    background: var(--color-surface);
+    border-top: 1px solid var(--color-border);
+  }
+
+  .mobile-nav-item {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    color: var(--color-text-secondary);
+    font-size: 10px;
+    text-decoration: none;
+    border-radius: var(--border-radius-sm);
+  }
+  .mobile-nav-item.active { color: var(--color-accent); background: var(--color-accent-dim); }
+  .mobile-nav-item:active { transform: scale(.97); }
+
+  .mobile-drawer-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: rgba(0,0,0,.52);
+  }
+
+  .mobile-drawer {
+    display: flex;
+    position: fixed;
+    z-index: 50;
+    inset: 0 auto 0 0;
+    width: min(84vw, 340px);
+    background: var(--color-surface);
+    border-right: 1px solid var(--color-border);
+    flex-direction: column;
+    box-shadow: 20px 0 50px rgba(0,0,0,.28);
+  }
+
+  .mobile-drawer-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 14px;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .mobile-drawer-head strong { display: block; color: var(--color-accent); font-family: var(--font-mono); letter-spacing: .12em; }
+  .mobile-drawer-head span { display: block; color: var(--color-text-secondary); font-size: 11px; margin-top: 2px; }
+  .mobile-drawer-links { flex: 1; overflow: auto; padding: 10px; }
+  .mobile-drawer-link {
+    width: 100%;
+    min-height: 46px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    margin-bottom: 3px;
+    color: var(--color-text-secondary);
+    background: transparent;
+    border: 0;
+    border-radius: var(--border-radius-sm);
+    text-decoration: none;
+    text-align: left;
+  }
+  .mobile-drawer-link.active { color: var(--color-bg); background: var(--color-accent); }
+  .mobile-drawer-link:active { background: var(--color-surface-raised); }
+
+  .mobile-drawer-footer { padding: 12px; border-top: 1px solid var(--color-border); }
+  .mobile-user { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .mobile-user-avatar { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: var(--color-accent); color: var(--color-bg); font-weight: 700; }
+  .mobile-user strong, .mobile-user span { display: block; }
+  .mobile-user strong { font-size: 13px; }
+  .mobile-user span { color: var(--color-text-secondary); font-size: 11px; text-transform: capitalize; }
+  .mobile-drawer-actions { display: grid; gap: 6px; }
+  .mobile-drawer-actions button { min-height: 40px; display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--color-border); border-radius: var(--border-radius-sm); background: var(--color-surface-raised); color: var(--color-text-secondary); }
+
+  .mobile-modal { width: min(420px, calc(100vw - 24px)) !important; max-height: calc(100vh - 48px); overflow: auto; }
+
+  button, a { -webkit-tap-highlight-color: transparent; }
+}
+
+@media (max-width: 520px) {
+  .app-main .grid-cols-4,
+  .app-main .grid-cols-3 { grid-template-columns: minmax(0, 1fr) !important; }
+  .app-main .p-6 { padding: 12px !important; }
+  .app-main .text-section-header { font-size: 18px; }
+}

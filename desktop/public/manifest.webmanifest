@@ -1,0 +1,14 @@
+{
+  "name": "LabOS — Laboratory Operations & Knowledge System",
+  "short_name": "LabOS",
+  "description": "Shared laboratory inventory, projects, notes, resources and knowledge.",
+  "start_url": "./#/dashboard",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#14161A",
+  "theme_color": "#14161A",
+  "icons": [
+    { "src": "./labos-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

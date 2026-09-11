@@ -1,0 +1,47 @@
+import { apiFetch, getApiErrorMessage } from './http';
+
+export interface ProjectFinancialSummary {
+  project_id: string; name: string; budget: number | string | null; actual_expense: number; project_income: number; net_spend: number; allocated_inventory_value: number; budget_remaining: number | null; budget_used_percent: number | null;
+}
+
+export interface Project {
+  id: string; name: string;
+  status: 'active' | 'completed' | 'on_hold' | 'cancelled';
+  budget?: string | number; total_spent?: string | number;
+  description?: string; priority?: 'low'|'normal'|'high'|'critical';
+  start_date?: string | null; due_date?: string | null; owner_id?: string | null;
+  created_at: string; updated_at: string; transactions?: any[];
+}
+export interface ProjectMember { project_id:string; user_id:string; member_role:'lead'|'member'|'observer'; joined_at:string; username:string; role:string; }
+export interface ProjectTask { id:string; project_id:string; title:string; description:string; status:'todo'|'in_progress'|'blocked'|'done'|'cancelled'; priority:'low'|'normal'|'high'|'critical'; assignee_id?:string|null; assignee_username?:string|null; due_date?:string|null; completed_at?:string|null; created_at:string; updated_at:string; }
+export interface ProjectExperiment { id:string; project_id:string; title:string; status:'planned'|'running'|'completed'|'failed'|'cancelled'; hypothesis:string; procedure:string; observations:string; result:string; conclusion:string; performed_by?:string|null; performer_username?:string|null; started_at?:string|null; completed_at?:string|null; created_at:string; updated_at:string; }
+export interface ProjectItem { project_id:string; item_id:string; allocated_quantity:string|number; notes:string; name:string; type:string; item_status:string; current_quantity:string|number; unit?:string|null; sku?:string|null; location_name?:string|null; }
+export interface ProjectWorkspace { members:ProjectMember[]; tasks:ProjectTask[]; experiments:ProjectExperiment[]; items:ProjectItem[]; notes:any[]; resources:any[]; activity:any[]; permissions?:{access:'admin'|'edit'|'view'; member_role:string; can_edit:boolean}; }
+export interface UserCandidate { id:string; username:string; role:string; }
+export interface ProjectBomItem { id:string; project_id:string; name:string; part_number?:string|null; required_quantity:number|string; unit?:string|null; preferred_item_id?:string|null; alternative_item_id?:string|null; notes:string; preferred_item_name?:string|null; preferred_item_quantity?:number|string|null; alternative_item_name?:string|null; alternative_item_quantity?:number|string|null; }
+
+export async function getProjects(): Promise<Project[]> { const r=await apiFetch('/projects'); if(!r.ok)throw await apiError(r,'Failed to fetch projects'); return r.json(); }
+export async function getProjectFinancialSummary():Promise<ProjectFinancialSummary[]> { const r=await apiFetch('/projects/financial-summary'); if(!r.ok)throw await apiError(r,'Failed to fetch project financial summary'); return r.json(); }
+export async function getProject(id:string):Promise<Project>{const r=await apiFetch(`/projects/${id}`);if(!r.ok)throw await apiError(r,'Failed to fetch project');return r.json();}
+export async function createProject(project:Partial<Project>):Promise<Project>{const r=await apiFetch('/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(project)});if(!r.ok)throw await apiError(r,'Failed to create project');return r.json();}
+async function apiError(r: Response, fallback: string): Promise<Error> { const p=await r.json().catch(()=>null) as any; const m=typeof p?.error==='string'?p.error:typeof p?.message==='string'?p.message:typeof p?.error?.message==='string'?p.error.message:fallback; return new Error(m); }
+export async function updateProject(id:string,project:Partial<Project>):Promise<Project>{const r=await apiFetch(`/projects/${id}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(project)});if(!r.ok)throw await apiError(r,'Failed to update project');const data=await r.json();if(!data?.id)throw new Error('Project update returned no project record');return data;}
+export async function deleteProject(id:string):Promise<void>{const r=await apiFetch(`/projects/${id}`,{method:'DELETE'});if(!r.ok)throw await apiError(r,'Failed to delete project');}
+export async function getProjectWorkspace(id:string):Promise<ProjectWorkspace>{const r=await apiFetch(`/projects/${id}/workspace`);if(!r.ok)throw await apiError(r,'Failed to fetch project workspace');return r.json();}
+export async function getProjectMemberCandidates(id:string):Promise<UserCandidate[]>{const r=await apiFetch(`/projects/${id}/member-candidates`);if(!r.ok)throw await apiError(r,'Failed to fetch users');return r.json();}
+export async function addProjectMember(id:string,user_id:string,member_role:string):Promise<ProjectMember>{const r=await apiFetch(`/projects/${id}/members`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id,member_role})});if(!r.ok)throw await apiError(r,'Failed to add member');const data=await r.json();if(!data?.user_id)throw new Error('Member update returned no membership record');return data;}
+export async function removeProjectMember(id:string,userId:string):Promise<void>{const r=await apiFetch(`/projects/${id}/members/${userId}`,{method:'DELETE'});if(!r.ok)throw await apiError(r,'Failed to remove member');}
+export async function createProjectTask(id:string,data:Partial<ProjectTask>):Promise<ProjectTask>{const r=await apiFetch(`/projects/${id}/tasks`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});if(!r.ok)throw await apiError(r,'Failed to create task');return r.json();}
+export async function updateProjectTask(id:string,taskId:string,data:Partial<ProjectTask>):Promise<ProjectTask>{const r=await apiFetch(`/projects/${id}/tasks/${taskId}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});if(!r.ok)throw await apiError(r,'Failed to update task');return r.json();}
+export async function deleteProjectTask(id:string,taskId:string):Promise<void>{const r=await apiFetch(`/projects/${id}/tasks/${taskId}`,{method:'DELETE'});if(!r.ok)throw await apiError(r,'Failed to delete task');}
+export async function createProjectExperiment(id:string,data:Partial<ProjectExperiment>):Promise<ProjectExperiment>{const r=await apiFetch(`/projects/${id}/experiments`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});if(!r.ok)throw await apiError(r,'Failed to create experiment');return r.json();}
+export async function updateProjectExperiment(id:string,experimentId:string,data:Partial<ProjectExperiment>):Promise<ProjectExperiment>{const r=await apiFetch(`/projects/${id}/experiments/${experimentId}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});if(!r.ok)throw await apiError(r,'Failed to update experiment');return r.json();}
+export async function deleteProjectExperiment(id:string,experimentId:string):Promise<void>{const r=await apiFetch(`/projects/${id}/experiments/${experimentId}`,{method:'DELETE'});if(!r.ok)throw await apiError(r,'Failed to delete experiment');}
+export async function repeatProjectExperiment(id:string,experimentId:string):Promise<ProjectExperiment>{const r=await apiFetch(`/projects/${id}/experiments/${experimentId}/repeat`,{method:'POST'});if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to repeat experiment'));return r.json();}
+export async function getProjectExperimentHistory(id:string,experimentId:string):Promise<any[]>{const r=await apiFetch(`/projects/${id}/experiments/${experimentId}/history`);if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to fetch experiment history'));return r.json();}
+export async function linkProjectItem(id:string,item_id:string,allocated_quantity:number,notes=''):Promise<ProjectItem>{const r=await apiFetch(`/projects/${id}/items`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({item_id,allocated_quantity,notes})});if(!r.ok)throw await apiError(r,'Failed to link inventory item');return r.json();}
+export async function unlinkProjectItem(id:string,itemId:string):Promise<void>{const r=await apiFetch(`/projects/${id}/items/${itemId}`,{method:'DELETE'});if(!r.ok)throw await apiError(r,'Failed to unlink inventory item');}
+export async function getProjectBom(id:string):Promise<ProjectBomItem[]>{const r=await apiFetch(`/projects/${id}/bom`);if(!r.ok)throw await apiError(r,'Failed to fetch project BOM');return r.json();}
+export async function createProjectBomItem(id:string,data:Partial<ProjectBomItem>):Promise<ProjectBomItem>{const r=await apiFetch(`/projects/${id}/bom`,{method:'POST',body:JSON.stringify(data)});if(!r.ok)throw await apiError(r,'Failed to create BOM item');return r.json();}
+export async function updateProjectBomItem(id:string,bomId:string,data:Partial<ProjectBomItem>):Promise<ProjectBomItem>{const r=await apiFetch(`/projects/${id}/bom/${bomId}`,{method:'PATCH',body:JSON.stringify(data)});if(!r.ok)throw await apiError(r,'Failed to update BOM item');return r.json();}
+export async function deleteProjectBomItem(id:string,bomId:string):Promise<void>{const r=await apiFetch(`/projects/${id}/bom/${bomId}`,{method:'DELETE'});if(!r.ok)throw await apiError(r,'Failed to delete BOM item');}

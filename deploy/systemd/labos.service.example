@@ -1,0 +1,20 @@
+[Unit]
+Description=LabOS API
+After=network.target
+
+[Service]
+Type=simple
+User=labos
+WorkingDirectory=/opt/labos/lab-inventory-app/backend
+EnvironmentFile=/opt/labos/lab-inventory-app/backend/.env
+ExecStart=/usr/bin/node src/index.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/labos/lab-inventory-app/backend/storage
+
+[Install]
+WantedBy=multi-user.target

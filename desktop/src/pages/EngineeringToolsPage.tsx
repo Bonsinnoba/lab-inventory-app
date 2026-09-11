@@ -1,0 +1,68 @@
+import { useState } from 'react';
+import { Calculator, Gauge, Lightbulb, Radio, Ruler, Zap } from 'lucide-react';
+
+const inputClass = 'w-full px-3 py-2.5 bg-bg border border-border rounded-sm text-sm text-text-primary focus:outline-none focus:border-accent';
+const buttonClass = 'px-3 py-2 bg-surface-raised border border-border rounded-sm text-sm text-text-secondary hover:text-text-primary hover:border-accent';
+const toNumber = (value: string) => value.trim() === '' ? null : Number(value);
+const formatValue = (value: number | null, unit: string) => value === null || !Number.isFinite(value) ? '--' : `${value.toPrecision(6)} ${unit}`;
+
+type ToolId = 'ohms' | 'divider' | 'resistor' | 'reactance' | 'led' | 'power' | 'convert';
+const tools: { id: ToolId; label: string; icon: typeof Calculator }[] = [
+  { id: 'ohms', label: "Ohm's Law", icon: Zap },
+  { id: 'divider', label: 'Voltage Divider', icon: Gauge },
+  { id: 'resistor', label: 'Resistor', icon: Calculator },
+  { id: 'reactance', label: 'Capacitor / Inductor', icon: Radio },
+  { id: 'led', label: 'LED Resistor', icon: Lightbulb },
+  { id: 'power', label: 'Power', icon: Zap },
+  { id: 'convert', label: 'Unit Converter', icon: Ruler },
+];
+
+function Panel({ title, description, children }: { title: string; description: string; children: React.ReactNode }) {
+  return <section className="bg-surface border border-border rounded-md p-5 md:p-6"><div className="mb-5"><h3 className="font-semibold">{title}</h3><p className="text-sm text-text-secondary mt-1">{description}</p></div>{children}</section>;
+}
+
+function OhmsTool() {
+  const [values, setValues] = useState({ voltage: '', current: '', resistance: '' });
+  const calculate = (field: 'voltage' | 'current' | 'resistance') => { const v = toNumber(values.voltage); const i = toNumber(values.current); const r = toNumber(values.resistance); if (field === 'voltage' && i !== null && r !== null) setValues({ ...values, voltage: String(i * r) }); if (field === 'current' && v !== null && r) setValues({ ...values, current: String(v / r) }); if (field === 'resistance' && v !== null && i) setValues({ ...values, resistance: String(v / i) }); };
+  return <Panel title="Ohm's Law" description="Enter any two values, then calculate the third."><div className="grid md:grid-cols-3 gap-4">{(['voltage', 'current', 'resistance'] as const).map((field) => <label key={field} className="text-sm text-text-secondary">{field === 'voltage' ? 'Voltage (V)' : field === 'current' ? 'Current (A)' : 'Resistance (ohm)'}<input type="number" step="any" min="0" value={values[field]} onChange={(e) => setValues({ ...values, [field]: e.target.value })} className={`${inputClass} mt-1`} /></label>)}</div><div className="flex flex-wrap gap-2 mt-5"><button onClick={() => calculate('voltage')} className={buttonClass}>Calculate voltage</button><button onClick={() => calculate('current')} className={buttonClass}>Calculate current</button><button onClick={() => calculate('resistance')} className={buttonClass}>Calculate resistance</button><button onClick={() => setValues({ voltage: '', current: '', resistance: '' })} className={buttonClass}>Clear</button></div></Panel>;
+}
+
+function DividerTool() {
+  const [values, setValues] = useState({ input: '', top: '', bottom: '' }); const vin = toNumber(values.input); const top = toNumber(values.top); const bottom = toNumber(values.bottom); const output = vin !== null && top !== null && bottom !== null && top + bottom !== 0 ? vin * bottom / (top + bottom) : null;
+  return <Panel title="Voltage Divider" description="Calculate output voltage across the lower resistor."><div className="grid md:grid-cols-3 gap-4">{[['input', 'Input voltage (V)'], ['top', 'Top resistance (ohm)'], ['bottom', 'Bottom resistance (ohm)']].map(([field, label]) => <label key={field} className="text-sm text-text-secondary">{label}<input type="number" step="any" min="0" value={values[field as keyof typeof values]} onChange={(e) => setValues({ ...values, [field]: e.target.value })} className={`${inputClass} mt-1`} /></label>)}</div><div className="mt-6 p-4 bg-surface-raised border border-border rounded-sm"><div className="text-sm text-text-secondary">Output voltage</div><div className="text-3xl font-mono text-text-primary mt-1">{formatValue(output, 'V')}</div></div></Panel>;
+}
+
+const resistorColors = ['black', 'brown', 'red', 'orange', 'yellow', 'green', 'blue', 'violet', 'gray', 'white'];
+const resistorDigits: Record<string, number> = Object.fromEntries(resistorColors.map((color, index) => [color, index]));
+function ResistorTool() {
+  const [bands, setBands] = useState(['brown', 'black', 'red']); const value = (resistorDigits[bands[0]] * 10 + resistorDigits[bands[1]]) * 10 ** resistorDigits[bands[2]]; return <Panel title="Resistor Calculator" description="Decode a three-band resistor value from its color bands."><div className="grid md:grid-cols-3 gap-4">{bands.map((band, index) => <label key={index} className="text-sm text-text-secondary">Band {index + 1}<select value={band} onChange={(e) => setBands(bands.map((current, currentIndex) => currentIndex === index ? e.target.value : current))} className={`${inputClass} mt-1`}>{resistorColors.map((color) => <option key={color} value={color}>{color[0].toUpperCase() + color.slice(1)}</option>)}</select></label>)}</div><div className="mt-6 p-4 bg-surface-raised border border-border rounded-sm"><div className="text-sm text-text-secondary">Resistance</div><div className="text-3xl font-mono text-text-primary mt-1">{value >= 1_000_000 ? `${value / 1_000_000} Mohm` : value >= 1_000 ? `${value / 1_000} kohm` : `${value} ohm`}</div></div></Panel>;
+}
+
+function ReactanceTool() {
+  const [mode, setMode] = useState<'capacitor' | 'inductor'>('capacitor'); const [frequency, setFrequency] = useState(''); const [value, setValue] = useState(''); const f = toNumber(frequency); const component = toNumber(value); const reactance = f !== null && component !== null && f > 0 ? mode === 'capacitor' ? 1 / (2 * Math.PI * f * component) : 2 * Math.PI * f * component : null;
+  return <Panel title="Capacitor / Inductor Reactance" description="Calculate AC reactance at a selected frequency."><div className="grid md:grid-cols-3 gap-4"><label className="text-sm text-text-secondary">Component<select value={mode} onChange={(e) => setMode(e.target.value as typeof mode)} className={`${inputClass} mt-1`}><option value="capacitor">Capacitor</option><option value="inductor">Inductor</option></select></label><label className="text-sm text-text-secondary">Frequency (Hz)<input type="number" min="0" step="any" value={frequency} onChange={(e) => setFrequency(e.target.value)} className={`${inputClass} mt-1`} /></label><label className="text-sm text-text-secondary">{mode === 'capacitor' ? 'Capacitance (F)' : 'Inductance (H)'}<input type="number" min="0" step="any" value={value} onChange={(e) => setValue(e.target.value)} className={`${inputClass} mt-1`} /></label></div><div className="mt-6 p-4 bg-surface-raised border border-border rounded-sm"><div className="text-sm text-text-secondary">Reactance</div><div className="text-3xl font-mono text-text-primary mt-1">{formatValue(reactance, 'ohm')}</div></div></Panel>;
+}
+
+function LedTool() {
+  const [values, setValues] = useState({ supply: '', forward: '2', current: '0.02' }); const supply = toNumber(values.supply); const forward = toNumber(values.forward); const current = toNumber(values.current); const resistance = supply !== null && forward !== null && current !== null && current > 0 ? (supply - forward) / current : null; const power = resistance !== null && current !== null ? current * current * resistance : null;
+  return <Panel title="LED Resistor" description="Size a series resistor and estimate its power dissipation."><div className="grid md:grid-cols-3 gap-4">{[['supply', 'Supply voltage (V)'], ['forward', 'LED forward voltage (V)'], ['current', 'Target current (A)']].map(([field, label]) => <label key={field} className="text-sm text-text-secondary">{label}<input type="number" min="0" step="any" value={values[field as keyof typeof values]} onChange={(e) => setValues({ ...values, [field]: e.target.value })} className={`${inputClass} mt-1`} /></label>)}</div><div className="grid md:grid-cols-2 gap-4 mt-6"><div className="p-4 bg-surface-raised border border-border rounded-sm"><div className="text-sm text-text-secondary">Required resistance</div><div className="text-2xl font-mono text-text-primary mt-1">{formatValue(resistance, 'ohm')}</div></div><div className="p-4 bg-surface-raised border border-border rounded-sm"><div className="text-sm text-text-secondary">Resistor power</div><div className="text-2xl font-mono text-text-primary mt-1">{formatValue(power, 'W')}</div></div></div></Panel>;
+}
+
+function PowerTool() {
+  const [values, setValues] = useState({ voltage: '', current: '', resistance: '' }); const v = toNumber(values.voltage); const i = toNumber(values.current); const r = toNumber(values.resistance); const power = v !== null && i !== null ? v * i : v !== null && r ? v * v / r : i !== null && r ? i * i * r : null;
+  return <Panel title="Power Calculator" description="Calculate DC power from voltage, current, or resistance pairs."><div className="grid md:grid-cols-3 gap-4">{(['voltage', 'current', 'resistance'] as const).map((field) => <label key={field} className="text-sm text-text-secondary">{field === 'voltage' ? 'Voltage (V)' : field === 'current' ? 'Current (A)' : 'Resistance (ohm)'}<input type="number" min="0" step="any" value={values[field]} onChange={(e) => setValues({ ...values, [field]: e.target.value })} className={`${inputClass} mt-1`} /></label>)}</div><div className="mt-6 p-4 bg-surface-raised border border-border rounded-sm"><div className="text-sm text-text-secondary">Power</div><div className="text-3xl font-mono text-text-primary mt-1">{formatValue(power, 'W')}</div></div></Panel>;
+}
+
+const conversionUnits: Record<string, Record<string, number>> = { length: { mm: 0.001, cm: 0.01, m: 1, km: 1000, in: 0.0254, ft: 0.3048 }, voltage: { mV: 0.001, V: 1, kV: 1000 }, current: { mA: 0.001, A: 1 }, resistance: { ohm: 1, kohm: 1000, Mohm: 1000000 }, power: { mW: 0.001, W: 1, kW: 1000 }, capacitance: { nF: 1e-9, uF: 1e-6, mF: 1e-3, F: 1 } };
+function ConverterTool() {
+  const [kind, setKind] = useState('length'); const units = Object.keys(conversionUnits[kind]); const [from, setFrom] = useState(units[0]); const [to, setTo] = useState(units[1] || units[0]); const [value, setValue] = useState(''); const result = toNumber(value); const converted = result === null ? null : result * conversionUnits[kind][from] / conversionUnits[kind][to]; const changeKind = (next: string) => { const nextUnits = Object.keys(conversionUnits[next]); setKind(next); setFrom(nextUnits[0]); setTo(nextUnits[1] || nextUnits[0]); setValue(''); };
+  return <Panel title="Engineering Unit Converter" description="Convert common laboratory and electronics units."><div className="grid md:grid-cols-4 gap-4"><label className="text-sm text-text-secondary">Category<select value={kind} onChange={(e) => changeKind(e.target.value)} className={`${inputClass} mt-1`}>{Object.keys(conversionUnits).map((key) => <option key={key} value={key}>{key[0].toUpperCase() + key.slice(1)}</option>)}</select></label><label className="text-sm text-text-secondary">Value<input type="number" step="any" value={value} onChange={(e) => setValue(e.target.value)} className={`${inputClass} mt-1`} /></label><label className="text-sm text-text-secondary">From<select value={from} onChange={(e) => setFrom(e.target.value)} className={`${inputClass} mt-1`}>{units.map((unit) => <option key={unit}>{unit}</option>)}</select></label><label className="text-sm text-text-secondary">To<select value={to} onChange={(e) => setTo(e.target.value)} className={`${inputClass} mt-1`}>{units.map((unit) => <option key={unit}>{unit}</option>)}</select></label></div><div className="mt-6 p-4 bg-surface-raised border border-border rounded-sm flex items-center justify-between"><span className="text-sm text-text-secondary">Converted value</span><span className="text-2xl font-mono text-text-primary">{converted === null ? '--' : `${converted.toPrecision(8)} ${to}`}</span></div></Panel>;
+}
+
+export default function EngineeringToolsPage() {
+  const [activeTool, setActiveTool] = useState<ToolId>('ohms');
+  const tool = tools.find((entry) => entry.id === activeTool)!;
+  const ToolIcon = tool.icon;
+  const renderTool = () => ({ ohms: <OhmsTool />, divider: <DividerTool />, resistor: <ResistorTool />, reactance: <ReactanceTool />, led: <LedTool />, power: <PowerTool />, convert: <ConverterTool /> }[activeTool]);
+  return <div className="p-4 md:p-6 max-w-[1200px] mx-auto space-y-6"><header className="border-b border-border pb-5"><div className="page-kicker">PHASE 7 ENGINEERING TOOLS</div><h2 className="text-page-title font-ui font-semibold mt-1">Engineering Tools</h2><p className="text-sm text-text-secondary mt-2">Local calculators for electronics and laboratory design work.</p></header><div className="grid lg:grid-cols-[220px_1fr] gap-8"><nav className="space-y-1">{tools.map((entry) => { const Icon = entry.icon; return <button key={entry.id} onClick={() => setActiveTool(entry.id)} className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-sm text-left text-sm ${activeTool === entry.id ? 'bg-accent text-bg' : 'text-text-secondary hover:text-text-primary hover:bg-surface-raised'}`}><Icon size={16} />{entry.label}</button>; })}</nav><main><div className="flex items-center gap-2 mb-4 text-accent"><ToolIcon size={18} /><span className="text-sm font-medium">{tool.label}</span></div>{renderTool()}</main></div></div>;
+}
