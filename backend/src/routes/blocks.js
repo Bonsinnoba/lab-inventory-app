@@ -103,9 +103,10 @@ router.put('/:id', async (req, res) => {
 // DELETE /api/blocks/:id — connectors referencing this block cascade-delete
 router.delete('/:id', async (req, res) => {
   try {
-    const current = await pool.query('SELECT project_id FROM project_blocks WHERE id = $1', [req.params.id]);
+    const current = await pool.query('SELECT * FROM project_blocks WHERE id = $1', [req.params.id]);
     if (!current.rowCount) return res.status(404).json({ error: { code: 'BLOCK_NOT_FOUND', message: 'Block not found' } });
-    const access = await getProjectAccess(current.rows[0].project_id, req.user);
+    const currentBlock = current.rows[0];
+    const access = await getProjectAccess(currentBlock.project_id, req.user);
     if (access.access === 'none') return res.status(403).json({ error: { code: 'PROJECT_ACCESS_REQUIRED', message: 'You do not have access to this project' } });
     if (access.access === 'view') return res.status(403).json({ error: { code: 'PROJECT_READ_ONLY', message: 'You have read-only access to this project' } });
     const result = await pool.query('DELETE FROM project_blocks WHERE id = $1 RETURNING id', [req.params.id]);

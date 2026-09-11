@@ -2,6 +2,12 @@ import { pool } from '../db.js';
 
 export async function writeAuditLog({ req, actorUserId = null, action, entityType, entityId = null, oldValue = null, newValue = null, metadata = null }) {
   try {
+    const auditMetadata = {
+      ...(metadata && typeof metadata === 'object' ? metadata : {}),
+      ...(req?.requestId ? { request_id: req.requestId } : {}),
+      ...(req?.method && req?.originalUrl ? { endpoint: `${req.method} ${req.originalUrl}` } : {}),
+    };
+
     await pool.query(
       `INSERT INTO audit_log
         (actor_user_id, action, entity_type, entity_id, old_value, new_value, metadata, ip_address, user_agent)
@@ -13,7 +19,7 @@ export async function writeAuditLog({ req, actorUserId = null, action, entityTyp
         entityId,
         oldValue == null ? null : JSON.stringify(oldValue),
         newValue == null ? null : JSON.stringify(newValue),
-        metadata == null ? null : JSON.stringify(metadata),
+        Object.keys(auditMetadata).length ? JSON.stringify(auditMetadata) : null,
         req.ip || null,
         req.get?.('user-agent') || null,
       ]

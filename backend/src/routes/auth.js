@@ -76,16 +76,50 @@ router.post('/login', loginRateLimit(), async (req, res) => {
       'SELECT id, username, password_hash, role, created_at, is_active FROM users WHERE username = $1',
       [username.trim()]
     );
-    if (!result.rowCount) return res.status(401).json({ error: 'Invalid credentials' });
+    if (!result.rowCount) {
+      await writeAuditLog({
+        req,
+        action: 'LOGIN_FAILED',
+        entityType: 'auth',
+        metadata: { username: String(username).trim(), reason: 'unknown_user' },
+      });
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
 
     const user = result.rows[0];
     const validPassword = await bcrypt.compare(password, user.password_hash);
-    if (!validPassword) return res.status(401).json({ error: 'Invalid credentials' });
+    if (!validPassword) {
+      await writeAuditLog({
+        req,
+        action: 'LOGIN_FAILED',
+        entityType: 'auth',
+        entityId: user.id,
+        metadata: { username: user.username, reason: 'invalid_password' },
+      });
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
 
-    if (!user.is_active) return res.status(403).json({ error: 'Account is disabled' });
+    if (!user.is_active) {
+      await writeAuditLog({
+        req,
+        action: 'LOGIN_FAILED',
+        entityType: 'auth',
+        entityId: user.id,
+        metadata: { username: user.username, reason: 'account_disabled' },
+      });
+      return res.status(403).json({ error: 'Account is disabled' });
+    }
     await pool.query('UPDATE users SET last_login_at = now() WHERE id = $1', [user.id]);
     const safeUser = { id: user.id, username: user.username, role: user.role, created_at: user.created_at, is_active: user.is_active };
     const token = issueToken(safeUser);
+    await writeAuditLog({
+      req,
+      actorUserId: user.id,
+      action: 'LOGIN',
+      entityType: 'auth',
+      entityId: user.id,
+      metadata: { username: user.username },
+    });
     res.json({ user: safeUser, token });
   } catch (err) {
     console.error(err);
