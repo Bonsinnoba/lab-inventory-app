@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Activity, BarChart3, BookOpen, Box, Bot, Calculator, Command, FileText,
-  Folder, Layers, Search, Settings, Users, X, Zap,
+  Activity, BarChart3, BookOpen, Box, Bot, Calculator, Command, FileText, ShieldCheck,
+  Folder, Layers, Search, Settings, Users, X, Zap, Music2,
 } from 'lucide-react';
 
 interface CommandPaletteProps { open: boolean; onClose: () => void; }
@@ -28,6 +28,8 @@ const COMMANDS: CommandItem[] = [
   { id: 'assistant', label: 'Lab Assistant', hint: 'Ask the lab', path: '/assistant', icon: Bot, keywords: 'ai assistant help' },
   { id: 'reports', label: 'Reports', hint: 'Analytics & exports', path: '/reports', icon: BarChart3, keywords: 'analytics csv reporting statistics' },
   { id: 'automation', label: 'Automation', hint: 'Reminders & due work', path: '/automation', icon: Zap, keywords: 'reminders notifications automation' },
+  { id: 'media', label: 'Media Manager', hint: 'Local media & music', path: '#media-manager', icon: Music2, keywords: 'music audio media player local' },
+  { id: 'daily-use', label: 'Daily Use & System', hint: 'Health, export & preferences', path: '/daily-use', icon: ShieldCheck, keywords: 'health backup export notifications voice' },
   { id: 'collaboration', label: 'Collaboration', hint: 'Team activity', path: '/collaboration', icon: Users, keywords: 'team comments activity' },
   { id: 'settings', label: 'Settings', hint: 'Account & appearance', path: '/settings', icon: Settings, keywords: 'profile password theme preferences' },
 ];
@@ -42,6 +44,8 @@ export default function CommandPalette({ open, onClose }: CommandPaletteProps) {
   const activate = (item: CommandItem) => {
     if (item.id === 'engineering') {
       window.dispatchEvent(new CustomEvent('labos:engineering-tools'));
+    } else if (item.id === 'media') {
+      window.dispatchEvent(new CustomEvent('labos:media-manager'));
     } else {
       navigate(item.path);
     }

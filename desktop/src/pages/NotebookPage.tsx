@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getNotes, getAllTags, createNote, updateNote, deleteNote, Note } from '../api/notes';
+import { getProjects, Project } from '../api/projects';
 import {
   Plus, Search, X, Trash2, Tag as TagIcon, Mic, Volume2, Sigma, Save, Square,
   ChevronLeft, ChevronRight,
@@ -9,8 +10,8 @@ import { useToast } from '../contexts/ToastContext';
 import SymbolPickerModal from '../components/SymbolPickerModal';
 import NoteRevisionsPanel from '../components/NoteRevisionsPanel';
 
-type Draft = { id: string | 'new' | null; title: string; body: string; tags: string[] };
-const EMPTY_DRAFT: Draft = { id: null, title: '', body: '', tags: [] };
+type Draft = { id: string | 'new' | null; title: string; body: string; tags: string[]; project_id?: string | null };
+const EMPTY_DRAFT: Draft = { id: null, title: '', body: '', tags: [], project_id: null };
 
 export default function NotebookPage() {
   const queryClient = useQueryClient();
@@ -23,6 +24,7 @@ export default function NotebookPage() {
   const [isListCollapsed, setIsListCollapsed] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const { data: projects = [] } = useQuery<Project[]>({ queryKey: ['projects-for-notebook'], queryFn: getProjects, staleTime: 30000 });
   const bodyRef = useRef<HTMLTextAreaElement>(null);
   const recognitionRef = useRef<any>(null);
 
@@ -41,7 +43,7 @@ export default function NotebookPage() {
     ? draft.title.trim() !== '' || draft.body.trim() !== ''
     : originalNote
       ? draft.title !== originalNote.title || draft.body !== originalNote.body ||
-        JSON.stringify(draft.tags) !== JSON.stringify(originalNote.tags)
+        JSON.stringify(draft.tags) !== JSON.stringify(originalNote.tags) || draft.project_id !== (originalNote.project_id || null)
       : false;
 
   const createMutation = useMutation({
@@ -49,7 +51,7 @@ export default function NotebookPage() {
     onSuccess: (created) => {
       queryClient.invalidateQueries({ queryKey: ['notes'] });
       queryClient.invalidateQueries({ queryKey: ['tags'] });
-      setDraft({ id: created.id, title: created.title, body: created.body, tags: created.tags });
+      setDraft({ id: created.id, title: created.title, body: created.body, tags: created.tags, project_id: created.project_id || null });
       showToast('Note created');
     },
     onError: (err: any) => showToast(err?.message || 'Failed to create note', 'error'),
@@ -60,7 +62,7 @@ export default function NotebookPage() {
     onSuccess: (updated) => {
       queryClient.invalidateQueries({ queryKey: ['notes'] });
       queryClient.invalidateQueries({ queryKey: ['tags'] });
-      setDraft({ id: updated.id, title: updated.title, body: updated.body, tags: updated.tags });
+      setDraft({ id: updated.id, title: updated.title, body: updated.body, tags: updated.tags, project_id: updated.project_id || null });
       showToast('Note saved');
     },
     onError: (err: any) => showToast(err?.message || 'Failed to save note', 'error'),
@@ -85,13 +87,13 @@ export default function NotebookPage() {
   const handleSelectNote = (note: Note) => {
     if (draft.id === note.id) return;
     if (!confirmDiscardIfDirty()) return;
-    setDraft({ id: note.id, title: note.title, body: note.body, tags: note.tags });
+    setDraft({ id: note.id, title: note.title, body: note.body, tags: note.tags, project_id: note.project_id || null });
   };
 
   const handleNewNote = () => {
     if (draft.id === 'new' && !isDirty) return;
     if (!confirmDiscardIfDirty()) return;
-    setDraft({ id: 'new', title: '', body: '', tags: [] });
+    setDraft({ id: 'new', title: '', body: '', tags: [], project_id: null });
   };
 
   const handleSave = () => {
@@ -100,9 +102,9 @@ export default function NotebookPage() {
       return;
     }
     if (draft.id === 'new') {
-      createMutation.mutate({ title: draft.title, body: draft.body, tags: draft.tags });
+      createMutation.mutate({ title: draft.title, body: draft.body, tags: draft.tags, project_id: draft.project_id || undefined });
     } else if (draft.id) {
-      updateMutation.mutate({ id: draft.id, note: { title: draft.title, body: draft.body, tags: draft.tags } });
+      updateMutation.mutate({ id: draft.id, note: { title: draft.title, body: draft.body, tags: draft.tags, project_id: draft.project_id || undefined } });
     }
   };
 
@@ -377,6 +379,11 @@ export default function NotebookPage() {
                     </button>
                   </span>
                 ))}
+                <select value={draft.project_id || ''} onChange={(e) => setDraft({ ...draft, project_id: e.target.value || null })} className="px-2 py-1 bg-surface-raised border border-border rounded-sm text-xs text-text-secondary" title="Save to project">
+                  <option value="">No project</option>
+                  {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+                </select>
+                <span className="text-[10px] text-text-secondary">Save to project</span>
                 <input
                   type="text"
                   placeholder="Add tag..."

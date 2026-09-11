@@ -1,138 +1,87 @@
-import { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, ShieldCheck, Plus, History, ExternalLink, Wrench } from 'lucide-react';
+import { useState, useRef, useEffect, useMemo } from 'react';
+import { Send, Bot, User, ShieldCheck, Plus, History, ExternalLink, Wrench, Settings2, Volume2, Square, StickyNote, Trash2, ChevronDown } from 'lucide-react';
 import { apiFetch } from '../api/http';
+import { getProjects, Project } from '../api/projects';
+import { createNote } from '../api/notes';
+import { useQuery } from '@tanstack/react-query';
+import { useToast } from '../contexts/ToastContext';
 
 interface ChatMessage { role: 'user' | 'model'; content: string; }
 interface SourceRef { type: string; id: string; title: string; }
 interface Conversation { id: string; title: string; created_at: string; updated_at: string; }
+type Scope = 'none'|'project'|'project_workspace'|'project_lab_data'|'full_project'|'custom';
+interface ContextState { scope: Scope; projectId: string|null; customTools: string[]; }
 interface Props { fullPage?: boolean; }
 
-const sourceLabel: Record<string,string> = { item:'Inventory', project:'Project', note:'Note', resource:'Resource', location:'Location', transaction:'Transaction' };
+const sourceLabel: Record<string,string> = { item:'Inventory', project:'Project', note:'Note', resource:'Resource', location:'Location', transaction:'Transaction', task:'Task', experiment:'Experiment', block:'Canvas' };
+const scopeLabels: Record<Scope,string> = { none:'None', project:'Project', project_workspace:'Project + Workspace', project_lab_data:'Project + Lab Data', full_project:'Full Project', custom:'Custom' };
+const customOptions = [
+  ['get_project','Project summary'],['get_project_workspace','Workspace'],['list_notes','Notes'],['search_knowledge','Knowledge'],
+  ['search_items','Inventory search'],['get_item','Inventory item details'],['get_transaction_summary','Financial summary'],['list_locations','Locations'],['get_location','Location details'],
+  ['search_global','Global search'],['list_projects','Project list'],['get_project_financials','Project financials'],['list_recent_activity','Recent activity']
+];
+
+function Markdown({ text }: { text: string }) {
+  const lines = text.split(/\r?\n/); const out: JSX.Element[] = []; let i=0;
+  while(i<lines.length){ const line=lines[i];
+    if(!line.trim()){i++;continue;}
+    if(/^```/.test(line)){ const code=[]; i++; while(i<lines.length&&!/^```/.test(lines[i])){code.push(lines[i]);i++;} i++; out.push(<pre key={out.length} className="my-2 p-3 overflow-x-auto bg-bg border border-border rounded-sm text-xs font-mono whitespace-pre">{code.join('\n')}</pre>); continue; }
+    if(/^#{1,3}\s/.test(line)){ const level=(line.match(/^#+/)||['#'])[0].length; const C=level===1?'h3':level===2?'h4':'h5'; out.push(<C key={out.length} className="font-semibold mt-3 mb-1">{line.replace(/^#{1,3}\s/,'')}</C>); i++; continue; }
+    if(/^[-*]\s/.test(line)){ const items=[]; while(i<lines.length&&/^[-*]\s/.test(lines[i])){items.push(lines[i].replace(/^[-*]\s/,''));i++;} out.push(<ul key={out.length} className="list-disc pl-5 my-2 space-y-1">{items.map((x,j)=><li key={j}>{inline(x)}</li>)}</ul>); continue; }
+    if(/^\d+\.\s/.test(line)){ const items=[]; while(i<lines.length&&/^\d+\.\s/.test(lines[i])){items.push(lines[i].replace(/^\d+\.\s/,''));i++;} out.push(<ol key={out.length} className="list-decimal pl-5 my-2 space-y-1">{items.map((x,j)=><li key={j}>{inline(x)}</li>)}</ol>); continue; }
+    out.push(<p key={out.length} className="my-1">{inline(line)}</p>); i++;
+  } return <div className="leading-relaxed">{out}</div>;
+}
+function inline(s:string){ const parts=s.split(/(`[^`]+`|\*\*[^*]+\*\*)/g); return <>{parts.map((p,i)=>p.startsWith('`')?<code key={i} className="px-1 py-0.5 bg-surface-raised rounded text-xs font-mono">{p.slice(1,-1)}</code>:p.startsWith('**')?<strong key={i}>{p.slice(2,-2)}</strong>:p)}</>; }
 
 export default function AssistantChat({ fullPage = false }: Props) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [input, setInput] = useState('');
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [conversationId, setConversationId] = useState<string | null>(null);
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [sources, setSources] = useState<SourceRef[]>([]);
-  const [toolStatus, setToolStatus] = useState<string | null>(null);
-  const [capabilities, setCapabilities] = useState<{enabled:boolean; model:string; can_modify_data:boolean} | null>(null);
-  const [showHistory, setShowHistory] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const { showToast } = useToast();
+  const [messages, setMessages] = useState<ChatMessage[]>([]); const [input,setInput]=useState(''); const [isStreaming,setIsStreaming]=useState(false);
+  const [conversationId,setConversationId]=useState<string|null>(null); const [conversations,setConversations]=useState<Conversation[]>([]); const [sources,setSources]=useState<SourceRef[]>([]);
+  const [toolStatus,setToolStatus]=useState<string|null>(null); const [capabilities,setCapabilities]=useState<any>(null); const [showHistory,setShowHistory]=useState(false); const [showContext,setShowContext]=useState(false); const [error,setError]=useState<string|null>(null); const [speakingIndex,setSpeakingIndex]=useState<number|null>(null);
+  const [context,setContext]=useState<ContextState>({scope:'none',projectId:null,customTools:[]}); const scrollRef=useRef<HTMLDivElement>(null);
+  const {data:projects=[]}=useQuery<Project[]>({queryKey:['assistant-projects'],queryFn:getProjects,enabled:showContext&&context.scope!=='none',staleTime:30000});
 
-  useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }); }, [messages]);
+  const loadConversations=async()=>{try{const r=await apiFetch('/assistant/conversations');if(r.ok)setConversations(await r.json());}catch{}};
+  useEffect(()=>{ apiFetch('/assistant/capabilities').then(async r=>r.ok&&setCapabilities(await r.json())).catch(()=>null); apiFetch('/assistant/preferences').then(async r=>{if(r.ok){const p=await r.json();setContext({scope:p.context_scope||'none',projectId:p.context_project_id||null,customTools:Array.isArray(p.context_tools)?p.context_tools:[]});}}).catch(()=>null); loadConversations(); },[]);
+  useEffect(()=>{scrollRef.current?.scrollTo({top:scrollRef.current.scrollHeight,behavior:'smooth'});},[messages,toolStatus]);
 
-  const loadConversations = async () => {
-    try {
-      const response = await apiFetch('/assistant/conversations');
-      if (response.ok) setConversations(await response.json());
-    } catch { /* non-critical */ }
+  const saveContext=async(next:ContextState)=>{setContext(next);try{const r=await apiFetch('/assistant/preferences',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({context_scope:next.scope,context_project_id:next.projectId,context_tools:next.customTools})});if(!r.ok){const b=await r.json().catch(()=>({}));throw new Error(b.error||'Failed to save context');}showToast(`Assistant context: ${scopeLabels[next.scope]}`);}catch(e){showToast(e instanceof Error?e.message:'Failed to save context','error');}};
+  const startNew=()=>{if(isStreaming)return;setConversationId(null);setMessages([]);setSources([]);setError(null);setToolStatus(null);};
+  const deleteConversation=async(id:string)=>{if(!window.confirm('Delete this conversation?'))return;try{const r=await apiFetch(`/assistant/conversations/${id}`,{method:'DELETE'});if(!r.ok)throw new Error('Unable to delete conversation');setConversations(v=>v.filter(c=>c.id!==id));if(conversationId===id)startNew();}catch(e){setError(e instanceof Error?e.message:'Unable to delete conversation');}};
+  const loadConversation=async(id:string)=>{if(isStreaming)return;try{const r=await apiFetch(`/assistant/conversations/${id}`);if(!r.ok)throw new Error('Unable to load conversation');const d=await r.json();setConversationId(d.id);setMessages(d.messages.map((m:ChatMessage)=>({role:m.role,content:m.content})));setSources([]);setError(null);setShowHistory(false);}catch(e){setError(e instanceof Error?e.message:'Unable to load conversation');}};
+
+  const sendMessage=async()=>{const trimmed=input.trim();if(!trimmed||isStreaming)return;if(context.scope!=='none'&&['project','project_workspace','project_lab_data','full_project'].includes(context.scope)&&!context.projectId){setError('Select a project for this context scope.');setShowContext(true);return;}
+    setError(null);setSources([]);setToolStatus(null);setMessages(v=>[...v,{role:'user',content:trimmed},{role:'model',content:''}]);setInput('');setIsStreaming(true);
+    try{const r=await apiFetch('/assistant/chat',{method:'POST',body:JSON.stringify({message:trimmed,conversation_id:conversationId,context_scope:context.scope,context_project_id:context.projectId,context_tools:context.customTools})});if(!r.ok||!r.body){const b=await r.json().catch(()=>({}));throw new Error(b?.error?.message||b?.error||'Assistant request failed');}
+      const reader=r.body.getReader(),decoder=new TextDecoder();let buffer='';while(true){const {done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const events=buffer.split('\n\n');buffer=events.pop()||'';for(const raw of events){const eventLine=raw.split('\n').find(l=>l.startsWith('event:'));const dataLine=raw.split('\n').find(l=>l.startsWith('data:'));if(!dataLine)continue;let data:any;try{data=JSON.parse(dataLine.slice(5).trim())}catch{continue}const type=eventLine?eventLine.slice(6).trim():'message';if(type==='tool_status')setToolStatus(data.tools?.length?`Checking ${data.tools.join(', ').replaceAll('_',' ')}…`:'Checking lab data…');else if(type==='sources')setSources(data.items||[]);else if(type==='error')setError(data.error||'Assistant request failed');else if(type==='done'){setConversationId(data.conversation_id||null);loadConversations();}else if(data.text)setMessages(v=>{const n=[...v],last=n.length-1;n[last]={...n[last],content:n[last].content+data.text};return n;});}}
+    }catch(e){setError(e instanceof Error?e.message:'Assistant is unavailable right now');setMessages(v=>v.map((m,i)=>i===v.length-1&&m.role==='model'&&!m.content?{...m,content:'Unable to complete the request.'}:m));}finally{setIsStreaming(false);setToolStatus(null);}
   };
 
-  useEffect(() => {
-    apiFetch('/assistant/capabilities').then(async r => r.ok ? setCapabilities(await r.json()) : null).catch(() => null);
-    loadConversations();
-  }, []);
+  const readAloud=(text:string,index:number)=>{if(speakingIndex===index){window.speechSynthesis.cancel();window.dispatchEvent(new CustomEvent('labos:resume-music'));setSpeakingIndex(null);return;}window.speechSynthesis.cancel();window.dispatchEvent(new CustomEvent('labos:pause-music',{detail:{reason:'tts'}}));const u=new SpeechSynthesisUtterance(text);u.onend=()=>{window.dispatchEvent(new CustomEvent('labos:resume-music',{detail:{reason:'tts'}}));setSpeakingIndex(null)};u.onerror=()=>{window.dispatchEvent(new CustomEvent('labos:resume-music',{detail:{reason:'tts'}}));setSpeakingIndex(null)};setSpeakingIndex(index);window.speechSynthesis.speak(u);};
+  const exportToNotes=async(text:string)=>{try{await createNote({title:`Assistant response — ${new Date().toLocaleString()}`,body:text,tags:['assistant']});showToast('Response exported to Notes');}catch(e){showToast(e instanceof Error?e.message:'Failed to export response','error');}};
+  const allowedCustom=useMemo(()=>capabilities?.tools||customOptions.map(x=>x[0]),[capabilities]);
+  const toggleCustom=(name:string)=>saveContext({...context,customTools:context.customTools.includes(name)?context.customTools.filter(x=>x!==name):[...context.customTools,name]});
+  const shellClass=fullPage?'flex flex-col h-full min-h-0 bg-surface border border-border rounded-md':'flex flex-col h-full';
 
-  const startNew = () => { if (isStreaming) return; setConversationId(null); setMessages([]); setSources([]); setError(null); setToolStatus(null); };
-
-  const loadConversation = async (id: string) => {
-    if (isStreaming) return;
-    try {
-      const response = await apiFetch(`/assistant/conversations/${id}`);
-      if (!response.ok) throw new Error('Unable to load conversation');
-      const data = await response.json();
-      setConversationId(data.id);
-      setMessages(data.messages.map((m: ChatMessage) => ({ role: m.role, content: m.content })));
-      setSources([]);
-      setError(null);
-      setShowHistory(false);
-    } catch (err) { setError(err instanceof Error ? err.message : 'Unable to load conversation'); }
-  };
-
-  const sendMessage = async () => {
-    const trimmed = input.trim();
-    if (!trimmed || isStreaming) return;
-    setError(null); setSources([]); setToolStatus(null);
-    setMessages(prev => [...prev, { role:'user', content:trimmed }, { role:'model', content:'' }]);
-    setInput(''); setIsStreaming(true);
-    try {
-      const response = await apiFetch('/assistant/chat', { method:'POST', body:JSON.stringify({ message:trimmed, conversation_id:conversationId }) });
-      if (!response.ok || !response.body) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(body?.error?.message || body?.error || 'Assistant request failed');
-      }
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer='';
-      while(true){
-        const {done,value}=await reader.read(); if(done) break;
-        buffer += decoder.decode(value,{stream:true});
-        const events=buffer.split('\n\n'); buffer=events.pop()||'';
-        for(const raw of events){
-          const eventLine=raw.split('\n').find(l=>l.startsWith('event:'));
-          const dataLine=raw.split('\n').find(l=>l.startsWith('data:'));
-          if(!dataLine) continue;
-          let data:any; try { data=JSON.parse(dataLine.slice(5).trim()); } catch { continue; }
-          const type=eventLine ? eventLine.slice(6).trim() : 'message';
-          if(type==='tool_status') setToolStatus(data.tools?.length ? `Checking ${data.tools.join(', ').replaceAll('_',' ')}…` : 'Checking lab data…');
-          else if(type==='sources') setSources(data.items || []);
-          else if(type==='error') { setError(data.error || 'Assistant request failed'); setToolStatus(null); }
-          else if(type==='done') { setConversationId(data.conversation_id || null); setToolStatus(null); loadConversations(); }
-          else if(data.text) setMessages(prev => { const next=[...prev]; const last=next.length-1; next[last]={...next[last],content:next[last].content+data.text}; return next; });
-        }
-      }
-    } catch(err){
-      setError(err instanceof Error ? err.message : 'Assistant is unavailable right now');
-      setMessages(prev => prev.map((m,i)=>i===prev.length-1 && m.role==='model' && !m.content ? {...m,content:'Unable to complete the request.'}:m));
-    } finally { setIsStreaming(false); setToolStatus(null); }
-  };
-
-  const shellClass = fullPage ? 'flex flex-col h-full min-h-0 bg-surface border border-border rounded-md' : 'flex flex-col h-full';
-  return (
-    <div className={shellClass}>
-      <div className="flex items-center gap-3 px-4 py-3 border-b border-border flex-shrink-0">
-        <div className="w-9 h-9 rounded-md bg-accent/10 text-accent flex items-center justify-center"><Bot size={19}/></div>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2"><strong className="text-sm">Lab Assistant</strong><span className="text-[10px] uppercase tracking-wider text-status-ok flex items-center gap-1"><ShieldCheck size={12}/> Read-only</span></div>
-          <div className="text-xs text-text-secondary truncate">{capabilities?.enabled ? `Connected · ${capabilities.model}` : 'Database-aware assistant'}</div>
-        </div>
-        <button onClick={startNew} disabled={isStreaming} title="New conversation" className="p-2 rounded-sm text-text-secondary hover:text-text-primary hover:bg-surface-raised disabled:opacity-40"><Plus size={17}/></button>
-        {fullPage && <button onClick={()=>setShowHistory(v=>!v)} className="p-2 rounded-sm text-text-secondary hover:text-text-primary hover:bg-surface-raised"><History size={17}/></button>}
-      </div>
-
-      {fullPage && showHistory && <div className="border-b border-border p-3 max-h-56 overflow-y-auto bg-surface-raised/30">
-        <div className="flex items-center justify-between mb-2"><span className="text-xs font-medium">Conversations</span><button onClick={startNew} className="text-xs text-accent">New</button></div>
-        <div className="space-y-1">{conversations.length===0 ? <div className="text-xs text-text-secondary py-2">No saved conversations.</div> : conversations.map(c=><button key={c.id} onClick={()=>loadConversation(c.id)} className={`w-full text-left px-2 py-2 rounded-sm text-xs hover:bg-surface-raised ${c.id===conversationId?'bg-accent/10 text-accent':'text-text-secondary'}`}>{c.title || 'Untitled conversation'}</button>)}</div>
-      </div>}
-
-      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
-        {messages.length===0 && <div className="max-w-xl mx-auto text-center mt-10 px-4">
-          <Bot size={38} className="mx-auto mb-3 text-accent"/>
-          <h2 className="text-base font-semibold mb-2">Ask the lab anything</h2>
-          <p className="text-sm text-text-secondary">I can search real inventory, projects, notes, resources, locations and financial summaries. I cannot change lab data.</p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-5 text-left">
-            {['What equipment needs repair?','Show me the active projects','Find notes about ESP32','How much did we spend this month?'].map(q=><button key={q} onClick={()=>setInput(q)} className="p-3 border border-border rounded-sm text-xs text-text-secondary hover:text-text-primary hover:border-accent bg-surface-raised">{q}</button>)}
-          </div>
-        </div>}
-        {messages.map((msg,i)=><div key={i} className="flex gap-2 items-start">
-          <div className={`w-7 h-7 rounded-sm flex items-center justify-center flex-shrink-0 ${msg.role==='user'?'bg-accent/20 text-accent':'bg-surface-raised text-text-secondary'}`}>{msg.role==='user'?<User size={14}/>:<Bot size={14}/>}</div>
-          <div className="flex-1 min-w-0 text-sm text-text-primary whitespace-pre-wrap break-words leading-relaxed">{msg.content || (isStreaming && i===messages.length-1 ? <span className="text-text-secondary">thinking…</span> : '')}</div>
-        </div>)}
-        {toolStatus && <div className="text-xs text-text-secondary flex items-center gap-2"><Wrench size={13}/>{toolStatus}</div>}
-        {error && <div className="text-sm text-status-danger bg-status-danger/10 border border-status-danger/30 rounded-sm px-3 py-2">{error}</div>}
-        {sources.length>0 && <div className="border border-border rounded-sm p-3 bg-surface-raised/40"><div className="text-xs font-medium mb-2">Sources consulted</div><div className="flex flex-wrap gap-2">{sources.map(s=><span key={`${s.type}:${s.id}`} className="inline-flex items-center gap-1 px-2 py-1 rounded-sm border border-border text-[11px] text-text-secondary"><span className="text-accent">{sourceLabel[s.type]||s.type}</span><span className="truncate max-w-44">{s.title}</span><ExternalLink size={10}/></span>)}</div></div>}
-      </div>
-
-      <div className="border-t border-border p-3 flex-shrink-0">
-        <div className="flex items-end gap-2">
-          <textarea value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage();}}} placeholder="Ask the lab assistant…" rows={1} className="flex-1 resize-none bg-surface-raised border border-border rounded-sm px-3 py-2 text-sm text-text-primary placeholder:text-text-secondary focus:outline-none focus:border-accent max-h-32"/>
-          <button onClick={sendMessage} disabled={isStreaming||!input.trim()} className="p-2 bg-accent text-bg rounded-sm hover:bg-accent-dim transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"><Send size={16}/></button>
-        </div>
-        <div className="text-[10px] text-text-secondary mt-2 flex items-center gap-1"><ShieldCheck size={11}/> v2.0 assistant is read-only; actions are never executed automatically.</div>
-      </div>
+  return <div className={shellClass}>
+    <div className="flex items-center gap-3 px-4 py-3 border-b border-border flex-shrink-0">
+      <div className="w-9 h-9 rounded-md bg-accent/10 text-accent flex items-center justify-center"><Bot size={19}/></div><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><strong className="text-sm">Lab Assistant</strong><span className="text-[10px] uppercase tracking-wider text-status-ok flex items-center gap-1"><ShieldCheck size={12}/> Read-only</span></div><div className="text-xs text-text-secondary truncate">{capabilities?.enabled?`Connected · ${capabilities.model}`:'Database-aware assistant'} · Context: {scopeLabels[context.scope]}</div></div>
+      <button onClick={()=>setShowContext(v=>!v)} title="Context controls" className={`p-2 rounded-sm ${showContext?'bg-accent/10 text-accent':'text-text-secondary hover:text-text-primary hover:bg-surface-raised'}`}><Settings2 size={17}/></button><button onClick={startNew} disabled={isStreaming} title="New conversation" className="p-2 rounded-sm text-text-secondary hover:text-text-primary hover:bg-surface-raised disabled:opacity-40"><Plus size={17}/></button><button onClick={()=>setShowHistory(v=>!v)} title="Conversation history" className="p-2 rounded-sm text-text-secondary hover:text-text-primary hover:bg-surface-raised"><History size={17}/></button>
     </div>
-  );
+    {showContext&&<div className="border-b border-border p-3 bg-surface-raised/30 space-y-3">
+      <div className="flex items-center justify-between"><div><div className="text-xs font-semibold">Assistant context</div><div className="text-[11px] text-text-secondary">OFF by default. Only authorized read-only data is exposed.</div></div><ChevronDown size={15} className="text-text-secondary"/></div>
+      <select value={context.scope} onChange={e=>saveContext({...context,scope:e.target.value as Scope,projectId:e.target.value==='none'?null:context.projectId})} className="w-full bg-surface border border-border rounded-sm px-2 py-2 text-xs">{(Object.keys(scopeLabels) as Scope[]).map(s=><option key={s} value={s}>{scopeLabels[s]}</option>)}</select>
+      {context.scope!=='none'&&context.scope!=='custom'&&<select value={context.projectId||''} onChange={e=>saveContext({...context,projectId:e.target.value||null})} className="w-full bg-surface border border-border rounded-sm px-2 py-2 text-xs"><option value="">Select project…</option>{projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select>}
+      {context.scope==='custom'&&<div className="grid grid-cols-1 sm:grid-cols-2 gap-1">{customOptions.filter(([n])=>allowedCustom.includes(n)).map(([name,label])=><label key={name} className="flex items-center gap-2 text-[11px] p-1.5 rounded hover:bg-surface"><input type="checkbox" checked={context.customTools.includes(name)} onChange={()=>toggleCustom(name)}/>{label}</label>)}</div>}
+    </div>}
+    {showHistory&&<div className="border-b border-border p-3 max-h-64 overflow-y-auto bg-surface-raised/30"><div className="flex items-center justify-between mb-2"><span className="text-xs font-medium">Conversations</span><button onClick={startNew} className="text-xs text-accent">New</button></div><div className="space-y-1">{conversations.length===0?<div className="text-xs text-text-secondary py-2">No saved conversations.</div>:conversations.map(c=><div key={c.id} className="flex gap-1"><button onClick={()=>loadConversation(c.id)} className={`flex-1 text-left px-2 py-2 rounded-sm text-xs hover:bg-surface-raised ${c.id===conversationId?'bg-accent/10 text-accent':'text-text-secondary'}`}>{c.title||'Untitled conversation'}</button><button onClick={()=>deleteConversation(c.id)} title="Delete conversation" className="p-2 text-text-secondary hover:text-status-danger"><Trash2 size={13}/></button></div>)}</div></div>}
+    <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
+      {messages.length===0&&<div className="max-w-xl mx-auto text-center mt-8 px-4"><Bot size={38} className="mx-auto mb-3 text-accent"/><h2 className="text-base font-semibold mb-2">Ask the lab anything</h2><p className="text-sm text-text-secondary">Context is currently <b>{scopeLabels[context.scope]}</b>. Turn it on only when you want the assistant to consult LabOS data.</p><div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-5 text-left">{['Summarize this project','What experiments are active?','Find notes about ESP32','What should I inspect next?'].map(q=><button key={q} onClick={()=>setInput(q)} className="p-3 border border-border rounded-sm text-xs text-text-secondary hover:text-text-primary hover:border-accent bg-surface-raised">{q}</button>)}</div></div>}
+      {messages.map((msg,i)=><div key={i} className="flex gap-2 items-start"><div className={`w-7 h-7 rounded-sm flex items-center justify-center flex-shrink-0 ${msg.role==='user'?'bg-accent/20 text-accent':'bg-surface-raised text-text-secondary'}`}>{msg.role==='user'?<User size={14}/>:<Bot size={14}/>}</div><div className="flex-1 min-w-0 text-sm text-text-primary break-words">{msg.role==='model'&&msg.content?<Markdown text={msg.content}/>:msg.content||(isStreaming&&i===messages.length-1?<span className="text-text-secondary">thinking…</span>:'')}{msg.role==='model'&&msg.content&&<div className="flex gap-1 mt-2"><button onClick={()=>readAloud(msg.content,i)} className="inline-flex items-center gap-1 px-2 py-1 text-[10px] border border-border rounded-sm text-text-secondary hover:text-text-primary">{speakingIndex===i?<Square size={11}/>:<Volume2 size={11}/>} Read aloud</button><button onClick={()=>exportToNotes(msg.content)} className="inline-flex items-center gap-1 px-2 py-1 text-[10px] border border-border rounded-sm text-text-secondary hover:text-text-primary"><StickyNote size={11}/> Export to Notes</button></div>}</div></div>)}
+      {toolStatus&&<div className="text-xs text-text-secondary flex items-center gap-2"><Wrench size={13}/>{toolStatus}</div>}{error&&<div className="text-sm text-status-danger bg-status-danger/10 border border-status-danger/30 rounded-sm px-3 py-2">{error}</div>}
+      {sources.length>0&&<div className="border border-border rounded-sm p-3 bg-surface-raised/40"><div className="text-xs font-medium mb-2">Sources consulted</div><div className="flex flex-wrap gap-2">{sources.map(s=><span key={`${s.type}:${s.id}`} className="inline-flex items-center gap-1 px-2 py-1 rounded-sm border border-border text-[11px] text-text-secondary"><span className="text-accent">{sourceLabel[s.type]||s.type}</span><span className="truncate max-w-44">{s.title}</span><ExternalLink size={10}/></span>)}</div></div>}
+    </div>
+    <div className="border-t border-border p-3 flex-shrink-0"><div className="flex items-end gap-2"><textarea value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage()}}} placeholder="Ask the lab assistant…" rows={1} className="flex-1 resize-none bg-surface-raised border border-border rounded-sm px-3 py-2 text-sm text-text-primary placeholder:text-text-secondary focus:outline-none focus:border-accent max-h-32"/><button onClick={sendMessage} disabled={isStreaming||!input.trim()} className="p-2 bg-accent text-bg rounded-sm disabled:opacity-40"><Send size={16}/></button></div><div className="text-[10px] text-text-secondary mt-2 flex items-center gap-1"><ShieldCheck size={11}/> Read-only · scoped context · no automatic data changes.</div></div>
+  </div>;
 }

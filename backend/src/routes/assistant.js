@@ -29,7 +29,7 @@ STRICT SAFETY RULES:
 ACTION REQUESTS:
 If the user asks for an action, you may explain the intended action as a proposal, but it must be clearly labeled as a proposal and must not be represented as completed. Ask the user to perform/confirm it through the appropriate LabOS UI.`;
 
-const tools = [
+const BASE_TOOLS = [
   {
     name: 'search_global',
     description: 'Search the laboratory across inventory items, projects, notes, resources, and financial transactions.',
@@ -132,6 +132,49 @@ const tools = [
     parameters: { type: 'object', properties: { limit: { type: 'integer' } } }
   }
 ];
+
+
+const CONTEXT_SCOPES = new Set(['none','project','project_workspace','project_lab_data','full_project','custom']);
+const TOOL_GROUPS = {
+  project: ['get_project'],
+  workspace: ['get_project_workspace','list_notes','search_knowledge'],
+  lab_data: ['get_project_workspace'],
+  full: ['get_project_financials'],
+};
+function normalizeContext(body = {}) {
+  const scope = CONTEXT_SCOPES.has(body.context_scope) ? body.context_scope : 'none';
+  const projectId = typeof body.context_project_id === 'string' && body.context_project_id ? body.context_project_id : null;
+  const customTools = Array.isArray(body.context_tools) ? body.context_tools.filter((x) => typeof x === 'string') : [];
+  return { scope, projectId, customTools };
+}
+function toolsForContext(context) {
+  if (context.scope === 'none') return [];
+  let names = [];
+  if (context.scope === 'project') names = TOOL_GROUPS.project;
+  if (context.scope === 'project_workspace') names = [...TOOL_GROUPS.project, ...TOOL_GROUPS.workspace];
+  if (context.scope === 'project_lab_data') names = [...TOOL_GROUPS.project, ...TOOL_GROUPS.workspace, ...TOOL_GROUPS.lab_data];
+  if (context.scope === 'full_project') names = [...TOOL_GROUPS.project, ...TOOL_GROUPS.workspace, ...TOOL_GROUPS.lab_data, ...TOOL_GROUPS.full];
+  if (context.scope === 'custom') names = context.customTools;
+  return BASE_TOOLS.filter((tool) => names.includes(tool.name));
+}
+async function validateContext(context, user) {
+  if (context.scope === 'none') return;
+  if (['project','project_workspace','project_lab_data','full_project'].includes(context.scope) && !context.projectId) {
+    throw new Error('A project must be selected for this context scope');
+  }
+  if (context.projectId) await requireProjectVisibility(context.projectId, user);
+}
+function scopedSystemInstruction(context) {
+  const labels = {
+    none: 'Context is OFF. Do not use laboratory-data tools and answer only from the conversation or general knowledge.',
+    project: 'Context is limited to the selected project summary.',
+    project_workspace: 'Context is limited to the selected project and its workspace: tasks, experiments, notes, and resources.',
+    project_lab_data: 'Context is limited to the selected project, its workspace, and project-linked laboratory data.',
+    full_project: 'Context is limited to the selected project and all authorized project-related laboratory knowledge and activity.',
+    custom: 'Context is limited to the explicitly selected tools.'
+  };
+  return `${SYSTEM_INSTRUCTION}\n\nCURRENT CONTEXT POLICY:\n- ${labels[context.scope]}\n- Selected project: ${context.projectId || 'none'}\n- Never access or infer data outside this scope.`;
+}
 
 async function requireProjectVisibility(projectId, user) {
   const access = await getProjectAccess(projectId, user);
@@ -272,13 +315,17 @@ async function getLocation({ location_id }) {
   return result(r.rows[0],[source('location',r.rows[0].id,r.rows[0].name)]);
 }
 
-async function searchKnowledge({ query, category }, user) {
+async function searchKnowledge({ query, category, project_id }, user) {
   const q=`%${String(query||'').trim()}%`; const values=[q];
   let categoryClause='';
+  let projectClause='';
+  if(project_id){ values.push(project_id); projectClause=`AND project_id=$${values.length}`; }
   if(category?.trim()){ values.push(category.trim()); categoryClause=`AND category ILIKE $${values.length}`; }
+  const notesValues=project_id?[q,project_id]:[q];
+  const resourcesValues=values;
   const [notes,resources]=await Promise.all([
-    pool.query(`SELECT id,title,tags,project_id,updated_at FROM notes WHERE (title ILIKE $1 OR body ILIKE $1 OR EXISTS (SELECT 1 FROM unnest(tags) tag WHERE tag ILIKE $1)) ORDER BY updated_at DESC LIMIT 15`,[q]),
-    pool.query(`SELECT id,name,category,description,tags,project_id,item_id,updated_at FROM resources WHERE (name ILIKE $1 OR description ILIKE $1 OR EXISTS (SELECT 1 FROM unnest(tags) tag WHERE tag ILIKE $1)) ${categoryClause} ORDER BY updated_at DESC LIMIT 15`,values)
+    pool.query(`SELECT id,title,tags,project_id,updated_at FROM notes WHERE (title ILIKE $1 OR body ILIKE $1 OR EXISTS (SELECT 1 FROM unnest(tags) tag WHERE tag ILIKE $1)) ${project_id?'AND project_id=$2':''} ORDER BY updated_at DESC LIMIT 15`,notesValues),
+    pool.query(`SELECT id,name,category,description,tags,project_id,item_id,updated_at FROM resources WHERE (name ILIKE $1 OR description ILIKE $1 OR EXISTS (SELECT 1 FROM unnest(tags) tag WHERE tag ILIKE $1)) ${projectClause} ${categoryClause} ORDER BY updated_at DESC LIMIT 15`,resourcesValues)
   ]);
   const visibleNotes = await filterProjectRows(notes.rows, user);
   const visibleResources = await filterProjectRows(resources.rows, user);
@@ -323,12 +370,14 @@ function sendEvent(res,event,data){
 
 router.get('/capabilities',(req,res)=>{
   res.setHeader('Cache-Control','no-store');
-  res.json({ enabled:Boolean(ai), mode:'read-only', model:MODEL_NAME, max_message_length:MAX_MESSAGE_LENGTH, tools:tools.map(t=>t.name), can_modify_data:false });
+  res.json({ enabled:Boolean(ai), mode:'read-only', model:MODEL_NAME, max_message_length:MAX_MESSAGE_LENGTH, tools:BASE_TOOLS.map(t=>t.name), context_scopes:[...CONTEXT_SCOPES], can_modify_data:false });
 });
 
 router.post('/chat',async(req,res)=>{
   const message=typeof req.body?.message==='string'?req.body.message.trim():'';
   const requestedConversationId=typeof req.body?.conversation_id==='string'?req.body.conversation_id:null;
+  const context=normalizeContext(req.body);
+  try { await validateContext(context, req.user); } catch(err) { return res.status(400).json({error:err instanceof Error?err.message:'Invalid assistant context'}); }
   if(!message) return res.status(400).json({error:'message is required'});
   if(message.length>MAX_MESSAGE_LENGTH) return res.status(400).json({error:`message is too long (maximum ${MAX_MESSAGE_LENGTH} characters)`});
   if(!ai) return res.status(503).json({error:{code:'AI_NOT_CONFIGURED',message:'Lab Assistant is not configured. Set GEMINI_API_KEY on the backend.'}});
@@ -358,7 +407,7 @@ router.post('/chat',async(req,res)=>{
     res.setHeader('Connection','keep-alive');
     res.setHeader('X-Accel-Buffering','no');
 
-    const chat=ai.chats.create({model:MODEL_NAME,history,config:{tools:[{functionDeclarations:tools.map(t=>({name:t.name,description:t.description,parametersJsonSchema:t.parameters}))}],systemInstruction:SYSTEM_INSTRUCTION}});
+    const chat=ai.chats.create({model:MODEL_NAME,history,config:{tools:[{functionDeclarations:toolsForContext(context).map(t=>({name:t.name,description:t.description,parametersJsonSchema:t.parameters}))}],systemInstruction:scopedSystemInstruction(context)}});
     let response=await chat.sendMessage({message,config:{abortSignal:abortController.signal}});
     let toolCalls=response.functionCalls;
     let toolRounds=0;
@@ -371,6 +420,14 @@ router.post('/chat',async(req,res)=>{
       for(const call of toolCalls){
         const implementation=toolImplementations[call.name];
         const started=Date.now();
+        if(!toolsForContext(context).some(t=>t.name===call.name)){
+          const err={error:'Tool is outside the active assistant context'};
+          await recordToolCall(runId,call.name,call.args||{},err,'failed',Date.now()-started);
+          parts.push({functionResponse:{name:call.name,response:err}});
+          continue;
+        }
+        const callArgs={...(call.args||{})};
+        if(['get_project','get_project_workspace','get_project_financials','list_notes','search_knowledge'].includes(call.name) && context.projectId) callArgs.project_id=context.projectId;
         if(!implementation){
           const err={error:`Unknown tool: ${call.name}`};
           await recordToolCall(runId,call.name,call.args||{},err,'failed',Date.now()-started);
@@ -378,13 +435,13 @@ router.post('/chat',async(req,res)=>{
           continue;
         }
         try{
-          const toolResult=await implementation(call.args||{}, req.user);
+          const toolResult=await implementation(callArgs, req.user);
           if(toolResult?.sources) allSources.push(...toolResult.sources);
-          await recordToolCall(runId,call.name,call.args||{},toolResult,'completed',Date.now()-started);
+          await recordToolCall(runId,call.name,callArgs,toolResult,'completed',Date.now()-started);
           parts.push({functionResponse:{name:call.name,response:{result:toolResult?.data ?? toolResult}}});
         }catch(err){
           const safeMessage=err instanceof Error?err.message:'Tool failed';
-          await recordToolCall(runId,call.name,call.args||{},{error:safeMessage},'failed',Date.now()-started);
+          await recordToolCall(runId,call.name,callArgs,{error:safeMessage},'failed',Date.now()-started);
           parts.push({functionResponse:{name:call.name,response:{error:safeMessage}}});
         }
       }
@@ -403,8 +460,8 @@ router.post('/chat',async(req,res)=>{
 
     await pool.query(`INSERT INTO conversation_messages(conversation_id,role,content) VALUES($1,'model',$2)`,[conversationId,fullResponse]);
     await pool.query(`UPDATE conversations SET updated_at=now() WHERE id=$1 AND user_id=$2`,[conversationId,req.user.userId]);
-    await finishRun(runId,'completed',{toolRounds,metadata:{source_count:uniqueSources.length}});
-    await writeAuditLog({req,action:'AI_QUERY',entityType:'ai_run',entityId:runId,metadata:{conversation_id:conversationId,tool_rounds:toolRounds,source_count:uniqueSources.length}});
+    await finishRun(runId,'completed',{toolRounds,metadata:{source_count:uniqueSources.length,context_scope:context.scope,context_project_id:context.projectId}});
+    await writeAuditLog({req,action:'AI_QUERY',entityType:'ai_run',entityId:runId,metadata:{conversation_id:conversationId,tool_rounds:toolRounds,source_count:uniqueSources.length,context_scope:context.scope,context_project_id:context.projectId}});
     sendEvent(res,'done',{conversation_id:conversationId,run_id:runId,mode:'read-only'});
     res.end();
   }catch(err){
@@ -420,6 +477,23 @@ router.post('/chat',async(req,res)=>{
       res.status(500).json({error:'Assistant is unavailable right now'});
     }
   }
+});
+
+
+router.get('/preferences',async(req,res)=>{
+  try{
+    const r=await pool.query(`SELECT context_scope,context_project_id,context_tools,updated_at FROM assistant_preferences WHERE user_id=$1`,[req.user.userId]);
+    res.json(r.rows[0] || {context_scope:'none',context_project_id:null,context_tools:[]});
+  }catch(err){console.error(err);res.status(500).json({error:'Failed to fetch assistant preferences'});}
+});
+router.patch('/preferences',async(req,res)=>{
+  try{
+    const context=normalizeContext(req.body);
+    await validateContext(context,req.user);
+    const r=await pool.query(`INSERT INTO assistant_preferences(user_id,context_scope,context_project_id,context_tools) VALUES($1,$2,$3,$4) ON CONFLICT(user_id) DO UPDATE SET context_scope=EXCLUDED.context_scope,context_project_id=EXCLUDED.context_project_id,context_tools=EXCLUDED.context_tools,updated_at=now() RETURNING context_scope,context_project_id,context_tools,updated_at`,[req.user.userId,context.scope,context.projectId,JSON.stringify(context.customTools)]);
+    await writeAuditLog({req,action:'UPDATE',entityType:'assistant_preferences',entityId:req.user.userId,metadata:{context_scope:context.scope,context_project_id:context.projectId}});
+    res.json(r.rows[0]);
+  }catch(err){console.error(err);res.status(400).json({error:err instanceof Error?err.message:'Failed to save assistant preferences'});}
 });
 
 router.get('/conversations',async(req,res)=>{

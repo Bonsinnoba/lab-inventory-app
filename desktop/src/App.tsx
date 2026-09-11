@@ -29,10 +29,14 @@ import EngineeringToolsPage from "./pages/EngineeringToolsPage";
 import ReportsPage from "./pages/ReportsPage";
 import AutomationPage from "./pages/AutomationPage";
 import OperationsPage from "./pages/OperationsPage";
+import DailyUsePanel from "./components/DailyUsePanel";
+import MediaManager from "./components/MediaManager";
+import MusicPlayer from "./components/MusicPlayer";
 import LoginPage from "./pages/LoginPage";
 import CommandPalette from "./components/CommandPalette";
 import { getToken, setToken, removeToken, getStoredUser, setStoredUser, removeStoredUser, getCurrentUser } from "./api/auth";
 import type { User } from "./api/auth";
+import { getDailyUsePreferences } from './api/system';
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { ToastProvider } from "./contexts/ToastContext";
 
@@ -55,6 +59,10 @@ function AppContent() {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [engineeringToolsOpen, setEngineeringToolsOpen] = useState(false);
   const [engineeringToolsMinimized, setEngineeringToolsMinimized] = useState(false);
+  const [mediaManagerOpen, setMediaManagerOpen] = useState(false);
+  const [musicOpen, setMusicOpen] = useState(false);
+  const [musicMinimized, setMusicMinimized] = useState(false);
+  const [autoPauseMusic, setAutoPauseMusic] = useState(true);
 
   // Check for existing auth on mount
   useEffect(() => {
@@ -72,6 +80,18 @@ function AppContent() {
     };
     window.addEventListener('keydown', onCommand);
     return () => window.removeEventListener('keydown', onCommand);
+  }, []);
+
+  useEffect(() => {
+    if (isAuthenticated) getDailyUsePreferences().then((p) => setAutoPauseMusic(p.auto_pause_music)).catch(() => undefined);
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    const onMedia = () => setMediaManagerOpen(true);
+    const onMusic = () => { setMusicOpen(true); setMusicMinimized(false); };
+    window.addEventListener('labos:media-manager', onMedia);
+    window.addEventListener('labos:music-player', onMusic);
+    return () => { window.removeEventListener('labos:media-manager', onMedia); window.removeEventListener('labos:music-player', onMusic); };
   }, []);
 
   useEffect(() => {
@@ -197,6 +217,7 @@ function AppContent() {
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/reports" element={<ReportsPage />} />
             <Route path="/automation" element={<AutomationPage />} />
+            <Route path="/daily-use" element={<DailyUsePanel />} />
           </Routes>
           </div>
         </main>
@@ -215,6 +236,8 @@ function AppContent() {
         onClose={() => setEngineeringToolsOpen(false)}
         onMinimize={() => setEngineeringToolsMinimized(true)}
       />
+      <MediaManager open={mediaManagerOpen} onClose={() => setMediaManagerOpen(false)} onOpenMusic={() => { setMediaManagerOpen(false); setMusicOpen(true); setMusicMinimized(false); }} />
+      <MusicPlayer open={musicOpen} onClose={() => setMusicOpen(false)} minimized={musicMinimized} onMinimize={() => setMusicMinimized(true)} onRestore={() => setMusicMinimized(false)} autoPause={autoPauseMusic} />
       <ActivityRail active={rightPanelContent} onSelect={setRightPanelContent} />
       <MobileNav />
       {mobileScanOpen && <ScanLookupModal onClose={() => setMobileScanOpen(false)} />}
