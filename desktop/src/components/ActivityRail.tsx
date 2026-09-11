@@ -1,4 +1,4 @@
-import { Bot, BookOpen, Search } from 'lucide-react';
+import { Bot, BookOpen, Search, Calculator } from 'lucide-react';
 
 export type DockableContent = 'assistant' | 'notebook' | 'search' | null;
 
@@ -33,6 +33,15 @@ export default function ActivityRail({ active, onSelect }: ActivityRailProps) {
           </button>
         );
       })}
+      <button
+        type="button"
+        onClick={() => window.dispatchEvent(new CustomEvent('labos:engineering-tools'))}
+        title="Engineering Tools"
+        aria-label="Engineering Tools"
+        className="w-9 h-9 flex items-center justify-center rounded-sm transition-colors text-text-secondary hover:text-text-primary hover:bg-surface-raised mt-1 border-t border-border pt-1"
+      >
+        <Calculator size={20} />
+      </button>
     </div>
   );
 }

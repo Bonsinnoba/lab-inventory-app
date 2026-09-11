@@ -1,68 +1,315 @@
-import { useState } from 'react';
-import { Calculator, Gauge, Lightbulb, Radio, Ruler, Zap } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
+import { Calculator, Ruler, Zap, Minus, X, Save, Trash2, GitCompare, LineChart, ClipboardCheck } from 'lucide-react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { calculateEngineering, compareCalculations, createEngineeringTest, deleteCalculation, deleteEngineeringTest, getCalculations, getEngineeringTests, saveCalculation } from '../api/engineering';
+import { useToast } from '../contexts/ToastContext';
 
-const inputClass = 'w-full px-3 py-2.5 bg-bg border border-border rounded-sm text-sm text-text-primary focus:outline-none focus:border-accent';
-const buttonClass = 'px-3 py-2 bg-surface-raised border border-border rounded-sm text-sm text-text-secondary hover:text-text-primary hover:border-accent';
-const toNumber = (value: string) => value.trim() === '' ? null : Number(value);
-const formatValue = (value: number | null, unit: string) => value === null || !Number.isFinite(value) ? '--' : `${value.toPrecision(6)} ${unit}`;
+const input='w-full px-2.5 py-2 bg-bg border border-border rounded-sm text-sm focus:outline-none focus:border-accent';
+type Tool='calculator'|'formula'|'electronics'|'graphing'|'tests'|'saved'|'compare';
+const tools:[Tool,string,any][]=[['calculator','Calculator',Calculator],['formula','Formula',Ruler],['electronics','Electronics',Zap],['graphing','Graphing',LineChart],['tests','Engineering Tests',ClipboardCheck],['saved','Saved Calculations',Save],['compare','Compare Results',GitCompare]];
 
-type ToolId = 'ohms' | 'divider' | 'resistor' | 'reactance' | 'led' | 'power' | 'convert';
-const tools: { id: ToolId; label: string; icon: typeof Calculator }[] = [
-  { id: 'ohms', label: "Ohm's Law", icon: Zap },
-  { id: 'divider', label: 'Voltage Divider', icon: Gauge },
-  { id: 'resistor', label: 'Resistor', icon: Calculator },
-  { id: 'reactance', label: 'Capacitor / Inductor', icon: Radio },
-  { id: 'led', label: 'LED Resistor', icon: Lightbulb },
-  { id: 'power', label: 'Power', icon: Zap },
-  { id: 'convert', label: 'Unit Converter', icon: Ruler },
-];
-
-function Panel({ title, description, children }: { title: string; description: string; children: React.ReactNode }) {
-  return <section className="bg-surface border border-border rounded-md p-5 md:p-6"><div className="mb-5"><h3 className="font-semibold">{title}</h3><p className="text-sm text-text-secondary mt-1">{description}</p></div>{children}</section>;
+interface WindowProps {
+  children: ReactNode;
+  onClose: () => void;
+  minimized: boolean;
+  setMinimized: (value: boolean) => void;
 }
 
-function OhmsTool() {
-  const [values, setValues] = useState({ voltage: '', current: '', resistance: '' });
-  const calculate = (field: 'voltage' | 'current' | 'resistance') => { const v = toNumber(values.voltage); const i = toNumber(values.current); const r = toNumber(values.resistance); if (field === 'voltage' && i !== null && r !== null) setValues({ ...values, voltage: String(i * r) }); if (field === 'current' && v !== null && r) setValues({ ...values, current: String(v / r) }); if (field === 'resistance' && v !== null && i) setValues({ ...values, resistance: String(v / i) }); };
-  return <Panel title="Ohm's Law" description="Enter any two values, then calculate the third."><div className="grid md:grid-cols-3 gap-4">{(['voltage', 'current', 'resistance'] as const).map((field) => <label key={field} className="text-sm text-text-secondary">{field === 'voltage' ? 'Voltage (V)' : field === 'current' ? 'Current (A)' : 'Resistance (ohm)'}<input type="number" step="any" min="0" value={values[field]} onChange={(e) => setValues({ ...values, [field]: e.target.value })} className={`${inputClass} mt-1`} /></label>)}</div><div className="flex flex-wrap gap-2 mt-5"><button onClick={() => calculate('voltage')} className={buttonClass}>Calculate voltage</button><button onClick={() => calculate('current')} className={buttonClass}>Calculate current</button><button onClick={() => calculate('resistance')} className={buttonClass}>Calculate resistance</button><button onClick={() => setValues({ voltage: '', current: '', resistance: '' })} className={buttonClass}>Clear</button></div></Panel>;
+type Point = { x: number; y: number };
+type WindowSize = { width: number; height: number };
+type ResizeDirection = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
+
+const WINDOW_MARGIN = 16;
+const WINDOW_TOP_MIN = 48;
+const MIN_WINDOW_WIDTH = 480;
+const MIN_WINDOW_HEIGHT = 340;
+const DEFAULT_WINDOW_SIZE: WindowSize = { width: 760, height: 560 };
+const MINIMIZED_WIDTH = 200;
+const MINIMIZED_HEIGHT = 44;
+
+function clampPosition(point: Point, width: number, height: number): Point {
+  const maxX = Math.max(WINDOW_MARGIN, window.innerWidth - width - WINDOW_MARGIN);
+  const maxY = Math.max(WINDOW_TOP_MIN, window.innerHeight - height - WINDOW_MARGIN);
+  return {
+    x: Math.min(Math.max(WINDOW_MARGIN, point.x), maxX),
+    y: Math.min(Math.max(WINDOW_TOP_MIN, point.y), maxY),
+  };
 }
 
-function DividerTool() {
-  const [values, setValues] = useState({ input: '', top: '', bottom: '' }); const vin = toNumber(values.input); const top = toNumber(values.top); const bottom = toNumber(values.bottom); const output = vin !== null && top !== null && bottom !== null && top + bottom !== 0 ? vin * bottom / (top + bottom) : null;
-  return <Panel title="Voltage Divider" description="Calculate output voltage across the lower resistor."><div className="grid md:grid-cols-3 gap-4">{[['input', 'Input voltage (V)'], ['top', 'Top resistance (ohm)'], ['bottom', 'Bottom resistance (ohm)']].map(([field, label]) => <label key={field} className="text-sm text-text-secondary">{label}<input type="number" step="any" min="0" value={values[field as keyof typeof values]} onChange={(e) => setValues({ ...values, [field]: e.target.value })} className={`${inputClass} mt-1`} /></label>)}</div><div className="mt-6 p-4 bg-surface-raised border border-border rounded-sm"><div className="text-sm text-text-secondary">Output voltage</div><div className="text-3xl font-mono text-text-primary mt-1">{formatValue(output, 'V')}</div></div></Panel>;
+function clampSize(width: number, height: number): WindowSize {
+  const maxWidth = Math.max(MIN_WINDOW_WIDTH, window.innerWidth - WINDOW_MARGIN * 2);
+  const maxHeight = Math.max(MIN_WINDOW_HEIGHT, window.innerHeight - WINDOW_TOP_MIN - WINDOW_MARGIN);
+  return {
+    width: Math.min(Math.max(MIN_WINDOW_WIDTH, width), maxWidth),
+    height: Math.min(Math.max(MIN_WINDOW_HEIGHT, height), maxHeight),
+  };
 }
 
-const resistorColors = ['black', 'brown', 'red', 'orange', 'yellow', 'green', 'blue', 'violet', 'gray', 'white'];
-const resistorDigits: Record<string, number> = Object.fromEntries(resistorColors.map((color, index) => [color, index]));
-function ResistorTool() {
-  const [bands, setBands] = useState(['brown', 'black', 'red']); const value = (resistorDigits[bands[0]] * 10 + resistorDigits[bands[1]]) * 10 ** resistorDigits[bands[2]]; return <Panel title="Resistor Calculator" description="Decode a three-band resistor value from its color bands."><div className="grid md:grid-cols-3 gap-4">{bands.map((band, index) => <label key={index} className="text-sm text-text-secondary">Band {index + 1}<select value={band} onChange={(e) => setBands(bands.map((current, currentIndex) => currentIndex === index ? e.target.value : current))} className={`${inputClass} mt-1`}>{resistorColors.map((color) => <option key={color} value={color}>{color[0].toUpperCase() + color.slice(1)}</option>)}</select></label>)}</div><div className="mt-6 p-4 bg-surface-raised border border-border rounded-sm"><div className="text-sm text-text-secondary">Resistance</div><div className="text-3xl font-mono text-text-primary mt-1">{value >= 1_000_000 ? `${value / 1_000_000} Mohm` : value >= 1_000 ? `${value / 1_000} kohm` : `${value} ohm`}</div></div></Panel>;
+function clampMiniPosition(point: Point): Point {
+  const maxX = Math.max(WINDOW_MARGIN, window.innerWidth - MINIMIZED_WIDTH - WINDOW_MARGIN);
+  const maxY = Math.max(WINDOW_MARGIN, window.innerHeight - MINIMIZED_HEIGHT - WINDOW_MARGIN);
+  return {
+    x: Math.min(Math.max(WINDOW_MARGIN, point.x), maxX),
+    y: Math.min(Math.max(WINDOW_MARGIN, point.y), maxY),
+  };
 }
 
-function ReactanceTool() {
-  const [mode, setMode] = useState<'capacitor' | 'inductor'>('capacitor'); const [frequency, setFrequency] = useState(''); const [value, setValue] = useState(''); const f = toNumber(frequency); const component = toNumber(value); const reactance = f !== null && component !== null && f > 0 ? mode === 'capacitor' ? 1 / (2 * Math.PI * f * component) : 2 * Math.PI * f * component : null;
-  return <Panel title="Capacitor / Inductor Reactance" description="Calculate AC reactance at a selected frequency."><div className="grid md:grid-cols-3 gap-4"><label className="text-sm text-text-secondary">Component<select value={mode} onChange={(e) => setMode(e.target.value as typeof mode)} className={`${inputClass} mt-1`}><option value="capacitor">Capacitor</option><option value="inductor">Inductor</option></select></label><label className="text-sm text-text-secondary">Frequency (Hz)<input type="number" min="0" step="any" value={frequency} onChange={(e) => setFrequency(e.target.value)} className={`${inputClass} mt-1`} /></label><label className="text-sm text-text-secondary">{mode === 'capacitor' ? 'Capacitance (F)' : 'Inductance (H)'}<input type="number" min="0" step="any" value={value} onChange={(e) => setValue(e.target.value)} className={`${inputClass} mt-1`} /></label></div><div className="mt-6 p-4 bg-surface-raised border border-border rounded-sm"><div className="text-sm text-text-secondary">Reactance</div><div className="text-3xl font-mono text-text-primary mt-1">{formatValue(reactance, 'ohm')}</div></div></Panel>;
+function Window({ children, onClose, minimized, setMinimized }: WindowProps) {
+  const [size, setSize] = useState<WindowSize>(() => clampSize(DEFAULT_WINDOW_SIZE.width, DEFAULT_WINDOW_SIZE.height));
+  const [pos, setPos] = useState<Point>(() => clampPosition({
+    x: Math.round((window.innerWidth - DEFAULT_WINDOW_SIZE.width) / 2),
+    y: Math.max(WINDOW_TOP_MIN, Math.round((window.innerHeight - DEFAULT_WINDOW_SIZE.height) / 2)),
+  }, DEFAULT_WINDOW_SIZE.width, DEFAULT_WINDOW_SIZE.height));
+  const [miniPos, setMiniPos] = useState<Point>(() => clampMiniPosition({
+    x: window.innerWidth - MINIMIZED_WIDTH - WINDOW_MARGIN,
+    y: window.innerHeight - MINIMIZED_HEIGHT - WINDOW_MARGIN,
+  }));
+
+  const dragRef = useRef<{ pointerId: number; startX: number; startY: number; left: number; top: number } | null>(null);
+  const resizeRef = useRef<{
+    pointerId: number;
+    direction: ResizeDirection;
+    startX: number;
+    startY: number;
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const miniDragRef = useRef<{ pointerId: number; startX: number; startY: number; left: number; top: number; moved: boolean } | null>(null);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setSize(previous => {
+        const next = clampSize(previous.width, previous.height);
+        setPos(previousPos => clampPosition(previousPos, next.width, next.height));
+        return next;
+      });
+      setMiniPos(previous => clampMiniPosition(previous));
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const beginDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      left: pos.x,
+      top: pos.y,
+    };
+  };
+
+  const moveDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    setPos(clampPosition({
+      x: drag.left + event.clientX - drag.startX,
+      y: drag.top + event.clientY - drag.startY,
+    }, size.width, size.height));
+  };
+
+  const endDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    dragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  const beginResize = (direction: ResizeDirection) => (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    resizeRef.current = {
+      pointerId: event.pointerId,
+      direction,
+      startX: event.clientX,
+      startY: event.clientY,
+      left: pos.x,
+      top: pos.y,
+      width: size.width,
+      height: size.height,
+    };
+  };
+
+  const moveResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    const resize = resizeRef.current;
+    if (!resize || resize.pointerId !== event.pointerId) return;
+
+    const dx = event.clientX - resize.startX;
+    const dy = event.clientY - resize.startY;
+    let width = resize.width;
+    let height = resize.height;
+    let left = resize.left;
+    let top = resize.top;
+
+    if (resize.direction.includes('e')) width = resize.width + dx;
+    if (resize.direction.includes('s')) height = resize.height + dy;
+    if (resize.direction.includes('w')) {
+      width = resize.width - dx;
+      left = resize.left + dx;
+    }
+    if (resize.direction.includes('n')) {
+      height = resize.height - dy;
+      top = resize.top + dy;
+    }
+
+    const nextSize = clampSize(width, height);
+    if (resize.direction.includes('w')) left = resize.left + (resize.width - nextSize.width);
+    if (resize.direction.includes('n')) top = resize.top + (resize.height - nextSize.height);
+
+    setSize(nextSize);
+    setPos(clampPosition({ x: left, y: top }, nextSize.width, nextSize.height));
+  };
+
+  const endResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    resizeRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  const beginMiniDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    miniDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      left: miniPos.x,
+      top: miniPos.y,
+      moved: false,
+    };
+  };
+
+  const moveMiniDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const drag = miniDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const dx = event.clientX - drag.startX;
+    const dy = event.clientY - drag.startY;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) drag.moved = true;
+    setMiniPos(clampMiniPosition({ x: drag.left + dx, y: drag.top + dy }));
+  };
+
+  const endMiniDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  const restoreFromMini = () => {
+    const moved = miniDragRef.current?.moved ?? false;
+    miniDragRef.current = null;
+    if (!moved) setMinimized(false);
+  };
+
+  if (minimized) {
+    return (
+      <button
+        type="button"
+        onPointerDown={beginMiniDrag}
+        onPointerMove={moveMiniDrag}
+        onPointerUp={endMiniDrag}
+        onPointerCancel={endMiniDrag}
+        onClick={restoreFromMini}
+        style={{ left: miniPos.x, top: miniPos.y, width: MINIMIZED_WIDTH, height: MINIMIZED_HEIGHT }}
+        className="fixed z-[80] px-4 bg-surface border border-accent rounded-sm shadow-lg text-sm flex items-center justify-center gap-2 cursor-move select-none touch-none"
+        aria-label="Restore Engineering Tools"
+        title="Drag to move, click to restore"
+      >
+        <Calculator size={16} /> Engineering Tools
+      </button>
+    );
+  }
+
+  const handles: Array<[ResizeDirection, string]> = [
+    ['n', 'top-0 left-3 right-3 h-2 cursor-n-resize'],
+    ['s', 'bottom-0 left-3 right-3 h-2 cursor-s-resize'],
+    ['e', 'right-0 top-3 bottom-3 w-2 cursor-e-resize'],
+    ['w', 'left-0 top-3 bottom-3 w-2 cursor-w-resize'],
+    ['ne', 'right-0 top-0 w-3 h-3 cursor-ne-resize'],
+    ['nw', 'left-0 top-0 w-3 h-3 cursor-nw-resize'],
+    ['se', 'right-0 bottom-0 w-3 h-3 cursor-se-resize'],
+    ['sw', 'left-0 bottom-0 w-3 h-3 cursor-sw-resize'],
+  ];
+
+  return (
+    <div
+      style={{ left: pos.x, top: pos.y, width: size.width, height: size.height }}
+      className="fixed z-[70] max-w-[calc(100vw-32px)] max-h-[calc(100vh-64px)] bg-surface border border-border rounded-md shadow-2xl overflow-hidden"
+      role="dialog"
+      aria-label="Engineering Tools"
+    >
+      <div
+        onPointerDown={beginDrag}
+        onPointerMove={moveDrag}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        className="h-11 px-4 bg-surface-raised border-b border-border flex items-center justify-between cursor-move select-none touch-none"
+      >
+        <div className="font-semibold text-sm flex items-center gap-2"><Calculator size={17} /> Engineering Tools</div>
+        <div className="flex gap-1">
+          <button type="button" onPointerDown={event => event.stopPropagation()} onClick={() => setMinimized(true)} title="Minimize" className="p-1.5 hover:bg-bg rounded"><Minus size={15} /></button>
+          <button type="button" onPointerDown={event => event.stopPropagation()} onClick={onClose} title="Close" className="p-1.5 hover:bg-bg rounded"><X size={15} /></button>
+        </div>
+      </div>
+      <div className="h-[calc(100%-44px)] overflow-hidden">{children}</div>
+      {handles.map(([direction, className]) => (
+        <div
+          key={direction}
+          onPointerDown={beginResize(direction)}
+          onPointerMove={moveResize}
+          onPointerUp={endResize}
+          onPointerCancel={endResize}
+          className={`absolute z-10 ${className}`}
+          aria-hidden="true"
+        />
+      ))}
+    </div>
+  );
 }
 
-function LedTool() {
-  const [values, setValues] = useState({ supply: '', forward: '2', current: '0.02' }); const supply = toNumber(values.supply); const forward = toNumber(values.forward); const current = toNumber(values.current); const resistance = supply !== null && forward !== null && current !== null && current > 0 ? (supply - forward) / current : null; const power = resistance !== null && current !== null ? current * current * resistance : null;
-  return <Panel title="LED Resistor" description="Size a series resistor and estimate its power dissipation."><div className="grid md:grid-cols-3 gap-4">{[['supply', 'Supply voltage (V)'], ['forward', 'LED forward voltage (V)'], ['current', 'Target current (A)']].map(([field, label]) => <label key={field} className="text-sm text-text-secondary">{label}<input type="number" min="0" step="any" value={values[field as keyof typeof values]} onChange={(e) => setValues({ ...values, [field]: e.target.value })} className={`${inputClass} mt-1`} /></label>)}</div><div className="grid md:grid-cols-2 gap-4 mt-6"><div className="p-4 bg-surface-raised border border-border rounded-sm"><div className="text-sm text-text-secondary">Required resistance</div><div className="text-2xl font-mono text-text-primary mt-1">{formatValue(resistance, 'ohm')}</div></div><div className="p-4 bg-surface-raised border border-border rounded-sm"><div className="text-sm text-text-secondary">Resistor power</div><div className="text-2xl font-mono text-text-primary mt-1">{formatValue(power, 'W')}</div></div></div></Panel>;
+function Field({label,value,onChange,type='number'}:{label:string;value:string;onChange:(v:string)=>void;type?:string}){return <label className="text-xs text-text-secondary">{label}<input type={type} step="any" value={value} onChange={e=>onChange(e.target.value)} className={`${input} mt-1`}/></label>}
+
+function Electronics({onResult}:{onResult:(r:any)=>void}){
+  const [mode,setMode]=useState<'ohm'|'power'|'divider'|'led'>('ohm');
+  const [v,setV]=useState<Record<string,string>>({});
+  const run=async()=>{
+    const maps:any={ohm:['ohms_law',{current_A:Number(v.i),resistance_ohm:Number(v.r)}],power:['power_vi',{voltage_V:Number(v.v),current_A:Number(v.i)}],divider:['voltage_divider',{vin_V:Number(v.v),r1_ohm:Number(v.r1),r2_ohm:Number(v.r2)}],led:['led_resistor',{supply_V:Number(v.vs),forward_V:Number(v.vf),current_A:Number(v.i)}]};
+    onResult(await calculateEngineering(...maps[mode]));
+  };
+  return <div><select className={input} value={mode} onChange={e=>{setMode(e.target.value as any);setV({})}}><option value="ohm">Ohm's Law</option><option value="power">Power</option><option value="divider">Voltage Divider</option><option value="led">LED Resistor</option></select><div className="grid sm:grid-cols-3 gap-3 mt-3">{mode==='ohm'&&<><Field label="Current (A)" value={v.i||''} onChange={x=>setV({...v,i:x})}/><Field label="Resistance (ohm)" value={v.r||''} onChange={x=>setV({...v,r:x})}/></>}{mode==='power'&&<><Field label="Voltage (V)" value={v.v||''} onChange={x=>setV({...v,v:x})}/><Field label="Current (A)" value={v.i||''} onChange={x=>setV({...v,i:x})}/></>}{mode==='divider'&&<><Field label="Vin (V)" value={v.v||''} onChange={x=>setV({...v,v:x})}/><Field label="R1 (ohm)" value={v.r1||''} onChange={x=>setV({...v,r1:x})}/><Field label="R2 (ohm)" value={v.r2||''} onChange={x=>setV({...v,r2:x})}/></>}{mode==='led'&&<><Field label="Supply (V)" value={v.vs||''} onChange={x=>setV({...v,vs:x})}/><Field label="Forward (V)" value={v.vf||''} onChange={x=>setV({...v,vf:x})}/><Field label="Current (A)" value={v.i||''} onChange={x=>setV({...v,i:x})}/></>}</div><button onClick={run} className="mt-4 px-3 py-2 bg-accent text-bg rounded-sm text-sm">Calculate</button></div>;
 }
 
-function PowerTool() {
-  const [values, setValues] = useState({ voltage: '', current: '', resistance: '' }); const v = toNumber(values.voltage); const i = toNumber(values.current); const r = toNumber(values.resistance); const power = v !== null && i !== null ? v * i : v !== null && r ? v * v / r : i !== null && r ? i * i * r : null;
-  return <Panel title="Power Calculator" description="Calculate DC power from voltage, current, or resistance pairs."><div className="grid md:grid-cols-3 gap-4">{(['voltage', 'current', 'resistance'] as const).map((field) => <label key={field} className="text-sm text-text-secondary">{field === 'voltage' ? 'Voltage (V)' : field === 'current' ? 'Current (A)' : 'Resistance (ohm)'}<input type="number" min="0" step="any" value={values[field]} onChange={(e) => setValues({ ...values, [field]: e.target.value })} className={`${inputClass} mt-1`} /></label>)}</div><div className="mt-6 p-4 bg-surface-raised border border-border rounded-sm"><div className="text-sm text-text-secondary">Power</div><div className="text-3xl font-mono text-text-primary mt-1">{formatValue(power, 'W')}</div></div></Panel>;
-}
+interface EngineeringToolsProps {open:boolean;minimized:boolean;onClose:()=>void;onMinimize:()=>void;}
 
-const conversionUnits: Record<string, Record<string, number>> = { length: { mm: 0.001, cm: 0.01, m: 1, km: 1000, in: 0.0254, ft: 0.3048 }, voltage: { mV: 0.001, V: 1, kV: 1000 }, current: { mA: 0.001, A: 1 }, resistance: { ohm: 1, kohm: 1000, Mohm: 1000000 }, power: { mW: 0.001, W: 1, kW: 1000 }, capacitance: { nF: 1e-9, uF: 1e-6, mF: 1e-3, F: 1 } };
-function ConverterTool() {
-  const [kind, setKind] = useState('length'); const units = Object.keys(conversionUnits[kind]); const [from, setFrom] = useState(units[0]); const [to, setTo] = useState(units[1] || units[0]); const [value, setValue] = useState(''); const result = toNumber(value); const converted = result === null ? null : result * conversionUnits[kind][from] / conversionUnits[kind][to]; const changeKind = (next: string) => { const nextUnits = Object.keys(conversionUnits[next]); setKind(next); setFrom(nextUnits[0]); setTo(nextUnits[1] || nextUnits[0]); setValue(''); };
-  return <Panel title="Engineering Unit Converter" description="Convert common laboratory and electronics units."><div className="grid md:grid-cols-4 gap-4"><label className="text-sm text-text-secondary">Category<select value={kind} onChange={(e) => changeKind(e.target.value)} className={`${inputClass} mt-1`}>{Object.keys(conversionUnits).map((key) => <option key={key} value={key}>{key[0].toUpperCase() + key.slice(1)}</option>)}</select></label><label className="text-sm text-text-secondary">Value<input type="number" step="any" value={value} onChange={(e) => setValue(e.target.value)} className={`${inputClass} mt-1`} /></label><label className="text-sm text-text-secondary">From<select value={from} onChange={(e) => setFrom(e.target.value)} className={`${inputClass} mt-1`}>{units.map((unit) => <option key={unit}>{unit}</option>)}</select></label><label className="text-sm text-text-secondary">To<select value={to} onChange={(e) => setTo(e.target.value)} className={`${inputClass} mt-1`}>{units.map((unit) => <option key={unit}>{unit}</option>)}</select></label></div><div className="mt-6 p-4 bg-surface-raised border border-border rounded-sm flex items-center justify-between"><span className="text-sm text-text-secondary">Converted value</span><span className="text-2xl font-mono text-text-primary">{converted === null ? '--' : `${converted.toPrecision(8)} ${to}`}</span></div></Panel>;
-}
-
-export default function EngineeringToolsPage() {
-  const [activeTool, setActiveTool] = useState<ToolId>('ohms');
-  const tool = tools.find((entry) => entry.id === activeTool)!;
-  const ToolIcon = tool.icon;
-  const renderTool = () => ({ ohms: <OhmsTool />, divider: <DividerTool />, resistor: <ResistorTool />, reactance: <ReactanceTool />, led: <LedTool />, power: <PowerTool />, convert: <ConverterTool /> }[activeTool]);
-  return <div className="p-4 md:p-6 max-w-[1200px] mx-auto space-y-6"><header className="border-b border-border pb-5"><div className="page-kicker">PHASE 7 ENGINEERING TOOLS</div><h2 className="text-page-title font-ui font-semibold mt-1">Engineering Tools</h2><p className="text-sm text-text-secondary mt-2">Local calculators for electronics and laboratory design work.</p></header><div className="grid lg:grid-cols-[220px_1fr] gap-8"><nav className="space-y-1">{tools.map((entry) => { const Icon = entry.icon; return <button key={entry.id} onClick={() => setActiveTool(entry.id)} className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-sm text-left text-sm ${activeTool === entry.id ? 'bg-accent text-bg' : 'text-text-secondary hover:text-text-primary hover:bg-surface-raised'}`}><Icon size={16} />{entry.label}</button>; })}</nav><main><div className="flex items-center gap-2 mb-4 text-accent"><ToolIcon size={18} /><span className="text-sm font-medium">{tool.label}</span></div>{renderTool()}</main></div></div>;
+export default function EngineeringToolsPage({open,minimized,onClose,onMinimize}:EngineeringToolsProps){
+  const [tool,setTool]=useState<Tool>('calculator');
+  const [last,setLast]=useState<any>(null);
+  const [title,setTitle]=useState('');
+  const [projectId,setProjectId]=useState('');
+  const [graph,setGraph]=useState('10,20\n20,35\n30,28\n40,50');
+  const [test,setTest]=useState({title:'',description:'',status:'planned',conclusion:''});
+  const qc=useQueryClient();
+  const {showToast}=useToast();
+  const calcs=useQuery({queryKey:['engineering-calculations'],queryFn:getCalculations,enabled:open});
+  const tests=useQuery({queryKey:['engineering-tests'],queryFn:getEngineeringTests,enabled:open});
+  const save=useMutation({mutationFn:()=>saveCalculation({title:title||'Engineering calculation',project_id:projectId||null,category:'engineering',formula:last.formula,inputs:last.inputs,result_numeric:last.result_numeric,result_unit:last.result_unit}),onSuccess:()=>{qc.invalidateQueries({queryKey:['engineering-calculations']});showToast('Calculation saved')}});
+  const addTest=useMutation({mutationFn:()=>createEngineeringTest({...test,project_id:projectId||null}),onSuccess:()=>{setTest({title:'',description:'',status:'planned',conclusion:''});qc.invalidateQueries({queryKey:['engineering-tests']});showToast('Engineering test saved')}});
+  const delCalc=useMutation({mutationFn:deleteCalculation,onSuccess:()=>qc.invalidateQueries({queryKey:['engineering-calculations']})});
+  const delTest=useMutation({mutationFn:deleteEngineeringTest,onSuccess:()=>qc.invalidateQueries({queryKey:['engineering-tests']})});
+  const compare=async()=>{const ids=(calcs.data||[]).slice(0,5).map(c=>c.id);if(ids.length<2)return showToast('Save at least two calculations first','error');const rows=await compareCalculations(ids);showToast(rows.map(r=>`${r.title}: ${r.result_numeric??r.result_text} ${r.result_unit}`).join(' | '));};
+  const points=useMemo(()=>graph.split(/\r?\n/).map(x=>x.split(',').map(Number)).filter(a=>a.length===2&&a.every(Number.isFinite)),[graph]);
+  const maxX=Math.max(1,...points.map(p=>p[0])),maxY=Math.max(1,...points.map(p=>p[1]));
+  const body=tool==='electronics'?<Electronics onResult={setLast}/>:tool==='calculator'?<Electronics onResult={setLast}/>:tool==='formula'?<div className="space-y-2 text-sm"><div className="font-medium">Formula Catalog</div><div className="p-3 bg-surface-raised border border-border rounded-sm">V = I × R</div><div className="p-3 bg-surface-raised border border-border rounded-sm">P = V × I</div><div className="p-3 bg-surface-raised border border-border rounded-sm">Vout = Vin × R2 / (R1 + R2)</div><div className="p-3 bg-surface-raised border border-border rounded-sm">R = (Vs − Vf) / I</div></div>:tool==='graphing'?<div><textarea className={`${input} min-h-28`} value={graph} onChange={e=>setGraph(e.target.value)} placeholder="x,y per line"/><div className="mt-3 border border-border bg-bg rounded-sm p-2"><svg viewBox="0 0 500 240" className="w-full h-56"><polyline fill="none" stroke="currentColor" strokeWidth="2" points={points.map(p=>`${(p[0]/maxX)*470+15},${225-(p[1]/maxY)*200}`).join(' ')}/>{points.map((p,i)=><circle key={i} cx={(p[0]/maxX)*470+15} cy={225-(p[1]/maxY)*200} r="4" fill="currentColor"/>)}</svg></div></div>:tool==='tests'?<div><div className="grid gap-2"><input className={input} placeholder="Test title" value={test.title} onChange={e=>setTest({...test,title:e.target.value})}/><textarea className={input} placeholder="Description" value={test.description} onChange={e=>setTest({...test,description:e.target.value})}/><select className={input} value={test.status} onChange={e=>setTest({...test,status:e.target.value})}><option>planned</option><option>running</option><option>passed</option><option>failed</option><option>cancelled</option></select><textarea className={input} placeholder="Conclusion" value={test.conclusion} onChange={e=>setTest({...test,conclusion:e.target.value})}/><button disabled={!test.title.trim()} onClick={()=>addTest.mutate()} className="px-3 py-2 bg-accent text-bg rounded-sm text-sm">Save test</button></div><div className="mt-4 space-y-2">{(tests.data||[]).map(t=><div key={t.id} className="p-2 border border-border rounded-sm text-xs flex justify-between"><span><b>{t.title}</b> · {t.status}{t.conclusion?` · ${t.conclusion}`:''}</span><button onClick={()=>delTest.mutate(t.id)} className="text-status-danger">×</button></div>)}</div></div>:tool==='saved'?<div className="space-y-2">{(calcs.data||[]).map(c=><div key={c.id} className="p-3 border border-border rounded-sm text-xs flex justify-between"><span><b>{c.title}</b> · {c.result_numeric??c.result_text} {c.result_unit}<div className="text-text-secondary mt-1">{c.formula}</div></span><button onClick={()=>delCalc.mutate(c.id)}><Trash2 size={14}/></button></div>)}{!calcs.data?.length&&<div className="text-sm text-text-secondary">No saved calculations.</div>}</div>:<div className="space-y-3"><p className="text-sm text-text-secondary">Compare the latest saved calculations.</p><button onClick={compare} className="px-3 py-2 bg-accent text-bg rounded-sm text-sm flex items-center gap-2"><GitCompare size={15}/> Compare latest</button></div>;
+  if(!open)return null;
+  return <Window onClose={onClose} minimized={minimized} setMinimized={onMinimize}><div className="grid grid-cols-[155px_1fr] max-h-[72vh]"><nav className="p-2 border-r border-border bg-surface-raised space-y-1">{tools.map(([id,label,Icon])=><button key={id} onClick={()=>setTool(id)} className={`w-full flex items-center gap-2 px-2 py-2 rounded text-xs text-left ${tool===id?'bg-accent text-bg':'text-text-secondary hover:bg-bg'}`}><Icon size={14}/>{label}</button>)}</nav><main className="p-4 overflow-auto"><div className="text-sm font-medium mb-3">{tools.find(x=>x[0]===tool)?.[1]}</div>{body}{last&&<section className="mt-4 p-3 bg-surface-raised border border-border rounded-sm"><div className="text-xs text-text-secondary">Result</div><div className="text-2xl font-mono mt-1">{Number(last.result_numeric).toPrecision(8)} {last.result_unit}</div><div className="grid sm:grid-cols-2 gap-2 mt-3"><Field label="Saved title" value={title} onChange={setTitle} type="text"/><Field label="Project ID (optional)" value={projectId} onChange={setProjectId} type="text"/></div><button onClick={()=>save.mutate()} className="mt-3 px-3 py-2 border border-border rounded-sm text-xs flex gap-2 items-center"><Save size={14}/> Save calculation</button></section>}</main></div></Window>;
 }

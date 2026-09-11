@@ -1,0 +1,12 @@
+import { apiFetch } from './http';
+async function parse(r:Response,f:string){if(!r.ok){const x=await r.json().catch(()=>null);throw new Error(x?.error?.message||x?.error||f)}return r.status===204?undefined:r.json()}
+export const getEngineeringFormulas=async()=>parse(await apiFetch('/engineering/formulas'),'Failed to load formulas');
+export const calculateEngineering=async(formula:string,inputs:any)=>parse(await apiFetch('/engineering/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({formula,inputs})}),'Calculation failed');
+export const getCalculations=async()=>parse(await apiFetch('/engineering/calculations'),'Failed to load calculations');
+export const saveCalculation=async(data:any)=>parse(await apiFetch('/engineering/calculations',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}),'Failed to save calculation');
+export const deleteCalculation=async(id:string)=>parse(await apiFetch(`/engineering/calculations/${id}`,{method:'DELETE'}),'Failed to delete calculation');
+export const getEngineeringTests=async()=>parse(await apiFetch('/engineering/tests'),'Failed to load engineering tests');
+export const createEngineeringTest=async(data:any)=>parse(await apiFetch('/engineering/tests',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}),'Failed to create test');
+export const updateEngineeringTest=async(id:string,data:any)=>parse(await apiFetch(`/engineering/tests/${id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}),'Failed to update test');
+export const deleteEngineeringTest=async(id:string)=>parse(await apiFetch(`/engineering/tests/${id}`,{method:'DELETE'}),'Failed to delete test');
+export const compareCalculations=async(ids:string[])=>parse(await apiFetch(`/engineering/compare?ids=${encodeURIComponent(ids.join(','))}`),'Failed to compare calculations');

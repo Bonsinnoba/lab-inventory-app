@@ -52,6 +52,8 @@ function AppContent() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [mobileScanOpen, setMobileScanOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [engineeringToolsOpen, setEngineeringToolsOpen] = useState(false);
+  const [engineeringToolsMinimized, setEngineeringToolsMinimized] = useState(false);
 
   // Check for existing auth on mount
   useEffect(() => {
@@ -69,6 +71,15 @@ function AppContent() {
     };
     window.addEventListener('keydown', onCommand);
     return () => window.removeEventListener('keydown', onCommand);
+  }, []);
+
+  useEffect(() => {
+    const onEngineeringTools = () => {
+      setEngineeringToolsOpen(true);
+      setEngineeringToolsMinimized(false);
+    };
+    window.addEventListener('labos:engineering-tools', onEngineeringTools);
+    return () => window.removeEventListener('labos:engineering-tools', onEngineeringTools);
   }, []);
 
   useEffect(() => {
@@ -115,7 +126,6 @@ function AppContent() {
     if (path.startsWith('/assistant')) return 'Lab Assistant';
     if (path.startsWith('/users')) return 'Users';
     if (path.startsWith('/settings')) return 'Settings';
-    if (path.startsWith('/engineering')) return 'Engineering Tools';
     if (path.startsWith('/reports')) return 'Reports';
     if (path.startsWith('/automation')) return 'Automation';
     return 'Inventory';
@@ -183,7 +193,6 @@ function AppContent() {
             <Route path="/assistant" element={<AssistantPage />} />
             <Route path="/users" element={<UsersPage />} />
             <Route path="/settings" element={<SettingsPage />} />
-            <Route path="/engineering" element={<EngineeringToolsPage />} />
             <Route path="/reports" element={<ReportsPage />} />
             <Route path="/automation" element={<AutomationPage />} />
           </Routes>
@@ -198,6 +207,12 @@ function AppContent() {
           {renderRightPanelContent()}
         </RightPanel>
       )}
+      <EngineeringToolsPage
+        open={engineeringToolsOpen}
+        minimized={engineeringToolsMinimized}
+        onClose={() => setEngineeringToolsOpen(false)}
+        onMinimize={() => setEngineeringToolsMinimized(true)}
+      />
       <ActivityRail active={rightPanelContent} onSelect={setRightPanelContent} />
       <MobileNav />
       {mobileScanOpen && <ScanLookupModal onClose={() => setMobileScanOpen(false)} />}

@@ -29,6 +29,7 @@ import collaborationRouter from './routes/collaboration.js';
 import knowledgeRouter from './routes/knowledge.js';
 import reportsRouter from './routes/reports.js';
 import automationRouter from './routes/automation.js';
+import engineeringRouter from './routes/engineering.js';
 
 dotenv.config();
 
@@ -118,6 +119,7 @@ app.use('/api/collaboration', authenticateToken, collaborationRouter);
 app.use('/api/knowledge', authenticateToken, knowledgeRouter);
 app.use('/api/reports', authenticateToken, reportsRouter);
 app.use('/api/automation', authenticateToken, automationRouter);
+app.use('/api/engineering', authenticateToken, engineeringRouter);
 
 // Destructive endpoints are additionally restricted inside their route files
 // where necessary. This top-level reference documents the intended security

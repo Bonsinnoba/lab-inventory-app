@@ -20,7 +20,6 @@ const items = [
   [DollarSign, 'Financials', '/financials'],
   [Search, 'Search', '/search'],
   [Bot, 'Lab Assistant', '/assistant'],
-  [Calculator, 'Engineering Tools', '/engineering'],
   [FileBarChart, 'Reports', '/reports'],
   [BellRing, 'Automation', '/automation'],
 ] as const;

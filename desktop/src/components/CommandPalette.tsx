@@ -24,7 +24,7 @@ const COMMANDS: CommandItem[] = [
   { id: 'knowledge', label: 'Knowledge', hint: 'Lab knowledge', path: '/knowledge', icon: BookOpen, keywords: 'knowledge documents references' },
   { id: 'resources', label: 'Resources', hint: 'Files & media', path: '/resources', icon: Folder, keywords: 'files pdf images documents media' },
   { id: 'search', label: 'Global Search', hint: 'Find anything', path: '/search', icon: Search, keywords: 'find universal search' },
-  { id: 'engineering', label: 'Engineering Tools', hint: 'Calculators & BOM', path: '/engineering', icon: Calculator, keywords: 'electronics calculator bom engineering' },
+  { id: 'engineering', label: 'Engineering Tools', hint: 'Calculators & BOM', path: '#engineering-tools', icon: Calculator, keywords: 'electronics calculator bom engineering' },
   { id: 'assistant', label: 'Lab Assistant', hint: 'Ask the lab', path: '/assistant', icon: Bot, keywords: 'ai assistant help' },
   { id: 'reports', label: 'Reports', hint: 'Analytics & exports', path: '/reports', icon: BarChart3, keywords: 'analytics csv reporting statistics' },
   { id: 'automation', label: 'Automation', hint: 'Reminders & due work', path: '/automation', icon: Zap, keywords: 'reminders notifications automation' },
@@ -38,6 +38,15 @@ export default function CommandPalette({ open, onClose }: CommandPaletteProps) {
   const previouslyFocused = useRef<HTMLElement | null>(null);
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
+
+  const activate = (item: CommandItem) => {
+    if (item.id === 'engineering') {
+      window.dispatchEvent(new CustomEvent('labos:engineering-tools'));
+    } else {
+      navigate(item.path);
+    }
+    onClose();
+  };
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -64,7 +73,7 @@ export default function CommandPalette({ open, onClose }: CommandPaletteProps) {
       if (event.key === 'ArrowDown') { event.preventDefault(); setActiveIndex((index) => Math.min(index + 1, Math.max(filtered.length - 1, 0))); return; }
       if (event.key === 'ArrowUp') { event.preventDefault(); setActiveIndex((index) => Math.max(index - 1, 0)); return; }
       if (event.key === 'Enter' && filtered[activeIndex]) {
-        event.preventDefault(); navigate(filtered[activeIndex].path); onClose();
+        event.preventDefault(); activate(filtered[activeIndex]);
       }
     };
     window.addEventListener('keydown', onKeyDown);
@@ -106,7 +115,7 @@ export default function CommandPalette({ open, onClose }: CommandPaletteProps) {
                 aria-selected={active}
                 className={`command-palette-item ${active ? 'active' : ''}`}
                 onMouseEnter={() => setActiveIndex(index)}
-                onClick={() => { navigate(item.path); onClose(); }}
+                onClick={() => activate(item)}
               >
                 <span className="command-palette-icon"><Icon size={17} /></span>
                 <span className="command-palette-copy"><strong>{item.label}</strong><small>{item.hint}</small></span>

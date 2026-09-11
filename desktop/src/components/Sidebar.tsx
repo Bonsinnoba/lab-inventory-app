@@ -1,4 +1,4 @@
-import { Box, DollarSign, FileText, Search, Layers, LogOut, Users, User, Settings, Sun, Moon, Folder, ScanLine, LayoutDashboard, BookOpen, Bot, Calculator, FileBarChart, BellRing, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { Box, DollarSign, FileText, Search, Layers, LogOut, Users, User, Settings, Sun, Moon, Folder, ScanLine, LayoutDashboard, BookOpen, Bot, FileBarChart, BellRing, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { useState, useCallback, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useTheme } from '../contexts/ThemeContext';
@@ -15,7 +15,6 @@ const menuItems = [
   { icon: Layers, label: 'Projects', id: 'projects', path: '/projects' },
   { icon: Users, label: 'Collaboration', id: 'collaboration', path: '/collaboration' },
   { icon: Bot, label: 'Lab Assistant', id: 'assistant', path: '/assistant' },
-  { icon: Calculator, label: 'Engineering Tools', id: 'engineering', path: '/engineering' },
   { icon: FileBarChart, label: 'Reports', id: 'reports', path: '/reports' },
   { icon: BellRing, label: 'Automation', id: 'automation', path: '/automation' },
 ];
