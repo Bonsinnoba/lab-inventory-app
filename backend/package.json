@@ -11,7 +11,8 @@
     "test:security": "node src/test-security-foundation.js",
     "test:f2": "node src/test-f2-foundation.js",
     "test:core-static": "node src/test-core-phase1-static.js",
-    "test:track1-phase2-static": "node src/test-track1-phase2-static.js"
+    "test:track1-phase2-static": "node src/test-track1-phase2-static.js",
+    "test:track2-static": "node src/test-track2-static.js"
   },
   "dependencies": {
     "@google/genai": "^2.16.0",
