@@ -30,6 +30,7 @@ export interface Item {
   assigned_to?: string | null;
   assigned_to_username?: string | null;
   supplier?: string | null;
+  supplier_id?: string | null;
   part_number?: string | null;
   created_at: string;
   updated_at: string;

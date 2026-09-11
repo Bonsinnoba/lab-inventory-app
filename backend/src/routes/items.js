@@ -81,7 +81,7 @@ router.post('/', async (req, res) => {
     name, type, category, sku,
     initial_quantity, current_quantity, unit, dimensions,
     status, condition_notes, unit_cost, replacement_cost,
-    location_id, photo_url, supplier, part_number,
+    location_id, photo_url, supplier, supplier_id = null, part_number,
   } = req.body;
 
   if (!name || !type) {
@@ -94,14 +94,14 @@ router.post('/', async (req, res) => {
         name, type, category, sku,
         initial_quantity, current_quantity, unit, dimensions,
         status, condition_notes, unit_cost, replacement_cost,
-        location_id, photo_url, supplier, part_number
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+        location_id, photo_url, supplier, supplier_id, part_number
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
       RETURNING *`,
       [
         name, type, category ?? null, sku ?? null,
         initial_quantity ?? 0, current_quantity ?? initial_quantity ?? 0, unit ?? null, dimensions ?? null,
         status ?? 'available', condition_notes ?? null, unit_cost ?? null, replacement_cost ?? null,
-        location_id ?? null, photo_url ?? null, supplier ?? null, part_number ?? null,
+        location_id ?? null, photo_url ?? null, supplier ?? null, supplier_id ?? null, part_number ?? null,
       ]
     );
     await writeAuditLog({ req, action: 'CREATE', entityType: 'item', entityId: result.rows[0].id, newValue: result.rows[0] });
@@ -119,7 +119,7 @@ router.put('/:id', async (req, res) => {
     'initial_quantity', 'unit', 'dimensions',
     'status', 'condition_notes', 'last_checked_at', 'unit_cost', 'replacement_cost',
     'location_id', 'photo_url', 'next_maintenance_date', 'maintenance_interval_days',
-    'manufacturer', 'model_number', 'serial_number', 'asset_tag', 'calibration_interval_days', 'next_calibration_date', 'assigned_to', 'supplier', 'part_number',
+    'manufacturer', 'model_number', 'serial_number', 'asset_tag', 'calibration_interval_days', 'next_calibration_date', 'assigned_to', 'supplier', 'supplier_id', 'part_number',
     'image_resource_id',
   ];
 

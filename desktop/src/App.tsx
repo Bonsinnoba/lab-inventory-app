@@ -28,6 +28,7 @@ import SettingsPage from "./pages/SettingsPage";
 import EngineeringToolsPage from "./pages/EngineeringToolsPage";
 import ReportsPage from "./pages/ReportsPage";
 import AutomationPage from "./pages/AutomationPage";
+import OperationsPage from "./pages/OperationsPage";
 import LoginPage from "./pages/LoginPage";
 import CommandPalette from "./components/CommandPalette";
 import { getToken, setToken, removeToken, getStoredUser, setStoredUser, removeStoredUser, getCurrentUser } from "./api/auth";
@@ -167,6 +168,7 @@ function AppContent() {
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/inventory" element={<InventoryPage />} />
+            <Route path="/operations" element={<OperationsPage />} />
             <Route path="/inventory/:itemId" element={<ItemDetailPage />} />
             <Route path="/inventory/:itemId/transactions" element={<ItemDetailPage />} />
             <Route path="/inventory/:itemId/history" element={<ItemDetailPage />} />

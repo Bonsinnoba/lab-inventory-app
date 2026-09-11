@@ -1,0 +1,111 @@
+import { useState } from 'react';
+import type { ReactNode } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { AlertTriangle, Box, Factory, MapPin, PackageSearch, Plus, RefreshCw, Trash2, Wrench } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { createSupplier, deleteSupplier, getOperationsOverview, getSuppliers } from '../api/operations';
+import { useToast } from '../contexts/ToastContext';
+
+const input = 'w-full px-3 py-2 bg-bg border border-border rounded-sm text-sm focus:outline-none focus:border-accent';
+const tabs = [
+  ['overview', 'Overview'], ['stock', 'Stock'], ['equipment', 'Equipment'],
+  ['suppliers', 'Suppliers'], ['maintenance', 'Maintenance'], ['requirements', 'Requirements'], ['locations', 'Locations'],
+] as const;
+type Tab = typeof tabs[number][0];
+
+function Metric({ icon: Icon, label, value, detail }: { icon: any; label: string; value: ReactNode; detail?: string }) {
+  return <div className="p-4 bg-surface border border-border rounded-md">
+    <div className="flex items-center gap-2 text-text-secondary text-xs"><Icon size={15} />{label}</div>
+    <div className="text-2xl font-semibold mt-2 font-mono">{value}</div>
+    {detail && <div className="text-xs text-text-secondary mt-1">{detail}</div>}
+  </div>;
+}
+function Section({ title, children }: { title: string; children: ReactNode }) {
+  return <section className="bg-surface border border-border rounded-md overflow-hidden">
+    <div className="px-4 py-3 border-b border-border font-medium text-sm">{title}</div>
+    <div className="p-4">{children}</div>
+  </section>;
+}
+
+export default function OperationsPage() {
+  const [tab, setTab] = useState<Tab>('overview');
+  const [supplier, setSupplier] = useState({ name: '', contact_name: '', email: '', phone: '', website: '', notes: '' });
+  const qc = useQueryClient();
+  const { showToast } = useToast();
+  const overview = useQuery({ queryKey: ['operations-overview'], queryFn: getOperationsOverview });
+  const suppliers = useQuery({ queryKey: ['operations-suppliers'], queryFn: getSuppliers });
+  const addSupplier = useMutation({
+    mutationFn: () => createSupplier(supplier),
+    onSuccess: () => {
+      setSupplier({ name: '', contact_name: '', email: '', phone: '', website: '', notes: '' });
+      qc.invalidateQueries({ queryKey: ['operations-suppliers'] });
+      showToast('Supplier created');
+    },
+    onError: (e: any) => showToast(e.message || 'Failed to create supplier', 'error'),
+  });
+  const removeSupplier = useMutation({
+    mutationFn: deleteSupplier,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['operations-suppliers'] });
+      showToast('Supplier deleted');
+    },
+    onError: (e: any) => showToast(e.message || 'Failed to delete supplier', 'error'),
+  });
+
+  if (overview.isLoading) return <div className="p-6">Loading laboratory operations…</div>;
+  if (overview.error || !overview.data) return <div className="p-6 text-status-danger">Failed to load laboratory operations. <button className="underline" onClick={() => overview.refetch()}>Retry</button></div>;
+  const o = overview.data;
+
+  return <div className="p-6 max-w-[1500px] mx-auto space-y-5">
+    <div className="flex items-center justify-between">
+      <div><h2 className="text-page-title font-semibold">Laboratory Operations</h2><p className="text-sm text-text-secondary mt-1">Stock, assets, suppliers, maintenance, calibration and project resource readiness.</p></div>
+      <button onClick={() => { overview.refetch(); suppliers.refetch(); }} className="p-2 border border-border rounded-sm hover:bg-surface-raised" title="Refresh"><RefreshCw size={16} /></button>
+    </div>
+    <div className="flex flex-wrap gap-1 border-b border-border">
+      {tabs.map(([id, label]) => <button key={id} onClick={() => setTab(id)} className={`px-3 py-2 text-sm border-b-2 ${tab === id ? 'border-accent text-text-primary' : 'border-transparent text-text-secondary hover:text-text-primary'}`}>{label}</button>)}
+    </div>
+
+    {tab === 'overview' && <div className="space-y-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <Metric icon={Box} label="Inventory items" value={o.summary.total_items} />
+        <Metric icon={AlertTriangle} label="Low stock" value={o.summary.low_stock} />
+        <Metric icon={Wrench} label="Equipment / tools" value={Number(o.summary.equipment) + Number(o.summary.tools)} />
+        <Metric icon={PackageSearch} label="Stock value" value={Number(o.summary.stock_value || 0).toFixed(2)} />
+      </div>
+      <div className="grid lg:grid-cols-2 gap-4">
+        <Section title="Low-stock intelligence">
+          {o.low_stock.length ? <div className="space-y-2">{o.low_stock.slice(0, 10).map((x: any) => <div key={x.id} className="flex justify-between p-2 border border-border rounded-sm text-sm"><Link className="hover:text-accent" to={`/inventory/${x.id}`}>{x.name}</Link><span className="font-mono">{x.current_quantity} {x.unit || ''}</span></div>)}</div> : <div className="text-sm text-text-secondary">No low-stock items.</div>}
+        </Section>
+        <Section title="Calibration due within 30 days">
+          {o.calibration_due.length ? <div className="space-y-2">{o.calibration_due.map((x: any) => <div key={x.id} className="flex justify-between p-2 border border-border rounded-sm text-sm"><Link className="hover:text-accent" to={`/inventory/${x.id}`}>{x.name}</Link><span className="font-mono">{String(x.next_calibration_date).slice(0, 10)}</span></div>)}</div> : <div className="text-sm text-text-secondary">No calibration due soon.</div>}
+        </Section>
+      </div>
+      <Section title="Project readiness — missing BOM components">
+        <div className="overflow-auto"><table className="w-full text-sm"><thead><tr className="text-text-secondary text-left"><th className="pb-2">Project</th><th className="pb-2">Component</th><th className="pb-2">Required</th><th className="pb-2">Status</th></tr></thead><tbody>
+          {o.missing_bom.slice(0, 20).map((x: any) => <tr key={x.id} className="border-t border-border"><td className="py-2">{x.project_name}</td><td>{x.name}</td><td>{x.required_quantity} {x.unit || ''}</td><td className="text-status-danger">Missing</td></tr>)}
+          {!o.missing_bom.length && <tr><td colSpan={4} className="py-4 text-text-secondary">All currently linked BOM lines have sufficient preferred or alternative stock.</td></tr>}
+        </tbody></table></div>
+      </Section>
+    </div>}
+
+    {tab === 'stock' && <div className="space-y-4"><Section title="Stock intelligence"><div className="grid md:grid-cols-3 gap-3"><Metric icon={Box} label="Components" value={o.summary.components} /><Metric icon={Factory} label="Materials" value={o.summary.materials} /><Metric icon={AlertTriangle} label="Low stock" value={o.summary.low_stock} /></div></Section><Section title="Low-stock items"><div className="space-y-2">{o.low_stock.map((x: any) => <div key={x.id} className="grid grid-cols-[1fr_auto_auto] gap-4 p-2 border border-border rounded-sm text-sm"><Link to={`/inventory/${x.id}`} className="hover:text-accent">{x.name}</Link><span>{x.type}</span><span className="font-mono">{x.current_quantity} {x.unit || ''}</span></div>)}</div></Section></div>}
+
+    {tab === 'equipment' && <Section title="Equipment, instruments and tools"><div className="overflow-auto"><table className="w-full text-sm"><thead><tr className="text-left text-text-secondary"><th className="pb-2">Asset</th><th>Status</th><th>Serial / tag</th><th>Assigned</th><th>Calibration</th></tr></thead><tbody>{o.equipment.map((x: any) => <tr key={x.id} className="border-t border-border"><td className="py-2"><Link to={`/inventory/${x.id}`} className="hover:text-accent">{x.name}</Link><div className="text-xs text-text-secondary">{x.manufacturer || ''} {x.model_number || ''}</div></td><td>{x.status}</td><td className="font-mono text-xs">{x.serial_number || x.asset_tag || '—'}</td><td>{x.assigned_to || 'Unassigned'}</td><td>{x.next_calibration_date || '—'}</td></tr>)}</tbody></table></div></Section>}
+
+    {tab === 'suppliers' && <div className="grid lg:grid-cols-[340px_1fr] gap-4"><Section title="Add supplier"><div className="space-y-2">
+      <input className={input} placeholder="name" value={supplier.name} onChange={e => setSupplier({ ...supplier, name: e.target.value })} />
+      <input className={input} placeholder="contact name" value={supplier.contact_name} onChange={e => setSupplier({ ...supplier, contact_name: e.target.value })} />
+      <input className={input} placeholder="email" value={supplier.email} onChange={e => setSupplier({ ...supplier, email: e.target.value })} />
+      <input className={input} placeholder="phone" value={supplier.phone} onChange={e => setSupplier({ ...supplier, phone: e.target.value })} />
+      <input className={input} placeholder="website" value={supplier.website} onChange={e => setSupplier({ ...supplier, website: e.target.value })} />
+      <textarea className={input} placeholder="notes" value={supplier.notes} onChange={e => setSupplier({ ...supplier, notes: e.target.value })} />
+      <button disabled={!supplier.name.trim() || addSupplier.isPending} onClick={() => addSupplier.mutate()} className="w-full px-3 py-2 bg-accent text-bg rounded-sm text-sm flex justify-center gap-2"><Plus size={15} /> Add supplier</button>
+    </div></Section><Section title="Suppliers"><div className="space-y-2">{(suppliers.data || []).map(s => <div key={s.id} className="p-3 border border-border rounded-sm flex justify-between gap-3"><div><div className="font-medium">{s.name}</div><div className="text-xs text-text-secondary">{s.contact_name || ''} {s.email ? `· ${s.email}` : ''} · {s.item_count} linked item{s.item_count === 1 ? '' : 's'}</div></div><button onClick={() => removeSupplier.mutate(s.id)} title="Delete supplier" className="text-status-danger"><Trash2 size={15} /></button></div>)}</div></Section></div>}
+
+    {tab === 'maintenance' && <div className="space-y-4"><Section title="Maintenance due / scheduled"><div className="space-y-2">{o.maintenance_due.map((x: any) => <div key={x.id} className="p-3 border border-border rounded-sm grid md:grid-cols-[1fr_auto_auto] gap-3 text-sm"><Link to={`/inventory/${x.item_id}`} className="hover:text-accent">{x.name}</Link><span>{x.maintenance_type} · {x.status}</span><span className="font-mono">{x.scheduled_date || '—'}</span></div>)}{!o.maintenance_due.length && <div className="text-text-secondary text-sm">No maintenance currently due or scheduled.</div>}</div></Section><Section title="Calibration"><div className="space-y-2">{o.calibration_due.map((x: any) => <div key={x.id} className="flex justify-between p-2 border border-border rounded-sm text-sm"><span>{x.name}</span><span className="font-mono">{x.next_calibration_date}</span></div>)}</div></Section></div>}
+
+    {tab === 'requirements' && <Section title="Project resource requirements"><div className="space-y-2">{o.requirements.map((x: any) => <div key={x.id} className="grid md:grid-cols-[1fr_1fr_auto_auto] gap-3 p-3 border border-border rounded-sm text-sm"><span>{x.project_name}</span><span>{x.name} · {x.quantity} {x.unit || ''}</span><span>{x.status}</span><span>{x.preferred_quantity ?? '—'} available</span></div>)}{!o.requirements.length && <div className="text-text-secondary">No open resource requirements.</div>}</div></Section>}
+
+    {tab === 'locations' && <Section title="Locations"><p className="text-sm text-text-secondary mb-3">Locations remain managed from the inventory/location workflow.</p><Link to="/inventory" className="inline-flex items-center gap-2 px-3 py-2 bg-accent text-bg rounded-sm text-sm"><MapPin size={15} /> Open Inventory</Link></Section>}
+  </div>;
+}

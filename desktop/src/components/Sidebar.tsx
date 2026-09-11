@@ -1,4 +1,4 @@
-import { Box, DollarSign, FileText, Search, Layers, LogOut, Users, User, Settings, Sun, Moon, Folder, ScanLine, LayoutDashboard, BookOpen, Bot, FileBarChart, BellRing, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { Box, Settings2, DollarSign, FileText, Search, Layers, LogOut, Users, User, Settings, Sun, Moon, Folder, ScanLine, LayoutDashboard, BookOpen, Bot, FileBarChart, BellRing, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { useState, useCallback, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useTheme } from '../contexts/ThemeContext';
@@ -7,6 +7,7 @@ import ScanLookupModal from './ScanLookupModal';
 const menuItems = [
   { icon: LayoutDashboard, label: 'Dashboard', id: 'dashboard', path: '/dashboard' },
   { icon: Box, label: 'Inventory', id: 'inventory', path: '/inventory' },
+  { icon: Settings2, label: 'Laboratory Operations', id: 'operations', path: '/operations' },
   { icon: DollarSign, label: 'Financials', id: 'financials', path: '/financials' },
   { icon: FileText, label: 'Notebook', id: 'notebook', path: '/notebook' },
   { icon: BookOpen, label: 'Knowledge', id: 'knowledge', path: '/knowledge' },

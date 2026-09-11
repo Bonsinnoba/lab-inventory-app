@@ -1,4 +1,4 @@
-import { Box, DollarSign, FileText, Folder, Layers, LogOut, Settings, X, LayoutDashboard, ScanLine, Search, Bot, User, Calculator, FileBarChart, BellRing } from 'lucide-react';
+import { Box, DollarSign, FileText, Folder, Layers, LogOut, Settings, X, LayoutDashboard, ScanLine, Search, Bot, User, FileBarChart, BellRing } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 import { useTheme } from '../contexts/ThemeContext';
 import { useState } from 'react';
