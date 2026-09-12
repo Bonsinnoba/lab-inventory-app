@@ -1,109 +1,144 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { config } from './config.js';
 import { pool } from './db.js';
-import { STORAGE_DIR, resolveStoragePath } from './storage.js';
+import { resolveStoragePath } from './storage.js';
 
 const YTDLP = process.env.YTDLP_PATH || 'yt-dlp';
 const POLL_MS = 5000;
+const MAX_ERROR_LENGTH = 2000;
 let timer = null;
-let running = false;
+let ticking = false;
+const processes = new Map();
 
 function qualityFormat(quality) {
   const height = quality === 'best' ? null : Number.parseInt(quality, 10) || 720;
   if (!height) return 'best';
-  // Prefer a single progressive file so the download requires no FFmpeg.
   return `best[height<=${height}]/best[ext=mp4][height<=${height}]/best`;
 }
 
-function run(command, args, onLine) {
+function terminate(child) {
+  if (!child || child.killed) return;
+  try {
+    if (process.platform === 'win32' && child.pid) {
+      spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+    } else {
+      child.kill('SIGTERM');
+    }
+  } catch {}
+}
+
+function parseProgress(line) {
+  const match = line.match(/download:(\d+(?:\.\d+)?)%\|(\d+)\|([^|]*)\|([^|]*)\|([^|]*)/i);
+  if (match) {
+    const total = Number(match[3]);
+    const speed = match[4] || null;
+    const eta = match[5] || null;
+    return { progress: Math.min(100, Number(match[1])), downloaded: Number(match[2]), total: Number.isFinite(total) ? total : null, speed, eta };
+  }
+  const percent = line.match(/(\d+(?:\.\d+)?)%/);
+  return percent ? { progress: Math.min(100, Number(percent[1])), downloaded: null, total: null, speed: null, eta: null } : null;
+}
+
+function run(command, args, { jobId, onProgress } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { windowsHide: true });
+    if (jobId) processes.set(jobId, child);
     let stderr = '';
     let stdout = '';
+    let settled = false;
+    const finish = (fn, value) => { if (settled) return; settled = true; if (jobId) processes.delete(jobId); fn(value); };
     child.stdout.on('data', chunk => { stdout += chunk.toString(); });
     child.stderr.on('data', chunk => {
       const text = chunk.toString();
       stderr += text;
-      for (const line of text.split(/\r?\n/)) if (line.trim()) onLine?.(line.trim());
+      for (const line of text.split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        const progress = parseProgress(line.trim());
+        if (progress) void onProgress?.(progress);
+      }
     });
-    child.on('error', reject);
-    child.on('close', code => code === 0 ? resolve({ stdout, stderr }) : reject(new Error(stderr.trim().split(/\r?\n/).slice(-1)[0] || `yt-dlp exited with code ${code}`)));
+    child.on('error', err => finish(reject, err));
+    child.on('close', code => code === 0
+      ? finish(resolve, { stdout, stderr })
+      : finish(reject, Object.assign(new Error(stderr.trim().split(/\r?\n/).slice(-1)[0] || `yt-dlp exited with code ${code}`), { code })));
   });
 }
 
-function parseProgress(line) {
-  const match = line.match(/(\d+(?:\.\d+)?)%/);
-  return match ? Math.min(100, Number(match[1])) : null;
+async function isCancelled(jobId) {
+  const r = await pool.query('SELECT cancel_requested,status FROM resource_download_jobs WHERE id=$1', [jobId]);
+  return !r.rowCount || r.rows[0].cancel_requested || ['cancelled'].includes(r.rows[0].status);
 }
 
-async function youtubeThumbnail(resource) {
-  if (!resource.url || !/(youtube\.com|youtu\.be)/i.test(resource.url)) return resource.thumbnail_url || null;
-  const dir = resolveStoragePath(resource.id);
-  await fs.mkdir(dir, { recursive: true });
-  const template = path.join(dir, 'thumbnail.%(ext)s');
-  await run(YTDLP, ['--skip-download', '--write-thumbnail', '--no-playlist', '--output', template, resource.url], null);
-  const entries = await fs.readdir(dir);
-  const thumbnail = entries.find(name => /^thumbnail\.(jpg|jpeg|png|webp)$/i.test(name));
-  if (!thumbnail) return resource.thumbnail_url || null;
-  return `/api/media-downloads/${resource.id}/thumbnail`;
-}
-
-export async function ensureYouTubeThumbnail(resource) {
-  try {
-    return await youtubeThumbnail(resource);
-  } catch (err) {
-    console.warn(`YouTube thumbnail failed for ${resource.id}:`, err.message);
-    return resource.thumbnail_url || null;
-  }
-}
-
-function localVideoBaseName(resource) {
-  return (resource.name || 'video').replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').trim() || 'video';
+async function cleanMediaFiles(dir, base) {
+  const entries = await fs.readdir(dir).catch(() => []);
+  await Promise.all(entries
+    .filter(name => name.startsWith(`${base}.`) && !/^thumbnail\./i.test(name))
+    .map(name => fs.rm(path.join(dir, name), { force: true })));
 }
 
 async function startJob(job) {
-  const resourceResult = await pool.query('SELECT * FROM resources WHERE id = $1', [job.resource_id]);
+  const resourceResult = await pool.query('SELECT * FROM resources WHERE id=$1', [job.resource_id]);
   if (!resourceResult.rowCount) throw new Error('Resource no longer exists');
   const resource = resourceResult.rows[0];
   if (resource.kind !== 'link' || !resource.url) throw new Error('Only URL resources can be downloaded');
 
   const dir = resolveStoragePath(resource.id);
   await fs.mkdir(dir, { recursive: true });
-  const base = localVideoBaseName(resource);
+  const base = (resource.name || 'video').replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').trim() || 'video';
   const outputTemplate = path.join(dir, `${base}.%(ext)s`);
+  const maxAttempts = Math.max(1, Math.min(5, Number(job.max_attempts) || 3));
 
-  await pool.query(`UPDATE resource_download_jobs SET status='downloading', attempts=attempts+1, progress=0, started_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=$1`, [job.id]);
+  await pool.query(`UPDATE resource_download_jobs SET status='downloading',cancel_requested=FALSE,attempts=attempts+1,progress=0,bytes_downloaded=0,total_bytes=NULL,error_message=NULL,started_at=CURRENT_TIMESTAMP,process_started_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=$1`, [job.id]);
 
   const args = [
-    '--no-playlist', '--newline', '--restrict-filenames',
-    '-f', qualityFormat(job.quality),
-    '-o', outputTemplate,
-    resource.url,
+    '--no-playlist', '--newline', '--progress',
+    '--progress-template', 'download:%(progress._percent_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.speed)s|%(progress.eta)s',
+    '--restrict-filenames', '-f', qualityFormat(job.quality), '-o', outputTemplate, resource.url,
   ];
 
   try {
-    await run(YTDLP, args, async line => {
-      const progress = parseProgress(line);
-      if (progress !== null) {
-        await pool.query('UPDATE resource_download_jobs SET progress=$1, updated_at=CURRENT_TIMESTAMP WHERE id=$2', [progress, job.id]).catch(() => {});
-      }
+    await run(YTDLP, args, {
+      jobId: job.id,
+      onProgress: async p => {
+        if (await isCancelled(job.id)) {
+          terminate(processes.get(job.id));
+          return;
+        }
+        await pool.query(`UPDATE resource_download_jobs SET progress=$1,bytes_downloaded=$2,total_bytes=$3,last_progress_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=$4 AND status='downloading'`, [p.progress, p.downloaded, p.total, job.id]).catch(() => {});
+      },
     });
+
+    if (await isCancelled(job.id)) {
+      await cleanMediaFiles(dir, base);
+      await pool.query(`UPDATE resource_download_jobs SET status='cancelled',updated_at=CURRENT_TIMESTAMP WHERE id=$1`, [job.id]);
+      return;
+    }
 
     const entries = await fs.readdir(dir);
     const mediaName = entries.find(name => name.startsWith(`${base}.`) && !/^thumbnail\./i.test(name));
     if (!mediaName) throw new Error('yt-dlp completed but no local video file was found');
     const output = path.join(dir, mediaName);
     const stat = await fs.stat(output);
-    const mimeType = mediaName.toLowerCase().endsWith('.mp4') ? 'video/mp4' : mediaName.toLowerCase().endsWith('.webm') ? 'video/webm' : 'video/*';
+    if (!stat.isFile() || stat.size <= 0) throw new Error('yt-dlp produced an empty media file');
+    const lower = mediaName.toLowerCase();
+    const mimeType = lower.endsWith('.mp4') ? 'video/mp4' : lower.endsWith('.webm') ? 'video/webm' : lower.endsWith('.mkv') ? 'video/x-matroska' : 'video/*';
     const relativePath = `${resource.id}/${mediaName}`;
-    await pool.query(`UPDATE resources SET local_media_path=$1, local_media_filename=$2, local_media_mime_type=$3, local_media_size_bytes=$4, local_media_downloaded_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=$5`, [relativePath, mediaName, mimeType, stat.size, resource.id]);
-    await pool.query(`UPDATE resource_download_jobs SET status='completed', progress=100, total_bytes=$1, bytes_downloaded=$1, completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=$2`, [stat.size, job.id]);
+    await pool.query(`UPDATE resources SET local_media_path=$1,local_media_filename=$2,local_media_mime_type=$3,local_media_size_bytes=$4,local_media_downloaded_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=$5`, [relativePath, mediaName, mimeType, stat.size, resource.id]);
+    await pool.query(`UPDATE resource_download_jobs SET status='completed',progress=100,total_bytes=$1,bytes_downloaded=$1,completed_at=CURRENT_TIMESTAMP,last_progress_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=$2`, [stat.size, job.id]);
   } catch (err) {
-    const entries = await fs.readdir(dir).catch(() => []);
-    await Promise.all(entries.filter(name => name.startsWith(`${base}.`) && !/^thumbnail\./i.test(name)).map(name => fs.rm(path.join(dir, name), { force: true })));
-    await pool.query(`UPDATE resource_download_jobs SET status='failed', error_message=$1, updated_at=CURRENT_TIMESTAMP WHERE id=$2`, [err.message.slice(0, 2000), job.id]);
+    processes.delete(job.id);
+    const cancelled = await isCancelled(job.id).catch(() => false);
+    await cleanMediaFiles(dir, base);
+    if (cancelled) {
+      await pool.query(`UPDATE resource_download_jobs SET status='cancelled',updated_at=CURRENT_TIMESTAMP WHERE id=$1`, [job.id]);
+      return;
+    }
+    const attemptsResult = await pool.query('SELECT attempts,max_attempts FROM resource_download_jobs WHERE id=$1', [job.id]);
+    const current = attemptsResult.rows[0];
+    const retry = current && current.attempts < Math.max(1, Math.min(5, current.max_attempts || maxAttempts));
+    const message = String(err?.message || 'Download failed').slice(0, MAX_ERROR_LENGTH);
+    await pool.query(`UPDATE resource_download_jobs SET status=$1,error_message=$2,updated_at=CURRENT_TIMESTAMP WHERE id=$3`, [retry ? 'queued' : 'failed', message, job.id]);
   }
 }
 
@@ -116,9 +151,14 @@ function isWithinWindow(start, end, now) {
   return s < e ? minutes >= s && minutes < e : minutes >= s || minutes < e;
 }
 
+async function recoverInterruptedJobs() {
+  await pool.query(`UPDATE resource_download_jobs SET status='queued',error_message=COALESCE(error_message,'Download worker restarted before completion'),updated_at=CURRENT_TIMESTAMP WHERE status='downloading' AND cancel_requested=FALSE`);
+  await pool.query(`UPDATE resource_download_jobs SET status='cancelled',updated_at=CURRENT_TIMESTAMP WHERE status='downloading' AND cancel_requested=TRUE`);
+}
+
 async function tick() {
-  if (running) return;
-  running = true;
+  if (ticking) return;
+  ticking = true;
   try {
     const settingsResult = await pool.query('SELECT * FROM media_download_settings WHERE id=1');
     const settings = settingsResult.rows[0];
@@ -132,17 +172,18 @@ async function tick() {
     const eligibility = settings.mode === 'manual'
       ? '(scheduled_for IS NOT NULL AND scheduled_for <= CURRENT_TIMESTAMP)'
       : '(scheduled_for IS NULL OR scheduled_for <= CURRENT_TIMESTAMP)';
-    const jobs = await pool.query(`SELECT * FROM resource_download_jobs WHERE status IN ('queued','scheduled') AND ${eligibility} ORDER BY priority DESC, scheduled_for NULLS FIRST, created_at ASC LIMIT $1`, [available]);
+    const jobs = await pool.query(`SELECT * FROM resource_download_jobs WHERE status IN ('queued','scheduled') AND cancel_requested=FALSE AND ${eligibility} ORDER BY priority DESC,scheduled_for NULLS FIRST,created_at ASC LIMIT $1`, [available]);
     await Promise.all(jobs.rows.map(job => startJob(job)));
   } catch (err) {
     console.error('Media download worker:', err.message);
   } finally {
-    running = false;
+    ticking = false;
   }
 }
 
 export function startMediaDownloadWorker() {
   if (timer) return;
+  void recoverInterruptedJobs().catch(err => console.error('Media download recovery:', err.message));
   timer = setInterval(() => void tick(), POLL_MS);
   timer.unref?.();
   void tick();
@@ -151,4 +192,11 @@ export function startMediaDownloadWorker() {
 export async function stopMediaDownloadWorker() {
   if (timer) clearInterval(timer);
   timer = null;
+  for (const child of processes.values()) terminate(child);
+  processes.clear();
+}
+
+export async function cancelMediaDownloadJob(jobId) {
+  await pool.query(`UPDATE resource_download_jobs SET cancel_requested=TRUE,status=CASE WHEN status IN ('queued','scheduled','paused','failed') THEN 'cancelled' ELSE status END,updated_at=CURRENT_TIMESTAMP WHERE id=$1`, [jobId]);
+  terminate(processes.get(jobId));
 }
