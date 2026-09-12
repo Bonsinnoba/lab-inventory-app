@@ -1,11 +1,17 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { pool } from './db.js';
+import { config } from './config.js';
 import { resolveStoragePath } from './storage.js';
 
-const YTDLP = process.env.YTDLP_PATH || 'yt-dlp';
-const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const BACKEND_DIR = path.resolve(MODULE_DIR, '..');
+const DEFAULT_YTDLP = process.platform === 'win32' ? path.join(BACKEND_DIR, 'yt-dlp.exe') : path.join(BACKEND_DIR, 'yt-dlp');
+const DEFAULT_FFMPEG = process.platform === 'win32' ? path.join(BACKEND_DIR, 'tools', 'ffmpeg', 'bin', 'ffmpeg.exe') : path.join(BACKEND_DIR, 'tools', 'ffmpeg', 'bin', 'ffmpeg');
+const YTDLP = process.env.YTDLP_PATH || DEFAULT_YTDLP;
+const FFMPEG = process.env.FFMPEG_PATH || DEFAULT_FFMPEG;
 const POLL_MS = 5000;
 const MAX_ERROR_LENGTH = 2000;
 let timer = null;
@@ -73,7 +79,7 @@ async function startJob(job) {
     ...ytDlpRuntimeArgs(),
     '--no-playlist','--newline','--progress','--progress-template','download:%(progress._percent_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.speed)s|%(progress.eta)s',
     '--restrict-filenames','-f',qualityFormat(job.quality),'--merge-output-format','mp4',
-    ...(process.env.FFMPEG_PATH ? ['--ffmpeg-location', FFMPEG] : []),
+    '--ffmpeg-location',FFMPEG,
     '-o',outputTemplate,resource.url,
   ];
   try {
@@ -131,6 +137,16 @@ export async function ensureYouTubeThumbnail(resource) {
   const stat = await fs.stat(path.join(dir, filename));
   if (!stat.isFile() || stat.size <= 0) throw new Error('yt-dlp produced an empty YouTube thumbnail');
   return `/api/media-downloads/${resource.id}/thumbnail`;
+}
+
+export async function getMediaToolStatus() {
+  const check = async (command, args) => {
+    try { await run(command, args); return { available: true }; }
+    catch (err) { return { available: false, error: String(err?.message || 'Unavailable').slice(0, 500) }; }
+  };
+  const yt = await check(YTDLP, ['--version']);
+  const ffmpeg = await check(FFMPEG, ['-version']);
+  return { yt_dlp: { path: YTDLP, ...yt }, ffmpeg: { path: FFMPEG, ...ffmpeg }, node: { path: process.execPath, available: Boolean(process.execPath) }, production: config.isProduction };
 }
 
 function isWithinWindow(start, end, now) {
