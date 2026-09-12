@@ -18,7 +18,8 @@
     "test:track5-phase2-ui-static": "node src/test-track5-phase2-ui-static.js",
     "test:track5-phase2-static": "node src/test-track5-phase2-static.js",
     "test:track4-static": "node src/test-track4-static.js",
-    "test:phase3-static": "node src/test-phase3-static.js"
+    "test:phase3-static": "node src/test-phase3-static.js",
+    "test:phase4-static": "node src/test-phase4-static.js"
   },
   "dependencies": {
     "@google/genai": "^2.16.0",
