@@ -8,19 +8,22 @@ import { useEffect, useRef, useState, type MouseEvent, type WheelEvent } from 'r
 import { Document, Page, pdfjs } from 'react-pdf';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
-pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+  'pdfjs-dist/build/pdf.worker.min.mjs',
+  import.meta.url,
+).toString();
 
-let rememberedSplitMode = false;
-let rememberedSize: 'medium' | 'large' = 'medium';
-
-const ZOOM_STEP = 0.25;
-const ZOOM_MIN = 0.5;
-const ZOOM_MAX = 3;
+interface Props {
+  resource: Resource;
+  resources?: Resource[];
+  onClose: () => void;
+  onEdit?: (resource: Resource) => void;
+}
 
 function extension(r: Resource) {
-  return (r.original_filename || r.name || '').toLowerCase().split('.').pop() || '';
+  const name = r.name || r.original_name || '';
+  return name.split('.').pop()?.toLowerCase() || '';
 }
 
 function isMarkdownResource(r: Resource) {
@@ -30,74 +33,83 @@ function isMarkdownResource(r: Resource) {
 
 function isEditableResource(r: Resource) {
   const ext = extension(r);
-  return ext === 'pdf' || ext === 'md' || ext === 'markdown' || ext === 'docx';
+  return ext === 'pdf' || isMarkdownResource(r) || ext === 'docx';
 }
 
 function iconForResource(r: Resource) {
-  if (r.kind === 'folder') return Folder;
-  if (r.kind === 'link') return LinkIcon;
-  if (r.file_type === 'image') return ImageIcon;
-  if (r.file_type === 'video') return Video;
-  if (r.file_type === 'audio') return Music;
-  if (r.file_type === 'pdf' || r.file_type === 'text' || r.file_type === 'document') return FileText;
-  return FileIcon;
+  const ext = extension(r);
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(ext)) return <ImageIcon size={15} />;
+  if (['mp4', 'webm', 'mov', 'm4v'].includes(ext)) return <Video size={15} />;
+  if (['mp3', 'wav', 'ogg', 'm4a'].includes(ext)) return <Music size={15} />;
+  if (ext === 'pdf' || isMarkdownResource(r) || ext === 'docx') return <FileText size={15} />;
+  if (r.resource_type === 'folder') return <Folder size={15} />;
+  if (r.resource_type === 'link') return <LinkIcon size={15} />;
+  return <FileIcon size={15} />;
 }
 
 function subtitleForResource(r: Resource) {
-  if (r.kind === 'link') return r.url || 'Link';
-  if (r.kind === 'folder') return 'Folder';
-  return r.original_filename || r.file_type;
+  return [r.resource_type, extension(r).toUpperCase()].filter(Boolean).join(' • ');
 }
 
-interface ResourceViewerModalProps {
-  resource: Resource;
-  resources?: Resource[];
-  onClose: () => void;
-  onEdit?: (resource: Resource) => void;
-}
+export default function ResourceViewerModal({ resource, resources = [], onClose, onEdit }: Props) {
+  const list = resources.length ? resources : [resource];
+  const initialIndex = Math.max(0, list.findIndex((r) => r.id === resource.id));
+  const [leftId, setLeftId] = useState<string | null>(resource.id);
+  const [rightId, setRightId] = useState<string | null>(list.length > 1 ? list[(initialIndex + 1) % list.length]?.id ?? null : null);
+  const [isSplit, setIsSplit] = useState(() => localStorage.getItem('labos-resource-viewer-split') === '1');
+  const [size, setSize] = useState<'medium' | 'large'>(() => (localStorage.getItem('labos-resource-viewer-size') as 'medium' | 'large') || 'medium');
+  const [hoveredPane, setHoveredPane] = useState<'left' | 'right'>('left');
+  const [pickerFor, setPickerFor] = useState<'left' | 'right' | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [pdfPage, setPdfPage] = useState(1);
+  const [pdfPages, setPdfPages] = useState(0);
+  const [docxHtml, setDocxHtml] = useState<string | null>(null);
+  const [text, setText] = useState<string | null>(null);
+  const [loadingContent, setLoadingContent] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const dragRef = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
 
-export default function ResourceViewerModal({ resource, resources, onClose, onEdit }: ResourceViewerModalProps) {
-  const list = resources && resources.length > 0 ? resources : [resource];
-  const canCompare = list.length > 1;
-  const [isSplit, setIsSplit] = useState(canCompare && rememberedSplitMode);
-  const [size, setSize] = useState<'medium' | 'large'>(rememberedSize);
-  const [leftId, setLeftId] = useState(resource.id);
-  const [rightId, setRightId] = useState<string | null>(null);
-  const [pickerFor, setPickerFor] = useState<'left' | 'right' | null>(
-    canCompare && rememberedSplitMode ? 'right' : null
-  );
-  const [hoveredPane, setHoveredPane] = useState<'left' | 'right' | null>(null);
+  const left = list.find((r) => r.id === leftId) || resource;
+  const right = rightId ? list.find((r) => r.id === rightId) || null : null;
 
-  const leftResource = list.find((r) => r.id === leftId) || resource;
-  const rightResource = rightId ? list.find((r) => r.id === rightId) || null : null;
+  useEffect(() => {
+    localStorage.setItem('labos-resource-viewer-split', isSplit ? '1' : '0');
+  }, [isSplit]);
 
-  const enterCompare = () => {
-    setIsSplit(true);
-    rememberedSplitMode = true;
-    if (!rightId) setPickerFor('right');
-  };
-  const exitCompare = () => {
-    setIsSplit(false);
-    rememberedSplitMode = false;
-    setPickerFor(null);
-    setRightId(null);
-  };
-  const pickResource = (side: 'left' | 'right', chosen: Resource) => {
-    if (side === 'left') setLeftId(chosen.id);
-    else setRightId(chosen.id);
-    setPickerFor(null);
-  };
-  const cancelPicker = () => {
-    if (pickerFor === 'right' && !rightId) exitCompare();
-    else setPickerFor(null);
-  };
-  const toggleSize = () => {
-    const next = size === 'medium' ? 'large' : 'medium';
-    setSize(next);
-    rememberedSize = next;
-  };
+  useEffect(() => {
+    localStorage.setItem('labos-resource-viewer-size', size);
+  }, [size]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      const r = left;
+      const ext = extension(r);
+      setLoadingContent(true);
+      setError(null);
+      setDocxHtml(null);
+      setText(null);
+      setPdfPage(1);
+      try {
+        if (ext === 'docx') setDocxHtml(await getDocxHtml(r.id));
+        else if (isMarkdownResource(r) || ['txt', 'csv', 'json', 'xml', 'yaml', 'yml'].includes(ext)) {
+          const response = await fetch(getResourceAccessUrl(r));
+          if (!response.ok) throw new Error(`Unable to load resource (${response.status})`);
+          setText(await response.text());
+        }
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : 'Unable to load resource');
+      } finally {
+        if (!cancelled) setLoadingContent(false);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [left.id]);
+
   const stepList = (id: string, dir: 1 | -1) => {
     const idx = list.findIndex((r) => r.id === id);
+    if (idx < 0 || list.length === 0) return id;
     return list[(idx + dir + list.length) % list.length].id;
   };
 
@@ -112,16 +124,16 @@ export default function ResourceViewerModal({ resource, resources, onClose, onEd
       if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLElement && active.isContentEditable) return;
       const dir = e.key === 'ArrowLeft' ? -1 : 1;
       if (!isSplit) {
-        if (!pickerFor) setLeftId((id) => stepList(id, dir));
+        if (!pickerFor) setLeftId((id) => id ? stepList(id, dir) : id);
       } else if (hoveredPane === 'left' && pickerFor !== 'left') {
-        setLeftId((id) => stepList(id, dir));
-      } else if (hoveredPane === 'right' && pickerFor !== 'right' && rightId) {
-        setRightId((id) => stepList(id, dir));
+        setLeftId((id) => id ? stepList(id, dir) : id);
+      } else if (hoveredPane === 'right' && pickerFor !== 'right') {
+        setRightId((id) => id ? stepList(id, dir) : id);
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [onClose, isSplit, hoveredPane, pickerFor, rightId, list]);
+  }, [onClose, isSplit, hoveredPane, pickerFor, list]);
 
   const containerSizeClass = size === 'large'
     ? 'w-[95vw] h-[95vh]'
@@ -129,187 +141,76 @@ export default function ResourceViewerModal({ resource, resources, onClose, onEd
       ? 'w-full h-full max-w-[95vw] max-h-[90vh]'
       : 'w-full h-full max-w-6xl max-h-[90vh]';
 
-  return (
-    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
-      <div className={`relative ${containerSizeClass} bg-surface border border-border rounded-md overflow-hidden flex flex-col`}>
-        <div className="bg-surface-raised border-b border-border px-3 py-1.5 flex items-center justify-between z-10 flex-shrink-0">
-          <span className="text-xs text-text-secondary">{isSplit ? 'Split view: 2 resources' : canCompare ? `${list.length} resources` : ''}</span>
-          <div className="flex items-center gap-1.5">
-            {canCompare && (
-              <button onClick={isSplit ? exitCompare : enterCompare} className={`flex items-center gap-1.5 px-2.5 py-1 rounded-sm text-xs font-medium ${isSplit ? 'bg-accent/15 text-accent' : 'hover:bg-surface text-text-secondary hover:text-text-primary border border-border'}`} title={isSplit ? 'Exit split view' : 'Compare two resources'}>
-                <PanelRight size={14} />{isSplit ? 'Exit split view' : 'Compare'}
-              </button>
-            )}
-            <button onClick={toggleSize} className="p-1.5 hover:bg-surface rounded-sm text-text-secondary hover:text-text-primary" title={size === 'large' ? 'Shrink viewer' : 'Enlarge viewer'}>
-              {size === 'large' ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
-            </button>
-            <button onClick={onClose} className="p-1.5 hover:bg-surface rounded-sm text-text-secondary hover:text-text-primary" title="Close"><X size={18} /></button>
-          </div>
-        </div>
-
-        <div className="flex-1 flex min-h-0">
-          {pickerFor === 'left' ? (
-            <ResourcePicker resources={list.filter((r) => r.id !== rightId)} onPick={(r) => pickResource('left', r)} onCancel={cancelPicker} />
-          ) : (
-            <ResourcePane resource={leftResource} onSwitch={canCompare ? () => setPickerFor('left') : undefined} onEdit={onEdit} onMouseEnter={() => setHoveredPane('left')} onMouseLeave={() => setHoveredPane((p) => p === 'left' ? null : p)} />
-          )}
-          {isSplit && (
-            <>
-              <div className="w-px bg-border flex-shrink-0" />
-              {pickerFor === 'right' || !rightResource ? (
-                <ResourcePicker resources={list.filter((r) => r.id !== leftId)} onPick={(r) => pickResource('right', r)} onCancel={cancelPicker} />
-              ) : (
-                <ResourcePane resource={rightResource} onSwitch={() => setPickerFor('right')} onEdit={onEdit} onMouseEnter={() => setHoveredPane('right')} onMouseLeave={() => setHoveredPane((p) => p === 'right' ? null : p)} />
-              )}
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ResourcePicker({ resources, onPick, onCancel }: { resources: Resource[]; onPick: (r: Resource) => void; onCancel: () => void }) {
-  return (
-    <div className="flex-1 min-w-0 flex flex-col bg-surface-raised">
-      <div className="flex items-center justify-end px-3 py-2"><button onClick={onCancel} className="p-1.5 hover:bg-surface rounded-sm text-text-secondary hover:text-text-primary" title="Cancel"><X size={18} /></button></div>
-      <div className="flex-1 flex flex-col items-center overflow-hidden px-6 pt-2 pb-6 min-h-0">
-        <h3 className="text-text-primary font-medium mb-4">Choose a resource to compare</h3>
-        <div className="w-full max-w-md min-h-0 flex-1 overflow-y-auto bg-surface border border-border rounded-md">
-          {resources.length === 0 ? <div className="px-4 py-6 text-center text-sm text-text-secondary">No other resources to add.</div> : resources.map((r) => {
-            const Icon = iconForResource(r);
-            return <button key={r.id} onClick={() => onPick(r)} className="w-full flex items-center gap-3 px-4 py-3 hover:bg-surface-raised border-b border-border last:border-b-0 text-left"><Icon size={20} className="text-text-secondary flex-shrink-0" /><div className="min-w-0"><p className="text-sm text-text-primary truncate">{r.name}</p><p className="text-xs text-text-secondary truncate">{subtitleForResource(r)}</p></div></button>;
-          })}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ResourcePane({ resource, onSwitch, onEdit, onMouseEnter, onMouseLeave }: { resource: Resource; onSwitch?: () => void; onEdit?: (resource: Resource) => void; onMouseEnter?: () => void; onMouseLeave?: () => void }) {
-  const [isLoading, setIsLoading] = useState(true);
-  const [numPages, setNumPages] = useState<number | null>(null);
-  const [pageNumber, setPageNumber] = useState(1);
-  const [zoom, setZoom] = useState(1);
-  const [imgOffset, setImgOffset] = useState({ x: 0, y: 0 });
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [previewError, setPreviewError] = useState<string | null>(null);
-  const [docxHtml, setDocxHtml] = useState<string | null>(null);
-  const dragState = useRef<{ startX: number; startY: number; offsetX: number; offsetY: number } | null>(null);
-  const hoverRef = useRef(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    setIsLoading(true); setPreviewUrl(null); setPreviewError(null); setDocxHtml(null); setNumPages(null); setPageNumber(1); setZoom(1); setImgOffset({ x: 0, y: 0 });
-    const docx = extension(resource) === 'docx';
-    if (docx) {
-      getDocxHtml(resource.id).then((result) => { if (!cancelled) { setDocxHtml(safeHtml(result.html)); setIsLoading(false); } }).catch((err: any) => { if (!cancelled) { setPreviewError(err?.message || 'Unable to open DOCX'); setIsLoading(false); } });
-      return () => { cancelled = true; };
-    }
-    const needsUrl = resource.kind === 'file' && ['image', 'video', 'audio', 'pdf', 'text'].includes(resource.file_type);
-    if (!needsUrl) { setIsLoading(false); return () => { cancelled = true; }; }
-    getResourceAccessUrl(resource.id).then((url) => { if (!cancelled) setPreviewUrl(url); }).catch((err: any) => { if (!cancelled) { setPreviewError(err?.message || 'Unable to access resource'); setIsLoading(false); } });
-    return () => { cancelled = true; };
-  }, [resource.id, resource.kind, resource.file_type]);
-
-  useEffect(() => {
-    const zoomable = resource.file_type === 'image' || resource.file_type === 'pdf';
-    if (!zoomable) return;
-    const handler = (e: KeyboardEvent) => {
-      if (!hoverRef.current) return;
-      if (e.key === '+' || e.key === '=') setZoom((z) => Math.min(ZOOM_MAX, +(z + ZOOM_STEP).toFixed(2)));
-      else if (e.key === '-') setZoom((z) => Math.max(ZOOM_MIN, +(z - ZOOM_STEP).toFixed(2)));
-      else if (e.key === '0') { setZoom(1); setImgOffset({ x: 0, y: 0 }); }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [resource.file_type]);
-
-  const zoomIn = () => setZoom((z) => Math.min(ZOOM_MAX, +(z + ZOOM_STEP).toFixed(2)));
-  const zoomOut = () => setZoom((z) => Math.max(ZOOM_MIN, +(z - ZOOM_STEP).toFixed(2)));
-  const resetZoom = () => { setZoom(1); setImgOffset({ x: 0, y: 0 }); };
-  const handleImageWheel = (e: WheelEvent<HTMLDivElement>) => { e.preventDefault(); e.deltaY < 0 ? zoomIn() : zoomOut(); };
-  const handleImageMouseDown = (e: MouseEvent<HTMLDivElement>) => { if (zoom <= 1) return; dragState.current = { startX: e.clientX, startY: e.clientY, offsetX: imgOffset.x, offsetY: imgOffset.y }; };
-  const handleImageMouseMove = (e: MouseEvent<HTMLDivElement>) => { if (!dragState.current) return; setImgOffset({ x: dragState.current.offsetX + e.clientX - dragState.current.startX, y: dragState.current.offsetY + e.clientY - dragState.current.startY }); };
-  const stopDrag = () => { dragState.current = null; };
-
-  const handleDownload = () => {
-    const a = document.createElement('a');
-    a.href = getResourceDownloadUrl(resource.id, true);
-    a.download = resource.original_filename || resource.name;
-    document.body.appendChild(a); a.click(); a.remove();
+  const choose = (pane: 'left' | 'right', id: string) => {
+    if (pane === 'left') setLeftId(id);
+    else setRightId(id);
+    setPickerFor(null);
   };
 
-  const renderContent = () => {
-    if (previewError) return <div className="w-full h-full flex items-center justify-center bg-surface-raised"><div className="text-center max-w-md px-6"><p className="text-text-primary mb-2">Unable to open resource</p><p className="text-text-secondary text-sm break-words">{previewError}</p></div></div>;
-    if (extension(resource) === 'docx') return docxHtml ? <div className="w-full h-full overflow-auto bg-surface-raised p-6 md:p-10"><article className="mx-auto max-w-4xl min-h-full bg-white text-black shadow-lg px-8 py-10 prose prose-sm max-w-none" dangerouslySetInnerHTML={{ __html: docxHtml }} /></div> : <div className="w-full h-full bg-surface-raised" />;
-    if (resource.kind === 'link') {
-      if (resource.file_type === 'youtube') { const id = extractYouTubeId(resource.url || ''); if (id) return <div className="w-full h-full bg-black"><iframe width="100%" height="100%" src={`https://www.youtube.com/embed/${id}`} title={resource.name} frameBorder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen onLoad={() => setIsLoading(false)} /></div>; }
-      return <div className="w-full h-full flex items-center justify-center bg-surface-raised"><a href={resource.url} target="_blank" rel="noopener noreferrer" className="text-accent underline">Open {resource.url}</a></div>;
+  const handleWheel = (e: WheelEvent<HTMLDivElement>) => {
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      setZoom((z) => Math.max(0.25, Math.min(4, z + (e.deltaY < 0 ? 0.1 : -0.1))));
     }
-    if (resource.kind === 'folder') return <div className="w-full h-full flex items-center justify-center bg-surface-raised"><div className="text-center"><p className="text-text-primary mb-2">Folder contents cannot be previewed</p><p className="text-text-secondary text-sm">Download to view files</p></div></div>;
-    if (resource.file_type === 'image') return <div className="w-full h-full flex items-center justify-center bg-black overflow-hidden select-none" onWheel={handleImageWheel} onMouseDown={handleImageMouseDown} onMouseMove={handleImageMouseMove} onMouseUp={stopDrag} onMouseLeave={stopDrag} onDoubleClick={resetZoom}><img src={previewUrl || ''} alt={resource.name} draggable={false} className="max-w-full max-h-full object-contain" style={{ transform: `translate(${imgOffset.x}px, ${imgOffset.y}px) scale(${zoom})`, cursor: zoom > 1 ? 'grab' : 'default' }} onLoad={() => setIsLoading(false)} onError={() => { setPreviewError('The resource could not be loaded.'); setIsLoading(false); }} /><ZoomControls zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onReset={resetZoom} /></div>;
-    if (resource.file_type === 'video') return <div className="w-full h-full flex items-center justify-center bg-black"><video src={previewUrl || ''} controls className="max-w-full max-h-full" onCanPlay={() => setIsLoading(false)} /></div>;
-    if (resource.file_type === 'audio') return <div className="w-full h-full flex items-center justify-center bg-surface-raised"><audio src={previewUrl || ''} controls className="w-full max-w-md" onCanPlay={() => setIsLoading(false)} /></div>;
-    if (resource.file_type === 'text') return <TextPreview url={previewUrl || ''} isMarkdown={isMarkdownResource(resource)} onLoaded={() => setIsLoading(false)} />;
-    if (resource.file_type === 'pdf') return <div className="w-full h-full bg-surface-raised flex flex-col items-center overflow-auto py-8"><Document file={previewUrl || ''} onLoadSuccess={({ numPages: n }) => { setNumPages(n); setIsLoading(false); }} onLoadError={() => setIsLoading(false)} loading={null}><Page pageNumber={pageNumber} scale={zoom} renderTextLayer renderAnnotationLayer className="shadow-lg" /></Document><div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-surface border border-border rounded-md px-3 py-2 shadow-lg">{numPages && numPages > 1 && <><button onClick={() => setPageNumber((p) => Math.max(1, p - 1))} disabled={pageNumber <= 1} className="p-1 hover:bg-surface-raised rounded-sm disabled:opacity-30"><ChevronLeft size={16} /></button><span className="text-sm text-text-secondary font-mono">{pageNumber} / {numPages}</span><button onClick={() => setPageNumber((p) => Math.min(numPages, p + 1))} disabled={pageNumber >= numPages} className="p-1 hover:bg-surface-raised rounded-sm disabled:opacity-30"><ChevronRight size={16} /></button><div className="w-px h-4 bg-border" /></>}<ZoomControls zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onReset={resetZoom} /></div></div>;
-    return <div className="w-full h-full flex items-center justify-center bg-surface-raised"><div className="text-center"><p className="text-text-primary mb-2">Preview not available</p><p className="text-text-secondary text-sm">Download to view this file</p></div></div>;
   };
 
-  return <div className="flex-1 min-w-0 flex flex-col" onMouseEnter={() => { hoverRef.current = true; onMouseEnter?.(); }} onMouseLeave={() => { hoverRef.current = false; onMouseLeave?.(); }}>
-    <div className="flex items-center justify-between gap-2 px-2.5 py-1 border-b border-border bg-surface-raised flex-shrink-0">
-      <h3 className="text-xs text-text-primary font-medium truncate min-w-0">{resource.name}</h3>
-      <div className="flex items-center gap-0.5 flex-shrink-0">
-        {isEditableResource(resource) && onEdit && <button onClick={() => onEdit(resource)} className="flex items-center gap-1 px-2 py-1 bg-accent text-bg rounded-sm text-[11px]" title="Edit resource"><Pencil size={13} />Edit</button>}
-        {onSwitch && <button onClick={onSwitch} className="p-1 hover:bg-surface rounded-sm text-text-secondary hover:text-text-primary" title="Switch to another resource"><Repeat size={15} /></button>}
-        <button onClick={handleDownload} className="p-1 hover:bg-surface rounded-sm text-text-secondary hover:text-text-primary" title="Download"><Download size={15} /></button>
+  const renderContent = (r: Resource) => {
+    const ext = extension(r);
+    const url = getResourceAccessUrl(r);
+    if (error && r.id === left.id) return <div className="p-6 text-sm text-red-300">{error}</div>;
+    if (loadingContent && r.id === left.id) return <div className="p-6 text-sm text-slate-400">Loading preview…</div>;
+
+    if (ext === 'pdf') {
+      return <div className="flex h-full items-center justify-center overflow-auto" onWheel={handleWheel}>
+        <div style={{ transform: `scale(${zoom})`, transformOrigin: 'center center' }}>
+          <Document file={url} onLoadSuccess={({ numPages }) => setPdfPages(numPages)} onLoadError={() => setError('Unable to load PDF')}>
+            <Page pageNumber={pdfPage} renderTextLayer renderAnnotationLayer />
+          </Document>
+        </div>
+      </div>;
+    }
+    if (ext === 'docx' && docxHtml) return <div className="h-full overflow-auto bg-white p-8 text-black"><div dangerouslySetInnerHTML={{ __html: docxHtml }} /></div>;
+    if (isMarkdownResource(r) && text !== null) return <pre className="h-full overflow-auto whitespace-pre-wrap p-6 text-sm leading-6 text-slate-200">{text}</pre>;
+    if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(ext)) return <div className="flex h-full items-center justify-center overflow-auto" onWheel={handleWheel}><img src={url} alt={r.name} style={{ transform: `scale(${zoom})`, maxWidth: '90%', maxHeight: '90%', objectFit: 'contain' }} /></div>;
+    if (['mp4', 'webm', 'mov', 'm4v'].includes(ext)) return <div className="flex h-full items-center justify-center p-6"><video controls src={url} className="max-h-full max-w-full" /></div>;
+    if (['mp3', 'wav', 'ogg', 'm4a'].includes(ext)) return <div className="flex h-full items-center justify-center p-6"><audio controls src={url} className="w-full max-w-xl" /></div>;
+    if (r.resource_type === 'link') return <div className="flex h-full items-center justify-center p-8 text-center"><a href={r.url || url} target="_blank" rel="noreferrer" className="text-sm text-sky-300 underline">Open resource link</a></div>;
+    return <div className="flex h-full items-center justify-center p-8 text-slate-400">No inline preview is available for this resource. Use Download to open it.</div>;
+  };
+
+  const renderPane = (r: Resource | null, pane: 'left' | 'right') => {
+    if (!r) return <div className="flex h-full items-center justify-center text-sm text-slate-500">Select a resource to compare.</div>;
+    const active = r.id === left.id && pane === 'left';
+    return <div className="flex min-w-0 flex-1 flex-col border border-slate-800 bg-slate-950" onMouseEnter={() => setHoveredPane(pane)}>
+      <div className="flex min-h-12 items-center justify-between gap-2 border-b border-slate-800 px-3">
+        <div className="flex min-w-0 items-center gap-2"><span className="text-slate-400">{iconForResource(r)}</span><div className="min-w-0"><div className="truncate text-sm font-medium text-slate-100">{r.name}</div><div className="text-[10px] text-slate-500">{subtitleForResource(r)}</div></div></div>
+        <div className="flex shrink-0 items-center gap-1">
+          <button className="rounded px-2 py-1 text-xs text-slate-300 hover:bg-slate-800" onClick={() => setPickerFor(pane)}>{active ? 'Change' : 'Choose'}</button>
+          {isEditableResource(r) && onEdit && <button className="flex items-center gap-1 rounded px-2 py-1 text-xs text-slate-300 hover:bg-slate-800" onClick={() => onEdit(r)}><Pencil size={13} />Edit</button>}
+          <a href={getResourceDownloadUrl(r)} download className="rounded p-1.5 text-slate-300 hover:bg-slate-800" title="Download"><Download size={14} /></a>
+        </div>
       </div>
-    </div>
-    <div className="flex-1 relative min-h-0">
-      {isLoading && <div className="absolute inset-0 flex items-center justify-center bg-surface z-10"><div className="text-text-secondary text-sm">Loading…</div></div>}
-      {renderContent()}
+      <div className="min-h-0 flex-1">{renderContent(r)}</div>
+      {pane === 'left' && extension(r) === 'pdf' && pdfPages > 0 && <div className="flex items-center justify-center gap-3 border-t border-slate-800 py-2 text-xs text-slate-400"><button disabled={pdfPage <= 1} onClick={() => setPdfPage((p) => p - 1)} className="disabled:opacity-30"><ChevronLeft size={15} /></button><span>{pdfPage} / {pdfPages}</span><button disabled={pdfPage >= pdfPages} onClick={() => setPdfPage((p) => p + 1)} className="disabled:opacity-30"><ChevronRight size={15} /></button></div>}
+    </div>;
+  };
+
+  return <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-3">
+    <div className={`${containerSizeClass} flex min-h-0 flex-col overflow-hidden rounded-xl border border-slate-700 bg-slate-900 shadow-2xl`}>
+      <div className="flex min-h-12 items-center justify-between border-b border-slate-800 px-3">
+        <div className="flex items-center gap-2 text-sm font-medium text-slate-100"><FileText size={15} />Resource Viewer</div>
+        <div className="flex items-center gap-1">
+          <button title="Zoom in" onClick={() => setZoom((z) => Math.min(4, z + 0.1))} className="rounded p-1.5 text-slate-300 hover:bg-slate-800"><ZoomIn size={15} /></button>
+          <button title="Zoom out" onClick={() => setZoom((z) => Math.max(0.25, z - 0.1))} className="rounded p-1.5 text-slate-300 hover:bg-slate-800"><ZoomOut size={15} /></button>
+          <button title="Reset zoom" onClick={() => setZoom(1)} className="rounded p-1.5 text-slate-300 hover:bg-slate-800"><RotateCcw size={15} /></button>
+          <button title="Toggle compare" onClick={() => { setIsSplit((v) => !v); setRightId((id) => id || (list.find((r) => r.id !== left.id)?.id ?? null)); }} className={`rounded p-1.5 ${isSplit ? 'bg-slate-700 text-white' : 'text-slate-300 hover:bg-slate-800'}`}><PanelRight size={15} /></button>
+          <button title="Repeat selection" onClick={() => setRightId(left.id)} className="rounded p-1.5 text-slate-300 hover:bg-slate-800"><Repeat size={15} /></button>
+          <button title="Resize" onClick={() => setSize((v) => v === 'medium' ? 'large' : 'medium')} className="rounded p-1.5 text-slate-300 hover:bg-slate-800">{size === 'large' ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>
+          <button title="Close" onClick={onClose} className="rounded p-1.5 text-slate-300 hover:bg-slate-800"><X size={16} /></button>
+        </div>
+      </div>
+      <div className="min-h-0 flex flex-1 gap-2 p-2">{renderPane(left, 'left')}{isSplit && renderPane(right, 'right')}</div>
+      {pickerFor && <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/50 p-6"><div className="max-h-[70vh] w-full max-w-lg overflow-auto rounded-xl border border-slate-700 bg-slate-900 p-3 shadow-2xl"><div className="mb-2 flex items-center justify-between"><span className="text-sm font-medium text-slate-100">Choose resource</span><button onClick={() => setPickerFor(null)} className="rounded p-1 text-slate-400 hover:bg-slate-800"><X size={15} /></button></div>{list.map((r) => <button key={r.id} onClick={() => choose(pickerFor, r.id)} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-200 hover:bg-slate-800"><span className="text-slate-400">{iconForResource(r)}</span><span className="min-w-0 flex-1 truncate">{r.name}</span><span className="text-[10px] text-slate-500">{subtitleForResource(r)}</span></button>)}</div></div>}
     </div>
   </div>;
-}
-
-function ZoomControls({ zoom, onZoomIn, onZoomOut, onReset }: { zoom: number; onZoomIn: () => void; onZoomOut: () => void; onReset: () => void }) {
-  return <div className="flex items-center gap-2 bg-surface border border-border rounded-md px-3 py-2 shadow-lg"><button onClick={onZoomOut} disabled={zoom <= ZOOM_MIN} className="p-1 hover:bg-surface-raised rounded-sm disabled:opacity-30" title="Zoom out"><ZoomOut size={16} /></button><span className="text-sm text-text-secondary font-mono w-11 text-center">{Math.round(zoom * 100)}%</span><button onClick={onZoomIn} disabled={zoom >= ZOOM_MAX} className="p-1 hover:bg-surface-raised rounded-sm disabled:opacity-30" title="Zoom in"><ZoomIn size={16} /></button><button onClick={onReset} className="p-1 hover:bg-surface-raised rounded-sm" title="Reset zoom"><RotateCcw size={14} /></button></div>;
-}
-
-function TextPreview({ url, isMarkdown, onLoaded }: { url: string; isMarkdown: boolean; onLoaded: () => void }) {
-  const [content, setContent] = useState<string | null>(null);
-  const [error, setError] = useState(false);
-  useEffect(() => { let cancelled = false; setContent(null); setError(false); fetch(url).then((res) => { if (!res.ok) throw new Error('Failed to load file'); return res.text(); }).then((text) => { if (!cancelled) setContent(text); }).catch(() => { if (!cancelled) setError(true); }).finally(() => { if (!cancelled) onLoaded(); }); return () => { cancelled = true; }; }, [url]);
-  if (error) return <div className="w-full h-full flex items-center justify-center bg-surface-raised text-text-secondary">Preview not available</div>;
-  if (content === null) return <div className="w-full h-full bg-surface-raised" />;
-  return <div className="w-full h-full bg-surface-raised overflow-auto"><div className="max-w-4xl mx-auto p-6">{isMarkdown ? renderMarkdown(content) : <pre className="whitespace-pre-wrap break-words font-mono text-sm text-text-primary">{content}</pre>}</div></div>;
-}
-
-function renderMarkdown(source: string): JSX.Element[] {
-  return source.split('\n').map((line, i) => {
-    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
-    if (heading) { const Tag = `h${heading[1].length}` as 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6'; return <Tag key={i} className="font-semibold text-text-primary mt-4 mb-2">{heading[2]}</Tag>; }
-    if (/^\s*[-*+]\s+/.test(line)) return <li key={i} className="ml-5 list-disc text-text-primary">{line.replace(/^\s*[-*+]\s+/, '')}</li>;
-    if (/^>\s?/.test(line)) return <blockquote key={i} className="border-l-2 border-border pl-3 my-2 text-text-secondary italic">{line.replace(/^>\s?/, '')}</blockquote>;
-    if (line.trim() === '') return <div key={i} className="h-2" />;
-    return <p key={i} className="text-text-primary my-2 leading-relaxed">{line}</p>;
-  });
-}
-
-function safeHtml(html: string) {
-  const doc = new DOMParser().parseFromString(html, 'text/html');
-  doc.querySelectorAll('script, iframe, object, embed, form').forEach((el) => el.remove());
-  doc.querySelectorAll('*').forEach((el) => {
-    for (const attr of Array.from(el.attributes)) {
-      if (attr.name.toLowerCase().startsWith('on')) el.removeAttribute(attr.name);
-      if ((attr.name === 'href' || attr.name === 'src') && /^\s*javascript:/i.test(attr.value)) el.removeAttribute(attr.name);
-    }
-  });
-  return doc.body.innerHTML;
-}
-
-function extractYouTubeId(url: string): string | null {
-  const patterns = [/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/];
-  for (const pattern of patterns) { const match = url.match(pattern); if (match) return match[1]; }
-  return null;
 }
