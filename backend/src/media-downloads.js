@@ -5,6 +5,7 @@ import { pool } from './db.js';
 import { resolveStoragePath } from './storage.js';
 
 const YTDLP = process.env.YTDLP_PATH || 'yt-dlp';
+const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
 const POLL_MS = 5000;
 const MAX_ERROR_LENGTH = 2000;
 let timer = null;
@@ -13,8 +14,11 @@ const processes = new Map();
 
 function qualityFormat(quality) {
   const height = quality === 'best' ? null : Number.parseInt(quality, 10) || 720;
-  if (!height) return 'b';
-  return `b[height<=${height}]/b`;
+  if (!height) return 'bv*+ba/b';
+  return `bv*[height<=${height}]+ba/b[height<=${height}]/b`;
+}
+function ytDlpRuntimeArgs() {
+  return process.execPath ? ['--js-runtimes', `node:${process.execPath}`] : [];
 }
 function terminate(child) {
   if (!child || child.killed) return;
@@ -65,7 +69,13 @@ async function startJob(job) {
   const outputTemplate = path.join(dir, `${base}.%(ext)s`);
   const maxAttempts = Math.max(1, Math.min(5, Number(job.max_attempts) || 3));
   await pool.query(`UPDATE resource_download_jobs SET status='downloading',cancel_requested=FALSE,stop_requested_status=NULL,attempts=attempts+1,progress=0,bytes_downloaded=0,total_bytes=NULL,error_message=NULL,started_at=CURRENT_TIMESTAMP,process_started_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=$1`, [job.id]);
-  const args = ['--no-playlist','--newline','--progress','--progress-template','download:%(progress._percent_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.speed)s|%(progress.eta)s','--restrict-filenames','-f',qualityFormat(job.quality),'-o',outputTemplate,resource.url];
+  const args = [
+    ...ytDlpRuntimeArgs(),
+    '--no-playlist','--newline','--progress','--progress-template','download:%(progress._percent_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.speed)s|%(progress.eta)s',
+    '--restrict-filenames','-f',qualityFormat(job.quality),'--merge-output-format','mp4',
+    ...(process.env.FFMPEG_PATH ? ['--ffmpeg-location', FFMPEG] : []),
+    '-o',outputTemplate,resource.url,
+  ];
   try {
     await run(YTDLP, args, { jobId: job.id, onProgress: async p => {
       const stop = await getStopState(job.id);
@@ -115,7 +125,7 @@ export async function ensureYouTubeThumbnail(resource) {
   const existing = (await fs.readdir(dir).catch(() => [])).find(name => /^thumbnail\.(jpg|jpeg|png|webp)$/i.test(name));
   if (existing) return `/api/media-downloads/${resource.id}/thumbnail`;
   const outputTemplate = path.join(dir, 'thumbnail.%(ext)s');
-  await run(YTDLP, ['--skip-download','--write-thumbnail','--no-playlist','--restrict-filenames','-o',outputTemplate,resource.url]);
+  await run(YTDLP, [...ytDlpRuntimeArgs(),'--skip-download','--write-thumbnail','--no-playlist','--restrict-filenames','-o',outputTemplate,resource.url]);
   const filename = (await fs.readdir(dir).catch(() => [])).find(name => /^thumbnail\.(jpg|jpeg|png|webp)$/i.test(name));
   if (!filename) throw new Error('yt-dlp completed but no YouTube thumbnail was found');
   const stat = await fs.stat(path.join(dir, filename));
