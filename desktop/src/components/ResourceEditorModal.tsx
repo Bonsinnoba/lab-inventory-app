@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Save, X, Upload, FileText, AlertTriangle } from 'lucide-react';
-import { Resource, getResourceText, replaceResourceFile } from '../api/resources';
+import { Resource, getResourceText, replaceResourceFile, saveResourceText } from '../api/resources';
 import { useToast } from '../contexts/ToastContext';
 
 interface Props {
@@ -41,13 +41,7 @@ export default function ResourceEditorModal({ resource, onClose, onSaved }: Prop
   const saveMarkdown = async () => {
     setSaving(true);
     try {
-      const response = await fetch(`/api/resources/${resource.id}/content`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content }),
-      });
-      if (!response.ok) throw new Error((await response.json().catch(() => ({})))?.error || 'Failed to save Markdown');
-      const updated = await response.json();
+      const updated = await saveResourceText(resource.id, content);
       onSaved(updated);
       showToast('Markdown saved');
       onClose();
@@ -102,7 +96,6 @@ export default function ResourceEditorModal({ resource, onClose, onSaved }: Prop
             <button onClick={onClose} className="p-1.5 hover:bg-surface rounded-sm text-text-secondary hover:text-text-primary" title="Close"><X size={18} /></button>
           </div>
         </div>
-
         <div className="flex-1 min-h-0">
           {loading ? (
             <div className="h-full flex items-center justify-center text-text-secondary">Loading…</div>
