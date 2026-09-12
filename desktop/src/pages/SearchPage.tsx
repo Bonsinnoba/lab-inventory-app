@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { globalSearch, SearchResult, SearchType } from '../api/search';
 import { Search as SearchIcon, Box, FileText, DollarSign, Folder, Filter, X, Layers, ArrowRight, Clock3, Users, ClipboardList, Beaker, SquareStack, MapPin } from 'lucide-react';
 import { formatQuantity } from '../lib/utils';
