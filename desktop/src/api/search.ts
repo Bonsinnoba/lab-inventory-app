@@ -11,8 +11,6 @@ export interface SearchResult {
   [key: string]: any;
 }
 
-export interface SearchSuggestion { label: string; type: string; }
-
 export interface SearchResults {
   query?: string;
   total?: number;
@@ -40,13 +38,4 @@ export async function globalSearch(query: string, types?: SearchType[]): Promise
     throw new Error(message || 'Search failed');
   }
   return response.json();
-}
-
-export async function searchSuggestions(query: string): Promise<SearchSuggestion[]> {
-  const q = query.trim();
-  if (!q) return [];
-  const response = await apiFetch(`/search/suggestions?q=${encodeURIComponent(q)}`);
-  if (!response.ok) return [];
-  const body = await response.json();
-  return Array.isArray(body?.suggestions) ? body.suggestions : [];
 }
