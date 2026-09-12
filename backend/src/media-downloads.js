@@ -118,6 +118,10 @@ async function tick() {
     const settingsResult = await pool.query('SELECT * FROM media_download_settings WHERE id=1');
     const settings = settingsResult.rows[0];
     if (!settings?.enabled) return;
+    // Manual mode intentionally never starts jobs automatically. The Downloads
+    // page uses the explicit Start Now action, which puts one job at the front
+    // of the runnable queue without bypassing the worker/concurrency limits.
+    if (settings.mode === 'manual') return;
     const now = new Date();
     if (settings.mode === 'scheduled' && !isWithinWindow(settings.window_start, settings.window_end, now)) return;
     const slots = Math.max(1, Math.min(3, settings.concurrent_downloads || 1));
