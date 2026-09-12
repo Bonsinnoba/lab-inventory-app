@@ -4,7 +4,6 @@ import dotenv from 'dotenv';
 import fs from 'node:fs/promises';
 import { requestId, securityHeaders, apiRateLimit, requestTimeout } from './middleware/security.js';
 import { errorHandler, notFoundHandler } from './middleware/error-handler.js';
-
 import { pool } from './db.js';
 import { config } from './config.js';
 import { authenticateToken, requireRole } from './middleware/auth.js';
@@ -14,6 +13,7 @@ import projectsRouter from './routes/projects.js';
 import projectWorkspaceRouter from './routes/project-workspace.js';
 import resourcesRouter from './routes/resources.js';
 import resourceEditorRouter from './routes/resource-editor.js';
+import mediaDownloadsRouter from './routes/media-downloads.js';
 import notesRouter from './routes/notes.js';
 import searchRouter from './routes/search.js';
 import authRouter from './routes/auth.js';
@@ -35,50 +35,21 @@ import operationsRouter from './routes/operations.js';
 import systemRouter from './routes/system.js';
 import experienceRouter from './routes/experience.js';
 import phase4Router from './routes/phase4.js';
+import { startMediaDownloadWorker, stopMediaDownloadWorker } from './media-downloads.js';
 
 dotenv.config();
-
 const app = express();
-
 app.disable('x-powered-by');
-app.use(requestId);
-app.use(securityHeaders);
-app.use(requestTimeout(config.requestTimeoutMs));
+app.use(requestId); app.use(securityHeaders); app.use(requestTimeout(config.requestTimeoutMs));
 app.set('trust proxy', process.env.TRUST_PROXY === 'true' ? 1 : false);
-
-app.use(cors({
-  origin(origin, callback) {
-    if (!origin || config.allowedOrigins.includes(origin)) return callback(null, true);
-    return callback(new Error('Origin not allowed by CORS'));
-  },
-  maxAge: 86400,
-}));
+app.use(cors({ origin(origin, callback) { if (!origin || config.allowedOrigins.includes(origin)) return callback(null, true); return callback(new Error('Origin not allowed by CORS')); }, maxAge: 86400 }));
 app.use(express.json({ limit: `${config.maxJsonMb}mb` }));
 app.use('/api', apiRateLimit());
-
-app.get('/api/health', async (req, res) => {
-  let database = 'ok';
-  let storage = 'ok';
-  try { await pool.query('SELECT 1'); } catch { database = 'error'; }
-  try { await fs.access(config.storageDir || './storage'); } catch { storage = 'error'; }
-  const healthy = database === 'ok' && storage === 'ok';
-  res.setHeader('Cache-Control', 'no-store');
-  res.status(healthy ? 200 : 503).json({ status: healthy ? 'ok' : 'degraded', version: config.apiVersion, services: { api: 'ok', database, storage }, timestamp: new Date().toISOString() });
-});
-
-app.get('/api/meta', authenticateToken, (req, res) => {
-  res.json({ name: 'LabOS API', version: config.apiVersion, environment: config.nodeEnv, server_time: new Date().toISOString() });
-});
-
+app.get('/api/health', async (req, res) => { let database='ok', storage='ok'; try { await pool.query('SELECT 1'); } catch { database='error'; } try { await fs.access(config.storageDir || './storage'); } catch { storage='error'; } const healthy=database==='ok'&&storage==='ok'; res.setHeader('Cache-Control','no-store'); res.status(healthy?200:503).json({status:healthy?'ok':'degraded',version:config.apiVersion,services:{api:'ok',database,storage},timestamp:new Date().toISOString()}); });
+app.get('/api/meta', authenticateToken, (req,res) => res.json({name:'LabOS API',version:config.apiVersion,environment:config.nodeEnv,server_time:new Date().toISOString()}));
 app.use('/api/auth', authRouter);
 app.use('/api', authenticateToken);
-app.use('/api', (req, res, next) => {
-  if (req.user?.role === 'viewer' && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
-    return res.status(403).json({ error: { code: 'READ_ONLY_ROLE', message: 'Viewer accounts have read-only access' } });
-  }
-  next();
-});
-
+app.use('/api', (req,res,next) => { if (req.user?.role==='viewer'&&!['GET','HEAD','OPTIONS'].includes(req.method)) return res.status(403).json({error:{code:'READ_ONLY_ROLE',message:'Viewer accounts have read-only access'}}); next(); });
 app.use('/api/items', authenticateToken, itemsRouter);
 app.use('/api/transactions', authenticateToken, transactionsRouter);
 app.use('/api/projects', authenticateToken, projectWorkspaceRouter);
@@ -87,6 +58,7 @@ app.use('/api/projects', authenticateToken, projectConnectorsRouter);
 app.use('/api/projects', authenticateToken, projectsRouter);
 app.use('/api/resources', authenticateToken, resourcesRouter);
 app.use('/api/resource-editor', authenticateToken, resourceEditorRouter);
+app.use('/api/media-downloads', authenticateToken, mediaDownloadsRouter);
 app.use('/api/notes', authenticateToken, notesRouter);
 app.use('/api/search', authenticateToken, searchRouter);
 app.use('/api/funding-sources', authenticateToken, fundingSourcesRouter);
@@ -105,29 +77,8 @@ app.use('/api/operations', authenticateToken, operationsRouter);
 app.use('/api/system', authenticateToken, systemRouter);
 app.use('/api/experience', authenticateToken, experienceRouter);
 app.use('/api/phase4', authenticateToken, phase4Router);
-
 void requireRole;
-app.use('/api', notFoundHandler);
-app.use(errorHandler);
-
-const server = app.listen(config.port, config.host, () => {
-  server.requestTimeout = config.requestTimeoutMs;
-  server.headersTimeout = config.requestTimeoutMs + 5000;
-  server.keepAliveTimeout = 5000;
-  const address = config.publicBaseUrl || `http://${config.host}:${config.port}`;
-  console.log(`LabOS API v${config.apiVersion} running at ${address}`);
-});
-
-async function shutdown(signal) {
-  console.log(`${signal} received; shutting down gracefully...`);
-  const forceExit = setTimeout(() => process.exit(1), config.shutdownTimeoutMs);
-  forceExit.unref();
-  server.close(async () => {
-    await pool.end();
-    clearTimeout(forceExit);
-    process.exit(0);
-  });
-}
-
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
+app.use('/api', notFoundHandler); app.use(errorHandler);
+const server=app.listen(config.port,config.host,()=>{ server.requestTimeout=config.requestTimeoutMs; server.headersTimeout=config.requestTimeoutMs+5000; server.keepAliveTimeout=5000; const address=config.publicBaseUrl||`http://${config.host}:${config.port}`; console.log(`LabOS API v${config.apiVersion} running at ${address}`); startMediaDownloadWorker(); });
+async function shutdown(signal){ console.log(`${signal} received; shutting down gracefully...`); const forceExit=setTimeout(()=>process.exit(1),config.shutdownTimeoutMs); forceExit.unref(); await stopMediaDownloadWorker(); server.close(async()=>{ await pool.end(); clearTimeout(forceExit); process.exit(0); }); }
+process.on('SIGTERM',()=>shutdown('SIGTERM')); process.on('SIGINT',()=>shutdown('SIGINT'));
