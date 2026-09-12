@@ -69,6 +69,39 @@ async function startJob(job){
     await pool.query(`UPDATE resource_download_jobs SET status=$1,error_message=$2,updated_at=CURRENT_TIMESTAMP WHERE id=$3`,[retry?'queued':'failed',message,job.id]);
   }
 }
+
+export async function ensureYouTubeThumbnail(resource) {
+  if (!resource?.id || !resource?.url) return null;
+  let url;
+  try { url = new URL(resource.url); } catch { return null; }
+  const host = url.hostname.toLowerCase().replace(/^www\./, '');
+  if (host !== 'youtube.com' && host !== 'youtu.be' && !host.endsWith('.youtube.com')) return null;
+
+  const dir = resolveStoragePath(resource.id);
+  await fs.mkdir(dir, { recursive: true });
+  const existing = (await fs.readdir(dir).catch(() => []))
+    .find(name => /^thumbnail\.(jpg|jpeg|png|webp)$/i.test(name));
+  if (existing) return `/api/media-downloads/${resource.id}/thumbnail`;
+
+  const outputTemplate = path.join(dir, 'thumbnail.%(ext)s');
+  await run(YTDLP, [
+    '--skip-download',
+    '--write-thumbnail',
+    '--no-playlist',
+    '--restrict-filenames',
+    '-o',
+    outputTemplate,
+    resource.url,
+  ]);
+
+  const filename = (await fs.readdir(dir).catch(() => []))
+    .find(name => /^thumbnail\.(jpg|jpeg|png|webp)$/i.test(name));
+  if (!filename) throw new Error('yt-dlp completed but no YouTube thumbnail was found');
+  const stat = await fs.stat(path.join(dir, filename));
+  if (!stat.isFile() || stat.size <= 0) throw new Error('yt-dlp produced an empty YouTube thumbnail');
+  return `/api/media-downloads/${resource.id}/thumbnail`;
+}
+
 function isWithinWindow(start,end,now){if(start===end)return true;const minutes=now.getHours()*60+now.getMinutes();const [sh,sm]=String(start).slice(0,5).split(':').map(Number);const [eh,em]=String(end).slice(0,5).split(':').map(Number);const s=sh*60+sm,e=eh*60+em;return s<e?minutes>=s&&minutes<e:minutes>=s||minutes<e;}
 async function recoverInterruptedJobs(){await pool.query(`UPDATE resource_download_jobs SET status='queued',error_message=COALESCE(error_message,'Download worker restarted before completion'),updated_at=CURRENT_TIMESTAMP WHERE status='downloading' AND cancel_requested=FALSE`);await pool.query(`UPDATE resource_download_jobs SET status=COALESCE(stop_requested_status,'cancelled'),stop_requested_status=NULL,updated_at=CURRENT_TIMESTAMP WHERE status='downloading' AND cancel_requested=TRUE`);}
 async function tick(){if(ticking)return;ticking=true;try{const settings=(await pool.query('SELECT * FROM media_download_settings WHERE id=1')).rows[0];if(!settings?.enabled)return;const now=new Date();if(settings.mode==='scheduled'&&!isWithinWindow(settings.window_start,settings.window_end,now))return;const slots=Math.max(1,Math.min(3,settings.concurrent_downloads||1));const active=await pool.query("SELECT COUNT(*)::int AS count FROM resource_download_jobs WHERE status='downloading'");const available=Math.max(0,slots-active.rows[0].count);if(!available)return;const eligibility=settings.mode==='manual'?'(scheduled_for IS NOT NULL AND scheduled_for <= CURRENT_TIMESTAMP)':'(scheduled_for IS NULL OR scheduled_for <= CURRENT_TIMESTAMP)';const jobs=await pool.query(`SELECT * FROM resource_download_jobs WHERE status IN ('queued','scheduled') AND cancel_requested=FALSE AND ${eligibility} ORDER BY priority DESC,scheduled_for NULLS FIRST,created_at ASC LIMIT $1`,[available]);await Promise.all(jobs.rows.map(job=>startJob(job)));}catch(err){console.error('Media download worker:',err.message);}finally{ticking=false;}}
