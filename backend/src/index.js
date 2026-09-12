@@ -33,6 +33,7 @@ import engineeringRouter from './routes/engineering.js';
 import operationsRouter from './routes/operations.js';
 import systemRouter from './routes/system.js';
 import experienceRouter from './routes/experience.js';
+import phase4Router from './routes/phase4.js';
 
 dotenv.config();
 
@@ -46,7 +47,6 @@ app.set('trust proxy', process.env.TRUST_PROXY === 'true' ? 1 : false);
 
 app.use(cors({
   origin(origin, callback) {
-    // Non-browser clients (Tauri, curl, native clients) may omit Origin.
     if (!origin || config.allowedOrigins.includes(origin)) return callback(null, true);
     return callback(new Error('Origin not allowed by CORS'));
   },
@@ -58,42 +58,18 @@ app.use('/api', apiRateLimit());
 app.get('/api/health', async (req, res) => {
   let database = 'ok';
   let storage = 'ok';
-  try {
-    await pool.query('SELECT 1');
-  } catch {
-    database = 'error';
-  }
-  try {
-    await fs.access(config.storageDir || './storage');
-  } catch {
-    storage = 'error';
-  }
-
+  try { await pool.query('SELECT 1'); } catch { database = 'error'; }
+  try { await fs.access(config.storageDir || './storage'); } catch { storage = 'error'; }
   const healthy = database === 'ok' && storage === 'ok';
   res.setHeader('Cache-Control', 'no-store');
-  res.status(healthy ? 200 : 503).json({
-    status: healthy ? 'ok' : 'degraded',
-    version: config.apiVersion,
-    services: { api: 'ok', database, storage },
-    timestamp: new Date().toISOString(),
-  });
+  res.status(healthy ? 200 : 503).json({ status: healthy ? 'ok' : 'degraded', version: config.apiVersion, services: { api: 'ok', database, storage }, timestamp: new Date().toISOString() });
 });
 
-// Authentication endpoints are the only public API routes. Every lab data
-// route below requires a valid bearer token.
 app.get('/api/meta', authenticateToken, (req, res) => {
-  res.json({
-    name: 'LabOS API',
-    version: config.apiVersion,
-    environment: config.nodeEnv,
-    server_time: new Date().toISOString(),
-  });
+  res.json({ name: 'LabOS API', version: config.apiVersion, environment: config.nodeEnv, server_time: new Date().toISOString() });
 });
 
 app.use('/api/auth', authRouter);
-
-// Viewer accounts may inspect lab data but cannot mutate it. The guard is
-// centralized so new protected routes inherit the read-only boundary.
 app.use('/api', authenticateToken);
 app.use('/api', (req, res, next) => {
   if (req.user?.role === 'viewer' && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
@@ -126,12 +102,9 @@ app.use('/api/engineering', authenticateToken, engineeringRouter);
 app.use('/api/operations', authenticateToken, operationsRouter);
 app.use('/api/system', authenticateToken, systemRouter);
 app.use('/api/experience', authenticateToken, experienceRouter);
+app.use('/api/phase4', authenticateToken, phase4Router);
 
-// Destructive endpoints are additionally restricted inside their route files
-// where necessary. This top-level reference documents the intended security
-// boundary: authentication is mandatory for all lab data.
 void requireRole;
-
 app.use('/api', notFoundHandler);
 app.use(errorHandler);
 
