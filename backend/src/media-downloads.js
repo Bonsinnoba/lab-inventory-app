@@ -118,17 +118,16 @@ async function tick() {
     const settingsResult = await pool.query('SELECT * FROM media_download_settings WHERE id=1');
     const settings = settingsResult.rows[0];
     if (!settings?.enabled) return;
-    // Manual mode intentionally never starts jobs automatically. The Downloads
-    // page uses the explicit Start Now action, which puts one job at the front
-    // of the runnable queue without bypassing the worker/concurrency limits.
-    if (settings.mode === 'manual') return;
     const now = new Date();
     if (settings.mode === 'scheduled' && !isWithinWindow(settings.window_start, settings.window_end, now)) return;
     const slots = Math.max(1, Math.min(3, settings.concurrent_downloads || 1));
     const active = await pool.query("SELECT COUNT(*)::int AS count FROM resource_download_jobs WHERE status='downloading'");
     const available = Math.max(0, slots - active.rows[0].count);
     if (!available) return;
-    const jobs = await pool.query(`SELECT * FROM resource_download_jobs WHERE status IN ('queued','scheduled') AND (scheduled_for IS NULL OR scheduled_for <= CURRENT_TIMESTAMP) ORDER BY priority DESC, scheduled_for NULLS FIRST, created_at ASC LIMIT $1`, [available]);
+    const eligibility = settings.mode === 'manual'
+      ? '(scheduled_for IS NOT NULL AND scheduled_for <= CURRENT_TIMESTAMP)'
+      : '(scheduled_for IS NULL OR scheduled_for <= CURRENT_TIMESTAMP)';
+    const jobs = await pool.query(`SELECT * FROM resource_download_jobs WHERE status IN ('queued','scheduled') AND ${eligibility} ORDER BY priority DESC, scheduled_for NULLS FIRST, created_at ASC LIMIT $1`, [available]);
     await Promise.all(jobs.rows.map(job => startJob(job)));
   } catch (err) {
     console.error('Media download worker:', err.message);
