@@ -11,6 +11,8 @@ export interface DownloadJob {
   started_at?: string; process_started_at?: string; last_progress_at?: string; completed_at?: string; created_at: string; updated_at?: string;
 }
 export interface DownloadSettings { enabled: boolean; mode: 'manual'|'scheduled'|'always'; window_start: string; window_end: string; concurrent_downloads: number; default_quality: string; max_retries: number; }
+export interface MediaToolStatus { available: boolean; path: string; error?: string; }
+export interface MediaToolsStatus { yt_dlp: MediaToolStatus; ffmpeg: MediaToolStatus; node: MediaToolStatus; production: boolean; }
 export type DownloadQuality = 'best'|'1080p'|'720p'|'480p';
 
 export function getLocalMediaUrl(id: string) { const token=getToken(); return apiUrl(`/media-downloads/${id}/media${token ? `?access_token=${encodeURIComponent(token)}` : ''}`); }
@@ -23,4 +25,5 @@ export async function cancelDownloadJob(id:string):Promise<DownloadJob>{return u
 export async function removeDownloadJob(id:string){ const r=await apiFetch(`/media-downloads/queue/${id}`,{method:'DELETE'}); if(!r.ok) throw new Error(await getApiErrorMessage(r,'Failed to remove download job')); }
 export async function getDownloadSettings():Promise<DownloadSettings>{const r=await apiFetch('/media-downloads/settings');if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to fetch download settings'));return r.json();}
 export async function saveDownloadSettings(settings:Partial<DownloadSettings>):Promise<DownloadSettings>{const r=await apiFetch('/media-downloads/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(settings)});if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to save download settings'));return r.json();}
+export async function getMediaToolsStatus():Promise<MediaToolsStatus>{const r=await apiFetch('/media-downloads/tools/status');if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to inspect media tools'));return r.json();}
 export async function downloadYouTubeThumbnail(id:string){const r=await apiFetch(`/media-downloads/${id}/thumbnail`,{method:'POST'});if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to download thumbnail'));return r.json();}
