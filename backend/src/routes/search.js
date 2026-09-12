@@ -7,7 +7,7 @@ const router = Router();
 // depending on a pre-built search_vector.
 const TYPE_QUERIES = {
   projects: `SELECT id, name, status, budget, 1.0 AS rank FROM projects p WHERE (COALESCE(p.name,'') ILIKE '%' || $1 || '%' OR COALESCE(p.description,'') ILIKE '%' || $1 || '%') AND ($3 = 'admin' OR p.owner_id = $2 OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = p.id AND pm.user_id = $2)) ORDER BY CASE WHEN lower(p.name)=lower($1) THEN 3 WHEN lower(p.name) LIKE lower($1) || '%' THEN 2 ELSE 1 END DESC, p.name ASC LIMIT 30`,
-  items: `SELECT i.id, i.name, i.type, i.status, i.current_quantity, i.unit, i.sku, i.storage_location, sc.name AS storage_container_name, sc.storage_location AS storage_container_location, 1.0 AS rank FROM items i LEFT JOIN storage_containers sc ON sc.id = i.storage_container_id WHERE (COALESCE(i.name,'') ILIKE '%' || $1 || '%' OR COALESCE(i.sku,'') ILIKE '%' || $1 || '%' OR COALESCE(i.storage_location,'') ILIKE '%' || $1 || '%' OR COALESCE(sc.name,'') ILIKE '%' || $1 || '%' OR COALESCE(sc.storage_location,'') ILIKE '%' || $1 || '%') ORDER BY CASE WHEN lower(i.name)=lower($1) THEN 3 WHEN lower(i.name) LIKE lower($1) || '%' THEN 2 ELSE 1 END DESC, i.name ASC LIMIT 30`,
+  items: `SELECT i.id, i.name, i.type, i.status, i.current_quantity, i.unit, i.sku, i.storage_location, i.location_id, l.name AS legacy_location_name, sc.name AS storage_container_name, sc.storage_location AS storage_container_location, 1.0 AS rank FROM items i LEFT JOIN locations l ON l.id = i.location_id LEFT JOIN storage_containers sc ON sc.id = i.storage_container_id WHERE (COALESCE(i.name,'') ILIKE '%' || $1 || '%' OR COALESCE(i.sku,'') ILIKE '%' || $1 || '%' OR COALESCE(i.storage_location,'') ILIKE '%' || $1 || '%' OR COALESCE(l.name,'') ILIKE '%' || $1 || '%' OR COALESCE(sc.name,'') ILIKE '%' || $1 || '%' OR COALESCE(sc.storage_location,'') ILIKE '%' || $1 || '%') ORDER BY CASE WHEN lower(i.name)=lower($1) THEN 3 WHEN lower(i.name) LIKE lower($1) || '%' THEN 2 ELSE 1 END DESC, i.name ASC LIMIT 30`,
   notes: `SELECT id, title, body, tags, updated_at, 1.0 AS rank FROM notes WHERE (COALESCE(title,'') ILIKE '%' || $1 || '%' OR COALESCE(body,'') ILIKE '%' || $1 || '%' OR EXISTS (SELECT 1 FROM unnest(COALESCE(tags, ARRAY[]::text[])) tag WHERE tag ILIKE '%' || $1 || '%')) AND ($3 = 'admin' OR project_id IS NULL OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = notes.project_id AND pm.user_id = $2)) ORDER BY CASE WHEN lower(title)=lower($1) THEN 3 WHEN lower(title) LIKE lower($1) || '%' THEN 2 ELSE 1 END DESC, updated_at DESC LIMIT 30`,
   transactions: `SELECT id, type, amount, date, vendor, notes, item_id, project_id, 1.0 AS rank FROM transactions WHERE (COALESCE(vendor,'') ILIKE '%' || $1 || '%' OR COALESCE(notes,'') ILIKE '%' || $1 || '%' OR COALESCE(type,'') ILIKE '%' || $1 || '%') AND ($3 = 'admin' OR project_id IS NULL OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = transactions.project_id AND pm.user_id = $2)) ORDER BY date DESC LIMIT 30`,
   resources: `SELECT id, name, kind, file_type, original_filename, item_id, project_id, note_id, category, description, tags, updated_at, 1.0 AS rank FROM resources WHERE (COALESCE(name,'') ILIKE '%' || $1 || '%' OR COALESCE(original_filename,'') ILIKE '%' || $1 || '%' OR COALESCE(description,'') ILIKE '%' || $1 || '%' OR COALESCE(category,'') ILIKE '%' || $1 || '%' OR EXISTS (SELECT 1 FROM unnest(COALESCE(tags, ARRAY[]::text[])) tag WHERE tag ILIKE '%' || $1 || '%')) AND ($3 = 'admin' OR project_id IS NULL OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = resources.project_id AND pm.user_id = $2)) ORDER BY CASE WHEN lower(name)=lower($1) THEN 3 WHEN lower(name) LIKE lower($1) || '%' THEN 2 ELSE 1 END DESC, updated_at DESC LIMIT 30`,
@@ -17,10 +17,16 @@ const TYPE_QUERIES = {
   blocks: `SELECT b.id, b.project_id, b.title, b.block_type, b.text_content, p.name AS project_name, 1.0 AS rank FROM project_blocks b JOIN projects p ON p.id=b.project_id WHERE (COALESCE(b.title,'') ILIKE '%' || $1 || '%' OR COALESCE(b.text_content,'') ILIKE '%' || $1 || '%') AND ($3 = 'admin' OR p.owner_id = $2 OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = b.project_id AND pm.user_id = $2)) ORDER BY CASE WHEN lower(COALESCE(b.title,''))=lower($1) THEN 3 WHEN lower(COALESCE(b.title,'')) LIKE lower($1) || '%' THEN 2 ELSE 1 END DESC, b.created_at DESC LIMIT 30`,
 };
 
+// Items and users are global tables and their queries only bind $1.
+// Project-scoped types bind query, user id, and role ($1, $2, $3).
+function queryParams(type, q, userId, role) {
+  return type === 'items' || type === 'users' ? [q] : [q, userId, role];
+}
+
 function normalizeTypes(type) { const requested = type ? (Array.isArray(type) ? type : String(type).split(',')) : Object.keys(TYPE_QUERIES); return [...new Set(requested.filter((value) => Object.hasOwn(TYPE_QUERIES, value)))]; }
 function decorate(type, row) {
   if (type === 'projects') return { ...row, type: 'project', title: row.name, subtitle: row.status || 'No status' };
-  if (type === 'items') return { ...row, type: 'item', title: row.name, subtitle: `${row.type || 'Item'} - ${row.status || 'unknown'}`, storage_location: row.storage_location || null, storage_container_name: row.storage_container_name || null, storage_container_location: row.storage_container_location || null };
+  if (type === 'items') return { ...row, type: 'item', title: row.name, subtitle: `${row.type || 'Item'} - ${row.status || 'unknown'}`, storage_location: row.storage_location || null, legacy_location_name: row.legacy_location_name || null, storage_container_name: row.storage_container_name || null, storage_container_location: row.storage_container_location || null };
   if (type === 'notes') return { ...row, type: 'note', title: row.title, subtitle: row.tags?.length ? row.tags.join(', ') : 'No tags' };
   if (type === 'users') return { ...row, type: 'user', title: row.display_name || row.username, subtitle: `${row.role} · ${row.email || row.username}` };
   if (type === 'tasks') return { ...row, type: 'task', title: row.title, subtitle: `${row.project_name} · ${row.status}` };
@@ -38,10 +44,9 @@ router.get('/', async (req, res) => {
   if (req.user.role !== 'admin') types = types.filter((type) => type !== 'users');
   if (types.length === 0) return res.status(400).json({ error: 'at least one permitted search type is required' });
   try {
-    // Do not let one broken/legacy table query make the entire global search fail.
-    // Successful categories still return immediately while the failing category is logged.
+    // Do not let one broken category make the entire global search fail.
     const settled = await Promise.allSettled(types.map(async (type) => {
-      const result = await pool.query(TYPE_QUERIES[type], [q, req.user.userId, req.user.role]);
+      const result = await pool.query(TYPE_QUERIES[type], queryParams(type, q, req.user.userId, req.user.role));
       return [type, result.rows.map((row) => decorate(type, row))];
     }));
     const rows = [];
