@@ -1,187 +1,37 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { getItems } from '../api/items';
-import { getProjects } from '../api/projects';
-import { getTransactions, getTransactionSummary } from '../api/transactions';
-import { getNotes } from '../api/notes';
-import NeedsAttentionBanner from '../components/NeedsAttentionBanner';
-import StatusLED from '../components/StatusLED';
-import {
-  Box, Layers, FileText, TrendingUp, TrendingDown, Wallet, ArrowRight,
-} from 'lucide-react';
+import { getExperienceDashboard } from '../api/experience';
+import { Activity, AlertTriangle, ArrowRight, Box, CalendarClock, CheckCircle2, ClipboardList, FlaskConical, Layers, Package, ShieldAlert } from 'lucide-react';
 
-export default function DashboardPage() {
-  const { data: items = [] } = useQuery({ queryKey: ['items'], queryFn: () => getItems() });
-  const { data: projects = [] } = useQuery({ queryKey: ['projects'], queryFn: getProjects });
-  const { data: recentTransactions = [] } = useQuery({
-    queryKey: ['transactions', 'recent'],
-    queryFn: () => getTransactions(),
-  });
-  const { data: summary } = useQuery({
-    queryKey: ['transactionSummary', {}],
-    queryFn: () => getTransactionSummary({}),
-  });
-  const { data: notes = [] } = useQuery({ queryKey: ['notes', {}], queryFn: () => getNotes() });
+function HealthBadge({status}:{status:string}){return <span className={`text-[10px] uppercase tracking-wider px-2 py-1 rounded border ${status==='healthy'?'text-status-ok border-status-ok/30':status==='watch'?'text-status-warning border-status-warning/30':'text-status-danger border-status-danger/30'}`}>{status}</span>}
 
-  const activeProjects = projects.filter((p) => p.status === 'active');
-  const itemsByStatus = items.reduce((acc, item) => {
-    acc[item.status] = (acc[item.status] || 0) + 1;
-    return acc;
-  }, {} as Record<string, number>);
-
-  return (
-    <div className="page-frame space-y-5">
-      <header className="dashboard-hero rounded-lg p-5 md:p-7 flex flex-col lg:flex-row lg:items-end lg:justify-between gap-5">
-        <div className="page-header-copy"><div className="page-kicker">LABORATORY COMMAND CENTER</div><h2 className="page-title text-2xl md:text-3xl mt-1">Good to see you.</h2><p className="page-subtitle mt-2">Monitor inventory, projects, knowledge and spending from one operational workspace.</p></div>
-        <div className="page-actions"><Link to="/inventory" className="ui-button ui-button-sm">Open inventory</Link><Link to="/projects" className="ui-button ui-button-primary ui-button-sm">Open projects</Link></div>
-      </header>
-
-      <NeedsAttentionBanner />
-
-      {/* Top summary cards */}
-      <div className="grid grid-cols-4 gap-4 mb-6">
-        <Link to="/inventory" className="metric-card ui-panel-raised rounded-md p-4 hover:border-accent transition-all">
-          <div className="flex items-center gap-2 mb-2">
-            <Box size={16} className="text-accent" />
-            <span className="text-text-secondary text-sm">Items</span>
-          </div>
-          <div className="text-text-primary text-section-header font-mono">{items.length}</div>
-        </Link>
-
-        <Link to="/projects" className="metric-card ui-panel-raised rounded-md p-4 hover:border-accent transition-all">
-          <div className="flex items-center gap-2 mb-2">
-            <Layers size={16} className="text-accent" />
-            <span className="text-text-secondary text-sm">Active Projects</span>
-          </div>
-          <div className="text-text-primary text-section-header font-mono">{activeProjects.length}</div>
-        </Link>
-
-        <Link to="/financials/ledger" className="metric-card ui-panel-raised rounded-md p-4 hover:border-accent transition-all">
-          <div className="flex items-center gap-2 mb-2">
-            <Wallet size={16} className="text-accent" />
-            <span className="text-text-secondary text-sm">Ledger Balance</span>
-          </div>
-          <div className={`text-section-header font-mono ${(summary?.totals.net ?? 0) >= 0 ? 'text-status-ok' : 'text-status-danger'}`}>
-            ${summary?.totals.net?.toFixed(2) || '0.00'}
-          </div>
-        </Link>
-
-        <Link to="/notebook" className="metric-card ui-panel-raised rounded-md p-4 hover:border-accent transition-all">
-          <div className="flex items-center gap-2 mb-2">
-            <FileText size={16} className="text-accent" />
-            <span className="text-text-secondary text-sm">Notes</span>
-          </div>
-          <div className="text-text-primary text-section-header font-mono">{notes.length}</div>
-        </Link>
-      </div>
-
-      <div className="grid grid-cols-2 gap-6">
-        {/* Inventory status breakdown */}
-        <div className="workspace-card ui-panel rounded-md p-5 md:p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-section-header font-ui font-semibold">Inventory by Status</h3>
-            <Link to="/inventory" className="text-accent text-sm hover:underline flex items-center gap-1">
-              View all <ArrowRight size={14} />
-            </Link>
-          </div>
-          {items.length === 0 ? (
-            <p className="text-text-secondary text-sm py-4">No items yet.</p>
-          ) : (
-            <div className="space-y-2">
-              {Object.entries(itemsByStatus).map(([status, count]) => (
-                <div key={status} className="flex items-center justify-between">
-                  <StatusLED status={status as any} />
-                  <span className="text-text-primary font-mono text-sm">{count}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Financial snapshot */}
-        <div className="workspace-card ui-panel rounded-md p-5 md:p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-section-header font-ui font-semibold">Financial Snapshot</h3>
-            <Link to="/financials" className="text-accent text-sm hover:underline flex items-center gap-1">
-              View all <ArrowRight size={14} />
-            </Link>
-          </div>
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-text-secondary text-sm flex items-center gap-2">
-                <TrendingUp size={14} className="text-status-ok" /> Total Income
-              </span>
-              <span className="text-text-primary font-mono text-sm">${summary?.totals.income.toFixed(2) || '0.00'}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-text-secondary text-sm flex items-center gap-2">
-                <TrendingDown size={14} className="text-status-danger" /> Total Expense
-              </span>
-              <span className="text-text-primary font-mono text-sm">${summary?.totals.expense.toFixed(2) || '0.00'}</span>
-            </div>
-            {summary?.budget && (
-              <div className="flex items-center justify-between pt-2 border-t border-border">
-                <span className="text-text-secondary text-sm">{summary.budget.label} Remaining</span>
-                <span className={`font-mono text-sm ${summary.budget.remaining < 0 ? 'text-status-danger' : 'text-text-primary'}`}>
-                  ${summary.budget.remaining.toFixed(2)}
-                </span>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Recent transactions */}
-        <div className="workspace-card ui-panel rounded-md p-5 md:p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-section-header font-ui font-semibold">Recent Transactions</h3>
-            <Link to="/financials/ledger" className="text-accent text-sm hover:underline flex items-center gap-1">
-              View ledger <ArrowRight size={14} />
-            </Link>
-          </div>
-          {recentTransactions.length === 0 ? (
-            <p className="text-text-secondary text-sm py-4">No transactions yet.</p>
-          ) : (
-            <div className="space-y-2">
-              {recentTransactions.slice(0, 5).map((tx) => (
-                <div key={tx.id} className="flex items-center justify-between text-sm">
-                  <span className="text-text-primary capitalize truncate pr-2">{tx.type.replace('_', ' ')}</span>
-                  <span className={`font-mono flex-shrink-0 ${tx.direction === 'income' ? 'text-status-ok' : 'text-text-primary'}`}>
-                    {tx.direction === 'income' ? '+' : '-'}${parseFloat(String(tx.amount)).toFixed(2)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Recent/active projects */}
-        <div className="workspace-card ui-panel rounded-md p-5 md:p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-section-header font-ui font-semibold">Active Projects</h3>
-            <Link to="/projects" className="text-accent text-sm hover:underline flex items-center gap-1">
-              View all <ArrowRight size={14} />
-            </Link>
-          </div>
-          {activeProjects.length === 0 ? (
-            <p className="text-text-secondary text-sm py-4">No active projects.</p>
-          ) : (
-            <div className="space-y-2">
-              {activeProjects.slice(0, 5).map((project) => (
-                <Link
-                  key={project.id}
-                  to={`/projects/${project.id}`}
-                  className="flex items-center justify-between text-sm hover:text-accent transition-colors"
-                >
-                  <span className="text-text-primary truncate pr-2">{project.name}</span>
-                  <span className="text-text-secondary font-mono flex-shrink-0">
-                    {project.budget ? `$${parseFloat(String(project.budget)).toFixed(2)}` : ''}
-                  </span>
-                </Link>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
+export default function DashboardPage(){
+ const {data,isLoading,error}=useQuery({queryKey:['experience','dashboard'],queryFn:getExperienceDashboard,refetchInterval:60000});
+ if(isLoading)return <div className="page-frame p-6 text-text-secondary">Loading command center…</div>;
+ if(error)return <div className="page-frame p-6 text-status-danger">Command center unavailable. Refresh and try again.</div>;
+ const m=data?.metrics||{active_projects:0,overdue_tasks:0,due_next_7_days:0,low_stock:0};
+ const due=data?.due??[];
+ return <div className="page-frame space-y-5">
+  <header className="dashboard-hero rounded-lg p-5 md:p-7 flex flex-col lg:flex-row lg:items-end lg:justify-between gap-5">
+   <div className="page-header-copy"><div className="page-kicker">LABORATORY COMMAND CENTER</div><h2 className="page-title text-2xl md:text-3xl mt-1">Today at a glance.</h2><p className="page-subtitle mt-2">One operational view of active work, upcoming deadlines, inventory risk and project health.</p></div>
+   <div className="page-actions flex gap-2"><Link to="/projects" className="ui-button ui-button-primary ui-button-sm">Projects</Link><Link to="/inventory" className="ui-button ui-button-sm">Inventory</Link></div>
+  </header>
+  <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+   <Link to="/projects" className="metric-card ui-panel-raised rounded-md p-4"><Layers size={16} className="text-accent"/><div className="text-2xl font-mono mt-2">{m.active_projects}</div><div className="text-xs text-text-secondary">Active projects</div></Link>
+   <div className="metric-card ui-panel-raised rounded-md p-4"><AlertTriangle size={16} className={m.overdue_tasks?'text-status-danger':'text-status-ok'}/><div className="text-2xl font-mono mt-2">{m.overdue_tasks}</div><div className="text-xs text-text-secondary">Overdue tasks</div></div>
+   <div className="metric-card ui-panel-raised rounded-md p-4"><CalendarClock size={16} className="text-accent"/><div className="text-2xl font-mono mt-2">{m.due_next_7_days}</div><div className="text-xs text-text-secondary">Due in 7 days</div></div>
+   <Link to="/inventory" className="metric-card ui-panel-raised rounded-md p-4"><Package size={16} className={m.low_stock?'text-status-warning':'text-status-ok'}/><div className="text-2xl font-mono mt-2">{m.low_stock}</div><div className="text-xs text-text-secondary">Low-stock items</div></Link>
+  </div>
+  <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+   <section className="workspace-card ui-panel rounded-md p-5"><div className="flex justify-between mb-4"><h3 className="text-section-header font-semibold">Project health</h3><Link to="/projects" className="text-accent text-xs flex items-center gap-1">All projects <ArrowRight size={13}/></Link></div>
+    {!data?.projects.length?<p className="text-sm text-text-secondary py-5">No active projects.</p>:<div className="space-y-2">{data.projects.slice(0,8).map((p:any)=><Link key={p.id} to={`/projects/${p.id}`} className="flex items-center gap-3 p-3 rounded border border-border hover:border-accent hover:bg-surface-raised"><span className="text-accent"><Activity size={16}/></span><span className="min-w-0 flex-1"><strong className="block text-sm truncate">{p.name}</strong><span className="text-[11px] text-text-secondary">{p.open_tasks} open tasks · {p.experiment_count} experiments</span></span><span className="font-mono text-xs">{p.health_score}%</span><HealthBadge status={p.health}/></Link>)}</div>}
+   </section>
+   <section className="workspace-card ui-panel rounded-md p-5"><h3 className="text-section-header font-semibold mb-4">Attention queue</h3>
+    {data?.overdue.length?<div className="space-y-2">{data.overdue.slice(0,6).map((x:any)=><Link key={x.id} to={`/projects/${x.project_id}/tasks`} className="flex gap-3 p-3 rounded border border-status-danger/20 bg-status-danger/5 hover:bg-surface-raised"><ShieldAlert size={16} className="text-status-danger mt-0.5"/><span className="min-w-0"><strong className="block text-sm truncate">{x.title}</strong><span className="text-xs text-text-secondary">{x.project_name} · overdue since {x.due_date}</span></span></Link>)}</div>:<div className="py-5 text-sm text-status-ok flex items-center gap-2"><CheckCircle2 size={17}/> No overdue tasks.</div>}
+    {due.length>0&&<><div className="border-t border-border my-4"/><h4 className="text-xs uppercase tracking-wider text-text-secondary mb-2">Next 7 days</h4>{due.slice(0,5).map((x:any)=><Link key={x.id} to={`/projects/${x.project_id}/tasks`} className="flex items-center gap-2 py-2 text-sm hover:text-accent"><ClipboardList size={14}/><span className="truncate flex-1">{x.title}</span><span className="font-mono text-[11px]">{x.due_date}</span></Link>)}</>}
+   </section>
+   <section className="workspace-card ui-panel rounded-md p-5"><div className="flex justify-between mb-4"><h3 className="text-section-header font-semibold">Low-stock intelligence</h3><Link to="/inventory" className="text-accent text-xs">Open inventory</Link></div>{!data?.low_stock.length?<p className="text-sm text-status-ok flex items-center gap-2"><CheckCircle2 size={15}/> Stock levels are above configured minimums.</p>:<div className="space-y-2">{data.low_stock.map((x:any)=><div key={x.id} className="flex items-center gap-3 py-2"><Box size={15} className="text-status-warning"/><span className="flex-1 text-sm truncate">{x.name}</span><span className="font-mono text-xs">{x.current_quantity} {x.unit||''}</span></div>)}</div>}</section>
+   <section className="workspace-card ui-panel rounded-md p-5"><h3 className="text-section-header font-semibold mb-4">Recent lab activity</h3>{!data?.recent.length?<p className="text-sm text-text-secondary">No recent activity.</p>:<div className="space-y-2">{data.recent.slice(0,8).map((x:any)=><Link key={`${x.type}-${x.id}`} to={`/projects/${x.project_id}`} className="flex items-center gap-3 py-2 hover:text-accent"><span className="text-accent">{x.type==='experiment'?<FlaskConical size={15}/>:<ClipboardList size={15}/>}</span><span className="flex-1 min-w-0"><strong className="block text-sm truncate">{x.title}</strong><span className="text-[10px] text-text-secondary">{x.project_name} · {x.type}</span></span><span className="text-[10px] text-text-secondary">{new Date(x.created_at).toLocaleDateString()}</span></Link>)}</div>}</section>
+  </div>
+ </div>
 }

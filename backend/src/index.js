@@ -32,6 +32,7 @@ import automationRouter from './routes/automation.js';
 import engineeringRouter from './routes/engineering.js';
 import operationsRouter from './routes/operations.js';
 import systemRouter from './routes/system.js';
+import experienceRouter from './routes/experience.js';
 
 dotenv.config();
 
@@ -124,6 +125,7 @@ app.use('/api/automation', authenticateToken, automationRouter);
 app.use('/api/engineering', authenticateToken, engineeringRouter);
 app.use('/api/operations', authenticateToken, operationsRouter);
 app.use('/api/system', authenticateToken, systemRouter);
+app.use('/api/experience', authenticateToken, experienceRouter);
 
 // Destructive endpoints are additionally restricted inside their route files
 // where necessary. This top-level reference documents the intended security

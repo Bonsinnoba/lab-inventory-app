@@ -385,13 +385,24 @@ export default function MusicPlayer({ open, onClose, minimized, onMinimize, onRe
   return (
     <>
       {minimized && (
-        <div
-          className="fixed z-[90] w-[320px] h-[154px] pointer-events-none"
-          style={{ left: Math.max(8, minimizedPos.left - 264), top: Math.max(8, minimizedPos.top - 96) }}
-        >
+        <>
           <div
             ref={minimizedWidgetRef}
-            className={`absolute right-0 bottom-[66px] w-[300px] rounded-2xl border border-border bg-surface/95 backdrop-blur-xl shadow-2xl p-3 transition-all duration-200 origin-bottom-right ${minimizedHover ? 'opacity-100 translate-y-0 scale-100 pointer-events-auto' : 'opacity-0 translate-y-2 scale-95 pointer-events-none'}`}
+            className={`fixed z-[91] w-[300px] rounded-2xl border border-border bg-surface/95 backdrop-blur-xl shadow-2xl p-3 transition-all duration-200 origin-bottom-right ${minimizedHover ? 'opacity-100 translate-y-0 scale-100 pointer-events-auto' : 'opacity-0 translate-y-2 scale-95 pointer-events-none'}`}
+            style={{
+              left: Math.max(8, Math.min(window.innerWidth - 308, minimizedPos.left - 244)),
+              top: Math.max(8, Math.min(window.innerHeight - 126, minimizedPos.top - 132)),
+            }}
+            onPointerEnter={() => {
+              // This does NOT open the widget. The icon is the only hover trigger.
+              if (minimizedHoverTimer.current) {
+                clearTimeout(minimizedHoverTimer.current);
+                minimizedHoverTimer.current = null;
+              }
+            }}
+            onPointerLeave={() => {
+              minimizedHoverTimer.current = setTimeout(() => setMinimizedHover(false), 450);
+            }}
           >
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 shrink-0 rounded-xl bg-accent/10 text-accent flex items-center justify-center overflow-hidden">
@@ -430,14 +441,16 @@ export default function MusicPlayer({ open, onClose, minimized, onMinimize, onRe
             onPointerMove={moveMinimizedDrag}
             onPointerUp={endMinimizedDrag}
             onPointerCancel={endMinimizedDrag}
-            className="absolute right-0 bottom-0 w-14 h-14 rounded-full border border-border bg-surface/95 backdrop-blur-xl text-accent shadow-2xl flex items-center justify-center cursor-grab active:cursor-grabbing transition-transform duration-200 hover:scale-105 focus:outline-none focus:ring-2 focus:ring-accent/50"
+            className="fixed z-[92] w-14 h-14 rounded-full border border-border bg-surface/95 backdrop-blur-xl text-accent shadow-2xl flex items-center justify-center cursor-grab active:cursor-grabbing transition-transform duration-200 hover:scale-105 focus:outline-none focus:ring-2 focus:ring-accent/50"
+            style={{ left: minimizedPos.left, top: minimizedPos.top }}
             title="Restore music player"
-            onMouseEnter={() => {
+            onPointerEnter={() => {
               if (minimizedHoverTimer.current) clearTimeout(minimizedHoverTimer.current);
+              minimizedHoverTimer.current = null;
               setMinimizedHover(true);
             }}
-            onMouseLeave={() => {
-              minimizedHoverTimer.current = setTimeout(() => setMinimizedHover(false), 600);
+            onPointerLeave={() => {
+              minimizedHoverTimer.current = setTimeout(() => setMinimizedHover(false), 700);
             }}
           >
             {playing && <span className="absolute inset-[-5px] rounded-full border-2 border-accent/50 animate-ping pointer-events-none" />}
@@ -445,7 +458,7 @@ export default function MusicPlayer({ open, onClose, minimized, onMinimize, onRe
             <span className="relative z-10">{playing ? <Music2Icon /> : <Play size={18}/>}</span>
             {playing && <span className="absolute bottom-2 right-2 flex items-end gap-[2px] h-3">{[0,1,2].map(i => <span key={i} className="w-[2px] bg-accent rounded-full animate-pulse" style={{ height: `${7 + i * 2}px`, animationDelay: `${i * 120}ms` }} />)}</span>}
           </button>
-        </div>
+        </>
       )}
 
       <div className={`fixed z-[75] left-[50%] top-[50%] -translate-x-1/2 -translate-y-1/2 w-[min(1120px,calc(100vw-2rem))] h-[min(760px,calc(100vh-2rem))] bg-surface border border-border rounded-2xl shadow-2xl overflow-hidden flex flex-col transition-all duration-200 ${minimized ? 'hidden' : 'opacity-100'}`}>
