@@ -2,133 +2,20 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { globalSearch, SearchResult, SearchType } from '../api/search';
-import { Search as SearchIcon, Box, FileText, DollarSign, Folder, Filter, X, Layers, ArrowRight, Clock3, Users, ClipboardList, Beaker, SquareStack } from 'lucide-react';
+import { Search as SearchIcon, Box, FileText, DollarSign, Folder, Filter, X, Layers, ArrowRight, Clock3, Users, ClipboardList, Beaker, SquareStack, MapPin } from 'lucide-react';
 import { formatQuantity } from '../lib/utils';
 import { getStoredUser } from '../api/auth';
-
 interface SearchPageProps { initialQuery?: string; onSearchChange?: (query: string) => void; }
 const ALL_TYPES: SearchType[] = ['items', 'projects', 'notes', 'resources', 'transactions', 'users', 'tasks', 'experiments', 'blocks'];
 const TYPE_LABELS: Record<SearchType, string> = { items: 'Items', projects: 'Projects', notes: 'Notes', resources: 'Resources', transactions: 'Transactions', users: 'Users', tasks: 'Tasks', experiments: 'Experiments', blocks: 'Canvas' };
-
 export default function SearchPage({ initialQuery = '', onSearchChange }: SearchPageProps) {
-  const navigate = useNavigate();
-  const currentUser = getStoredUser();
-  const availableTypes = currentUser?.role === 'admin' ? ALL_TYPES : ALL_TYPES.filter((type) => type !== 'users');
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [query, setQuery] = useState(initialQuery);
-  const [selectedTypes, setSelectedTypes] = useState<Set<SearchType>>(new Set(availableTypes));
-  const [debouncedQuery, setDebouncedQuery] = useState(initialQuery.trim());
-  const [recentSearches, setRecentSearches] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem('labos_recent_searches') || '[]'); } catch { return []; } });
-
-  useEffect(() => {
-    const timer = setTimeout(() => setDebouncedQuery(query.trim()), 250);
-    return () => clearTimeout(timer);
-  }, [query]);
-
-  useEffect(() => { if (initialQuery) setQuery(initialQuery); }, [initialQuery]);
-  useEffect(() => { onSearchChange?.(query); }, [query, onSearchChange]);
-  useEffect(() => { if (!debouncedQuery) return; const next = [debouncedQuery, ...recentSearches.filter((value) => value !== debouncedQuery)].slice(0, 6); setRecentSearches(next); localStorage.setItem('labos_recent_searches', JSON.stringify(next)); }, [debouncedQuery]);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === '/' && !['INPUT', 'TEXTAREA'].includes((event.target as HTMLElement)?.tagName)) {
-        event.preventDefault(); inputRef.current?.focus();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
-
-  const { data: results, isLoading, error } = useQuery({
-    queryKey: ['search', debouncedQuery, Array.from(selectedTypes).sort()],
-    queryFn: () => globalSearch(debouncedQuery, Array.from(selectedTypes)),
-    enabled: debouncedQuery.length > 0 && selectedTypes.size > 0,
-    staleTime: 15_000,
-  });
-
-  const toggleType = (type: SearchType) => setSelectedTypes((current) => {
-    const next = new Set(current); next.has(type) ? next.delete(type) : next.add(type); return next;
-  });
-
-  const handleResultClick = (result: SearchResult) => {
-    switch (result.type) {
-      case 'item': navigate(`/inventory/${result.id}`); break;
-      case 'project': navigate(`/projects/${result.id}`); break;
-      case 'transaction': result.item_id ? navigate(`/inventory/${result.item_id}/transactions`) : result.project_id ? navigate(`/projects/${result.project_id}`) : navigate('/financials'); break;
-      case 'resource': result.item_id ? navigate(`/inventory/${result.item_id}`) : result.project_id ? navigate(`/projects/${result.project_id}/canvas`) : navigate('/resources'); break;
-      case 'note': navigate('/notebook'); break;
-      case 'user': navigate('/collaboration'); break;
-      case 'task': navigate(`/projects/${result.project_id}/tasks`); break;
-      case 'experiment': navigate(`/projects/${result.project_id}/experiments`); break;
-      case 'block': navigate(`/projects/${result.project_id}/canvas`); break;
-    }
-  };
-
-  const sections = useMemo(() => availableTypes.map((type) => ({ type, values: results?.[type] || [] })).filter((section) => section.values.length), [results]);
-  const topResults = results?.all?.slice(0, 8) || [];
-
-  const iconFor = (type: SearchResult['type']) => ({ item: Box, project: Layers, note: FileText, transaction: DollarSign, resource: Folder, user: Users, task: ClipboardList, experiment: Beaker, block: SquareStack }[type]);
-
-  const renderResultCard = (result: SearchResult) => {
-    const Icon = iconFor(result.type);
-    return (
-      <button key={`${result.type}-${result.id}`} onClick={() => handleResultClick(result)} className="w-full text-left bg-surface border border-border rounded-md p-4 hover:border-accent hover:bg-surface-raised transition-colors cursor-pointer">
-        <div className="flex items-start gap-3">
-          <div className="text-accent mt-1"><Icon size={20} /></div>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-start justify-between gap-3">
-              <h4 className="text-text-primary font-medium truncate">{result.title}</h4>
-              <span className="text-[10px] uppercase tracking-wider text-text-secondary shrink-0">{result.type}</span>
-            </div>
-            <p className="text-text-secondary text-sm mt-1 truncate">{result.subtitle}</p>
-            {result.type === 'item' && <div className="text-text-secondary text-sm mt-2">{formatQuantity(result.current_quantity)} {result.unit || ''} {result.sku && `• SKU: ${result.sku}`}</div>}
-            {result.type === 'note' && result.body && <p className="text-text-secondary text-sm line-clamp-2 mt-2">{result.body}</p>}
-            {result.type === 'resource' && result.description && <p className="text-text-secondary text-sm line-clamp-2 mt-2">{result.description}</p>}
-            {result.tags?.length > 0 && <div className="flex gap-1 mt-2 flex-wrap">{result.tags.slice(0, 5).map((tag: string) => <span key={tag} className="px-2 py-0.5 bg-surface-raised border border-border rounded text-xs text-text-secondary">{tag}</span>)}</div>}
-          </div>
-        </div>
-      </button>
-    );
-  };
-
-  return (
-    <div className="p-4 sm:p-6 max-w-[1500px] mx-auto">
-      <div className="flex items-start justify-between gap-4 mb-6">
-        <div><h2 className="text-page-title font-ui font-semibold">Global Search</h2><p className="text-text-secondary text-sm mt-1">Search the laboratory's inventory, projects, notes, resources and financial records.</p></div>
-        <span className="hidden sm:flex items-center gap-1 text-xs text-text-secondary bg-surface border border-border rounded px-2 py-1"><kbd>Ctrl</kbd><span>+</span><kbd>K</kbd></span>
-      </div>
-
-      <div className="flex flex-col sm:flex-row gap-3 mb-4">
-        <div className="relative flex-1">
-          <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 text-text-secondary" size={20} />
-          <input ref={inputRef} autoFocus type="search" placeholder="Search the entire lab..." value={query} onChange={(e) => setQuery(e.target.value)} className="w-full pl-10 pr-4 py-3 bg-surface border border-border rounded-sm text-text-primary placeholder:text-text-secondary focus:outline-none focus:border-accent text-base sm:text-lg" />
-        </div>
-        <button onClick={() => setSelectedTypes(new Set(availableTypes))} className="flex items-center justify-center gap-2 px-4 py-3 bg-surface border border-border rounded-sm hover:border-accent transition-colors"><Filter size={18} /><span className="text-sm">All types</span></button>
-      </div>
-
-      <div className="flex gap-2 mb-6 flex-wrap">
-        {availableTypes.map((type) => <button key={type} onClick={() => toggleType(type)} className={`flex items-center gap-2 px-3 py-1.5 rounded-sm text-sm transition-colors ${selectedTypes.has(type) ? 'bg-accent text-bg' : 'bg-surface-raised border border-border text-text-secondary hover:text-text-primary'}`}><span>{TYPE_LABELS[type]}</span>{selectedTypes.has(type) && <X size={14} />}</button>)}
-      </div>
-
-      {!debouncedQuery ? (
-        <div className="text-center py-14 text-text-secondary"><SearchIcon size={48} className="mx-auto mb-4 opacity-50" /><p className="text-lg">Search across the entire laboratory</p><p className="text-sm mt-2">Try a component, project name, note, experiment, task, or Canvas block.</p>{recentSearches.length > 0 && <div className="mt-6"><p className="text-xs uppercase tracking-wider mb-2">Recent searches</p><div className="flex justify-center gap-2 flex-wrap">{recentSearches.map((recent) => <button key={recent} onClick={() => setQuery(recent)} className="px-2.5 py-1.5 bg-surface border border-border rounded-sm text-xs hover:border-accent">{recent}</button>)}</div></div>}<div className="mt-6 flex justify-center gap-2 flex-wrap"><Link to="/inventory" className="px-3 py-2 bg-surface border border-border rounded-sm text-xs hover:border-accent">Open inventory</Link><Link to="/projects" className="px-3 py-2 bg-surface border border-border rounded-sm text-xs hover:border-accent">Open projects</Link><Link to="/notebook" className="px-3 py-2 bg-surface border border-border rounded-sm text-xs hover:border-accent">Open notebook</Link></div></div>
-      ) : selectedTypes.size === 0 ? (
-        <div className="text-center py-12 text-text-secondary"><Filter size={40} className="mx-auto mb-3 opacity-50" /><p>Select at least one search type.</p></div>
-      ) : isLoading ? (
-        <div className="text-center py-12 text-text-secondary"><Clock3 size={32} className="mx-auto mb-3 animate-pulse" /><p>Searching the lab...</p></div>
-      ) : error ? (
-        <div className="text-center py-12 text-status-danger"><p className="text-lg">Search failed</p><p className="text-sm mt-1">Check the server connection and try again.</p></div>
-      ) : !results?.total ? (
-        <div className="text-center py-12 text-text-secondary"><p className="text-lg mb-2">No results for “{debouncedQuery}”</p><p className="text-sm">Try a different keyword or broaden the selected types.</p></div>
-      ) : (
-        <div>
-          <div className="flex items-center justify-between mb-5"><p className="text-text-secondary text-sm">{results.total} matching result{results.total !== 1 ? 's' : ''}</p><span className="text-xs text-text-secondary">Best matches first</span></div>
-
-          {topResults.length > 0 && <section className="mb-8"><div className="flex items-center justify-between mb-3"><h3 className="text-section-header font-ui font-semibold">Best matches</h3><ArrowRight size={16} className="text-text-secondary" /></div><div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">{topResults.map(renderResultCard)}</div></section>}
-
-          {sections.map(({ type, values }) => <section key={type} className="mb-7"><div className="flex items-center gap-2 mb-3"><h3 className="text-section-header font-ui font-semibold">{TYPE_LABELS[type]}</h3><span className="text-xs text-text-secondary">{results.counts?.[type] ?? values.length}</span></div><div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">{values.map(renderResultCard)}</div></section>)}
-        </div>
-      )}
-    </div>
-  );
+  const navigate = useNavigate(); const currentUser = getStoredUser(); const availableTypes = currentUser?.role === 'admin' ? ALL_TYPES : ALL_TYPES.filter((type) => type !== 'users'); const inputRef = useRef<HTMLInputElement>(null); const [query, setQuery] = useState(initialQuery); const [selectedTypes, setSelectedTypes] = useState<Set<SearchType>>(new Set(availableTypes)); const [debouncedQuery, setDebouncedQuery] = useState(initialQuery.trim()); const [recentSearches, setRecentSearches] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem('labos_recent_searches') || '[]'); } catch { return []; } });
+  useEffect(() => { const timer = setTimeout(() => setDebouncedQuery(query.trim()), 250); return () => clearTimeout(timer); }, [query]); useEffect(() => { if (initialQuery) setQuery(initialQuery); }, [initialQuery]); useEffect(() => { onSearchChange?.(query); }, [query, onSearchChange]); useEffect(() => { if (!debouncedQuery) return; const next = [debouncedQuery, ...recentSearches.filter((value) => value !== debouncedQuery)].slice(0, 6); setRecentSearches(next); localStorage.setItem('labos_recent_searches', JSON.stringify(next)); }, [debouncedQuery]);
+  useEffect(() => { const onKeyDown = (event: KeyboardEvent) => { if (event.key === '/' && !['INPUT', 'TEXTAREA'].includes((event.target as HTMLElement)?.tagName)) { event.preventDefault(); inputRef.current?.focus(); } }; window.addEventListener('keydown', onKeyDown); return () => window.removeEventListener('keydown', onKeyDown); }, []);
+  const { data: results, isLoading, error } = useQuery({ queryKey: ['search', debouncedQuery, Array.from(selectedTypes).sort()], queryFn: () => globalSearch(debouncedQuery, Array.from(selectedTypes)), enabled: debouncedQuery.length > 0 && selectedTypes.size > 0, staleTime: 15_000 });
+  const toggleType = (type: SearchType) => setSelectedTypes(current => { const next = new Set(current); next.has(type) ? next.delete(type) : next.add(type); return next; });
+  const handleResultClick = (result: SearchResult) => { switch (result.type) { case 'item': navigate(`/inventory/${result.id}`); break; case 'project': navigate(`/projects/${result.id}`); break; case 'transaction': result.item_id ? navigate(`/inventory/${result.item_id}/transactions`) : result.project_id ? navigate(`/projects/${result.project_id}`) : navigate('/financials'); break; case 'resource': result.item_id ? navigate(`/inventory/${result.item_id}`) : result.project_id ? navigate(`/projects/${result.project_id}/canvas`) : navigate('/resources'); break; case 'note': navigate('/notebook'); break; case 'user': navigate('/collaboration'); break; case 'task': navigate(`/projects/${result.project_id}/tasks`); break; case 'experiment': navigate(`/projects/${result.project_id}/experiments`); break; case 'block': navigate(`/projects/${result.project_id}/canvas`); break; } };
+  const sections = useMemo(() => availableTypes.map(type => ({ type, values: results?.[type] || [] })).filter(section => section.values.length), [results]); const topResults = results?.all?.slice(0, 8) || []; const iconFor = (type: SearchResult['type']) => ({ item: Box, project: Layers, note: FileText, transaction: DollarSign, resource: Folder, user: Users, task: ClipboardList, experiment: Beaker, block: SquareStack }[type]);
+  const renderResultCard = (result: SearchResult) => { const Icon = iconFor(result.type); return <button key={`${result.type}-${result.id}`} onClick={() => handleResultClick(result)} className="w-full text-left bg-surface border border-border rounded-md p-4 hover:border-accent hover:bg-surface-raised transition-colors cursor-pointer"><div className="flex items-start gap-3"><div className="text-accent mt-1"><Icon size={20}/></div><div className="flex-1 min-w-0"><div className="flex items-start justify-between gap-3"><h4 className="text-text-primary font-medium truncate">{result.title}</h4><span className="text-[10px] uppercase tracking-wider text-text-secondary shrink-0">{result.type}</span></div><p className="text-text-secondary text-sm mt-1 truncate">{result.subtitle}</p>{result.type === 'item' && <><div className="text-text-secondary text-sm mt-2">{formatQuantity(result.current_quantity)} {result.unit || ''} {result.sku && `• SKU: ${result.sku}`}</div><div className="flex items-center gap-1.5 mt-2 text-sm"><MapPin size={14} className="text-accent"/><strong className="text-text-primary">{result.storage_location || 'Storage location not labeled'}</strong>{result.storage_container_name && <span className="text-text-secondary">· {result.storage_container_name}</span>}</div></>}{result.type === 'note' && result.body && <p className="text-text-secondary text-sm line-clamp-2 mt-2">{result.body}</p>}{result.type === 'resource' && result.description && <p className="text-text-secondary text-sm line-clamp-2 mt-2">{result.description}</p>}{result.tags?.length > 0 && <div className="flex gap-1 mt-2 flex-wrap">{result.tags.slice(0, 5).map((tag: string) => <span key={tag} className="px-2 py-0.5 bg-surface-raised border border-border rounded text-xs text-text-secondary">{tag}</span>)}</div>}</div></div></button>; };
+  return <div className="p-4 sm:p-6 max-w-[1500px] mx-auto"><div className="flex items-start justify-between gap-4 mb-6"><div><h2 className="text-page-title font-ui font-semibold">Global Search</h2><p className="text-text-secondary text-sm mt-1">Search the laboratory's inventory, projects, notes, resources and financial records.</p></div><span className="hidden sm:flex items-center gap-1 text-xs text-text-secondary bg-surface border border-border rounded px-2 py-1"><kbd>Ctrl</kbd><span>+</span><kbd>K</kbd></span></div><div className="flex flex-col sm:flex-row gap-3 mb-4"><div className="relative flex-1"><SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 text-text-secondary" size={20}/><input ref={inputRef} autoFocus type="search" placeholder="Search the entire lab..." value={query} onChange={e => setQuery(e.target.value)} className="w-full pl-10 pr-4 py-3 bg-surface border border-border rounded-sm text-text-primary placeholder:text-text-secondary focus:outline-none focus:border-accent text-base sm:text-lg"/></div><button onClick={() => setSelectedTypes(new Set(availableTypes))} className="flex items-center justify-center gap-2 px-4 py-3 bg-surface border border-border rounded-sm hover:border-accent transition-colors"><Filter size={18}/><span className="text-sm">All types</span></button></div><div className="flex gap-2 mb-6 flex-wrap">{availableTypes.map(type => <button key={type} onClick={() => toggleType(type)} className={`flex items-center gap-2 px-3 py-1.5 rounded-sm text-sm transition-colors ${selectedTypes.has(type) ? 'bg-accent text-bg' : 'bg-surface-raised border border-border text-text-secondary hover:text-text-primary'}`}><span>{TYPE_LABELS[type]}</span>{selectedTypes.has(type)&&<X size={14}/>}</button>)}</div>{!debouncedQuery ? <div className="text-center py-14 text-text-secondary"><SearchIcon size={48} className="mx-auto mb-4 opacity-50"/><p className="text-lg">Search across the entire laboratory</p><p className="text-sm mt-2">Try a component, project name, note, experiment, task, or Canvas block.</p></div> : selectedTypes.size===0 ? <div className="text-center py-12 text-text-secondary"><Filter size={40} className="mx-auto mb-3 opacity-50"/><p>Select at least one search type.</p></div> : isLoading ? <div className="text-center py-12 text-text-secondary"><Clock3 size={32} className="mx-auto mb-3 animate-pulse"/><p>Searching the lab...</p></div> : error ? <div className="text-center py-12 text-status-danger"><p className="text-lg">Search failed</p><p className="text-sm mt-1">Check the server connection and try again.</p></div> : !results?.total ? <div className="text-center py-12 text-text-secondary"><p className="text-lg mb-2">No results for “{debouncedQuery}”</p><p className="text-sm">Try a different keyword or broaden the selected types.</p></div> : <div><div className="flex items-center justify-between mb-5"><p className="text-text-secondary text-sm">{results.total} matching result{results.total!==1?'s':''}</p><span className="text-xs text-text-secondary">Best matches first</span></div>{topResults.length>0&&<section className="mb-8"><div className="flex items-center justify-between mb-3"><h3 className="text-section-header font-ui font-semibold">Best matches</h3><ArrowRight size={16} className="text-text-secondary"/></div><div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">{topResults.map(renderResultCard)}</div></section>}{sections.map(({type,values})=><section key={type} className="mb-7"><div className="flex items-center gap-2 mb-3"><h3 className="text-section-header font-ui font-semibold">{TYPE_LABELS[type]}</h3><span className="text-xs text-text-secondary">{results.counts?.[type]??values.length}</span></div><div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">{values.map(renderResultCard)}</div></section>)}</div>}</div>;
 }
