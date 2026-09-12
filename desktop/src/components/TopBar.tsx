@@ -1,4 +1,4 @@
-import { Search, Command, Music2 } from 'lucide-react';
+import { Search, Command } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 interface TopBarProps { title: string; onOpenCommandPalette: () => void; }
@@ -14,7 +14,6 @@ export default function TopBar({ title, onOpenCommandPalette }: TopBarProps) {
         </div>
       </div>
       <div className="flex items-center gap-3">
-        <button type="button" onClick={() => window.dispatchEvent(new CustomEvent('labos:music-player'))} className="p-2 hover:bg-surface-raised rounded-sm transition-colors text-text-secondary hover:text-text-primary" title="Music Player"><Music2 size={18} /></button>
         <button type="button" onClick={onOpenCommandPalette} className="topbar-search hidden md:flex items-center gap-2 px-3 py-1.5 rounded-sm text-text-secondary hover:text-text-primary" title="Open command palette">
           <Search size={15} />
           <span className="text-xs flex-1">Search laboratory…</span>
