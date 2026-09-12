@@ -191,6 +191,21 @@ export default function ResourceViewerModal({ resource, resources = [], onClose,
     setPickerQuery('');
   };
 
+  const closePane = (pane: 'left' | 'right') => {
+    if (pane === 'right') {
+      setRightId(null);
+      setIsSplit(false);
+      return;
+    }
+    if (right) {
+      setLeftId(right.id);
+      setRightId(null);
+      setIsSplit(false);
+    } else {
+      onClose();
+    }
+  };
+
   const filtered = list.filter((r) => `${r.name || ''} ${r.original_filename || ''}`.toLowerCase().includes(pickerQuery.toLowerCase()));
   const zoomFor = (pane: 'left' | 'right') => pane === 'left' ? leftZoom : rightZoom;
   const setZoomFor = (pane: 'left' | 'right', value: number) => pane === 'left' ? setLeftZoom(value) : setRightZoom(value);
@@ -215,6 +230,7 @@ export default function ResourceViewerModal({ resource, resources = [], onClose,
             <button className="rounded px-2 py-1 text-xs text-slate-300 hover:bg-slate-800" onClick={() => setPickerFor(pane)}>{r ? 'Change' : 'Choose'}</button>
             {r && isEditableResource(r) && onEdit && <button className="flex items-center gap-1 rounded px-2 py-1 text-xs text-slate-300 hover:bg-slate-800" onClick={() => onEdit(r)}><Pencil size={13} />Edit</button>}
             {r && <a href={getResourceDownloadUrl(r.id)} download className="rounded p-1.5 text-slate-300 hover:bg-slate-800" title="Download"><Download size={14} /></a>}
+            <button onClick={() => closePane(pane)} className="rounded p-1.5 text-slate-300 hover:bg-slate-800" title={isSplit ? `Close ${pane} split` : 'Close viewer'} aria-label={isSplit ? `Close ${pane} split` : 'Close viewer'}><X size={15} /></button>
           </div>
         </div>
         <div className="min-h-0 flex-1">
