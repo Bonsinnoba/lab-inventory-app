@@ -78,7 +78,7 @@ export async function getResourceAccessUrl(id: string, forceDownload = false): P
 }
 
 export async function getResourceText(id: string): Promise<string> {
-  const response = await apiFetch(`/resources/${id}/content`);
+  const response = await apiFetch(`/resource-editor/${id}/content`);
   if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to read resource content'));
   return response.text();
 }
@@ -86,73 +86,56 @@ export async function getResourceText(id: string): Promise<string> {
 export async function replaceResourceFile(id: string, file: File): Promise<Resource> {
   const formData = new FormData();
   formData.append('file', file);
-  const response = await apiFetch(`/resources/${id}/file`, { method: 'PUT', body: formData });
+  const response = await apiFetch(`/resource-editor/${id}/file`, { method: 'PUT', body: formData });
   if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to replace resource file'));
   return response.json();
 }
 
+export async function saveResourceText(id: string, content: string): Promise<Resource> {
+  const response = await apiFetch(`/resource-editor/${id}/content`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }) });
+  if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to save resource content'));
+  return response.json();
+}
+
 export async function uploadFile(file: File, parent: { item_id?: string; project_id?: string; note_id?: string }, name?: string, onProgress?: (progress: number) => void, metadata?: { category?: string; description?: string; tags?: string[] }): Promise<Resource> {
-  const formData = new FormData();
-  formData.append('file', file);
-  if (name) formData.append('name', name);
-  if (parent.item_id) formData.append('item_id', parent.item_id);
-  if (parent.project_id) formData.append('project_id', parent.project_id);
-  if (parent.note_id) formData.append('note_id', parent.note_id);
-  if (metadata?.category) formData.append('category', metadata.category);
-  if (metadata?.description) formData.append('description', metadata.description);
-  if (metadata?.tags) formData.append('tags', JSON.stringify(metadata.tags));
+  const formData = new FormData(); formData.append('file', file);
+  if (name) formData.append('name', name); if (parent.item_id) formData.append('item_id', parent.item_id); if (parent.project_id) formData.append('project_id', parent.project_id); if (parent.note_id) formData.append('note_id', parent.note_id);
+  if (metadata?.category) formData.append('category', metadata.category); if (metadata?.description) formData.append('description', metadata.description); if (metadata?.tags) formData.append('tags', JSON.stringify(metadata.tags));
   return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.timeout = 120000;
+    const xhr = new XMLHttpRequest(); xhr.timeout = 120000;
     xhr.upload.addEventListener('progress', e => { if (e.lengthComputable && onProgress) onProgress((e.loaded / e.total) * 100); });
-    xhr.addEventListener('load', () => {
-      if (xhr.status === 201) resolve(JSON.parse(xhr.responseText));
-      else { let message = 'Failed to upload file'; try { const body = JSON.parse(xhr.responseText); const error = body?.error; if (typeof error === 'string') message = error; else if (error?.message) message = error.message; else if (body?.message) message = body.message; } catch {} reject(new Error(message)); }
-    });
+    xhr.addEventListener('load', () => { if (xhr.status === 201) resolve(JSON.parse(xhr.responseText)); else reject(new Error('Failed to upload file')); });
     xhr.addEventListener('error', () => reject(new Error('Upload failed — could not reach the server. Is the backend running?')));
     xhr.addEventListener('timeout', () => reject(new Error('Upload timed out after 2 minutes — check the backend server console for an error.')));
     xhr.addEventListener('abort', () => reject(new Error('Upload was cancelled')));
-    xhr.open('POST', `${API_BASE}/resources`);
-    const token = getToken();
-    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-    xhr.send(formData);
+    xhr.open('POST', `${API_BASE}/resources`); const token = getToken(); if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`); xhr.send(formData);
   });
 }
 
 export async function createFolder(name: string, parent: { item_id?: string; project_id?: string; note_id?: string }): Promise<Resource> {
   const response = await apiFetch(`/resources/folder`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, ...parent }) });
-  if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to create folder'));
-  return response.json();
+  if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to create folder')); return response.json();
 }
 
 export async function uploadFolderFiles(folderId: string, files: File[], relativePaths: string[], onProgress?: (progress: number) => void): Promise<Resource[]> {
-  const formData = new FormData();
-  files.forEach(file => formData.append('files', file));
-  formData.append('relative_paths', JSON.stringify(relativePaths));
+  const formData = new FormData(); files.forEach(file => formData.append('files', file)); formData.append('relative_paths', JSON.stringify(relativePaths));
   return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest(); xhr.timeout = 120000;
-    xhr.upload.addEventListener('progress', e => { if (e.lengthComputable && onProgress) onProgress((e.loaded / e.total) * 100); });
-    xhr.addEventListener('load', () => { if (xhr.status === 201) resolve(JSON.parse(xhr.responseText)); else reject(new Error('Failed to upload folder files')); });
-    xhr.addEventListener('error', () => reject(new Error('Upload failed — could not reach the server. Is the backend running?')));
-    xhr.addEventListener('timeout', () => reject(new Error('Upload timed out after 2 minutes')));
-    xhr.addEventListener('abort', () => reject(new Error('Upload was cancelled')));
+    const xhr = new XMLHttpRequest(); xhr.timeout = 120000; xhr.upload.addEventListener('progress', e => { if (e.lengthComputable && onProgress) onProgress((e.loaded / e.total) * 100); });
+    xhr.addEventListener('load', () => { if (xhr.status === 201) resolve(JSON.parse(xhr.responseText)); else reject(new Error('Failed to upload folder files')); }); xhr.addEventListener('error', () => reject(new Error('Upload failed — could not reach the server. Is the backend running?'))); xhr.addEventListener('timeout', () => reject(new Error('Upload timed out after 2 minutes'))); xhr.addEventListener('abort', () => reject(new Error('Upload was cancelled')));
     xhr.open('POST', `${API_BASE}/resources/${folderId}/files`); const token = getToken(); if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`); xhr.send(formData);
   });
 }
 
 export async function createLink(url: string, parent: { item_id?: string; project_id?: string; note_id?: string }, name?: string, metadata?: { category?: string; description?: string; tags?: string[] }): Promise<Resource> {
   const response = await apiFetch(`/resources/link`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, name, ...parent, ...metadata }) });
-  if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to create link'));
-  return response.json();
+  if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to create link')); return response.json();
 }
 
 export async function updateResourceMetadata(id: string, metadata: { category?: string; description?: string; tags?: string[] }): Promise<Resource> {
   const response = await apiFetch(`/resources/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(metadata) });
-  if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to update resource metadata'));
-  return response.json();
+  if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to update resource metadata')); return response.json();
 }
 
 export async function deleteResource(id: string): Promise<void> {
-  const response = await apiFetch(`/resources/${id}`, { method: 'DELETE' });
-  if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to delete resource'));
+  const response = await apiFetch(`/resources/${id}`, { method: 'DELETE' }); if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to delete resource'));
 }
