@@ -1,4 +1,4 @@
-import { Box, ChevronDown, DollarSign, FileBarChart, Layers, LogOut, PanelLeftClose, PanelLeftOpen, ScanLine, Settings2, Sun, User, Users, BookOpen, Settings, LayoutDashboard } from 'lucide-react';
+import { Box, ChevronDown, DollarSign, FileBarChart, Layers, LogOut, PanelLeftClose, PanelLeftOpen, ScanLine, Sun, User, Users, BookOpen, Settings, LayoutDashboard } from 'lucide-react';
 import { useState, useCallback, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useTheme } from '../contexts/ThemeContext';
@@ -54,7 +54,7 @@ export default function Sidebar({ user, onLogout }: SidebarProps) {
       <div onMouseDown={handleMouseDown} onDoubleClick={() => { setCollapsed(false); setWidth(DEFAULT_WIDTH); }} className="absolute right-0 top-0 bottom-0 w-1.5 -mr-0.5 cursor-col-resize z-10 group"><div className={`h-full w-full transition-colors ${isResizing ? 'bg-accent' : 'bg-transparent group-hover:bg-accent/50'}`} /></div>
       <div className="p-3 border-b border-border sidebar-brand-row"><div className="min-w-0"><div className="labos-brand">LAB<span>OS</span></div><div className="text-[10px] text-text-secondary font-mono mt-1 tracking-wider sidebar-brand-subtitle">LABORATORY OPERATING SYSTEM</div></div><button type="button" onClick={() => setCollapsed(v => !v)} className="sidebar-collapse-button" aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}>{collapsed ? <PanelLeftOpen size={17}/> : <PanelLeftClose size={17}/>}</button></div>
       <nav className="flex-1 p-2 overflow-y-auto sidebar-nav">
-        {primaryItems.map(renderLink)}
+        {primaryItems.map((item) => renderLink(item))}
         {groups.map(group => { const Icon = group.icon; const active = group.children.some(c => location.pathname.startsWith(c.path)); return <div key={group.id} className="mt-1">
           <button type="button" onClick={() => setOpenGroups(current => ({ ...current, [group.id]: !current[group.id] }))} title={collapsed ? group.label : undefined} className={`w-full flex items-center gap-3 px-3 py-2 rounded-sm text-left transition-colors ${active ? 'text-text-primary' : 'text-text-secondary'} hover:bg-surface-raised hover:text-text-primary`}>
             <Icon size={20}/><span className="text-sm sidebar-nav-label flex-1">{group.label}</span>{!collapsed && <ChevronDown size={15} className={`transition-transform ${openGroups[group.id] ? '' : '-rotate-90'}`} />}
