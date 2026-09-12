@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Save, X, FileText, FilePenLine, Copy } from 'lucide-react';
+import { Save, X, FileText, Copy } from 'lucide-react';
 import { Resource, getDocxHtml, getResourceText, saveDocxCopy, saveResourceText, createPdfEditCopy } from '../api/resources';
 import { useToast } from '../contexts/ToastContext';
 
@@ -60,7 +60,7 @@ export default function ResourceEditorModal({ resource, onClose, onSaved }: Prop
           {loading ? <div className="h-full flex items-center justify-center text-text-secondary">Loading…</div> : error ? <div className="h-full flex items-center justify-center"><div className="text-center max-w-md px-6"><FileText size={36} className="mx-auto mb-3 text-text-secondary" /><p className="text-text-primary mb-2">Unable to edit this file</p><p className="text-sm text-status-danger">{error}</p></div></div> : markdown ? (
             <div className="h-full flex flex-col"><div className="px-4 py-2 border-b border-border text-xs text-text-secondary">Edit the Markdown source directly. Changes are saved back to this LabOS resource.</div><textarea value={content} onChange={e => setContent(e.target.value)} spellCheck={false} className="flex-1 w-full resize-none bg-bg text-text-primary font-mono text-sm leading-6 p-5 outline-none" /></div>
           ) : docx ? (
-            <div className="h-full flex flex-col"><div className="px-4 py-2 border-b border-border text-xs text-text-secondary flex items-center gap-2"><FilePenLine size={14} /> Edit the document content. Saving creates a new DOCX resource and keeps the original unchanged.</div><div ref={editorRef} contentEditable suppressContentEditableWarning className="flex-1 overflow-auto bg-bg text-text-primary p-8 outline-none leading-7 prose prose-invert max-w-none" /></div>
+            <div className="h-full flex flex-col"><div className="px-4 py-2 border-b border-border text-xs text-text-secondary flex items-center gap-2"><FileText size={14} /> Edit the document content. Saving creates a new DOCX resource and keeps the original unchanged.</div><div ref={editorRef} contentEditable suppressContentEditableWarning className="flex-1 overflow-auto bg-bg text-text-primary p-8 outline-none leading-7 prose prose-invert max-w-none" /></div>
           ) : pdf ? (
             <div className="h-full flex items-center justify-center bg-surface-raised px-6"><div className="max-w-lg text-center"><Copy size={40} className="mx-auto mb-4 text-text-secondary" /><h4 className="text-lg font-medium text-text-primary mb-2">Create an editable PDF copy</h4><p className="text-sm text-text-secondary leading-6">LabOS will duplicate the original PDF into a new resource. The original stays untouched. The duplicated PDF can then be edited externally and re-uploaded to that copy.</p><p className="text-xs text-text-secondary mt-3">This preserves laboratory source material while establishing safe document versioning.</p></div></div>
           ) : <div className="h-full flex items-center justify-center text-text-secondary">This file type is not editable.</div>}
