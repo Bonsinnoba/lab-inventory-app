@@ -30,17 +30,17 @@ export default function Pagination({ page, pageSize, totalPages, total, onPageCh
   const start = (page - 1) * pageSize + 1;
   const end = Math.min(page * pageSize, total);
   return (
-    <div className="flex items-center justify-between gap-3 mt-4 text-sm text-text-secondary">
-      <span>Showing {start}–{end} of {total}</span>
-      <div className="flex items-center gap-2">
-        <label className="text-xs">Per view
-          <select value={pageSize} onChange={(e) => onPageSizeChange(Number(e.target.value))} className="ml-1 bg-surface border border-border rounded px-1.5 py-1">
+    <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 mt-2 text-[10px] text-text-secondary">
+      <span className="whitespace-nowrap">Showing {start}–{end} of {total}</span>
+      <div className="flex items-center gap-1 ml-auto">
+        <label className="text-[10px] whitespace-nowrap">Per view
+          <select value={pageSize} onChange={(e) => onPageSizeChange(Number(e.target.value))} className="ml-1 bg-surface border border-border rounded px-1 py-0.5 text-[10px]">
             <option value={6}>6</option><option value={12}>12</option><option value={24}>24</option><option value={48}>48</option>
           </select>
         </label>
-        <button disabled={page <= 1} onClick={() => onPageChange(page - 1)} className="px-2 py-1 border border-border rounded disabled:opacity-40">Prev</button>
-        <span className="min-w-[52px] text-center text-xs">{page} / {totalPages}</span>
-        <button disabled={page >= totalPages} onClick={() => onPageChange(page + 1)} className="px-2 py-1 border border-border rounded disabled:opacity-40">Next</button>
+        <button disabled={page <= 1} onClick={() => onPageChange(page - 1)} className="px-1.5 py-0.5 border border-border rounded disabled:opacity-40">Prev</button>
+        <span className="min-w-[30px] text-center">{page} / {totalPages}</span>
+        <button disabled={page >= totalPages} onClick={() => onPageChange(page + 1)} className="px-1.5 py-0.5 border border-border rounded disabled:opacity-40">Next</button>
       </div>
     </div>
   );
