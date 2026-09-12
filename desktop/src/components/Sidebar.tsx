@@ -1,4 +1,4 @@
-import { Box, ChevronDown, DollarSign, FileBarChart, Layers, LogOut, PanelLeftClose, PanelLeftOpen, ScanLine, Sun, User, Users, BookOpen, Settings, LayoutDashboard } from 'lucide-react';
+import { Box, ChevronDown, DollarSign, FileBarChart, Layers, LogOut, PanelLeftClose, PanelLeftOpen, ScanLine, Sun, User, Users, BookOpen, Settings, LayoutDashboard, NotebookPen } from 'lucide-react';
 import { useState, useCallback, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useTheme } from '../contexts/ThemeContext';
@@ -7,6 +7,7 @@ import ScanLookupModal from './ScanLookupModal';
 const primaryItems = [
   { icon: LayoutDashboard, label: 'Dashboard', path: '/dashboard' },
   { icon: Layers, label: 'Projects', path: '/projects' },
+  { icon: NotebookPen, label: 'Notebook', path: '/notebook' },
   { icon: Users, label: 'Collaboration', path: '/collaboration' },
   { icon: DollarSign, label: 'Financials', path: '/financials' },
   { icon: FileBarChart, label: 'Reports', path: '/reports' },
