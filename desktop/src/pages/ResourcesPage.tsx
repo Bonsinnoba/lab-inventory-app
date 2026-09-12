@@ -6,7 +6,6 @@ import { getNotes } from '../api/notes';
 import { useState, useRef } from 'react';
 import { Upload, Link as LinkIcon, File, Folder, Trash2, Play } from 'lucide-react';
 import ResourceViewerModal from '../components/ResourceViewerModal';
-import Pagination, { usePagination } from '../components/Pagination';
 import { useToast } from '../contexts/ToastContext';
 
 type ParentType = 'none' | 'item' | 'project' | 'note';
@@ -29,7 +28,6 @@ export default function ResourcesPage() {
 
   const resourcesQuery = useQuery<Resource[]>({ queryKey: ['resources', 'all'], queryFn: getAllResources });
   const resources = resourcesQuery.data || [];
-  const page = usePagination(resources, 6);
   const { data: items = [] } = useQuery({ queryKey: ['items', 'picker'], queryFn: () => getItems() });
   const { data: projects = [] } = useQuery({ queryKey: ['projects', 'picker'], queryFn: getProjects });
   const { data: notes = [] } = useQuery({ queryKey: ['notes', 'picker'], queryFn: () => getNotes() });
@@ -83,20 +81,17 @@ export default function ResourcesPage() {
     <div onDragOver={e => { e.preventDefault(); setIsDragOver(true); }} onDragLeave={e => { e.preventDefault(); setIsDragOver(false); }} onDrop={e => { e.preventDefault(); setIsDragOver(false); const f = e.dataTransfer.files[0]; if (f) setShowAttachModal({ mode: 'upload', file: f }); }} className={`border-2 border-dashed rounded-md p-8 mb-6 text-center ${isDragOver ? 'border-accent bg-accent/5' : 'border-border'}`}>
       <Upload size={32} className="mx-auto mb-2 text-text-secondary"/><p className="text-text-secondary text-sm">Drag and drop files here, or use the upload button</p>
     </div>
-    {resourcesQuery.isLoading ? <div className="py-8 text-center text-text-secondary">Loading…</div> : resourcesQuery.error ? <div className="py-8 text-center text-status-danger">Error loading resources</div> : resources.length === 0 ? <div className="py-8 text-center text-text-secondary">No resources yet across the lab.</div> : <>
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-4">
-        {page.pagedItems.map(r => <div key={r.id} onClick={() => setSelectedResource(r)} className="group relative bg-surface border border-border rounded-md overflow-hidden hover:border-accent cursor-pointer">
-          <div className="aspect-video">{renderThumbnail(r)}</div><div className="p-3"><div className="text-sm truncate" title={r.name}>{r.name}</div><div className="text-xs text-text-secondary mt-1 truncate">{attachedToLabel(r)}</div></div>
-          <button onClick={e => { e.stopPropagation(); deleteMutation.mutate(r.id); }} className="absolute top-2 right-2 p-1.5 bg-surface-raised border border-border rounded-sm opacity-0 group-hover:opacity-100 hover:bg-status-danger hover:border-status-danger"><Trash2 size={14}/></button>
-        </div>)}
-      </div>
-      <Pagination page={page.page} pageSize={page.pageSize} total={resources.length} totalPages={page.totalPages} onPageChange={page.setPage} onPageSizeChange={page.changePageSize}/>
-    </>}
+    {resourcesQuery.isLoading ? <div className="py-8 text-center text-text-secondary">Loading…</div> : resourcesQuery.error ? <div className="py-8 text-center text-status-danger">Error loading resources</div> : resources.length === 0 ? <div className="py-8 text-center text-text-secondary">No resources yet across the lab.</div> : <div className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-4">
+      {resources.map(r => <div key={r.id} onClick={() => setSelectedResource(r)} className="group relative bg-surface border border-border rounded-md overflow-hidden hover:border-accent cursor-pointer">
+        <div className="aspect-video">{renderThumbnail(r)}</div><div className="p-3"><div className="text-sm truncate" title={r.name}>{r.name}</div><div className="text-xs text-text-secondary mt-1 truncate">{attachedToLabel(r)}</div></div>
+        <button onClick={e => { e.stopPropagation(); deleteMutation.mutate(r.id); }} className="absolute top-2 right-2 p-1.5 bg-surface-raised border border-border rounded-sm opacity-0 group-hover:opacity-100 hover:bg-status-danger hover:border-status-danger"><Trash2 size={14}/></button>
+      </div>)}
+    </div>}
 
     {showAttachModal && <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowAttachModal(null)}><div className="bg-surface border border-border rounded-md p-6 w-96" onClick={e => e.stopPropagation()}>
       <h3 className="text-section-header font-ui font-semibold mb-4">{showAttachModal.mode === 'upload' ? `Attach \"${showAttachModal.file?.name}\" to…` : 'Add Link'}</h3>
       {showAttachModal.mode === 'link' && <div className="space-y-3 mb-4"><input value={linkUrl} onChange={e => setLinkUrl(e.target.value)} placeholder="https://…" className="w-full bg-surface-raised border border-border rounded-sm px-3 py-2 text-sm"/><input value={linkName} onChange={e => setLinkName(e.target.value)} placeholder="Label (optional)" className="w-full bg-surface-raised border border-border rounded-sm px-3 py-2 text-sm"/></div>}
-      <div className="space-y-3 mb-4"><label className="text-xs text-text-secondary block">Knowledge category<select value={category} onChange={e => setCategory(e.target.value)} className="mt-1 w-full px-3 py-2 bg-surface-raised border border-border rounded-sm text-sm">{['general','datasheet','manual','schematic','research','tutorial','reference','specification','image','cad','report','video','other'].map(c => <option key={c}>{c}</option>)}</select></label><label className="text-xs text-text-secondary block">Description<textarea value={description} onChange={e => setDescription(e.target.value)} rows={2} className="mt-1 w-full px-3 py-2 bg-surface-raised border border-border rounded-sm text-sm"/></label><label className="text-xs text-text-secondary block">Tags<input value={tagsInput} onChange={e => setTagsInput(e.target.value)} placeholder="esp32, power, reference" className="mt-1 w-full px-3 py-2 bg-surface-raised border border-border rounded-sm text-sm"/></label>
+      <div className="space-y-3 mb-4"><label className="text-xs text-text-secondary block">Knowledge category<select value={category} onChange={e => setCategory(e.target.value)} className="mt-1 w-full px-3 py-2 bg-surface-raised border border-border rounded-sm text-sm">{['general','datasheet','manual','schematic','research','tutorial','reference','specification','image','cad','report','video','other'].map(c => <option key={c}>{c}</option>)}</select></label><label className="text-xs text-text-secondary block">Description<textarea value={description} onChange={e => setDescription(e.target.value)} rows={2} className="mt-1 w-full px-3 py-2 bg-surface-raised border border-border rounded-sm text-sm"/></label><label className="text-xs text-text-secondary block">Tags<input value={tagsInput} onChange={e => setTagsInput(e.target.value)} placeholder="esp32, power, reference" className="mt-1 w-full bg-surface-raised border border-border rounded-sm px-3 py-2 text-sm"/></label>
         <div className="flex gap-2">{(['none','item','project','note'] as ParentType[]).map(t => <button key={t} onClick={() => { setParentType(t); setParentId(''); }} className={`flex-1 px-3 py-1.5 rounded-sm text-sm border capitalize ${parentType === t ? 'bg-accent/10 border-accent text-accent' : 'bg-surface-raised border-border text-text-secondary'}`}>{t}</button>)}</div>
         {parentType !== 'none' && <select value={parentId} onChange={e => setParentId(e.target.value)} className="w-full bg-surface-raised border border-border rounded-sm px-3 py-2 text-sm"><option value="">Select {parentType}…</option>{parentOptions.map(o => <option key={o.id} value={o.id}>{o.name || o.title}</option>)}</select>}
       </div>
