@@ -1,10 +1,10 @@
-import { Resource, getResourceDownloadUrl, getResourceAccessUrl, getDocxHtml } from '../api/resources';
+import { Resource, getResourceDownloadUrl, getDocxHtml } from '../api/resources';
 import {
   X, Download, ChevronLeft, ChevronRight, Repeat, Maximize2, Minimize2,
   ZoomIn, ZoomOut, RotateCcw, PanelRight, Pencil,
   Image as ImageIcon, Video, Music, FileText, File as FileIcon, Folder, Link as LinkIcon,
 } from 'lucide-react';
-import { useEffect, useRef, useState, type MouseEvent, type WheelEvent } from 'react';
+import { useEffect, useState, type WheelEvent } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
@@ -22,7 +22,7 @@ interface Props {
 }
 
 function extension(r: Resource) {
-  const name = r.name || r.original_name || '';
+  const name = r.name || r.original_filename || '';
   return name.split('.').pop()?.toLowerCase() || '';
 }
 
@@ -42,13 +42,13 @@ function iconForResource(r: Resource) {
   if (['mp4', 'webm', 'mov', 'm4v'].includes(ext)) return <Video size={15} />;
   if (['mp3', 'wav', 'ogg', 'm4a'].includes(ext)) return <Music size={15} />;
   if (ext === 'pdf' || isMarkdownResource(r) || ext === 'docx') return <FileText size={15} />;
-  if (r.resource_type === 'folder') return <Folder size={15} />;
-  if (r.resource_type === 'link') return <LinkIcon size={15} />;
+  if (r.kind === 'folder') return <Folder size={15} />;
+  if (r.kind === 'link') return <LinkIcon size={15} />;
   return <FileIcon size={15} />;
 }
 
 function subtitleForResource(r: Resource) {
-  return [r.resource_type, extension(r).toUpperCase()].filter(Boolean).join(' • ');
+  return [r.kind, extension(r).toUpperCase()].filter(Boolean).join(' • ');
 }
 
 export default function ResourceViewerModal({ resource, resources = [], onClose, onEdit }: Props) {
@@ -67,7 +67,6 @@ export default function ResourceViewerModal({ resource, resources = [], onClose,
   const [text, setText] = useState<string | null>(null);
   const [loadingContent, setLoadingContent] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const dragRef = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
 
   const left = list.find((r) => r.id === leftId) || resource;
   const right = rightId ? list.find((r) => r.id === rightId) || null : null;
@@ -91,11 +90,13 @@ export default function ResourceViewerModal({ resource, resources = [], onClose,
       setText(null);
       setPdfPage(1);
       try {
-        if (ext === 'docx') setDocxHtml(await getDocxHtml(r.id));
-        else if (isMarkdownResource(r) || ['txt', 'csv', 'json', 'xml', 'yaml', 'yml'].includes(ext)) {
-          const response = await fetch(getResourceAccessUrl(r));
+        if (ext === 'docx') {
+          const result = await getDocxHtml(r.id);
+          if (!cancelled) setDocxHtml(result.html);
+        } else if (isMarkdownResource(r) || ['txt', 'csv', 'json', 'xml', 'yaml', 'yml'].includes(ext)) {
+          const response = await fetch(getResourceDownloadUrl(r.id));
           if (!response.ok) throw new Error(`Unable to load resource (${response.status})`);
-          setText(await response.text());
+          if (!cancelled) setText(await response.text());
         }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : 'Unable to load resource');
@@ -121,7 +122,7 @@ export default function ResourceViewerModal({ resource, resources = [], onClose,
       }
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
       const active = document.activeElement;
-      if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLElement && active.isContentEditable) return;
+      if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || (active instanceof HTMLElement && active.isContentEditable)) return;
       const dir = e.key === 'ArrowLeft' ? -1 : 1;
       if (!isSplit) {
         if (!pickerFor) setLeftId((id) => id ? stepList(id, dir) : id);
@@ -156,25 +157,26 @@ export default function ResourceViewerModal({ resource, resources = [], onClose,
 
   const renderContent = (r: Resource) => {
     const ext = extension(r);
-    const url = getResourceAccessUrl(r);
-    if (error && r.id === left.id) return <div className="p-6 text-sm text-red-300">{error}</div>;
-    if (loadingContent && r.id === left.id) return <div className="p-6 text-sm text-slate-400">Loading preview…</div>;
+    const url = getResourceDownloadUrl(r.id);
+    const isLeft = r.id === left.id;
+    if (error && isLeft) return <div className="p-6 text-sm text-red-300">{error}</div>;
+    if (loadingContent && isLeft) return <div className="p-6 text-sm text-slate-400">Loading preview…</div>;
 
     if (ext === 'pdf') {
       return <div className="flex h-full items-center justify-center overflow-auto" onWheel={handleWheel}>
         <div style={{ transform: `scale(${zoom})`, transformOrigin: 'center center' }}>
-          <Document file={url} onLoadSuccess={({ numPages }) => setPdfPages(numPages)} onLoadError={() => setError('Unable to load PDF')}>
+          <Document file={url as unknown as File} onLoadSuccess={({ numPages }) => setPdfPages(numPages)} onLoadError={() => setError('Unable to load PDF')}>
             <Page pageNumber={pdfPage} renderTextLayer renderAnnotationLayer />
           </Document>
         </div>
       </div>;
     }
-    if (ext === 'docx' && docxHtml) return <div className="h-full overflow-auto bg-white p-8 text-black"><div dangerouslySetInnerHTML={{ __html: docxHtml }} /></div>;
-    if (isMarkdownResource(r) && text !== null) return <pre className="h-full overflow-auto whitespace-pre-wrap p-6 text-sm leading-6 text-slate-200">{text}</pre>;
+    if (ext === 'docx' && docxHtml && isLeft) return <div className="h-full overflow-auto bg-white p-8 text-black"><div dangerouslySetInnerHTML={{ __html: docxHtml }} /></div>;
+    if (isMarkdownResource(r) && text !== null && isLeft) return <pre className="h-full overflow-auto whitespace-pre-wrap p-6 text-sm leading-6 text-slate-200">{text}</pre>;
     if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(ext)) return <div className="flex h-full items-center justify-center overflow-auto" onWheel={handleWheel}><img src={url} alt={r.name} style={{ transform: `scale(${zoom})`, maxWidth: '90%', maxHeight: '90%', objectFit: 'contain' }} /></div>;
     if (['mp4', 'webm', 'mov', 'm4v'].includes(ext)) return <div className="flex h-full items-center justify-center p-6"><video controls src={url} className="max-h-full max-w-full" /></div>;
     if (['mp3', 'wav', 'ogg', 'm4a'].includes(ext)) return <div className="flex h-full items-center justify-center p-6"><audio controls src={url} className="w-full max-w-xl" /></div>;
-    if (r.resource_type === 'link') return <div className="flex h-full items-center justify-center p-8 text-center"><a href={r.url || url} target="_blank" rel="noreferrer" className="text-sm text-sky-300 underline">Open resource link</a></div>;
+    if (r.kind === 'link') return <div className="flex h-full items-center justify-center p-8 text-center"><a href={r.url || url} target="_blank" rel="noreferrer" className="text-sm text-sky-300 underline">Open resource link</a></div>;
     return <div className="flex h-full items-center justify-center p-8 text-slate-400">No inline preview is available for this resource. Use Download to open it.</div>;
   };
 
@@ -187,7 +189,7 @@ export default function ResourceViewerModal({ resource, resources = [], onClose,
         <div className="flex shrink-0 items-center gap-1">
           <button className="rounded px-2 py-1 text-xs text-slate-300 hover:bg-slate-800" onClick={() => setPickerFor(pane)}>{active ? 'Change' : 'Choose'}</button>
           {isEditableResource(r) && onEdit && <button className="flex items-center gap-1 rounded px-2 py-1 text-xs text-slate-300 hover:bg-slate-800" onClick={() => onEdit(r)}><Pencil size={13} />Edit</button>}
-          <a href={getResourceDownloadUrl(r)} download className="rounded p-1.5 text-slate-300 hover:bg-slate-800" title="Download"><Download size={14} /></a>
+          <a href={getResourceDownloadUrl(r.id)} download className="rounded p-1.5 text-slate-300 hover:bg-slate-800" title="Download"><Download size={14} /></a>
         </div>
       </div>
       <div className="min-h-0 flex-1">{renderContent(r)}</div>
