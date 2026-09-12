@@ -6,15 +6,15 @@ import { pool } from './db.js';
 import { STORAGE_DIR, resolveStoragePath } from './storage.js';
 
 const YTDLP = process.env.YTDLP_PATH || 'yt-dlp';
-const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
 const POLL_MS = 5000;
 let timer = null;
 let running = false;
 
 function qualityFormat(quality) {
   const height = quality === 'best' ? null : Number.parseInt(quality, 10) || 720;
-  if (!height) return 'bv*+ba/b';
-  return `bv*[height<=${height}]+ba/b[height<=${height}]/b[height<=${height}]/b`;
+  if (!height) return 'best';
+  // Prefer a single progressive file so the download requires no FFmpeg.
+  return `best[height<=${height}]/best[ext=mp4][height<=${height}]/best`;
 }
 
 function run(command, args, onLine) {
@@ -59,9 +59,8 @@ export async function ensureYouTubeThumbnail(resource) {
   }
 }
 
-function localVideoName(resource) {
-  const base = (resource.name || 'video').replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').trim() || 'video';
-  return `${base}.mp4`;
+function localVideoBaseName(resource) {
+  return (resource.name || 'video').replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').trim() || 'video';
 }
 
 async function startJob(job) {
@@ -72,16 +71,15 @@ async function startJob(job) {
 
   const dir = resolveStoragePath(resource.id);
   await fs.mkdir(dir, { recursive: true });
-  const filename = localVideoName(resource);
-  const output = path.join(dir, filename);
+  const base = localVideoBaseName(resource);
+  const outputTemplate = path.join(dir, `${base}.%(ext)s`);
 
   await pool.query(`UPDATE resource_download_jobs SET status='downloading', attempts=attempts+1, progress=0, started_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=$1`, [job.id]);
 
   const args = [
-    '--no-playlist', '--newline', '--restrict-filenames', '--merge-output-format', 'mp4',
-    '--ffmpeg-location', FFMPEG,
+    '--no-playlist', '--newline', '--restrict-filenames',
     '-f', qualityFormat(job.quality),
-    '-o', output,
+    '-o', outputTemplate,
     resource.url,
   ];
 
@@ -92,12 +90,19 @@ async function startJob(job) {
         await pool.query('UPDATE resource_download_jobs SET progress=$1, updated_at=CURRENT_TIMESTAMP WHERE id=$2', [progress, job.id]).catch(() => {});
       }
     });
+
+    const entries = await fs.readdir(dir);
+    const mediaName = entries.find(name => name.startsWith(`${base}.`) && !/^thumbnail\./i.test(name));
+    if (!mediaName) throw new Error('yt-dlp completed but no local video file was found');
+    const output = path.join(dir, mediaName);
     const stat = await fs.stat(output);
-    const relativePath = `${resource.id}/${filename}`;
-    await pool.query(`UPDATE resources SET local_media_path=$1, local_media_filename=$2, local_media_mime_type='video/mp4', local_media_size_bytes=$3, local_media_downloaded_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=$4`, [relativePath, filename, stat.size, resource.id]);
+    const mimeType = mediaName.toLowerCase().endsWith('.mp4') ? 'video/mp4' : mediaName.toLowerCase().endsWith('.webm') ? 'video/webm' : 'video/*';
+    const relativePath = `${resource.id}/${mediaName}`;
+    await pool.query(`UPDATE resources SET local_media_path=$1, local_media_filename=$2, local_media_mime_type=$3, local_media_size_bytes=$4, local_media_downloaded_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=$5`, [relativePath, mediaName, mimeType, stat.size, resource.id]);
     await pool.query(`UPDATE resource_download_jobs SET status='completed', progress=100, total_bytes=$1, bytes_downloaded=$1, completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=$2`, [stat.size, job.id]);
   } catch (err) {
-    await fs.rm(output, { force: true }).catch(() => {});
+    const entries = await fs.readdir(dir).catch(() => []);
+    await Promise.all(entries.filter(name => name.startsWith(`${base}.`) && !/^thumbnail\./i.test(name)).map(name => fs.rm(path.join(dir, name), { force: true })));
     await pool.query(`UPDATE resource_download_jobs SET status='failed', error_message=$1, updated_at=CURRENT_TIMESTAMP WHERE id=$2`, [err.message.slice(0, 2000), job.id]);
   }
 }
