@@ -13,8 +13,8 @@ const processes = new Map();
 
 function qualityFormat(quality) {
   const height = quality === 'best' ? null : Number.parseInt(quality, 10) || 720;
-  if (!height) return 'best';
-  return `best[height<=${height}]/best[ext=mp4][height<=${height}]/best`;
+  if (!height) return 'b';
+  return `b[height<=${height}]/b`;
 }
 function terminate(child) {
   if (!child || child.killed) return;
@@ -61,7 +61,7 @@ async function startJob(job) {
   if (resource.kind !== 'link' || !resource.url) throw new Error('Only URL resources can be downloaded');
   const dir = resolveStoragePath(resource.id);
   await fs.mkdir(dir, { recursive: true });
-  const base = (resource.name || 'video').replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').trim() || 'video';
+  const base = (resource.name || 'video').replace(/[<>:\"/\\|?*\x00-\x1F]/g, '_').trim() || 'video';
   const outputTemplate = path.join(dir, `${base}.%(ext)s`);
   const maxAttempts = Math.max(1, Math.min(5, Number(job.max_attempts) || 3));
   await pool.query(`UPDATE resource_download_jobs SET status='downloading',cancel_requested=FALSE,stop_requested_status=NULL,attempts=attempts+1,progress=0,bytes_downloaded=0,total_bytes=NULL,error_message=NULL,started_at=CURRENT_TIMESTAMP,process_started_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=$1`, [job.id]);
