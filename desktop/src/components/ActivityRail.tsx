@@ -1,8 +1,8 @@
 import { Bot, BookOpen, Search, Calculator, Music2, FolderOpen } from 'lucide-react';
 
-export type DockableContent = 'assistant' | 'notebook' | 'search' | null;
+export type DockableContent = 'assistant' | 'notebook' | 'search' | 'music' | null;
 interface ActivityRailProps { active: DockableContent; onSelect: (content: DockableContent) => void; engineeringOpen?: boolean; musicOpen?: boolean; mediaOpen?: boolean; }
-const items: { id: Exclude<DockableContent, null>; icon: typeof Bot; label: string }[] = [
+const items: { id: Exclude<DockableContent, null | 'music'>; icon: typeof Bot; label: string }[] = [
   { id: 'assistant', icon: Bot, label: 'Lab Assistant' },
   { id: 'notebook', icon: BookOpen, label: 'Notebook' },
   { id: 'search', icon: Search, label: 'Search' },
