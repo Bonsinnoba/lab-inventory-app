@@ -24,8 +24,10 @@ export default function ScanLookupModal({ onClose }: ScanLookupModalProps) {
   // immediately without the person needing to click into the field first.
   useEffect(() => {
     inputRef.current?.focus();
-    return () => stopCamera();
-  }, []);
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); onClose(); } };
+    window.addEventListener('keydown', onKeyDown);
+    return () => { window.removeEventListener('keydown', onKeyDown); stopCamera(); };
+  }, [onClose]);
 
   const stopCamera = () => {
     if (scanTimerRef.current !== null) window.clearInterval(scanTimerRef.current);
