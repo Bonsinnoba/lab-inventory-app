@@ -32,21 +32,40 @@ function terminate(child) {
   } catch {}
 }
 function parseProgress(line) {
-  const match = line.match(/download:(\d+(?:\.\d+)?)%\|(\d+)\|([^|]*)\|([^|]*)\|([^|]*)/i);
-  if (match) { const total = Number(match[3]); return { progress: Math.min(100, Number(match[1])), downloaded: Number(match[2]), total: Number.isFinite(total) ? total : null }; }
-  const percent = line.match(/(\d+(?:\.\d+)?)%/);
+  const text = String(line).replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, '').trim();
+  const match = text.match(/^download:\s*(\d+(?:\.\d+)?)%\s*\|\s*(\d+)\s*\|\s*([^|]*)\|\s*([^|]*)\|\s*([^|]*)/i);
+  if (match) {
+    const downloaded = Number(match[2]);
+    const total = Number(match[3]);
+    return { progress: Math.min(100, Number(match[1])), downloaded: Number.isFinite(downloaded) ? downloaded : null, total: Number.isFinite(total) ? total : null };
+  }
+  const percent = text.match(/(?:^|\s)(\d+(?:\.\d+)?)%/);
   return percent ? { progress: Math.min(100, Number(percent[1])), downloaded: null, total: null } : null;
 }
 function run(command, args, { jobId, onProgress } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { windowsHide: true });
     if (jobId) processes.set(jobId, child);
-    let stderr = '', stdout = '', settled = false;
+    let stderr = '', stdout = '', stdoutBuffer = '', stderrBuffer = '', settled = false;
     const finish = (fn, value) => { if (settled) return; settled = true; if (jobId) processes.delete(jobId); fn(value); };
-    child.stdout.on('data', c => { stdout += c.toString(); });
-    child.stderr.on('data', c => { const text = c.toString(); stderr += text; for (const line of text.split(/\r?\n/)) { if (!line.trim()) continue; const p = parseProgress(line.trim()); if (p) void onProgress?.(p); } });
+    const consume = (chunk, target) => {
+      const text = chunk.toString();
+      if (target === 'stdout') stdout += text; else stderr += text;
+      const buffer = target === 'stdout' ? stdoutBuffer + text : stderrBuffer + text;
+      const parts = buffer.split(/\r?\n|\r/);
+      const remainder = parts.pop() || '';
+      if (target === 'stdout') stdoutBuffer = remainder; else stderrBuffer = remainder;
+      for (const line of parts) { const p = parseProgress(line); if (p) void onProgress?.(p); }
+      const direct = parseProgress(remainder);
+      if (direct && /download:/i.test(remainder)) void onProgress?.(direct);
+    };
+    child.stdout.on('data', c => consume(c, 'stdout'));
+    child.stderr.on('data', c => consume(c, 'stderr'));
     child.on('error', e => finish(reject, e));
-    child.on('close', code => code === 0 ? finish(resolve, { stdout, stderr }) : finish(reject, Object.assign(new Error(stderr.trim().split(/\r?\n/).slice(-1)[0] || `yt-dlp exited with code ${code}`), { code })));
+    child.on('close', code => {
+      for (const line of [stdoutBuffer, stderrBuffer]) { const p = parseProgress(line); if (p) void onProgress?.(p); }
+      code === 0 ? finish(resolve, { stdout, stderr }) : finish(reject, Object.assign(new Error(stderr.trim().split(/\r?\n/).slice(-1)[0] || stdout.trim().split(/\r?\n/).slice(-1)[0] || `yt-dlp exited with code ${code}`), { code }));
+    });
   });
 }
 async function getStopState(jobId) { const r = await pool.query('SELECT cancel_requested,status,stop_requested_status FROM resource_download_jobs WHERE id=$1', [jobId]); if (!r.rowCount) return 'cancelled'; const row = r.rows[0]; return row.stop_requested_status || (row.cancel_requested ? 'cancelled' : null); }
@@ -77,9 +96,10 @@ async function startJob(job) {
   const dir = resolveStoragePath(resource.id); await fs.mkdir(dir, { recursive: true });
   const base = (resource.name || 'video').replace(/[<>:\"/\\|?*\x00-\x1F]/g, '_').trim() || 'video';
 
-  // YouTube thumbnails are mandatory and independent of the video-download setting.
-  // A missing thumbnail is repaired before the video worker starts downloading.
-  if (/(?:youtube\.com|youtu\.be)/i.test(resource.url)) await ensureYouTubeThumbnail(resource);
+  if (/(?:youtube\.com|youtu\.be)/i.test(resource.url)) {
+    const thumbnailUrl = await ensureYouTubeThumbnail(resource);
+    if (thumbnailUrl && resource.thumbnail_url !== thumbnailUrl) await pool.query('UPDATE resources SET thumbnail_url=$1,updated_at=CURRENT_TIMESTAMP WHERE id=$2', [thumbnailUrl, resource.id]);
+  }
 
   const outputTemplate = path.join(dir, `${base}.%(ext)s`);
   const maxAttempts = Math.max(1, Math.min(5, Number(job.max_attempts) || 3));
