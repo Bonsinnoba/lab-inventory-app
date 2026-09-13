@@ -6,11 +6,7 @@ export default function MediaManager({ open, onClose, onOpenMusic }: Props) {
   if (!open) return null;
 
   return (
-    <aside
-      className="fixed top-0 right-12 bottom-0 z-[80] w-[min(380px,calc(100vw-3rem))] bg-surface border-l border-border shadow-2xl flex flex-col"
-      role="complementary"
-      aria-label="Media Manager"
-    >
+    <div className="h-full w-full flex flex-col bg-surface" role="region" aria-label="Media Manager">
       <header className="flex items-center justify-between gap-3 px-4 py-3 border-b border-border flex-shrink-0 min-h-[56px] bg-surface/95 backdrop-blur">
         <div className="min-w-0">
           <div className="text-[10px] uppercase tracking-[0.16em] text-text-secondary">Daily use</div>
@@ -49,6 +45,6 @@ export default function MediaManager({ open, onClose, onOpenMusic }: Props) {
           </div>
         </div>
       </div>
-    </aside>
+    </div>
   );
 }
