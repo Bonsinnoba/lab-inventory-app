@@ -1,130 +1,30 @@
 import { useQuery } from '@tanstack/react-query';
 import { getProjectFinancialSummary, ProjectFinancialSummary } from '../api/projects';
 import { useNavigate } from 'react-router-dom';
-import { AlertTriangle, ArrowDownRight, ArrowUpRight, Wallet, RefreshCw } from 'lucide-react';
+import { AlertTriangle, ArrowDownRight, ArrowUpRight, Wallet, RefreshCw, ArrowLeft } from 'lucide-react';
 
 export default function ProjectFinanceView() {
   const navigate = useNavigate();
-  const { data = [], isLoading, error, refetch, isFetching } = useQuery<ProjectFinancialSummary[]>({
-    queryKey: ['projectFinancialSummary'],
-    queryFn: getProjectFinancialSummary,
-  });
+  const { data = [], isLoading, error, refetch, isFetching } = useQuery<ProjectFinancialSummary[]>({ queryKey: ['projectFinancialSummary'], queryFn: getProjectFinancialSummary });
   const totalBudget = data.reduce((sum, p) => sum + Number(p.budget ?? 0), 0);
   const totalExpense = data.reduce((sum, p) => sum + Number(p.actual_expense ?? 0), 0);
   const totalIncome = data.reduce((sum, p) => sum + Number(p.project_income ?? 0), 0);
   const allocatedInventory = data.reduce((sum, p) => sum + Number(p.allocated_inventory_value ?? 0), 0);
-
-  const cards = [
-    ['Total project budgets', totalBudget, Wallet],
-    ['Actual expenses', totalExpense, ArrowDownRight],
-    ['Project income', totalIncome, ArrowUpRight],
-    ['Allocated inventory', allocatedInventory, Wallet],
-  ] as const;
+  const cards = [['Total project budgets', totalBudget, Wallet], ['Actual expenses', totalExpense, ArrowDownRight], ['Project income', totalIncome, ArrowUpRight], ['Allocated inventory', allocatedInventory, Wallet]] as const;
 
   return (
     <div className="p-4 sm:p-6 max-w-[1400px] mx-auto w-full space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
+          <button onClick={() => navigate('/financials')} className="inline-flex items-center gap-1.5 text-sm text-text-secondary hover:text-text-primary mb-3 rounded-sm focus:outline-none focus:ring-1 focus:ring-accent px-1 py-1 -ml-1" aria-label="Back to Financials"><ArrowLeft size={16} /> Back to Financials</button>
           <p className="text-xs uppercase tracking-wider text-text-secondary font-medium">PROJECT FINANCE</p>
           <h3 className="text-section-header font-ui font-semibold mt-1">Project Finance</h3>
-          <p className="text-text-secondary text-sm mt-1 max-w-3xl">
-            Compare project budgets with actual spending and inventory committed to each project.
-          </p>
+          <p className="text-text-secondary text-sm mt-1 max-w-3xl">Compare project budgets with actual spending and inventory committed to each project.</p>
         </div>
-        <button
-          onClick={() => refetch()}
-          disabled={isFetching}
-          className="self-start inline-flex items-center gap-2 px-3 py-2 bg-surface-raised border border-border rounded-sm text-sm text-text-primary hover:border-accent transition-colors disabled:opacity-50"
-          aria-label="Refresh project finances"
-        >
-          <RefreshCw size={15} className={isFetching ? 'animate-spin' : ''} />
-          Refresh
-        </button>
+        <button onClick={() => refetch()} disabled={isFetching} className="self-start inline-flex items-center gap-2 px-3 py-2 bg-surface-raised border border-border rounded-sm text-sm text-text-primary hover:border-accent transition-colors disabled:opacity-50" aria-label="Refresh project finances"><RefreshCw size={15} className={isFetching ? 'animate-spin' : ''} /> Refresh</button>
       </div>
-
-      {!isLoading && !error && data.length > 0 && (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-          {cards.map(([label, value, Icon]) => (
-            <div key={label} className="bg-surface border border-border rounded-md p-3 sm:p-4">
-              <div className="flex items-center gap-2 text-text-secondary text-xs sm:text-sm">
-                <Icon size={16} />
-                <span>{label}</span>
-              </div>
-              <div className="font-mono text-lg sm:text-xl lg:text-2xl mt-2 text-text-primary">
-                ${Number(value).toFixed(2)}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {isLoading ? (
-        <div className="bg-surface border border-border rounded-md p-4 space-y-3" aria-busy="true">
-          {[1, 2, 3, 4, 5].map((row) => (
-            <div key={row} className="h-10 bg-surface-raised rounded animate-pulse" />
-          ))}
-        </div>
-      ) : error ? (
-        <div className="bg-surface border border-border rounded-md py-12 px-6 text-center">
-          <p className="text-status-danger text-sm">Project financial data could not be loaded.</p>
-          <button onClick={() => refetch()} className="mt-3 px-3 py-2 border border-border rounded-sm text-sm hover:border-accent transition-colors">
-            Try again
-          </button>
-        </div>
-      ) : data.length === 0 ? (
-        <div className="bg-surface border border-border rounded-md py-12 px-6 text-center">
-          <p className="text-text-primary font-medium">No project finance data yet</p>
-          <p className="text-text-secondary text-sm mt-1">Create a project and record its budget or transactions to see financial activity here.</p>
-        </div>
-      ) : (
-        <section className="bg-surface border border-border rounded-md overflow-hidden">
-          <div className="px-4 py-3 border-b border-border flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h4 className="text-text-primary font-medium">Project breakdown</h4>
-              <p className="text-xs text-text-secondary mt-0.5">Select a project to open its full financial and operational detail.</p>
-            </div>
-            <span className="text-xs text-text-secondary">{data.length} {data.length === 1 ? 'project' : 'projects'}</span>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm min-w-[820px]">
-              <thead className="bg-surface-raised border-b border-border">
-                <tr>
-                  <th className="text-left px-4 py-3 text-text-secondary font-medium">Project</th>
-                  <th className="text-right px-4 py-3 text-text-secondary font-medium">Budget</th>
-                  <th className="text-right px-4 py-3 text-text-secondary font-medium">Actual expense</th>
-                  <th className="text-right px-4 py-3 text-text-secondary font-medium">Remaining</th>
-                  <th className="text-right px-4 py-3 text-text-secondary font-medium">Inventory</th>
-                  <th className="text-right px-4 py-3 text-text-secondary font-medium">Used</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.map((p) => {
-                  const over = p.budget_remaining != null && p.budget_remaining < 0;
-                  return (
-                    <tr
-                      key={p.project_id}
-                      onClick={() => navigate(`/projects/${p.project_id}`)}
-                      onKeyDown={(e) => e.key === 'Enter' && navigate(`/projects/${p.project_id}`)}
-                      tabIndex={0}
-                      className="border-b border-border last:border-0 hover:bg-surface-raised focus:outline-none focus:bg-surface-raised cursor-pointer transition-colors"
-                    >
-                      <td className="px-4 py-3 text-text-primary font-medium">{p.name}</td>
-                      <td className="px-4 py-3 text-right font-mono">{p.budget == null ? '—' : `$${Number(p.budget).toFixed(2)}`}</td>
-                      <td className="px-4 py-3 text-right font-mono">${Number(p.actual_expense).toFixed(2)}</td>
-                      <td className={`px-4 py-3 text-right font-mono ${over ? 'text-status-danger font-medium' : 'text-text-primary'}`}>
-                        {p.budget_remaining == null ? '—' : `$${Number(p.budget_remaining).toFixed(2)}`}
-                        {over && <AlertTriangle size={14} className="inline ml-2" aria-label="Over budget" />}
-                      </td>
-                      <td className="px-4 py-3 text-right font-mono">${Number(p.allocated_inventory_value).toFixed(2)}</td>
-                      <td className="px-4 py-3 text-right font-mono">{p.budget_used_percent == null ? '—' : `${p.budget_used_percent.toFixed(1)}%`}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
+      {!isLoading && !error && data.length > 0 && <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">{cards.map(([label, value, Icon]) => <div key={label} className="bg-surface border border-border rounded-md p-3 sm:p-4"><div className="flex items-center gap-2 text-text-secondary text-xs sm:text-sm"><Icon size={16} /><span>{label}</span></div><div className="font-mono text-lg sm:text-xl lg:text-2xl mt-2 text-text-primary">${Number(value).toFixed(2)}</div></div>)}</div>}
+      {isLoading ? <div className="bg-surface border border-border rounded-md p-4 space-y-3" aria-busy="true">{[1,2,3,4,5].map(row => <div key={row} className="h-10 bg-surface-raised rounded animate-pulse" />)}</div> : error ? <div className="bg-surface border border-border rounded-md py-12 px-6 text-center"><p className="text-status-danger text-sm">Project financial data could not be loaded.</p><button onClick={() => refetch()} className="mt-3 px-3 py-2 border border-border rounded-sm text-sm hover:border-accent transition-colors">Try again</button></div> : data.length === 0 ? <div className="bg-surface border border-border rounded-md py-12 px-6 text-center"><p className="text-text-primary font-medium">No project finance data yet</p><p className="text-text-secondary text-sm mt-1">Create a project and record its budget or transactions to see financial activity here.</p></div> : <section className="bg-surface border border-border rounded-md overflow-hidden"><div className="px-4 py-3 border-b border-border flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between"><div><h4 className="text-text-primary font-medium">Project breakdown</h4><p className="text-xs text-text-secondary mt-0.5">Select a project to open its full financial and operational detail.</p></div><span className="text-xs text-text-secondary">{data.length} {data.length === 1 ? 'project' : 'projects'}</span></div><div className="overflow-x-auto"><table className="w-full text-sm min-w-[820px]"><thead className="bg-surface-raised border-b border-border"><tr><th className="text-left px-4 py-3 text-text-secondary font-medium">Project</th><th className="text-right px-4 py-3 text-text-secondary font-medium">Budget</th><th className="text-right px-4 py-3 text-text-secondary font-medium">Actual expense</th><th className="text-right px-4 py-3 text-text-secondary font-medium">Remaining</th><th className="text-right px-4 py-3 text-text-secondary font-medium">Inventory</th><th className="text-right px-4 py-3 text-text-secondary font-medium">Used</th></tr></thead><tbody>{data.map(p => { const over = p.budget_remaining != null && p.budget_remaining < 0; return <tr key={p.project_id} onClick={() => navigate(`/projects/${p.project_id}`)} onKeyDown={e => e.key === 'Enter' && navigate(`/projects/${p.project_id}`)} tabIndex={0} className="border-b border-border last:border-0 hover:bg-surface-raised focus:outline-none focus:bg-surface-raised cursor-pointer transition-colors"><td className="px-4 py-3 text-text-primary font-medium">{p.name}</td><td className="px-4 py-3 text-right font-mono">{p.budget == null ? '—' : `$${Number(p.budget).toFixed(2)}`}</td><td className="px-4 py-3 text-right font-mono">${Number(p.actual_expense).toFixed(2)}</td><td className={`px-4 py-3 text-right font-mono ${over ? 'text-status-danger font-medium' : 'text-text-primary'}`}>{p.budget_remaining == null ? '—' : `$${Number(p.budget_remaining).toFixed(2)}`}{over && <AlertTriangle size={14} className="inline ml-2" aria-label="Over budget" />}</td><td className="px-4 py-3 text-right font-mono">${Number(p.allocated_inventory_value).toFixed(2)}</td><td className="px-4 py-3 text-right font-mono">{p.budget_used_percent == null ? '—' : `${p.budget_used_percent.toFixed(1)}%`}</td></tr>; })}</tbody></table></div></section>}
     </div>
   );
 }
