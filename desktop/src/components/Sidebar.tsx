@@ -28,6 +28,12 @@ export default function Sidebar({ user, onLogout }: SidebarProps) {
   useEffect(() => { localStorage.setItem(WIDTH_KEY, String(width)); }, [width]);
   useEffect(() => { localStorage.setItem(COLLAPSED_KEY, String(collapsed)); if (!collapsed) setShowCollapsedProfile(false); }, [collapsed]);
   useEffect(() => { setOpenGroups(current => { const next = { ...current }; groups.forEach(group => { if (group.children.some(item => location.pathname.startsWith(item.path))) next[group.id] = true; }); return next; }); }, [location.pathname]);
+  useEffect(() => {
+    if (!showCollapsedProfile) return;
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); setShowCollapsedProfile(false); } };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [showCollapsedProfile]);
 
   const handleMouseDown = useCallback((event: React.MouseEvent) => {
     event.preventDefault(); if (collapsed) return; setIsResizing(true); const startX = event.clientX, startWidth = width;
@@ -72,7 +78,7 @@ export default function Sidebar({ user, onLogout }: SidebarProps) {
           <div className="flex items-center gap-3 mb-3"><div className="w-8 h-8 bg-accent rounded-full flex items-center justify-center flex-shrink-0"><User size={16} className="text-bg" aria-hidden="true" /></div><div className="flex-1 min-w-0"><p className="text-text-primary text-sm font-medium truncate sidebar-user-name">{user.display_name || user.username}</p><p className="text-text-secondary text-xs capitalize sidebar-user-role">{user.role}</p></div></div>
           <div className="flex gap-2 sidebar-user-actions"><button type="button" onClick={toggleTheme} title={`Switch to ${theme.mode === 'light' ? 'dark' : 'light'} mode`} aria-label={`Switch to ${theme.mode === 'light' ? 'dark' : 'light'} mode`} className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-surface-raised border border-border rounded-md text-text-secondary hover:text-text-primary hover:border-accent transition-colors text-sm">{theme.mode === 'light' ? <Moon size={16} aria-hidden="true" /> : <Sun size={16} aria-hidden="true" />}</button><Link to="/settings" title="Settings" aria-label="Settings" className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-surface-raised border border-border rounded-md text-text-secondary hover:text-text-primary hover:border-accent transition-colors text-sm"><Settings size={16} aria-hidden="true" /></Link>{onLogout && <button type="button" onClick={onLogout} title="Sign out" aria-label="Sign out" className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-surface-raised border border-border rounded-md text-text-secondary hover:text-text-primary hover:border-accent transition-colors text-sm"><LogOut size={16} aria-hidden="true" /></button>}</div>
         </>}
-      </div>}
+      </div>
     </aside>
   </>;
 }
