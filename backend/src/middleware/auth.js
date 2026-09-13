@@ -6,10 +6,15 @@ export async function authenticateToken(req, res, next) {
   const authHeader = req.headers.authorization;
   let token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7).trim() : null;
 
-  // Media/PDF elements cannot set Authorization headers. Resource download
-  // URLs use a short-lived, resource-scoped JWT and are accepted only on the
-  // download endpoint.
-  if (!token && req.path.endsWith('/download') && typeof req.query.access_token === 'string') {
+  // Browser media elements (<img>, <video>, <audio>, iframe resources) cannot
+  // reliably attach an Authorization header. Local resource media URLs may
+  // therefore carry the normal authenticated session token in the query
+  // string. This is intentionally limited to the media-serving endpoints.
+  const queryTokenAllowed =
+    req.path.endsWith('/download') ||
+    req.path.endsWith('/media') ||
+    req.path.endsWith('/thumbnail');
+  if (!token && queryTokenAllowed && typeof req.query.access_token === 'string') {
     token = req.query.access_token;
   }
 
