@@ -9,6 +9,20 @@
   min-width: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  scrollbar-width: none;
+}
+
+.desktop-sidebar .sidebar-nav::-webkit-scrollbar {
+  display: none;
+}
+
+/* The divider is a fixed visual separator, never a flexible spacer. */
+.desktop-sidebar .sidebar-section-divider {
+  flex: 0 0 1px !important;
+  height: 1px !important;
+  min-height: 1px !important;
+  max-height: 1px !important;
+  align-self: stretch;
 }
 
 /* Collapsed navigation matches the right activity rail: square controls with a little more breathing room. */
@@ -17,11 +31,6 @@
   flex-direction: column;
   align-items: center;
   gap: 5px;
-  scrollbar-width: none;
-}
-
-.desktop-sidebar.sidebar-collapsed .sidebar-nav::-webkit-scrollbar {
-  display: none;
 }
 
 .desktop-sidebar.sidebar-collapsed .sidebar-nav > a,
@@ -53,6 +62,7 @@
 .desktop-sidebar.sidebar-collapsed .sidebar-section-divider {
   width: 40px;
   margin: 4px auto;
+  align-self: center;
 }
 
 .desktop-sidebar.sidebar-collapsed .sidebar-nav > button.mt-2 {
@@ -67,7 +77,7 @@
   box-shadow: none;
 }
 
-/* The divider is only a visual section break; keep it compact so the expanded rail does not waste vertical space. */
+/* Keep the expanded sidebar separator compact as well. */
 .desktop-sidebar:not(.sidebar-collapsed) .sidebar-section-divider {
   height: 1px;
   margin: 5px 8px;
