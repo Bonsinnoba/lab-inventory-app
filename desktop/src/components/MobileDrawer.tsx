@@ -1,7 +1,7 @@
 import { Box, DollarSign, FileText, Folder, Layers, LogOut, Settings, X, LayoutDashboard, ScanLine, Search, Bot, User, FileBarChart, BellRing } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 import { useTheme } from '../contexts/ThemeContext';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import ScanLookupModal from './ScanLookupModal';
 
 interface Props {
@@ -28,6 +28,14 @@ export default function MobileDrawer({ open, onClose, user, onLogout }: Props) {
   const location = useLocation();
   const { theme, setMode } = useTheme();
   const [scan, setScan] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); onClose(); } };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [open, onClose]);
+
   if (!open) return null;
 
   return (
