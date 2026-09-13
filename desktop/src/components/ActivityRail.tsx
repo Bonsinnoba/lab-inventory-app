@@ -1,8 +1,8 @@
 import { Bot, BookOpen, Search, Calculator, Music2, FolderOpen } from 'lucide-react';
 
-export type DockableContent = 'assistant' | 'notebook' | 'search' | 'music' | null;
+export type DockableContent = 'assistant' | 'notebook' | 'search' | 'music' | 'media' | null;
 interface ActivityRailProps { active: DockableContent; onSelect: (content: DockableContent) => void; engineeringOpen?: boolean; musicOpen?: boolean; mediaOpen?: boolean; }
-const items: { id: Exclude<DockableContent, null | 'music'>; icon: typeof Bot; label: string }[] = [
+const items: { id: Exclude<DockableContent, null | 'music' | 'media'>; icon: typeof Bot; label: string }[] = [
   { id: 'assistant', icon: Bot, label: 'Lab Assistant' },
   { id: 'notebook', icon: BookOpen, label: 'Notebook' },
   { id: 'search', icon: Search, label: 'Search' },
@@ -25,8 +25,8 @@ export default function ActivityRail({ active, onSelect, engineeringOpen = false
       <ToolButton label="Engineering Tools" active={engineeringOpen} onClick={() => window.dispatchEvent(new CustomEvent('labos:engineering-tools'))}><Calculator size={19} strokeWidth={engineeringOpen ? 2.2 : 2} aria-hidden="true" /></ToolButton>
     </div>
     <div className="mt-auto pt-2 border-t border-border w-9 flex flex-col items-center gap-1" role="group" aria-label="Media tools">
-      <ToolButton label="Music Player" active={musicOpen} onClick={() => window.dispatchEvent(new CustomEvent('labos:music-player'))}><Music2 size={19} strokeWidth={musicOpen ? 2.2 : 2} aria-hidden="true" /></ToolButton>
-      <ToolButton label="Media Manager" active={mediaOpen} onClick={() => window.dispatchEvent(new CustomEvent('labos:media-manager'))}><FolderOpen size={19} strokeWidth={mediaOpen ? 2.2 : 2} aria-hidden="true" /></ToolButton>
+      <ToolButton label="Music Player" active={musicOpen} onClick={() => onSelect(musicOpen ? null : 'music')}><Music2 size={19} strokeWidth={musicOpen ? 2.2 : 2} aria-hidden="true" /></ToolButton>
+      <ToolButton label="Media Manager" active={mediaOpen} onClick={() => onSelect(mediaOpen ? null : 'media')}><FolderOpen size={19} strokeWidth={mediaOpen ? 2.2 : 2} aria-hidden="true" /></ToolButton>
     </div>
   </aside>;
 }
