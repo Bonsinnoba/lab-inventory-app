@@ -84,13 +84,11 @@ export default function ProjectsPage() {
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[850px]">
+          <table className="w-full min-w-[680px]">
             <thead className="bg-surface-raised border-b border-border">
               <tr>
-                <th scope="col" className="text-left px-4 py-3 text-text-secondary text-[11px] uppercase tracking-wider font-semibold">Name</th>
+                <th scope="col" className="text-left px-4 py-3 text-text-secondary text-[11px] uppercase tracking-wider font-semibold">Project</th>
                 <th scope="col" className="text-left px-4 py-3 text-text-secondary text-[11px] uppercase tracking-wider font-semibold">Status</th>
-                <th scope="col" className="text-right px-4 py-3 text-text-secondary text-[11px] uppercase tracking-wider font-semibold font-mono">Budget</th>
-                <th scope="col" className="text-right px-4 py-3 text-text-secondary text-[11px] uppercase tracking-wider font-semibold font-mono">Spent</th>
                 <th scope="col" className="text-left px-4 py-3 text-text-secondary text-[11px] uppercase tracking-wider font-semibold">Priority</th>
                 <th scope="col" className="text-left px-4 py-3 text-text-secondary text-[11px] uppercase tracking-wider font-semibold">Due</th>
                 <th scope="col" className="text-right px-4 py-3 text-text-secondary text-[11px] uppercase tracking-wider font-semibold font-mono">Remaining</th>
@@ -100,14 +98,14 @@ export default function ProjectsPage() {
               {isLoading ? (
                 Array.from({ length: 5 }).map((_, i) => (
                   <tr key={i} className="border-b border-border last:border-0">
-                    {Array.from({ length: 7 }).map((_, j) => (
+                    {Array.from({ length: 5 }).map((_, j) => (
                       <td key={j} className="px-4 py-3.5"><Skeleton className="h-4 w-full" /></td>
                     ))}
                   </tr>
                 ))
               ) : error ? (
                 <tr>
-                  <td colSpan={7} className="px-6 py-14 text-center" role="alert">
+                  <td colSpan={5} className="px-6 py-14 text-center" role="alert">
                     <div className="mx-auto max-w-sm">
                       <p className="text-sm font-medium text-status-danger">Projects couldn't be loaded.</p>
                       <p className="text-xs text-text-secondary mt-1.5">Check the connection and try again.</p>
@@ -119,7 +117,7 @@ export default function ProjectsPage() {
                 </tr>
               ) : projects.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-6 py-16 text-center">
+                  <td colSpan={5} className="px-6 py-16 text-center">
                     <div className="mx-auto max-w-sm">
                       <div className="mx-auto w-10 h-10 rounded-full border border-border bg-surface-raised flex items-center justify-center text-accent">
                         <FolderKanban size={19} />
@@ -149,23 +147,21 @@ export default function ProjectsPage() {
                       aria-label={`Open project ${project.name}`}
                       className="border-b border-border last:border-0 hover:bg-surface-raised transition-colors cursor-pointer focus:outline-none focus-visible:bg-surface-raised focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60"
                     >
-                      <td className="px-4 py-3.5">
-                        <div className="font-medium text-text-primary truncate max-w-[360px]">{project.name}</div>
-                        {project.description && <div className="mt-0.5 max-w-[360px] truncate text-xs text-text-secondary">{project.description}</div>}
+                      <td className="px-4 py-4">
+                        <div className="font-medium text-text-primary truncate max-w-[420px]">{project.name}</div>
+                        {project.description && <div className="mt-0.5 max-w-[420px] truncate text-xs text-text-secondary">{project.description}</div>}
                       </td>
-                      <td className="px-4 py-3.5">
+                      <td className="px-4 py-4">
                         <div className="flex items-center gap-2">
                           <span className="w-2 h-2 rounded-full shrink-0" aria-hidden="true" style={{ backgroundColor: statusColors[project.status], boxShadow: `0 0 8px ${statusColors[project.status]}66` }} />
                           <span className="text-sm">{statusLabels[project.status]}</span>
                         </div>
                       </td>
-                      <td className="px-4 py-3.5 text-right font-mono text-text-primary tabular-nums">{project.budget ? `$${budget.toFixed(2)}` : 'N/A'}</td>
-                      <td className="px-4 py-3.5 text-right font-mono text-text-primary tabular-nums">${totalSpent.toFixed(2)}</td>
-                      <td className="px-4 py-3.5">
+                      <td className="px-4 py-4">
                         <span className={`inline-flex items-center rounded border px-2 py-0.5 text-[10px] uppercase tracking-wider font-medium ${priorityClasses[priority] || priorityClasses.normal}`}>{priority.replace(/_/g, ' ')}</span>
                       </td>
-                      <td className="px-4 py-3.5 text-sm text-text-secondary whitespace-nowrap">{formatDate(project.due_date)}</td>
-                      <td className="px-4 py-3.5 text-right font-mono tabular-nums">
+                      <td className="px-4 py-4 text-sm text-text-secondary whitespace-nowrap">{formatDate(project.due_date)}</td>
+                      <td className="px-4 py-4 text-right font-mono tabular-nums">
                         {remaining !== null ? <span className={remaining < 0 ? 'text-status-danger' : 'text-text-primary'}>{remaining < 0 ? '−' : ''}${Math.abs(remaining).toFixed(2)}</span> : <span className="text-text-secondary">N/A</span>}
                       </td>
                     </tr>
