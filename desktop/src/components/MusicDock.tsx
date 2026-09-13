@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ListMusic, Pause, Play, SkipBack, SkipForward, Trash2, Upload, Volume2, X, Shuffle, Repeat, Repeat1, Plus, Library, FolderPlus, ChevronUp, ChevronDown, Music2 } from 'lucide-react';
+import { ListMusic, Pause, Play, SkipBack, SkipForward, Trash2, Upload, Volume2, X, Minimize2, Maximize2, Shuffle, Repeat, Repeat1, Plus, Library, FolderPlus, ChevronUp, ChevronDown, Music2 } from 'lucide-react';
 import { useToast } from '../contexts/ToastContext';
 
 type Track = { id: string; name: string; blob: Blob; addedAt?: number };
@@ -74,6 +74,7 @@ export default function MusicDock({ onClose, autoPause }: Props) {
   const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [minimized, setMinimized] = useState(false);
   const resumeAfterPause = useRef(false);
 
   const current = tracks.find(t => t.id === currentId) || null;
@@ -173,10 +174,31 @@ export default function MusicDock({ onClose, autoPause }: Props) {
   const art = (small = false) => <div className={`${small ? 'w-10 h-10' : 'w-full aspect-square'} shrink-0 rounded-xl border border-border bg-accent/10 text-accent flex items-center justify-center overflow-hidden`}><Music2 size={small ? 17 : 28} /></div>;
   const audioElement = <audio ref={audio} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onTimeUpdate={e => setPosition(e.currentTarget.currentTime)} onLoadedMetadata={e => setDuration(e.currentTarget.duration)} onEnded={advance} onError={() => setPlaying(false)} />;
 
+  if (minimized) return <section className="h-full min-h-0 flex flex-col justify-end bg-surface" aria-label="Minimized music player">
+    <div className="p-3 border-t border-border bg-surface-raised/40">
+      <div className="flex items-center gap-2.5">
+        {art(true)}
+        <div className="min-w-0 flex-1">
+          <div className="text-[10px] uppercase tracking-[0.16em] text-text-secondary">Music</div>
+          <div className="text-xs font-semibold truncate">{current?.name || 'Nothing playing'}</div>
+          <div className="text-[10px] text-text-secondary">{playing ? 'Playing locally' : 'Paused'}</div>
+        </div>
+        <button type="button" onClick={toggle} disabled={!current} className="w-9 h-9 rounded-full bg-accent text-bg flex items-center justify-center disabled:opacity-40" title={playing ? 'Pause' : 'Play'} aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={15}/> : <Play size={15}/>}</button>
+        <button type="button" onClick={() => setMinimized(false)} className="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-surface" title="Expand music player" aria-label="Expand music player"><Maximize2 size={15}/></button>
+        <button type="button" onClick={onClose} className="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-surface" title="Close music player" aria-label="Close music player"><X size={15}/></button>
+      </div>
+      <div className="flex items-center gap-2 mt-2 text-[10px] text-text-secondary"><span>{fmt(position)}</span><input aria-label="Track progress" className="flex-1 accent-current" type="range" min="0" max={duration || 0} step="0.1" value={Math.min(position, duration || 0)} onChange={e => { const v = Number(e.target.value); setPosition(v); if (audio.current) audio.current.currentTime = v; }}/><span>{fmt(duration)}</span></div>
+    </div>
+    {audioElement}
+  </section>;
+
   return <section className="h-full min-h-0 flex flex-col bg-surface" aria-label="Music player">
     <header className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-border bg-surface">
       <div className="flex items-center gap-3 min-w-0"><div className="w-9 h-9 rounded-lg bg-accent/10 text-accent flex items-center justify-center"><Music2 size={18}/></div><div className="min-w-0"><div className="text-[10px] uppercase tracking-[0.18em] text-text-secondary">Media</div><div className="font-semibold truncate">Music Player</div><div className="text-[10px] text-text-secondary">{tracks.length} tracks · {playlists.length} playlists</div></div></div>
-      <button type="button" onClick={onClose} className="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-surface-raised focus:outline-none focus:ring-2 focus:ring-accent/50" title="Close music player" aria-label="Close music player"><X size={17}/></button>
+      <div className="flex items-center gap-1">
+        <button type="button" onClick={() => setMinimized(true)} className="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-surface-raised focus:outline-none focus:ring-2 focus:ring-accent/50" title="Minimize music player" aria-label="Minimize music player"><Minimize2 size={16}/></button>
+        <button type="button" onClick={onClose} className="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-surface-raised focus:outline-none focus:ring-2 focus:ring-accent/50" title="Close music player" aria-label="Close music player"><X size={17}/></button>
+      </div>
     </header>
 
     <div className="shrink-0 p-3 border-b border-border bg-surface-raised/20">
