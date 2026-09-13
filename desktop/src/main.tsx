@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./styles/tokens.css";
 import "./styles/ui2.css";
+import "./styles/sidebar-profile.css";
 
 if (typeof window !== "undefined" && (window.location.protocol === "http:" || window.location.protocol === "https:")) {
   window.addEventListener("load", () => {
