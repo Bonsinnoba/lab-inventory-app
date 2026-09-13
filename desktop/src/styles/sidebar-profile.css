@@ -11,6 +11,62 @@
   overflow-x: hidden;
 }
 
+/* Collapsed navigation matches the right activity rail: square controls with a little more breathing room. */
+.desktop-sidebar.sidebar-collapsed .sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  scrollbar-width: none;
+}
+
+.desktop-sidebar.sidebar-collapsed .sidebar-nav::-webkit-scrollbar {
+  display: none;
+}
+
+.desktop-sidebar.sidebar-collapsed .sidebar-nav > a,
+.desktop-sidebar.sidebar-collapsed .sidebar-nav > button {
+  width: 40px;
+  height: 40px;
+  min-height: 40px;
+  flex: 0 0 40px;
+  margin-left: auto;
+  margin-right: auto;
+  padding: 0;
+  border-radius: 7px;
+}
+
+.desktop-sidebar.sidebar-collapsed .sidebar-nav > div {
+  width: 40px;
+  flex: 0 0 40px;
+  margin-top: 0;
+}
+
+.desktop-sidebar.sidebar-collapsed .sidebar-nav > div > button {
+  width: 40px;
+  height: 40px;
+  min-height: 40px;
+  padding: 0;
+  justify-content: center;
+}
+
+.desktop-sidebar.sidebar-collapsed .sidebar-section-divider {
+  width: 40px;
+  margin: 4px auto;
+}
+
+.desktop-sidebar.sidebar-collapsed .sidebar-nav > button.mt-2 {
+  margin-top: 0;
+  border-top: 0;
+  padding-top: 0;
+}
+
+.desktop-sidebar.sidebar-collapsed .desktop-nav-link.is-active {
+  background: color-mix(in srgb, var(--color-accent) 14%, var(--color-surface-raised));
+  border-color: color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
+  box-shadow: none;
+}
+
 .desktop-sidebar .sidebar-user-area {
   position: relative;
   z-index: 110;
