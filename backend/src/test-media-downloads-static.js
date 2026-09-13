@@ -26,8 +26,9 @@ const checks = [
   ['worker supports FFmpeg merge fallback', worker.includes('FFMPEG') && worker.includes('--merge-output-format') && worker.includes('bv*[height<=')],
   ['worker prefers requested quality with adaptive streams', worker.includes('bv*[height<=') && worker.includes('+ba') && worker.includes('/b[height<=')],
   ['worker supplies supported JS runtime', worker.includes('--js-runtimes') && worker.includes('process.execPath')],
-  ['worker guarantees YouTube thumbnail before video', worker.includes('ensureYouTubeThumbnail(resource)') && worker.includes('mandatory')],
+  ['worker guarantees YouTube thumbnail before video', worker.includes('ensureYouTubeThumbnail(resource)') && worker.includes('thumbnailUrl') && worker.includes('UPDATE resources SET thumbnail_url')],
   ['thumbnail downloader skips video', worker.includes('--skip-download') && worker.includes('--write-thumbnail')],
+  ['worker parses progress from stdout and stderr', worker.includes("child.stdout.on('data', c => consume(c, 'stdout'))") && worker.includes("child.stderr.on('data', c => consume(c, 'stderr'))")],
   ['worker tracks persistent progress', worker.includes('bytes_downloaded') && worker.includes('last_progress_at')],
   ['worker recovers interrupted jobs', worker.includes('recoverInterruptedJobs') && worker.includes("status='queued'")],
   ['worker supports active process cancellation', worker.includes('processes') && worker.includes('taskkill') && worker.includes('terminate')],
@@ -44,7 +45,8 @@ const checks = [
   ['Downloads page shows tool diagnostics', page.includes('Download system') && page.includes('yt-dlp') && page.includes('FFmpeg')],
   ['Resources page downloads YouTube thumbnail', resources.includes('downloadYouTubeThumbnail')],
   ['Resources page queues video by default', resources.includes('useState(true)') && resources.includes('Download video')],
-  ['Resources page uses authenticated local thumbnail URL', resources.includes('getLocalThumbnailUrl')],
+  ['Resources page always uses local YouTube thumbnail', resources.includes("isYouTube(r.url||'')?getLocalThumbnailUrl(r.id):r.thumbnail_url")],
+  ['Resources page has bounded scrollable link modal', resources.includes('max-h-[92vh]') && resources.includes('overflow-y-auto') && resources.includes('grid-cols-1 lg:grid-cols-[1.05fr_.95fr]')],
 ];
 
 let failed = 0;
