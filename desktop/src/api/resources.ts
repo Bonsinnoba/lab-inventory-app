@@ -6,6 +6,7 @@ export interface Resource {
   id: string; name: string; kind: 'file' | 'folder' | 'link';
   file_type: 'image' | 'video' | 'audio' | 'pdf' | 'text' | 'document' | 'youtube' | 'other' | 'schematic_folder';
   original_filename?: string; mime_type?: string; size_bytes?: number; url?: string; thumbnail_url?: string;
+  local_media_path?: string; local_media_filename?: string; local_media_mime_type?: string; local_media_size_bytes?: number; local_media_downloaded_at?: string;
   parent_resource_id?: string; relative_path?: string; item_id?: string; project_id?: string; note_id?: string;
   item_name?: string; project_name?: string; note_title?: string; category?: string; description?: string;
   tags?: string[]; updated_at?: string; created_at: string; derived_from_resource_id?: string;
