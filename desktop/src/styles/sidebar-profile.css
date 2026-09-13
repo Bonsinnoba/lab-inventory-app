@@ -67,6 +67,16 @@
   box-shadow: none;
 }
 
+/* The divider is only a visual section break; keep it compact so the expanded rail does not waste vertical space. */
+.desktop-sidebar:not(.sidebar-collapsed) .sidebar-section-divider {
+  height: 1px;
+  margin: 5px 8px;
+}
+
+.desktop-sidebar:not(.sidebar-collapsed) .sidebar-nav > div.mt-1 {
+  margin-top: 2px;
+}
+
 .desktop-sidebar .sidebar-user-area {
   position: relative;
   z-index: 110;
