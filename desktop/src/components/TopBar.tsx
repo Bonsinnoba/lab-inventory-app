@@ -21,20 +21,20 @@ export default function TopBar({ title, onOpenCommandPalette }: TopBarProps) {
         <button
           type="button"
           onClick={onOpenCommandPalette}
-          className="topbar-search hidden md:flex items-center gap-2 px-3 py-1.5 rounded-sm text-text-secondary hover:text-text-primary"
+          className="topbar-search hidden md:flex items-center gap-2 px-3 py-1.5 rounded-sm text-text-secondary hover:text-text-primary hover:bg-surface-raised transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
           title="Open command palette"
           aria-label="Open command palette"
         >
           <Search size={15} aria-hidden="true" />
           <span className="text-xs flex-1">Search laboratory…</span>
-          <span className="font-mono text-[10px] border border-border rounded px-1.5 py-0.5 flex items-center gap-1">
-            <Command size={10} aria-hidden="true" />K
+          <span className="font-mono text-[10px] border border-border rounded px-1.5 py-0.5 flex items-center gap-1" aria-hidden="true">
+            <Command size={10} />K
           </span>
         </button>
 
         <Link
           to="/search"
-          className="topbar-search-link p-2 rounded-sm transition-colors text-text-secondary hover:text-text-primary hover:bg-surface-raised"
+          className="topbar-search-link p-2 rounded-sm transition-colors text-text-secondary hover:text-text-primary hover:bg-surface-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
           title="Open full search"
           aria-label="Open full search"
         >
