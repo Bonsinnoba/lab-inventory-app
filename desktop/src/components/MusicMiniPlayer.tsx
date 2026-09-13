@@ -27,18 +27,22 @@ export default function MusicMiniPlayer({ onRestore, onClose }: Props) {
   }, []);
 
   useEffect(() => {
-    if (!drag.current.active) return;
     const move = (event: PointerEvent) => {
+      if (!drag.current.active) return;
       const dx = event.clientX - drag.current.startX;
       const dy = event.clientY - drag.current.startY;
       if (Math.abs(dx) > 3 || Math.abs(dy) > 3) drag.current.moved = true;
       setPositionOffset({ x: drag.current.originX + dx, y: drag.current.originY + dy });
     };
-    const up = () => { drag.current.active = false; window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); if (drag.current.moved) window.setTimeout(() => { drag.current.moved = false; }, 0); };
+    const up = () => {
+      if (!drag.current.active) return;
+      drag.current.active = false;
+      window.setTimeout(() => { drag.current.moved = false; }, 0);
+    };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
     return () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
-  }, [drag.current.active]);
+  }, []);
 
   const startDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
     if (event.button !== 0) return;
