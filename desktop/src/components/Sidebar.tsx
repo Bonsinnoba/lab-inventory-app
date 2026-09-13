@@ -19,6 +19,8 @@ export default function Sidebar({ user, onLogout }: SidebarProps) {
   const { theme, setMode } = useTheme();
   const [showScanModal, setShowScanModal] = useState(false);
   const [showCollapsedProfile, setShowCollapsedProfile] = useState(false);
+  const [showCollapsedGroup, setShowCollapsedGroup] = useState<string | null>(null);
+  const [collapsedGroupTop, setCollapsedGroupTop] = useState(0);
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSED_KEY) === 'true');
   const [width, setWidth] = useState(() => { const saved = Number(localStorage.getItem(WIDTH_KEY)); return Number.isFinite(saved) && saved >= MIN_WIDTH && saved <= MAX_WIDTH ? saved : DEFAULT_WIDTH; });
@@ -26,14 +28,20 @@ export default function Sidebar({ user, onLogout }: SidebarProps) {
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({ knowledge: true, laboratory: true });
 
   useEffect(() => { localStorage.setItem(WIDTH_KEY, String(width)); }, [width]);
-  useEffect(() => { localStorage.setItem(COLLAPSED_KEY, String(collapsed)); if (!collapsed) setShowCollapsedProfile(false); }, [collapsed]);
-  useEffect(() => { setOpenGroups(current => { const next = { ...current }; groups.forEach(group => { if (group.children.some(item => location.pathname.startsWith(item.path))) next[group.id] = true; }); return next; }); }, [location.pathname]);
+  useEffect(() => { localStorage.setItem(COLLAPSED_KEY, String(collapsed)); if (!collapsed) { setShowCollapsedProfile(false); setShowCollapsedGroup(null); } }, [collapsed]);
+  useEffect(() => { setOpenGroups(current => { const next = { ...current }; groups.forEach(group => { if (group.children.some(item => location.pathname.startsWith(item.path))) next[group.id] = true; }); return next; }); setShowCollapsedGroup(null); }, [location.pathname]);
   useEffect(() => {
-    if (!showCollapsedProfile) return;
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); setShowCollapsedProfile(false); } };
+    if (!showCollapsedProfile && !showCollapsedGroup) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setShowCollapsedProfile(false);
+        setShowCollapsedGroup(null);
+      }
+    };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [showCollapsedProfile]);
+  }, [showCollapsedProfile, showCollapsedGroup]);
 
   const handleMouseDown = useCallback((event: React.MouseEvent) => {
     event.preventDefault(); if (collapsed) return; setIsResizing(true); const startX = event.clientX, startWidth = width;
@@ -44,23 +52,40 @@ export default function Sidebar({ user, onLogout }: SidebarProps) {
 
   const renderLink = (item: { icon?: typeof User; label: string; path: string }, compact = false) => {
     const Icon = item.icon; const active = location.pathname === item.path || location.pathname.startsWith(`${item.path}/`);
-    return <Link key={item.path} to={item.path} aria-current={active ? 'page' : undefined} title={collapsed ? item.label : undefined} className={`desktop-nav-link w-full flex items-center gap-3 ${compact ? 'pl-11 pr-3' : 'px-3'} py-2 rounded-md text-left transition-colors ${active ? 'is-active bg-accent text-bg' : 'text-text-secondary hover:bg-surface-raised hover:text-text-primary'}`}>
+    return <Link key={item.path} to={item.path} aria-current={active ? 'page' : undefined} aria-label={collapsed ? item.label : undefined} data-tooltip={collapsed ? item.label : undefined} className={`desktop-nav-link sidebar-tooltip-trigger w-full flex items-center gap-3 ${compact ? 'pl-11 pr-3' : 'px-3'} py-2 rounded-md text-left transition-colors ${active ? 'is-active bg-accent text-bg' : 'text-text-secondary hover:bg-surface-raised hover:text-text-primary'}`}>
       {Icon && <Icon size={19} aria-hidden="true" />}<span className="text-sm sidebar-nav-label">{item.label}</span>
     </Link>;
   };
 
   const toggleTheme = () => setMode(theme.mode === 'light' ? 'dark' : 'light');
 
+  const openCollapsedGroupMenu = (event: React.MouseEvent<HTMLButtonElement>, groupId: string) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    setCollapsedGroupTop(Math.min(Math.max(8, rect.top - 4), window.innerHeight - 220));
+    setShowCollapsedProfile(false);
+    setShowCollapsedGroup(current => current === groupId ? null : groupId);
+  };
+
   return <>
     {showScanModal && <ScanLookupModal onClose={() => setShowScanModal(false)} />}
     <aside style={{ width: collapsed ? COLLAPSED_WIDTH : width }} aria-label="LabOS navigation" className={`desktop-sidebar relative bg-surface border-r border-border flex flex-col flex-shrink-0 ${collapsed ? 'sidebar-collapsed' : ''}`}>
-      <div onMouseDown={handleMouseDown} onDoubleClick={() => { setCollapsed(false); setWidth(DEFAULT_WIDTH); }} role="separator" aria-orientation="vertical" aria-label="Resize sidebar" className="absolute right-0 top-0 bottom-0 w-1.5 -mr-0.5 cursor-col-resize z-10 group"><div className={`h-full w-full transition-colors ${isResizing ? 'bg-accent' : 'bg-transparent group-hover:bg-accent/50'}`} /></div>
-      <div className="p-3 border-b border-border sidebar-brand-row"><div className="min-w-0"><div className="labos-brand" aria-label="LabOS">LAB<span>OS</span></div><div className="text-[10px] text-text-secondary font-mono mt-1 tracking-wider sidebar-brand-subtitle">LABORATORY OPERATING SYSTEM</div></div><button type="button" onClick={() => setCollapsed(value => !value)} className="sidebar-collapse-button" aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}>{collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}</button></div>
-      <nav className="flex-1 p-2 overflow-y-auto sidebar-nav">{primaryItems.map(item => renderLink(item))}<div className="sidebar-section-divider" aria-hidden="true" />{groups.map(group => { const Icon = group.icon; const active = group.children.some(child => location.pathname === child.path || location.pathname.startsWith(`${child.path}/`)); return <div key={group.id} className="mt-1"><button type="button" onClick={() => setOpenGroups(current => ({ ...current, [group.id]: !current[group.id] }))} title={collapsed ? group.label : undefined} aria-label={collapsed ? group.label : undefined} aria-expanded={collapsed ? undefined : openGroups[group.id]} className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-left transition-colors ${active ? 'text-text-primary' : 'text-text-secondary'} hover:bg-surface-raised hover:text-text-primary`}><Icon size={19} aria-hidden="true" /><span className="text-sm sidebar-nav-label flex-1">{group.label}</span>{!collapsed && <ChevronDown size={15} className={`transition-transform ${openGroups[group.id] ? '' : '-rotate-90'}`} aria-hidden="true" />}</button>{!collapsed && openGroups[group.id] && group.children.map(child => renderLink(child, true))}</div>; })}{user?.role === 'admin' && renderLink({ icon: User, label: 'Users', path: '/users' })}<button type="button" onClick={() => setShowScanModal(true)} title={collapsed ? 'Scan Item' : undefined} className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-left transition-colors text-text-secondary hover:bg-surface-raised hover:text-text-primary mt-2 border-t border-border pt-3"><ScanLine size={19} aria-hidden="true" /><span className="text-sm sidebar-nav-label">Scan Item</span></button></nav>
+      <div onMouseDown={handleMouseDown} onDoubleClick={() => { setCollapsed(false); setWidth(DEFAULT_WIDTH); }} role="separator" aria-orientation="vertical" aria-label="Resize sidebar" data-tooltip={!collapsed ? 'Drag to resize sidebar' : undefined} className="absolute right-0 top-0 bottom-0 w-1.5 -mr-0.5 cursor-col-resize z-10 group"><div className={`h-full w-full transition-colors ${isResizing ? 'bg-accent' : 'bg-transparent group-hover:bg-accent/50'}`} /></div>
+      <div className="p-3 border-b border-border sidebar-brand-row"><div className="min-w-0"><div className="labos-brand" aria-label="LabOS">LAB<span>OS</span></div><div className="text-[10px] text-text-secondary font-mono mt-1 tracking-wider sidebar-brand-subtitle">LABORATORY OPERATING SYSTEM</div></div><button type="button" onClick={() => setCollapsed(value => !value)} className="sidebar-collapse-button sidebar-tooltip-trigger" aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} data-tooltip={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}>{collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}</button></div>
+      <nav className="flex-1 p-2 overflow-y-auto sidebar-nav">{primaryItems.map(item => renderLink(item))}<div className="sidebar-section-divider" aria-hidden="true" />{groups.map(group => { const Icon = group.icon; const active = group.children.some(child => location.pathname === child.path || location.pathname.startsWith(`${child.path}/`)); const collapsedOpen = showCollapsedGroup === group.id; return <div key={group.id} className="mt-1"><button type="button" onClick={event => collapsed ? openCollapsedGroupMenu(event, group.id) : setOpenGroups(current => ({ ...current, [group.id]: !current[group.id] }))} title={undefined} aria-label={collapsed ? group.label : undefined} aria-expanded={collapsed ? collapsedOpen : openGroups[group.id]} data-tooltip={collapsed ? group.label : undefined} className={`sidebar-tooltip-trigger w-full flex items-center gap-3 px-3 py-2 rounded-md text-left transition-colors ${active ? 'text-text-primary' : 'text-text-secondary'} hover:bg-surface-raised hover:text-text-primary`}><Icon size={19} aria-hidden="true" /><span className="text-sm sidebar-nav-label flex-1">{group.label}</span>{!collapsed && <ChevronDown size={15} className={`transition-transform ${openGroups[group.id] ? '' : '-rotate-90'}`} aria-hidden="true" />}</button>{!collapsed && openGroups[group.id] && group.children.map(child => renderLink(child, true))}</div>; })}{user?.role === 'admin' && renderLink({ icon: User, label: 'Users', path: '/users' })}<button type="button" onClick={() => setShowScanModal(true)} aria-label="Scan Item" data-tooltip={collapsed ? 'Scan Item' : undefined} className="sidebar-tooltip-trigger w-full flex items-center gap-3 px-3 py-2 rounded-md text-left transition-colors text-text-secondary hover:bg-surface-raised hover:text-text-primary mt-2 border-t border-border pt-3"><ScanLine size={19} aria-hidden="true" /><span className="text-sm sidebar-nav-label">Scan Item</span></button></nav>
+      {collapsed && showCollapsedGroup && <>
+        <div className="fixed inset-0 z-40" aria-hidden="true" onMouseDown={() => setShowCollapsedGroup(null)} />
+        <div role="menu" aria-label={`${groups.find(group => group.id === showCollapsedGroup)?.label || 'Group'} menu`} className="fixed left-[86px] z-50 w-64 rounded-xl border border-border bg-surface-raised shadow-2xl p-2.5" style={{ top: collapsedGroupTop }}>
+          {(() => { const group = groups.find(item => item.id === showCollapsedGroup); if (!group) return null; return <>
+            <div className="px-3 py-2 mb-1"><p className="text-sm font-semibold text-text-primary">{group.label}</p><p className="text-xs text-text-secondary mt-0.5">Navigate to {group.label.toLowerCase()}</p></div>
+            <div className="h-px bg-border my-1" aria-hidden="true" />
+            {group.children.map(child => { const active = location.pathname === child.path || location.pathname.startsWith(`${child.path}/`); return <Link key={child.path} to={child.path} role="menuitem" onClick={() => setShowCollapsedGroup(null)} className={`w-full flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${active ? 'bg-accent text-bg' : 'text-text-secondary hover:bg-surface hover:text-text-primary'}`}><span>{child.label}</span>{active && <span className="text-[10px] font-mono uppercase tracking-wider">Current</span>}</Link>; })}
+          </>})()}
+        </div>
+      </>}
       {user && <div className="relative p-3 border-t border-border sidebar-user-area">
         {collapsed ? <>
           {showCollapsedProfile && <div className="fixed inset-0 z-40" aria-hidden="true" onMouseDown={() => setShowCollapsedProfile(false)} />}
-          <button type="button" onClick={() => setShowCollapsedProfile(value => !value)} aria-expanded={showCollapsedProfile} aria-haspopup="menu" aria-label={`${user.display_name || user.username} profile`} title={`${user.display_name || user.username} profile`} className={`relative z-50 mx-auto w-10 h-10 bg-accent rounded-full flex items-center justify-center transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 ${showCollapsedProfile ? 'ring-2 ring-accent/50' : ''}`}><User size={18} className="text-bg" aria-hidden="true" /></button>
+          <button type="button" onClick={() => { setShowCollapsedGroup(null); setShowCollapsedProfile(value => !value); }} aria-expanded={showCollapsedProfile} aria-haspopup="menu" aria-label={`${user.display_name || user.username} profile`} data-tooltip={`${user.display_name || user.username} profile`} className={`sidebar-tooltip-trigger relative z-50 mx-auto w-10 h-10 bg-accent rounded-full flex items-center justify-center transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 ${showCollapsedProfile ? 'ring-2 ring-accent/50' : ''}`}><User size={18} className="text-bg" aria-hidden="true" /></button>
           {showCollapsedProfile && <div role="menu" aria-label="Profile menu" className="fixed left-[86px] bottom-3 z-50 w-72 rounded-xl border border-border bg-surface-raised shadow-2xl p-2.5">
             <div className="flex items-center gap-3 px-3 py-3 mb-1">
               <div className="w-10 h-10 rounded-full bg-accent flex items-center justify-center flex-shrink-0"><User size={18} className="text-bg" aria-hidden="true" /></div>
