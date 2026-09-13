@@ -1,0 +1,22 @@
+/* Collapsed profile menu must be able to float outside the narrow sidebar rail. */
+.desktop-sidebar {
+  overflow: visible;
+  position: relative;
+  z-index: 100;
+}
+
+.desktop-sidebar .sidebar-nav {
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.desktop-sidebar .sidebar-user-area {
+  position: relative;
+  z-index: 110;
+}
+
+.desktop-sidebar .sidebar-user-area [role="menu"] {
+  pointer-events: auto;
+  z-index: 120;
+}
