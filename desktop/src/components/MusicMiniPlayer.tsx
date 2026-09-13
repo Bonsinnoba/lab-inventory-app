@@ -18,7 +18,7 @@ export default function MusicMiniPlayer({ onRestore, onClose }: Props) {
 
   const getAudio = () => document.querySelector('audio') as HTMLAudioElement | null;
   const clickMusicControl = (label: string) => {
-    const button = Array.from(document.querySelectorAll('button')).find(candidate => candidate.getAttribute('aria-label') === label) as HTMLButtonElement | undefined;
+    const button = document.querySelector(`[aria-label="Music player"] button[aria-label="${label}"]`) as HTMLButtonElement | null;
     button?.click();
   };
   const clearHideTimer = () => { if (hideTimer.current !== null) { window.clearTimeout(hideTimer.current); hideTimer.current = null; } };
@@ -49,12 +49,6 @@ export default function MusicMiniPlayer({ onRestore, onClose }: Props) {
     return () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
   }, []);
 
-  useEffect(() => {
-    const syncRepeat = (event: Event) => { const value = (event as CustomEvent<'off' | 'all' | 'one'>).detail; if (value) setRepeat(value); };
-    window.addEventListener('labos:music-repeat-state', syncRepeat);
-    return () => window.removeEventListener('labos:music-repeat-state', syncRepeat);
-  }, []);
-
   const startDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
     if (event.button !== 0) return;
     drag.current = { active: true, moved: false, startX: event.clientX, startY: event.clientY, originX: positionOffset.x, originY: positionOffset.y };
@@ -63,7 +57,7 @@ export default function MusicMiniPlayer({ onRestore, onClose }: Props) {
 
   const toggle = () => { const audio = getAudio(); if (!audio) return; if (audio.paused) audio.play().catch(() => undefined); else audio.pause(); };
   const seek = (delta: number) => { const audio = getAudio(); if (!audio) return; audio.currentTime = Math.max(0, Math.min(audio.duration || Infinity, audio.currentTime + delta)); };
-  const toggleRepeat = () => clickMusicControl('Toggle repeat');
+  const toggleRepeat = () => { setRepeat(r => r === 'off' ? 'all' : r === 'all' ? 'one' : 'off'); clickMusicControl('Toggle repeat'); };
   const fmt = (value: number) => `${Math.floor(value / 60)}:${Math.floor(value % 60).toString().padStart(2, '0')}`;
 
   return <div className="fixed right-[68px] bottom-5 z-[85]" style={{ transform: `translate(${positionOffset.x}px, ${positionOffset.y}px)` }} onMouseEnter={() => { clearHideTimer(); setControlsOpen(true); }} onMouseLeave={scheduleHide} aria-label="Minimized music player">
