@@ -1,7 +1,7 @@
 import { useTheme } from '../contexts/ThemeContext';
 import { Sun, Moon, X } from 'lucide-react';
 import { ColorTheme, themeNames } from '../lib/themes';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { changePassword, getStoredUser, setStoredUser, updateProfile } from '../api/auth';
 
 interface SettingsMenuProps {
@@ -22,6 +22,12 @@ export default function SettingsMenu({ onClose }: SettingsMenuProps) {
   const [profileMessage, setProfileMessage] = useState('');
   const [profileError, setProfileError] = useState('');
   const [savingProfile, setSavingProfile] = useState(false);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); onClose(); } };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
 
   const colorThemes: ColorTheme[] = ['default', 'red', 'yellow', 'green', 'purple', 'orange', 'pink', 'violet', 'silver', 'gold'];
 
@@ -92,7 +98,6 @@ export default function SettingsMenu({ onClose }: SettingsMenuProps) {
           </button>
         </div>
 
-        {/* Light/Dark Mode Toggle */}
         <div className="mb-6">
           <label className="block text-text-secondary text-sm mb-3">Appearance</label>
           <div className="flex gap-2">
@@ -121,7 +126,6 @@ export default function SettingsMenu({ onClose }: SettingsMenuProps) {
           </div>
         </div>
 
-        {/* Color Theme Selector */}
         <div className="mb-6">
           <label className="block text-text-secondary text-sm mb-3">Accent Color</label>
           <div className="flex flex-wrap gap-2">
