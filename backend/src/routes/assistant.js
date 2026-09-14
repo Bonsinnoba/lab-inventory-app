@@ -4,6 +4,7 @@ import { pool } from '../db.js';
 import { config } from '../config.js';
 import { writeAuditLog } from '../middleware/audit.js';
 import { getProjectAccess } from '../middleware/project-access.js';
+import { getUserPermissions } from '../middleware/permissions.js';
 
 const router = Router();
 const ai = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
@@ -133,7 +134,6 @@ const BASE_TOOLS = [
   }
 ];
 
-
 const CONTEXT_SCOPES = new Set(['none','project','project_workspace','project_lab_data','full_project','custom']);
 const TOOL_GROUPS = {
   project: ['get_project'],
@@ -141,13 +141,55 @@ const TOOL_GROUPS = {
   lab_data: ['get_project_workspace'],
   full: ['get_project_financials'],
 };
+const TOOL_PERMISSIONS = Object.freeze({
+  search_global: null,
+  search_items: 'inventory.view',
+  get_item: 'inventory.view',
+  list_projects: 'projects.view',
+  get_project: 'projects.view',
+  get_project_workspace: 'projects.view',
+  get_project_financials: ['projects.view','finance.view'],
+  get_transaction_summary: 'finance.view',
+  list_locations: 'inventory.view',
+  get_location: 'inventory.view',
+  search_knowledge: null,
+  list_notes: 'notes.view',
+  list_recent_activity: 'reports.view'
+});
+
+async function assistantPermissions(user) {
+  if (!user?.userId) throw new Error('Authentication required');
+  const account = await pool.query('SELECT role, is_active FROM users WHERE id=$1', [user.userId]);
+  if (!account.rowCount || !account.rows[0].is_active) throw new Error('Account is disabled');
+  return getUserPermissions(user.userId, account.rows[0].role);
+}
+
+async function requireAssistantPermission(permission, user) {
+  const permissions = await assistantPermissions(user);
+  if (!permissions.has(permission)) {
+    const err = new Error(`Permission required: ${permission}`);
+    err.code = 'PERMISSION_DENIED';
+    err.permission = permission;
+    throw err;
+  }
+  return permissions;
+}
+
+function hasToolPermissions(toolName, permissions) {
+  const required = TOOL_PERMISSIONS[toolName];
+  if (!required) return true;
+  return Array.isArray(required) ? required.every((permission) => permissions.has(permission)) : permissions.has(required);
+}
+
 function normalizeContext(body = {}) {
   const scope = CONTEXT_SCOPES.has(body.context_scope) ? body.context_scope : 'none';
   const projectId = typeof body.context_project_id === 'string' && body.context_project_id ? body.context_project_id : null;
   const customTools = Array.isArray(body.context_tools) ? body.context_tools.filter((x) => typeof x === 'string') : [];
   return { scope, projectId, customTools };
 }
-function toolsForContext(context) {
+
+async function toolsForContext(context, user) {
+  const permissions = await assistantPermissions(user);
   if (context.scope === 'none') return [];
   let names = [];
   if (context.scope === 'project') names = TOOL_GROUPS.project;
@@ -155,8 +197,10 @@ function toolsForContext(context) {
   if (context.scope === 'project_lab_data') names = [...TOOL_GROUPS.project, ...TOOL_GROUPS.workspace, ...TOOL_GROUPS.lab_data];
   if (context.scope === 'full_project') names = [...TOOL_GROUPS.project, ...TOOL_GROUPS.workspace, ...TOOL_GROUPS.lab_data, ...TOOL_GROUPS.full];
   if (context.scope === 'custom') names = context.customTools;
-  return BASE_TOOLS.filter((tool) => names.includes(tool.name));
+  const available = BASE_TOOLS.filter((tool) => names.includes(tool.name));
+  return available.filter((tool) => hasToolPermissions(tool.name, permissions));
 }
+
 async function validateContext(context, user) {
   if (context.scope === 'none') return;
   if (['project','project_workspace','project_lab_data','full_project'].includes(context.scope) && !context.projectId) {
@@ -164,6 +208,7 @@ async function validateContext(context, user) {
   }
   if (context.projectId) await requireProjectVisibility(context.projectId, user);
 }
+
 function scopedSystemInstruction(context) {
   const labels = {
     none: 'Context is OFF. Do not use laboratory-data tools and answer only from the conversation or general knowledge.',
@@ -182,7 +227,6 @@ async function requireProjectVisibility(projectId, user) {
 }
 
 async function filterProjectRows(rows, user, projectIdField = 'project_id') {
-  if (user?.role === 'admin') return rows;
   const allowed = [];
   for (const row of rows) {
     if (!row[projectIdField] || (await getProjectAccess(row[projectIdField], user)).access !== 'none') allowed.push(row);
@@ -209,6 +253,14 @@ async function searchGlobal({ query, types }, user) {
   const selected = Array.isArray(types) && types.length ? types.filter((t) => allowed.includes(t)) : allowed;
   if (!query?.trim()) return result({ items: [] });
 
+  const permissions = await assistantPermissions(user);
+  const typePermissions = {
+    items: 'inventory.view', projects: 'projects.view', notes: 'notes.view', resources: 'resources.view',
+    transactions: 'finance.view', users: 'users.view', tasks: 'projects.view', experiments: 'projects.view', blocks: 'projects.view'
+  };
+  const authorized = selected.filter((type) => permissions.has(typePermissions[type]));
+  if (!authorized.length) throw new Error('You do not have permission to search the selected laboratory data');
+
   const q = query.trim().slice(0, 200);
   const queries = {
     items: `SELECT id,name,type,status,current_quantity,unit,sku,ts_rank_cd(search_vector,plainto_tsquery('english',$1)) AS rank FROM items WHERE search_vector @@ plainto_tsquery('english',$1) ORDER BY rank DESC,name LIMIT 8`,
@@ -221,11 +273,12 @@ async function searchGlobal({ query, types }, user) {
     experiments: `SELECT e.id,e.project_id,e.title,e.status,e.hypothesis,e.procedure,p.name AS project_name,1.0 AS rank FROM project_experiments e JOIN projects p ON p.id=e.project_id WHERE e.title ILIKE '%' || $1 || '%' OR e.hypothesis ILIKE '%' || $1 || '%' OR e.procedure ILIKE '%' || $1 || '%' ORDER BY e.updated_at DESC LIMIT 8`,
     blocks: `SELECT b.id,b.project_id,b.title,b.block_type,b.text_content,p.name AS project_name,1.0 AS rank FROM project_blocks b JOIN projects p ON p.id=b.project_id WHERE COALESCE(b.title,'') ILIKE '%' || $1 || '%' OR COALESCE(b.text_content,'') ILIKE '%' || $1 || '%' ORDER BY b.created_at DESC LIMIT 8`
   };
-  const pairs = await Promise.all(selected.map(async (type) => [type, (await pool.query(queries[type], [q])).rows]));
+  const pairs = await Promise.all(authorized.map(async (type) => [type, (await pool.query(queries[type], [q])).rows]));
   for (const pair of pairs) {
     const [type, rows] = pair;
     if (['projects','tasks','experiments','blocks'].includes(type)) pair[1] = await filterProjectRows(rows, user);
     if (type === 'resources') pair[1] = await filterProjectRows(rows, user);
+    if (type === 'transactions') pair[1] = await filterProjectRows(rows, user);
   }
   const sources = [];
   const grouped = Object.fromEntries(pairs.map(([type, rows]) => [type, rows.map((row) => {
@@ -238,7 +291,8 @@ async function searchGlobal({ query, types }, user) {
   return result({ query: q, total: all.length, all, grouped }, sources.slice(0, 20));
 }
 
-async function searchItems({ query, status }) {
+async function searchItems({ query, status }, user) {
+  await requireAssistantPermission('inventory.view', user);
   const conditions = [];
   const values = [];
   if (query?.trim()) { values.push(`%${query.trim()}%`); conditions.push(`(name ILIKE $${values.length} OR type ILIKE $${values.length})`); }
@@ -248,7 +302,8 @@ async function searchItems({ query, status }) {
   return result(rows, rows.map((r) => source('item', r.id, r.name)));
 }
 
-async function getItem({ item_id }) {
+async function getItem({ item_id }, user) {
+  await requireAssistantPermission('inventory.view', user);
   const r = await pool.query(`SELECT i.id,i.name,i.type,i.status,i.current_quantity,i.unit,i.sku,i.description,i.location_id,l.name AS location_name FROM items i LEFT JOIN locations l ON l.id=i.location_id WHERE i.id=$1`, [item_id]);
   if (!r.rowCount) throw new Error('Item not found');
   const row = r.rows[0];
@@ -256,6 +311,7 @@ async function getItem({ item_id }) {
 }
 
 async function listProjects({ status }, user) {
+  await requireAssistantPermission('projects.view', user);
   const values = status ? [status] : [];
   const where = status ? 'WHERE status=$1' : '';
   const rows = await filterProjectRows((await pool.query(`SELECT id,name,status,budget,total_spent,created_at FROM projects ${where} ORDER BY created_at DESC LIMIT 50`, values)).rows, user, 'id');
@@ -271,22 +327,27 @@ async function getProject({ project_id }, user) {
 }
 
 async function getProjectWorkspace({ project_id }, user) {
+  await requireAssistantPermission('projects.view', user);
   const project = await getProject({ project_id }, user);
-  const [members,tasks,experiments,items,notes,resources,activity] = await Promise.all([
-    pool.query(`SELECT pm.user_id,pm.member_role,u.username FROM project_members pm JOIN users u ON u.id=pm.user_id WHERE pm.project_id=$1 ORDER BY u.username`, [project_id]),
-    pool.query(`SELECT id,title,status,priority,assignee_id,due_date FROM project_tasks WHERE project_id=$1 ORDER BY due_date NULLS LAST,created_at DESC LIMIT 50`, [project_id]),
-    pool.query(`SELECT id,title,status,hypothesis,result,conclusion,updated_at FROM project_experiments WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 30`, [project_id]),
-    pool.query(`SELECT pi.item_id,pi.allocated_quantity,pi.notes,i.name,i.type,i.status,i.current_quantity,i.unit FROM project_items pi JOIN items i ON i.id=pi.item_id WHERE pi.project_id=$1 ORDER BY i.name`, [project_id]),
-    pool.query(`SELECT id,title,tags,updated_at FROM notes WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 30`, [project_id]),
-    pool.query(`SELECT id,name,category,tags,description,updated_at FROM resources WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 30`, [project_id]),
-    pool.query(`SELECT a.action,a.entity_type,a.entity_id,a.metadata,a.created_at,u.username AS actor_username FROM audit_log a LEFT JOIN users u ON u.id=a.actor_user_id WHERE (a.entity_type='project' AND a.entity_id=$1) OR a.metadata->>'project_id'=$1 ORDER BY a.created_at DESC LIMIT 30`, [project_id])
-  ]);
+  const permissions = await assistantPermissions(user);
+  const queries = {
+    members: permissions.has('users.view') ? pool.query(`SELECT pm.user_id,pm.member_role,u.username FROM project_members pm JOIN users u ON u.id=pm.user_id WHERE pm.project_id=$1 ORDER BY u.username`, [project_id]) : Promise.resolve({ rows: [] }),
+    tasks: pool.query(`SELECT id,title,status,priority,assignee_id,due_date FROM project_tasks WHERE project_id=$1 ORDER BY due_date NULLS LAST,created_at DESC LIMIT 50`, [project_id]),
+    experiments: pool.query(`SELECT id,title,status,hypothesis,result,conclusion,updated_at FROM project_experiments WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 30`, [project_id]),
+    items: permissions.has('inventory.view') ? pool.query(`SELECT pi.item_id,pi.allocated_quantity,pi.notes,i.name,i.type,i.status,i.current_quantity,i.unit FROM project_items pi JOIN items i ON i.id=pi.item_id WHERE pi.project_id=$1 ORDER BY i.name`, [project_id]) : Promise.resolve({ rows: [] }),
+    notes: permissions.has('notes.view') ? pool.query(`SELECT id,title,tags,updated_at FROM notes WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 30`, [project_id]) : Promise.resolve({ rows: [] }),
+    resources: permissions.has('resources.view') ? pool.query(`SELECT id,name,category,tags,description,updated_at FROM resources WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 30`, [project_id]) : Promise.resolve({ rows: [] }),
+    activity: permissions.has('reports.view') ? pool.query(`SELECT a.action,a.entity_type,a.entity_id,a.metadata,a.created_at,u.username AS actor_username FROM audit_log a LEFT JOIN users u ON u.id=a.actor_user_id WHERE (a.entity_type='project' AND a.entity_id=$1) OR a.metadata->>'project_id'=$1 ORDER BY a.created_at DESC LIMIT 30`, [project_id]) : Promise.resolve({ rows: [] })
+  };
+  const [members,tasks,experiments,items,notes,resources,activity] = await Promise.all(Object.values(queries));
   const row = { project: project.data, members: members.rows, tasks: tasks.rows, experiments: experiments.rows, items: items.rows, notes: notes.rows, resources: resources.rows, activity: activity.rows };
   const sources = [source('project', project_id, project.data.name), ...notes.rows.map(r=>source('note',r.id,r.title)), ...resources.rows.map(r=>source('resource',r.id,r.name)), ...items.rows.map(r=>source('item',r.item_id,r.name))];
   return result(row, sources.slice(0, 50));
 }
 
 async function getProjectFinancials({ project_id }, user) {
+  await requireAssistantPermission('projects.view', user);
+  await requireAssistantPermission('finance.view', user);
   await requireProjectVisibility(project_id, user);
   const r = await pool.query(`SELECT project_id,name,budget,actual_expense,project_income,net_spend,allocated_inventory_value FROM project_financial_summary WHERE project_id=$1`, [project_id]);
   if (!r.rowCount) throw new Error('Project financial summary not found');
@@ -294,7 +355,8 @@ async function getProjectFinancials({ project_id }, user) {
   return result(row, [source('project', row.project_id, row.name)]);
 }
 
-async function getTransactionSummary({ from, to }) {
+async function getTransactionSummary({ from, to }, user) {
+  await requireAssistantPermission('finance.view', user);
   const conditions=[]; const values=[];
   if (from) { values.push(from); conditions.push(`date >= $${values.length}`); }
   if (to) { values.push(to); conditions.push(`date <= $${values.length}`); }
@@ -304,18 +366,24 @@ async function getTransactionSummary({ from, to }) {
   return result({ from: from || null, to: to || null, income, expense, net: income-expense });
 }
 
-async function listLocations() {
+async function listLocations(user) {
+  await requireAssistantPermission('inventory.view', user);
   const rows=(await pool.query(`SELECT id,name,type,created_at FROM locations ORDER BY name`)).rows;
   return result(rows, rows.map(r=>source('location',r.id,r.name)));
 }
 
-async function getLocation({ location_id }) {
+async function getLocation({ location_id }, user) {
+  await requireAssistantPermission('inventory.view', user);
   const r=await pool.query(`SELECT id,name,type,description,created_at FROM locations WHERE id=$1`,[location_id]);
   if(!r.rowCount) throw new Error('Location not found');
   return result(r.rows[0],[source('location',r.rows[0].id,r.rows[0].name)]);
 }
 
 async function searchKnowledge({ query, category, project_id }, user) {
+  const permissions = await assistantPermissions(user);
+  const canNotes = permissions.has('notes.view');
+  const canResources = permissions.has('resources.view');
+  if (!canNotes && !canResources) throw new Error('Permission required: notes.view or resources.view');
   const q=`%${String(query||'').trim()}%`; const values=[q];
   let categoryClause='';
   let projectClause='';
@@ -324,16 +392,17 @@ async function searchKnowledge({ query, category, project_id }, user) {
   const notesValues=project_id?[q,project_id]:[q];
   const resourcesValues=values;
   const [notes,resources]=await Promise.all([
-    pool.query(`SELECT id,title,tags,project_id,updated_at FROM notes WHERE (title ILIKE $1 OR body ILIKE $1 OR EXISTS (SELECT 1 FROM unnest(tags) tag WHERE tag ILIKE $1)) ${project_id?'AND project_id=$2':''} ORDER BY updated_at DESC LIMIT 15`,notesValues),
-    pool.query(`SELECT id,name,category,description,tags,project_id,item_id,updated_at FROM resources WHERE (name ILIKE $1 OR description ILIKE $1 OR EXISTS (SELECT 1 FROM unnest(tags) tag WHERE tag ILIKE $1)) ${projectClause} ${categoryClause} ORDER BY updated_at DESC LIMIT 15`,resourcesValues)
+    canNotes ? pool.query(`SELECT id,title,tags,project_id,updated_at FROM notes WHERE (title ILIKE $1 OR body ILIKE $1 OR EXISTS (SELECT 1 FROM unnest(tags) tag WHERE tag ILIKE $1)) ${project_id?'AND project_id=$2':''} ORDER BY updated_at DESC LIMIT 15`,notesValues) : Promise.resolve({rows:[]}),
+    canResources ? pool.query(`SELECT id,name,category,description,tags,project_id,item_id,updated_at FROM resources WHERE (name ILIKE $1 OR description ILIKE $1 OR EXISTS (SELECT 1 FROM unnest(tags) tag WHERE tag ILIKE $1)) ${projectClause} ${categoryClause} ORDER BY updated_at DESC LIMIT 15`,resourcesValues) : Promise.resolve({rows:[]})
   ]);
-  const visibleNotes = await filterProjectRows(notes.rows, user);
-  const visibleResources = await filterProjectRows(resources.rows, user);
+  const visibleNotes = canNotes ? await filterProjectRows(notes.rows, user) : [];
+  const visibleResources = canResources ? await filterProjectRows(resources.rows, user) : [];
   const sources=[...visibleNotes.map(r=>source('note',r.id,r.title)),...visibleResources.map(r=>source('resource',r.id,r.name))];
   return result({ notes: visibleNotes, resources: visibleResources }, sources);
 }
 
 async function listNotes({ item_id, project_id }, user) {
+  await requireAssistantPermission('notes.view', user);
   const conditions=[]; const values=[];
   if(item_id){ values.push(item_id); conditions.push(`item_id=$${values.length}`); }
   if(project_id){ values.push(project_id); conditions.push(`project_id=$${values.length}`); }
@@ -342,7 +411,8 @@ async function listNotes({ item_id, project_id }, user) {
   return result(rows,rows.map(r=>source('note',r.id,r.title)));
 }
 
-async function listRecentActivity({ limit }) {
+async function listRecentActivity({ limit }, user) {
+  await requireAssistantPermission('reports.view', user);
   const safeLimit=Math.min(Math.max(Number(limit)||20,1),50);
   const rows=(await pool.query(`SELECT a.id,a.action,a.entity_type,a.entity_id,a.metadata,a.created_at,u.username AS actor_username FROM audit_log a LEFT JOIN users u ON u.id=a.actor_user_id ORDER BY a.created_at DESC LIMIT $1`,[safeLimit])).rows;
   return result(rows);
@@ -368,9 +438,15 @@ function sendEvent(res,event,data){
   res.write(`${event ? `event: ${event}\n` : ''}data: ${JSON.stringify(data)}\n\n`);
 }
 
-router.get('/capabilities',(req,res)=>{
-  res.setHeader('Cache-Control','no-store');
-  res.json({ enabled:Boolean(ai), mode:'read-only', model:MODEL_NAME, max_message_length:MAX_MESSAGE_LENGTH, tools:BASE_TOOLS.map(t=>t.name), context_scopes:[...CONTEXT_SCOPES], can_modify_data:false });
+router.get('/capabilities',async(req,res)=>{
+  try {
+    const permissions = await assistantPermissions(req.user);
+    const tools = BASE_TOOLS.filter((tool) => hasToolPermissions(tool.name, permissions)).map(t=>t.name);
+    res.setHeader('Cache-Control','no-store');
+    res.json({ enabled:Boolean(ai), mode:'read-only', model:MODEL_NAME, max_message_length:MAX_MESSAGE_LENGTH, tools, context_scopes:[...CONTEXT_SCOPES], can_modify_data:false });
+  } catch (err) {
+    res.status(403).json({ error: err instanceof Error ? err.message : 'Unable to read assistant capabilities' });
+  }
 });
 
 router.post('/chat',async(req,res)=>{
@@ -388,6 +464,8 @@ router.post('/chat',async(req,res)=>{
   req.on('close',()=>abortController.abort());
 
   try {
+    const availableTools = await toolsForContext(context, req.user);
+    if (context.scope !== 'none' && !availableTools.length) return res.status(403).json({error:'No assistant tools are available for your current permissions'});
     if(conversationId){
       const owner=await pool.query('SELECT id FROM conversations WHERE id=$1 AND user_id=$2',[conversationId,req.user.userId]);
       if(!owner.rowCount) return res.status(404).json({error:'Conversation not found'});
@@ -407,7 +485,7 @@ router.post('/chat',async(req,res)=>{
     res.setHeader('Connection','keep-alive');
     res.setHeader('X-Accel-Buffering','no');
 
-    const chat=ai.chats.create({model:MODEL_NAME,history,config:{tools:[{functionDeclarations:toolsForContext(context).map(t=>({name:t.name,description:t.description,parametersJsonSchema:t.parameters}))}],systemInstruction:scopedSystemInstruction(context)}});
+    const chat=ai.chats.create({model:MODEL_NAME,history,config:{tools:[{functionDeclarations:availableTools.map(t=>({name:t.name,description:t.description,parametersJsonSchema:t.parameters}))}],systemInstruction:scopedSystemInstruction(context)}});
     let response=await chat.sendMessage({message,config:{abortSignal:abortController.signal}});
     let toolCalls=response.functionCalls;
     let toolRounds=0;
@@ -420,8 +498,8 @@ router.post('/chat',async(req,res)=>{
       for(const call of toolCalls){
         const implementation=toolImplementations[call.name];
         const started=Date.now();
-        if(!toolsForContext(context).some(t=>t.name===call.name)){
-          const err={error:'Tool is outside the active assistant context'};
+        if(!availableTools.some(t=>t.name===call.name)){
+          const err={error:'Tool is outside the active assistant context or current permissions'};
           await recordToolCall(runId,call.name,call.args||{},err,'failed',Date.now()-started);
           parts.push({functionResponse:{name:call.name,response:err}});
           continue;
@@ -478,7 +556,6 @@ router.post('/chat',async(req,res)=>{
     }
   }
 });
-
 
 router.get('/preferences',async(req,res)=>{
   try{
