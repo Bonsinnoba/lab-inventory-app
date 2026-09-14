@@ -74,8 +74,9 @@ export default function NotebookDock({ onClose, onOpenFull }: Props) {
             <div className="min-h-4 flex-shrink-0 text-[10px]" aria-live="polite">{saveMutation.error ? <span className="text-status-danger">Could not save note. Try again.</span> : savedMessage ? <span className="text-status-success">{savedMessage}</span> : isDirty && <span className="text-text-secondary">Unsaved changes · Ctrl/Cmd+S to save</span>}</div>
           </div>
         ) : (
-          <button type="button" onClick={startNew} className="flex-1 min-h-0 w-full text-left p-4 rounded-sm border border-dashed border-border text-xs text-text-secondary hover:border-accent hover:text-text-primary hover:bg-surface-raised focus:outline-none focus:ring-2 focus:ring-accent/60">
-            <span className="font-medium text-text-primary">Jot something down</span><span className="block mt-1 text-[11px]">Write it here without leaving your current workspace.</span>
+          <button type="button" onClick={startNew} aria-label="Take a note" className="flex-none w-full h-12 px-3 rounded-sm border border-dashed border-border text-left text-xs text-text-secondary hover:border-accent hover:text-text-primary hover:bg-surface-raised focus:outline-none focus:ring-2 focus:ring-accent/60 flex items-center gap-3">
+            <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-sm bg-surface-raised border border-border"><Plus size={14} aria-hidden="true" /></span>
+            <span className="min-w-0"><span className="block font-medium text-text-primary">Take a note</span><span className="block text-[10px] mt-0.5 truncate">Start a quick capture</span></span>
           </button>
         )}
       </div>
