@@ -1,10 +1,10 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
-import { requireRole } from '../middleware/auth.js';
+import { hasPermission } from '../middleware/permissions.js';
 
 const router = Router();
 
-router.get('/', requireRole('admin'), async (req, res) => {
+router.get('/', hasPermission('reports.view'), async (req, res) => {
   const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
   const before = req.query.before || null;
   const values = [limit];
