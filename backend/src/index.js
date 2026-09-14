@@ -37,6 +37,7 @@ import experienceRouter from './routes/experience.js';
 import phase4Router from './routes/phase4.js';
 import excelRouter from './routes/excel.js';
 import excelPurchasesRouter from './routes/excel-purchases.js';
+import excelFinanceRouter from './routes/excel-finance.js';
 import { startMediaDownloadWorker, stopMediaDownloadWorker } from './media-downloads.js';
 
 dotenv.config();
@@ -81,6 +82,7 @@ app.use('/api/experience', authenticateToken, experienceRouter);
 app.use('/api/phase4', authenticateToken, phase4Router);
 app.use('/api/excel', authenticateToken, excelRouter);
 app.use('/api/excel/purchases', authenticateToken, excelPurchasesRouter);
+app.use('/api/excel/finance', authenticateToken, excelFinanceRouter);
 void requireRole;
 app.use('/api', notFoundHandler); app.use(errorHandler);
 const server=app.listen(config.port,config.host,()=>{ server.requestTimeout=config.requestTimeoutMs; server.headersTimeout=config.requestTimeoutMs+5000; server.keepAliveTimeout=5000; const address=config.publicBaseUrl||`http://${config.host}:${config.port}`; console.log(`LabOS API v${config.apiVersion} running at ${address}`); startMediaDownloadWorker(); });
