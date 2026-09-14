@@ -59,7 +59,12 @@ const incomeTypes = ['donation', 'investment', 'grant', 'lab_allocation', 'other
 const requiresFundingSource = ['donation', 'investment', 'grant'];
 
 // POST /api/transactions
-router.post('/', hasPermission('finance.create_expense'), async (req, res) => {
+router.post('/', async (req, res, next) => {
+  const { direction } = req.body;
+  const requiredPermission = direction === 'income' ? 'finance.create_income' : direction === 'expense' ? 'finance.create_expense' : null;
+  if (!requiredPermission) return res.status(400).json({ error: 'direction must be income or expense' });
+  return hasPermission(requiredPermission)(req, res, next);
+}, async (req, res) => {
   const { type, direction, amount, date, vendor, notes, item_id, project_id, funding_source_id, budget_period_id } = req.body;
   if (!type || !direction || amount === undefined) return res.status(400).json({ error: 'type, direction, and amount are required' });
   if (amount <= 0) return res.status(400).json({ error: 'amount must be greater than 0' });
