@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { pool } from '../db.js';
 import { hasPermission } from '../middleware/permissions.js';
 import { writeAuditLog } from '../middleware/audit.js';
 import { getProjectAccess, requireProjectEditor } from '../middleware/project-access.js';
