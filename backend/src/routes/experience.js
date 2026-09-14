@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
 import { getProjectAccess } from '../middleware/project-access.js';
+import { hasPermission } from '../middleware/permissions.js';
 
 const router = Router();
 
@@ -42,12 +43,12 @@ router.post('/notifications/read-all', async (req, res) => {
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to update notifications' }); }
 });
 
-router.get('/dashboard', async (req, res) => {
+router.get('/dashboard', hasPermission('projects.view'), async (req, res) => {
   try {
     const ids = await visibleProjectIds(req.user);
     const projectFilter = ids ? `AND p.id = ANY($1::uuid[])` : '';
     const args = ids ? [ids] : [];
-    const [projects, overdue, due, recent, lowStock] = await Promise.all([
+    const [projects, overdue, due, recent] = await Promise.all([
       pool.query(`SELECT p.id,p.name,p.status,p.priority,p.due_date,
         COUNT(DISTINCT t.id)::int AS task_count,
         COUNT(DISTINCT CASE WHEN t.status NOT IN ('done','cancelled') THEN t.id END)::int AS open_tasks,
@@ -73,11 +74,14 @@ router.get('/dashboard', async (req, res) => {
         SELECT 'experiment',e.id,e.title,e.created_at,e.project_id,p.name
         FROM project_experiments e JOIN projects p ON p.id=e.project_id
         WHERE 1=1 ${projectFilter}
-        ORDER BY created_at DESC LIMIT 12`, args),
-      pool.query(`SELECT id,name,current_quantity,initial_quantity,unit,status FROM items
-        WHERE status = 'low_stock' OR (initial_quantity > 0 AND current_quantity <= (initial_quantity * 0.2))
-        ORDER BY current_quantity ASC LIMIT 12`)
+        ORDER BY created_at DESC LIMIT 12`, args)
     ]);
+    let lowStock = { rows: [] };
+    if (req.permissions?.has('inventory.view')) {
+      lowStock = await pool.query(`SELECT id,name,current_quantity,initial_quantity,unit,status FROM items
+        WHERE status = 'low_stock' OR (initial_quantity > 0 AND current_quantity <= (initial_quantity * 0.2))
+        ORDER BY current_quantity ASC LIMIT 12`);
+    }
     const health = projects.rows.map(p => {
       const overdueCount = overdue.rows.filter(t => t.project_id === p.id).length;
       const score = Math.max(0, Math.min(100, 100 - overdueCount * 18 - (p.priority === 'critical' ? 5 : 0)));
@@ -95,7 +99,7 @@ router.get('/dashboard', async (req, res) => {
   } catch (err) { console.error(err); res.status(500).json({ error: err.message || 'Failed to load command center' }); }
 });
 
-router.get('/project-health/:id', async (req, res) => {
+router.get('/project-health/:id', hasPermission('projects.view'), async (req, res) => {
   try {
     const access = await getProjectAccess(req.params.id, req.user);
     if (access.access === 'none') return res.status(404).json({ error: 'Project not found' });
@@ -116,7 +120,7 @@ router.get('/project-health/:id', async (req, res) => {
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to load project health' }); }
 });
 
-router.get('/activity', async (req, res) => {
+router.get('/activity', hasPermission('projects.view'), async (req, res) => {
   const limit = Math.min(Math.max(Number(req.query.limit) || 30, 1), 100);
   try {
     const ids = await visibleProjectIds(req.user);
