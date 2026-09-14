@@ -35,8 +35,6 @@ const INVENTORY_COLUMNS = [
 ];
 
 const INVENTORY_HEADERS = INVENTORY_COLUMNS.map(([name]) => name);
-const NUMERIC_FIELDS = new Set(['Initial Quantity', 'Current Quantity', 'Unit Cost', 'Replacement Cost', 'Maintenance Interval Days', 'Calibration Interval Days']);
-const DATE_FIELDS = new Set(['Next Maintenance Date', 'Next Calibration Date']);
 
 function value(row, header) {
   const index = INVENTORY_HEADERS.indexOf(header);
@@ -47,7 +45,7 @@ function asText(v) {
   return v === null || v === undefined ? '' : String(v).trim();
 }
 
-function asNumber(v, field, rowNumber, errors, { integer = false } = {}) {
+function asNumber(v, field, errors, { integer = false } = {}) {
   const text = asText(v);
   if (!text) return null;
   const number = Number(text);
@@ -100,16 +98,15 @@ async function validateInventoryRows(rows) {
     if (!name) rowErrors.push('Name is required');
     if (!type) rowErrors.push('Type is required');
 
-    const initial = asNumber(value(row, 'Initial Quantity'), 'Initial Quantity', rowNumber, rowErrors);
+    const initial = asNumber(value(row, 'Initial Quantity'), 'Initial Quantity', rowErrors);
     const currentRaw = asText(value(row, 'Current Quantity'));
-    const current = currentRaw ? asNumber(currentRaw, 'Current Quantity', rowNumber, rowErrors) : initial;
-    const unitCost = asNumber(value(row, 'Unit Cost'), 'Unit Cost', rowNumber, rowErrors);
-    const replacementCost = asNumber(value(row, 'Replacement Cost'), 'Replacement Cost', rowNumber, rowErrors);
-    const maintenanceInterval = asNumber(value(row, 'Maintenance Interval Days'), 'Maintenance Interval Days', rowNumber, rowErrors, { integer: true });
-    const calibrationInterval = asNumber(value(row, 'Calibration Interval Days'), 'Calibration Interval Days', rowNumber, rowErrors, { integer: true });
+    const current = currentRaw ? asNumber(currentRaw, 'Current Quantity', rowErrors) : initial;
+    const unitCost = asNumber(value(row, 'Unit Cost'), 'Unit Cost', rowErrors);
+    const replacementCost = asNumber(value(row, 'Replacement Cost'), 'Replacement Cost', rowErrors);
+    const maintenanceInterval = asNumber(value(row, 'Maintenance Interval Days'), 'Maintenance Interval Days', rowErrors, { integer: true });
+    const calibrationInterval = asNumber(value(row, 'Calibration Interval Days'), 'Calibration Interval Days', rowErrors, { integer: true });
     const nextMaintenance = asDate(value(row, 'Next Maintenance Date'), 'Next Maintenance Date', rowErrors);
     const nextCalibration = asDate(value(row, 'Next Calibration Date'), 'Next Calibration Date', rowErrors);
-    if (current !== null && initial !== null && current < 0) rowErrors.push('Current Quantity cannot be negative');
 
     const locationName = asText(value(row, 'Location'));
     const location = locationName ? locationMap.get(locationName.toLowerCase()) : null;
@@ -143,6 +140,7 @@ async function validateInventoryRows(rows) {
       unit_cost: unitCost,
       replacement_cost: replacementCost,
       location_id: location?.id || null,
+      location_name: location?.name || null,
       supplier: asText(value(row, 'Supplier')) || null,
       part_number: asText(value(row, 'Part Number')) || null,
       manufacturer: asText(value(row, 'Manufacturer')) || null,
@@ -158,9 +156,9 @@ async function validateInventoryRows(rows) {
   return { valid, errors };
 }
 
-function inventoryWorkbook() {
+function inventoryWorkbook(rows = []) {
   const instructionRows = [
-    ['LabOS Inventory Import Template', ''],
+    ['LabOS Inventory Excel Workbook', ''],
     ['How to use', 'Fill the Inventory sheet in Excel, save it as .xlsx, then upload it back to LabOS.'],
     ['Create', 'Leave LabOS ID blank. Name and Type are required.'],
     ['Update', 'Put the existing LabOS ID in the row. LabOS will update that item.'],
@@ -170,10 +168,39 @@ function inventoryWorkbook() {
     ['Tip', 'Keep a copy of your original workbook before importing large batches.'],
   ];
   const noteRows = INVENTORY_COLUMNS.map(([name, description]) => [name, description]);
+  const dataRows = rows.map((item) => INVENTORY_HEADERS.map((header) => {
+    const map = {
+      'LabOS ID': item.id,
+      Name: item.name,
+      Type: item.type,
+      Category: item.category,
+      SKU: item.sku,
+      'Initial Quantity': Number(item.initial_quantity),
+      'Current Quantity': Number(item.current_quantity),
+      Unit: item.unit,
+      Dimensions: item.dimensions,
+      Status: item.status,
+      'Condition Notes': item.condition_notes,
+      'Unit Cost': item.unit_cost === null ? '' : Number(item.unit_cost),
+      'Replacement Cost': item.replacement_cost === null ? '' : Number(item.replacement_cost),
+      Location: item.location_name,
+      Supplier: item.supplier,
+      'Part Number': item.part_number,
+      Manufacturer: item.manufacturer,
+      'Model Number': item.model_number,
+      'Serial Number': item.serial_number,
+      'Asset Tag': item.asset_tag,
+      'Next Maintenance Date': item.next_maintenance_date ? String(item.next_maintenance_date).slice(0, 10) : '',
+      'Maintenance Interval Days': item.maintenance_interval_days,
+      'Calibration Interval Days': item.calibration_interval_days,
+      'Next Calibration Date': item.next_calibration_date ? String(item.next_calibration_date).slice(0, 10) : '',
+    };
+    return map[header] ?? '';
+  }));
   return buildXlsx({
     sheets: {
       Instructions: { rows: instructionRows, widths: [28, 100] },
-      Inventory: { rows: [INVENTORY_HEADERS, ...Array.from({ length: 5 }, () => INVENTORY_HEADERS.map(() => ''))], widths: INVENTORY_HEADERS.map((h) => Math.max(14, Math.min(28, h.length + 4))) },
+      Inventory: { rows: [INVENTORY_HEADERS, ...dataRows, ...(rows.length ? [] : Array.from({ length: 5 }, () => INVENTORY_HEADERS.map(() => '')))], widths: INVENTORY_HEADERS.map((h) => Math.max(14, Math.min(28, h.length + 4))) },
       'Field Guide': { rows: [['Field', 'Meaning'], ...noteRows], widths: [32, 90] },
     },
   });
@@ -191,6 +218,20 @@ router.get('/templates/inventory', async (req, res) => {
   res.setHeader('Content-Disposition', 'attachment; filename="LabOS-Inventory-Template.xlsx"');
   res.setHeader('Cache-Control', 'no-store');
   res.send(workbook);
+});
+
+router.get('/inventory/export', async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT i.*, l.name AS location_name FROM items i LEFT JOIN locations l ON l.id = i.location_id ORDER BY i.name ASC`);
+    const workbook = inventoryWorkbook(result.rows);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="LabOS-Inventory-${new Date().toISOString().slice(0, 10)}.xlsx"`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(workbook);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: { code: 'EXCEL_EXPORT_FAILED', message: 'Unable to export inventory to Excel' } });
+  }
 });
 
 router.post('/inventory/preview', upload.single('file'), async (req, res) => {
@@ -215,6 +256,7 @@ router.post('/inventory/import', upload.single('file'), async (req, res) => {
     const rows = getInventoryRows(parsed);
     const validation = await validateInventoryRows(rows);
     if (validation.errors.length) {
+      await client.query('ROLLBACK').catch(() => {});
       return res.status(422).json({ error: { code: 'EXCEL_VALIDATION_FAILED', message: 'Fix the validation errors before importing', rows: validation.errors } });
     }
     await client.query('BEGIN');
