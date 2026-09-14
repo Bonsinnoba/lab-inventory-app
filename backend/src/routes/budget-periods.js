@@ -1,12 +1,12 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
-import { requireRole } from '../middleware/auth.js';
+import { hasPermission } from '../middleware/permissions.js';
 import { writeAuditLog } from '../middleware/audit.js';
 
 const router = Router();
 
 // GET /api/budget-periods — list, ordered by start_date descending
-router.get('/', async (req, res) => {
+router.get('/', hasPermission('finance.view'), async (req, res) => {
   try {
     const result = await pool.query(
       'SELECT * FROM budget_periods ORDER BY start_date DESC NULLS LAST, created_at DESC'
@@ -19,7 +19,7 @@ router.get('/', async (req, res) => {
 });
 
 // GET /api/budget-periods/current — returns period containing today's date, or null
-router.get('/current', async (req, res) => {
+router.get('/current', hasPermission('finance.view'), async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT * FROM budget_periods 
@@ -36,7 +36,7 @@ router.get('/current', async (req, res) => {
 });
 
 // GET /api/budget-periods/:id
-router.get('/:id', async (req, res) => {
+router.get('/:id', hasPermission('finance.view'), async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM budget_periods WHERE id = $1', [req.params.id]);
     if (result.rows.length === 0) {
@@ -50,7 +50,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // POST /api/budget-periods
-router.post('/', async (req, res) => {
+router.post('/', hasPermission('finance.edit'), async (req, res) => {
   const { label, total_budget, start_date, end_date, notes } = req.body;
 
   if (!label || total_budget === undefined) {
@@ -77,7 +77,7 @@ router.post('/', async (req, res) => {
 });
 
 // PUT /api/budget-periods/:id
-router.put('/:id', async (req, res) => {
+router.put('/:id', hasPermission('finance.edit'), async (req, res) => {
   const fields = ['label', 'total_budget', 'start_date', 'end_date', 'notes'];
   const updates = [];
   const values = [];
@@ -108,6 +108,7 @@ router.put('/:id', async (req, res) => {
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Budget period not found' });
     }
+    await writeAuditLog({ req, action: 'UPDATE', entityType: 'budget_period', entityId: req.params.id, newValue: result.rows[0] });
     res.json(result.rows[0]);
   } catch (err) {
     console.error(err);
@@ -116,12 +117,13 @@ router.put('/:id', async (req, res) => {
 });
 
 // DELETE /api/budget-periods/:id
-router.delete('/:id', requireRole('admin'), async (req, res) => {
+router.delete('/:id', hasPermission('finance.delete'), async (req, res) => {
   try {
     const result = await pool.query('DELETE FROM budget_periods WHERE id = $1 RETURNING id', [req.params.id]);
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Budget period not found' });
     }
+    await writeAuditLog({ req, action: 'DELETE', entityType: 'budget_period', entityId: req.params.id });
     res.status(204).send();
   } catch (err) {
     console.error(err);
