@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
+import { hasPermission } from '../middleware/permissions.js';
 import { writeAuditLog } from '../middleware/audit.js';
 
 const router = Router();
 
-router.get('/activity', async (req, res) => {
+router.get('/activity', hasPermission('projects.view'), async (req, res) => {
   const limit = Math.min(Math.max(Number(req.query.limit) || 40, 1), 100);
   const before = req.query.before || null;
   const values = [limit];
@@ -57,7 +58,7 @@ async function canAccessProject(projectId, userId, role) {
   return result.rowCount > 0;
 }
 
-router.get('/projects/:projectId/comments', async (req, res) => {
+router.get('/projects/:projectId/comments', hasPermission('projects.view'), async (req, res) => {
   try {
     if (!(await canAccessProject(req.params.projectId, req.user.userId, req.user.role))) return res.status(403).json({ error: 'Project access required' });
     const result = await pool.query(`SELECT c.id,c.project_id,c.author_id,c.body,c.created_at,c.updated_at,u.username AS author_username
@@ -66,7 +67,7 @@ router.get('/projects/:projectId/comments', async (req, res) => {
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to fetch project comments' }); }
 });
 
-router.post('/projects/:projectId/comments', async (req, res) => {
+router.post('/projects/:projectId/comments', hasPermission('projects.edit'), async (req, res) => {
   const body = String(req.body?.body || '').trim();
   if (!body) return res.status(400).json({ error: 'body is required' });
   if (body.length > 5000) return res.status(400).json({ error: 'comment is too long' });
@@ -85,7 +86,7 @@ router.post('/projects/:projectId/comments', async (req, res) => {
   } catch (err) { console.error(err); res.status(500).json({ error:'Failed to create project comment' }); }
 });
 
-router.delete('/projects/:projectId/comments/:commentId', async (req, res) => {
+router.delete('/projects/:projectId/comments/:commentId', hasPermission('projects.edit'), async (req, res) => {
   try {
     const current = await pool.query('SELECT author_id FROM project_comments WHERE id=$1 AND project_id=$2', [req.params.commentId, req.params.projectId]);
     if (!current.rowCount) return res.status(404).json({ error:'Comment not found' });
