@@ -1,12 +1,20 @@
 import { pool } from '../db.js';
-import { hasPermission } from './permissions.js';
+import { getUserPermissions, hasPermission } from './permissions.js';
 
 /** Return the project permission for the current user.
  * admin => admin; owner/member lead/member => edit; observer => view; none => none.
+ * Global projects.view is enforced here as well so internal consumers cannot bypass it.
  */
 export async function getProjectAccess(projectId, user) {
   if (!user?.userId) return { access: 'none', memberRole: null };
-  if (user.role === 'admin') return { access: 'admin', memberRole: 'admin' };
+
+  const userResult = await pool.query('SELECT role, is_active FROM users WHERE id = $1', [user.userId]);
+  if (!userResult.rowCount || !userResult.rows[0].is_active) return { access: 'none', memberRole: null };
+  const role = userResult.rows[0].role;
+  const permissions = await getUserPermissions(user.userId, role);
+  if (!permissions.has('projects.view')) return { access: 'none', memberRole: null };
+
+  if (role === 'admin') return { access: 'admin', memberRole: 'admin' };
 
   const result = await pool.query(`
     SELECT p.owner_id, pm.member_role
@@ -16,7 +24,7 @@ export async function getProjectAccess(projectId, user) {
 
   if (!result.rowCount) return { access: 'none', memberRole: null };
   const row = result.rows[0];
-  if (user.role === 'viewer') {
+  if (role === 'viewer') {
     if (row.owner_id === user.userId || row.member_role) return { access: 'view', memberRole: row.member_role || 'observer' };
     return { access: 'none', memberRole: null };
   }
