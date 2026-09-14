@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
-import { requireRole } from '../middleware/auth.js';
+import { hasPermission } from '../middleware/permissions.js';
 
 const router = Router();
 
@@ -13,9 +13,12 @@ async function dueRows(user) {
   return { maintenance: maintenance.rows, calibration: calibration.rows, tasks: tasks.rows };
 }
 
-router.get('/due', async (req, res) => { try { res.json(await dueRows(req.user)); } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to load automation due items' }); } });
+router.get('/due', hasPermission('automation.view'), async (req, res) => {
+  try { res.json(await dueRows(req.user)); }
+  catch (err) { console.error(err); res.status(500).json({ error: 'Failed to load automation due items' }); }
+});
 
-router.post('/run', requireRole('admin'), async (req, res) => {
+router.post('/run', hasPermission('automation.run'), async (req, res) => {
   try {
     const due = await dueRows(req.user);
     const recipients = await pool.query("SELECT id FROM users WHERE is_active=TRUE AND (role='admin' OR role IN ('researcher','technician'))");
