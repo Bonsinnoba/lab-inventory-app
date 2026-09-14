@@ -1,12 +1,13 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
 import { getProjectAccess } from '../middleware/project-access.js';
+import { hasPermission } from '../middleware/permissions.js';
 import { writeAuditLog } from '../middleware/audit.js';
 
 const router = Router();
 
 // DELETE /api/connectors/:id
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', hasPermission('projects.edit'), async (req, res) => {
   try {
     const current = await pool.query('SELECT project_id FROM project_connectors WHERE id = $1', [req.params.id]);
     if (!current.rowCount) return res.status(404).json({ error: { code: 'CONNECTOR_NOT_FOUND', message: 'Connector not found' } });
