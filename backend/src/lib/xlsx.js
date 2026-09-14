@@ -20,8 +20,17 @@ function crc32(input) {
 
 function u16(n) { const b = Buffer.alloc(2); b.writeUInt16LE(n, 0); return b; }
 function u32(n) { const b = Buffer.alloc(4); b.writeUInt32LE(n >>> 0, 0); return b; }
+
+// XML 1.0 cannot represent most C0 control characters. They can appear in
+// inventory notes, supplier names, copied Excel cells, etc. Strip only the
+// characters XML 1.0 forbids while preserving tabs, line breaks and Unicode.
+function sanitizeXmlText(value) {
+  return String(value ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uD800-\uDFFF\uFFFE\uFFFF]/g, '');
+}
 function xmlEscape(value) {
-  return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+  return sanitizeXmlText(value)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
 
 function columnName(index) {
@@ -46,7 +55,7 @@ function makeSheetXml(rows, widths = []) {
     }).join('');
     return `<row r="${r + 1}">${cells}</row>`;
   }).join('');
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:${columnName(maxCol - 1)}${maxRow}"/>${cols}<sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetData>${sheetRows}</sheetData></worksheet>`;
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:${columnName(maxCol - 1)}${maxRow}"/><sheetViews><sheetView workbookViewId="0"/></sheetViews>${cols}<sheetData>${sheetRows}</sheetData></worksheet>`;
 }
 
 function zipEntries(entries) {
@@ -126,24 +135,46 @@ function readZipEntries(buffer) {
 }
 
 function decodeXmlText(text) {
-  return text.replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  return String(text ?? '').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
 }
 
-function parseSheetXml(xml) {
+function parseSharedStrings(xml) {
+  if (!xml) return [];
+  return [...xml.matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>/g)].map((match) => {
+    const parts = [...match[1].matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)].map((m) => decodeXmlText(m[1]));
+    return parts.join('');
+  });
+}
+
+function parseSheetXml(xml, sharedStrings = []) {
   const rows = [];
-  const rowMatches = xml.match(/<row\b[^>]*>[\s\S]*?<\/row>/g) || [];
+  const rowMatches = xml.match(/<row\b[^>]*>([\s\S]*?)<\/row>/g) || [];
   for (const rowXml of rowMatches) {
     const row = [];
-    const cells = rowXml.match(/<c\b[^>]*>[\s\S]*?<\/c>/g) || [];
+    const cells = rowXml.match(/<c\b[^>]*(?:\/>|>[\s\S]*?<\/c>)/g) || [];
     for (const cell of cells) {
       const ref = /\br="([A-Z]+)\d+"/.exec(cell)?.[1];
       if (!ref) continue;
       let col = 0;
       for (const ch of ref) col = col * 26 + ch.charCodeAt(0) - 64;
       col -= 1;
-      const isInline = /\bt="inlineStr"/.test(cell);
-      const value = isInline ? decodeXmlText(cell.match(/<t(?: xml:space="preserve")?>([\s\S]*?)<\/t>/)?.[1] || '') : (cell.match(/<v>([\s\S]*?)<\/v>/)?.[1] || '');
-      row[col] = isInline ? value : (value === '' ? '' : Number.isNaN(Number(value)) ? value : Number(value));
+      if (/\/\s*>$/.test(cell)) { row[col] = ''; continue; }
+      const type = /\bt="([^"]+)"/.exec(cell)?.[1] || '';
+      const value = cell.match(/<v>([\s\S]*?)<\/v>/)?.[1] || '';
+      if (type === 'inlineStr') {
+        const text = [...cell.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)].map((m) => decodeXmlText(m[1])).join('');
+        row[col] = text;
+      } else if (type === 's') {
+        const index = Number(value);
+        row[col] = Number.isInteger(index) && index >= 0 ? sharedStrings[index] ?? '' : '';
+      } else if (type === 'b') {
+        row[col] = value === '1';
+      } else if (value === '') {
+        row[col] = '';
+      } else {
+        const number = Number(value);
+        row[col] = Number.isNaN(number) ? decodeXmlText(value) : number;
+      }
     }
     rows.push(row);
   }
@@ -155,12 +186,13 @@ export function parseXlsx(buffer) {
   const workbook = entries.get('xl/workbook.xml');
   const rels = entries.get('xl/_rels/workbook.xml.rels');
   if (!workbook || !rels) throw new Error('Workbook metadata is missing');
+  const sharedStrings = parseSharedStrings(entries.get('xl/sharedStrings.xml'));
   const relMap = new Map([...rels.matchAll(/<Relationship\b[^>]*Id="([^"]+)"[^>]*Target="([^"]+)"/g)].map((m) => [m[1], m[2].replace(/^\//, '').startsWith('xl/') ? m[2].replace(/^\//, '') : `xl/${m[2].replace(/^\//, '')}`]));
   const sheets = [];
   for (const match of workbook.matchAll(/<sheet\b[^>]*name="([^"]+)"[^>]*r:id="([^"]+)"/g)) {
     const target = relMap.get(match[2]);
     if (!target || !entries.has(target)) continue;
-    sheets.push({ name: decodeXmlText(match[1]), rows: parseSheetXml(entries.get(target)) });
+    sheets.push({ name: decodeXmlText(match[1]), rows: parseSheetXml(entries.get(target), sharedStrings) });
   }
   if (!sheets.length) throw new Error('No worksheets found');
   return { sheets };
