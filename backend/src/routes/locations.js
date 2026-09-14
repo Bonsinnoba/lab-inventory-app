@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
+import { hasPermission } from '../middleware/permissions.js';
 import { writeAuditLog } from '../middleware/audit.js';
 
 const router = Router();
 
-router.get('/', async (req, res) => {
+router.get('/', hasPermission('inventory.view'), async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT l.*, COUNT(i.id)::int AS item_count
@@ -20,7 +21,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-router.get('/:id', async (req, res) => {
+router.get('/:id', hasPermission('inventory.view'), async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM locations WHERE id = $1', [req.params.id]);
     if (!result.rowCount) return res.status(404).json({ error: 'Location not found' });
@@ -31,7 +32,7 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-router.post('/', async (req, res) => {
+router.post('/', hasPermission('inventory.create'), async (req, res) => {
   const { name, parent_id = null } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: 'name is required' });
 
@@ -48,7 +49,7 @@ router.post('/', async (req, res) => {
   }
 });
 
-router.put('/:id', async (req, res) => {
+router.put('/:id', hasPermission('inventory.edit'), async (req, res) => {
   const { name, parent_id } = req.body;
   if (name === undefined && parent_id === undefined) {
     return res.status(400).json({ error: 'No valid fields to update' });
@@ -69,7 +70,7 @@ router.put('/:id', async (req, res) => {
   }
 });
 
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', hasPermission('inventory.delete'), async (req, res) => {
   try {
     const before = await pool.query('SELECT * FROM locations WHERE id = $1', [req.params.id]);
     if (!before.rowCount) return res.status(404).json({ error: 'Location not found' });
