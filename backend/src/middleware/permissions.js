@@ -6,14 +6,27 @@ export const PERMISSIONS = Object.freeze([
   'finance.view', 'finance.create_income', 'finance.create_expense', 'finance.edit', 'finance.delete', 'finance.import',
   'reports.view', 'reports.export',
   'users.view', 'users.create', 'users.edit', 'users.manage_permissions',
+  'engineering.view', 'engineering.create', 'engineering.edit', 'engineering.delete',
+  'automation.view', 'automation.run',
 ]);
 
 const ROLE_BASELINES = Object.freeze({
   admin: new Set(PERMISSIONS),
-  researcher: new Set(['inventory.view', 'inventory.create', 'inventory.edit', 'inventory.adjust_stock', 'projects.view', 'projects.create', 'projects.edit', 'finance.view', 'finance.create_expense', 'reports.view', 'reports.export']),
-  technician: new Set(['inventory.view', 'inventory.create', 'inventory.edit', 'inventory.adjust_stock', 'projects.view', 'finance.view', 'reports.view']),
-  member: new Set(['inventory.view', 'projects.view', 'finance.view', 'reports.view']),
-  viewer: new Set(['inventory.view', 'projects.view', 'finance.view', 'reports.view']),
+  researcher: new Set([
+    'inventory.view', 'inventory.create', 'inventory.edit', 'inventory.adjust_stock',
+    'projects.view', 'projects.create', 'projects.edit',
+    'finance.view', 'finance.create_expense',
+    'reports.view', 'reports.export',
+    'engineering.view', 'engineering.create', 'engineering.edit', 'engineering.delete',
+    'automation.view', 'automation.run',
+  ]),
+  technician: new Set([
+    'inventory.view', 'inventory.create', 'inventory.edit', 'inventory.adjust_stock',
+    'projects.view', 'finance.view', 'reports.view',
+    'engineering.view', 'engineering.create', 'engineering.edit', 'automation.view',
+  ]),
+  member: new Set(['inventory.view', 'projects.view', 'finance.view', 'reports.view', 'engineering.view', 'automation.view']),
+  viewer: new Set(['inventory.view', 'projects.view', 'finance.view', 'reports.view', 'engineering.view', 'automation.view']),
 });
 
 export function rolePermissions(role) {
