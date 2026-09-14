@@ -18,6 +18,12 @@ export async function downloadInventoryTemplate(): Promise<Blob> {
   return response.blob();
 }
 
+export async function downloadInventoryExcel(): Promise<Blob> {
+  const response = await apiFetch('/excel/inventory/export');
+  if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Unable to export inventory to Excel'));
+  return response.blob();
+}
+
 async function postInventoryFile(path: string, file: File): Promise<Response> {
   const form = new FormData();
   form.append('file', file);
