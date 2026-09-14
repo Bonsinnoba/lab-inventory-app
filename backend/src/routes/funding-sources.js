@@ -1,12 +1,12 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
-import { requireRole } from '../middleware/auth.js';
+import { hasPermission } from '../middleware/permissions.js';
 import { writeAuditLog } from '../middleware/audit.js';
 
 const router = Router();
 
 // GET /api/funding-sources — list with total_contributed
-router.get('/', async (req, res) => {
+router.get('/', hasPermission('finance.view'), async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT fs.*,
@@ -24,7 +24,7 @@ router.get('/', async (req, res) => {
 });
 
 // GET /api/funding-sources/:id — single source + transaction history
-router.get('/:id', async (req, res) => {
+router.get('/:id', hasPermission('finance.view'), async (req, res) => {
   try {
     const sourceResult = await pool.query(
       `SELECT fs.*,
@@ -56,7 +56,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // POST /api/funding-sources
-router.post('/', async (req, res) => {
+router.post('/', hasPermission('finance.edit'), async (req, res) => {
   const { name, source_type, contact_info, notes } = req.body;
 
   if (!name || !source_type) {
@@ -79,12 +79,13 @@ router.post('/', async (req, res) => {
     res.status(201).json(result.rows[0]);
   } catch (err) {
     console.error(err);
+    if (err.code === '23505') return res.status(409).json({ error: 'Funding source already exists' });
     res.status(500).json({ error: err.message || 'Failed to create funding source' });
   }
 });
 
 // PUT /api/funding-sources/:id
-router.put('/:id', async (req, res) => {
+router.put('/:id', hasPermission('finance.edit'), async (req, res) => {
   const fields = ['name', 'source_type', 'contact_info', 'notes'];
   const updates = [];
   const values = [];
@@ -100,7 +101,6 @@ router.put('/:id', async (req, res) => {
     return res.status(400).json({ error: 'No valid fields to update' });
   }
 
-  // Validate source_type if being updated
   if ('source_type' in req.body) {
     const validSourceTypes = ['donor', 'investor', 'grant_body', 'institutional', 'other'];
     if (!validSourceTypes.includes(req.body.source_type)) {
@@ -111,27 +111,28 @@ router.put('/:id', async (req, res) => {
   values.push(req.params.id);
 
   try {
+    const current = await pool.query('SELECT * FROM funding_sources WHERE id = $1', [req.params.id]);
+    if (!current.rowCount) return res.status(404).json({ error: 'Funding source not found' });
     const result = await pool.query(
       `UPDATE funding_sources SET ${updates.join(', ')} WHERE id = $${values.length} RETURNING *`,
       values
     );
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Funding source not found' });
-    }
+    await writeAuditLog({ req, action: 'UPDATE', entityType: 'funding_source', entityId: req.params.id, oldValue: current.rows[0], newValue: result.rows[0] });
     res.json(result.rows[0]);
   } catch (err) {
     console.error(err);
+    if (err.code === '23505') return res.status(409).json({ error: 'Funding source already exists' });
     res.status(500).json({ error: err.message || 'Failed to update funding source' });
   }
 });
 
 // DELETE /api/funding-sources/:id
-router.delete('/:id', requireRole('admin'), async (req, res) => {
+router.delete('/:id', hasPermission('finance.delete'), async (req, res) => {
   try {
-    const result = await pool.query('DELETE FROM funding_sources WHERE id = $1 RETURNING id', [req.params.id]);
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Funding source not found' });
-    }
+    const current = await pool.query('SELECT * FROM funding_sources WHERE id = $1', [req.params.id]);
+    if (!current.rowCount) return res.status(404).json({ error: 'Funding source not found' });
+    await pool.query('DELETE FROM funding_sources WHERE id = $1', [req.params.id]);
+    await writeAuditLog({ req, action: 'DELETE', entityType: 'funding_source', entityId: req.params.id, oldValue: current.rows[0] });
     res.status(204).send();
   } catch (err) {
     console.error(err);
