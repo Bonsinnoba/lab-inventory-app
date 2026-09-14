@@ -55,13 +55,13 @@ export default function NotebookDock({ onClose, onOpenFull }: Props) {
         </div>
       </header>
 
-      <div className="flex-1 min-h-0 flex flex-col p-3">
-        <div className="flex items-center justify-between mb-2 flex-shrink-0">
-          <span className="text-[11px] uppercase tracking-wide text-text-secondary font-medium">Quick note</span>
-          {editing && <span className="text-[10px] text-text-secondary">{draft.id ? 'Editing' : 'New'}</span>}
-        </div>
+      <main className="flex-1 min-h-0 flex flex-col p-3 gap-2">
         {editing ? (
           <div className="flex-1 min-h-0 flex flex-col gap-2">
+            <div className="flex items-center justify-between flex-shrink-0">
+              <span className="text-[11px] uppercase tracking-wide text-text-secondary font-medium">Quick note</span>
+              <span className="text-[10px] text-text-secondary">{draft.id ? 'Editing' : 'New'}</span>
+            </div>
             <input value={draft.title} onChange={e => setDraft(current => ({ ...current, title: e.target.value }))} placeholder="Note title" aria-label="Note title" autoFocus className="w-full flex-shrink-0 bg-surface-raised border border-border rounded-sm px-3 py-2 text-xs font-medium focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30" />
             <textarea value={draft.body} onChange={e => setDraft(current => ({ ...current, body: e.target.value }))} placeholder="Capture a thought, task, observation…" aria-label="Note content" className="flex-1 min-h-0 w-full resize-none bg-surface-raised border border-border rounded-sm px-3 py-3 text-xs leading-5 focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30" />
             <div className="flex items-center gap-2 flex-shrink-0">
@@ -79,19 +79,20 @@ export default function NotebookDock({ onClose, onOpenFull }: Props) {
             <span className="min-w-0"><span className="block font-medium text-text-primary">Take a note</span><span className="block text-[10px] mt-0.5 truncate">Start a quick capture</span></span>
           </button>
         )}
-      </div>
 
-      <div className="px-3 py-2 border-t border-border flex items-center gap-2 flex-shrink-0">
-        <div className="relative flex-1 min-w-0"><Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-secondary" aria-hidden="true" /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search notes…" aria-label="Search notes" className="w-full bg-surface-raised border border-border rounded-sm pl-8 pr-3 py-2 text-xs focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30" /></div>
-        <span className="text-[10px] text-text-secondary whitespace-nowrap">{notesQuery.isLoading ? '…' : notes.length}</span>
-      </div>
-      <div className="max-h-[30%] min-h-[120px] overflow-y-auto px-3 py-2 flex-shrink-0">
-        <div className="flex items-center justify-between mb-2"><span className="text-[11px] uppercase tracking-wide text-text-secondary font-medium">Recent notes</span><button type="button" onClick={onOpenFull} className="inline-flex items-center gap-1 text-[10px] text-accent hover:underline focus:outline-none focus:ring-1 focus:ring-accent/50 rounded">Full notebook <ExternalLink size={11} /></button></div>
-        {notesQuery.isLoading ? <div className="space-y-2">{Array.from({ length: 3 }).map((_, i) => <div key={i} className="p-3 rounded-sm border border-border animate-pulse"><div className="h-3.5 w-3/4 bg-surface-raised rounded" /><div className="h-2.5 w-full bg-surface-raised rounded mt-2" /></div>)}</div>
-          : notesQuery.error ? <div className="p-3 text-center border border-status-danger/30 bg-status-danger/5 rounded-sm"><p className="text-xs text-status-danger font-medium">Notes could not be loaded</p><button type="button" onClick={() => notesQuery.refetch()} className="mt-2 px-3 py-1.5 text-xs border border-border rounded-sm hover:border-accent focus:outline-none focus:ring-2 focus:ring-accent/50">Try again</button></div>
-          : notes.length === 0 ? <div className="p-4 text-center border border-dashed border-border rounded-sm"><FileText size={20} className="mx-auto text-text-secondary mb-1.5" /><p className="text-xs font-medium">{query ? 'No matching notes' : 'No notes yet'}</p></div>
-          : <div className="space-y-1.5">{notes.map(note => <button key={note.id} type="button" onClick={() => editNote(note)} className={`w-full text-left p-2.5 rounded-sm border transition-colors focus:outline-none focus:ring-2 focus:ring-accent/60 ${draft.id === note.id && editing ? 'border-accent bg-surface-raised' : 'border-border hover:border-accent hover:bg-surface-raised'}`}><div className="flex items-center gap-2"><FileText size={13} className="text-accent flex-shrink-0" /><div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-2"><p className="text-xs font-medium truncate">{note.title || 'Untitled note'}</p><span className="text-[9px] text-text-secondary flex-shrink-0">{new Date(note.updated_at).toLocaleDateString()}</span></div><p className="text-[10px] text-text-secondary truncate mt-0.5">{note.body || 'No content'}</p></div></div></button>)}</div>}
-      </div>
+        <div className="flex items-center gap-2 flex-shrink-0 pt-1">
+          <div className="relative flex-1 min-w-0"><Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-secondary" aria-hidden="true" /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search notes…" aria-label="Search notes" className="w-full bg-surface-raised border border-border rounded-sm pl-8 pr-3 py-2 text-xs focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30" /></div>
+          <span className="text-[10px] text-text-secondary whitespace-nowrap">{notesQuery.isLoading ? '…' : notes.length}</span>
+        </div>
+
+        <section className="flex-1 min-h-0 overflow-y-auto pt-1">
+          <div className="flex items-center justify-between mb-2"><span className="text-[11px] uppercase tracking-wide text-text-secondary font-medium">Recent notes</span><button type="button" onClick={onOpenFull} className="inline-flex items-center gap-1 text-[10px] text-accent hover:underline focus:outline-none focus:ring-1 focus:ring-accent/50 rounded">Full notebook <ExternalLink size={11} /></button></div>
+          {notesQuery.isLoading ? <div className="space-y-2">{Array.from({ length: 3 }).map((_, i) => <div key={i} className="p-3 rounded-sm border border-border animate-pulse"><div className="h-3.5 w-3/4 bg-surface-raised rounded" /><div className="h-2.5 w-full bg-surface-raised rounded mt-2" /></div>)}</div>
+            : notesQuery.error ? <div className="p-3 text-center border border-status-danger/30 bg-status-danger/5 rounded-sm"><p className="text-xs text-status-danger font-medium">Notes could not be loaded</p><button type="button" onClick={() => notesQuery.refetch()} className="mt-2 px-3 py-1.5 text-xs border border-border rounded-sm hover:border-accent focus:outline-none focus:ring-2 focus:ring-accent/50">Try again</button></div>
+            : notes.length === 0 ? <div className="p-4 text-center border border-dashed border-border rounded-sm"><FileText size={20} className="mx-auto text-text-secondary mb-1.5" /><p className="text-xs font-medium">{query ? 'No matching notes' : 'No notes yet'}</p></div>
+            : <div className="space-y-1.5">{notes.map(note => <button key={note.id} type="button" onClick={() => editNote(note)} className={`w-full text-left p-2.5 rounded-sm border transition-colors focus:outline-none focus:ring-2 focus:ring-accent/60 ${draft.id === note.id && editing ? 'border-accent bg-surface-raised' : 'border-border hover:border-accent hover:bg-surface-raised'}`}><div className="flex items-center gap-2"><FileText size={13} className="text-accent flex-shrink-0" /><div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-2"><p className="text-xs font-medium truncate">{note.title || 'Untitled note'}</p><span className="text-[9px] text-text-secondary flex-shrink-0">{new Date(note.updated_at).toLocaleDateString()}</span></div><p className="text-[10px] text-text-secondary truncate mt-0.5">{note.body || 'No content'}</p></div></div></button>)}</div>}
+        </section>
+      </main>
     </div>
   );
 }
