@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { pool } from '../db.js';
 import { getProjectAccess } from '../middleware/project-access.js';
 import { validateCanvasResource } from '../middleware/resource-access.js';
+import { hasPermission } from '../middleware/permissions.js';
 import { writeAuditLog } from '../middleware/audit.js';
 
 const router = Router();
@@ -22,7 +23,7 @@ function validateContentMatchesType(block_type, text_content, resource_id) {
 // PUT /api/blocks/:id — update position, size, and/or content. Every block
 // resizes and repositions independently — no shared row, no overlap
 // rejection, blocks may occupy the same space.
-router.put('/:id', async (req, res) => {
+router.put('/:id', hasPermission('projects.edit'), async (req, res) => {
   const fields = ['block_type', 'text_content', 'resource_id', 'title', 'x', 'y', 'width', 'height'];
   const updates = [];
   const values = [];
@@ -101,7 +102,7 @@ router.put('/:id', async (req, res) => {
 });
 
 // DELETE /api/blocks/:id — connectors referencing this block cascade-delete
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', hasPermission('projects.edit'), async (req, res) => {
   try {
     const current = await pool.query('SELECT * FROM project_blocks WHERE id = $1', [req.params.id]);
     if (!current.rowCount) return res.status(404).json({ error: { code: 'BLOCK_NOT_FOUND', message: 'Block not found' } });
