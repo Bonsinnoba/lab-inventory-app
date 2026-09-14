@@ -1,4 +1,5 @@
 import { pool } from '../db.js';
+import { hasPermission } from './permissions.js';
 
 /** Return the project permission for the current user.
  * admin => admin; owner/member lead/member => edit; observer => view; none => none.
@@ -26,30 +27,34 @@ export async function getProjectAccess(projectId, user) {
 }
 
 export async function requireProjectAccess(req, res, next) {
-  try {
-    const projectId = req.params.projectId || req.params.id;
-    const { access, memberRole } = await getProjectAccess(projectId, req.user);
-    if (access === 'none') return res.status(403).json({ error: { code: 'PROJECT_ACCESS_REQUIRED', message: 'You do not have access to this project' } });
-    req.projectAccess = access;
-    req.projectMemberRole = memberRole;
-    next();
-  } catch (err) {
-    console.error('Project access check failed:', err);
-    res.status(500).json({ error: { code: 'PROJECT_ACCESS_CHECK_FAILED', message: 'Unable to verify project permissions' } });
-  }
+  return hasPermission('projects.view')(req, res, async () => {
+    try {
+      const projectId = req.params.projectId || req.params.id;
+      const { access, memberRole } = await getProjectAccess(projectId, req.user);
+      if (access === 'none') return res.status(403).json({ error: { code: 'PROJECT_ACCESS_REQUIRED', message: 'You do not have access to this project' } });
+      req.projectAccess = access;
+      req.projectMemberRole = memberRole;
+      next();
+    } catch (err) {
+      console.error('Project access check failed:', err);
+      res.status(500).json({ error: { code: 'PROJECT_ACCESS_CHECK_FAILED', message: 'Unable to verify project permissions' } });
+    }
+  });
 }
 
 export async function requireProjectEditor(req, res, next) {
-  try {
-    const projectId = req.params.projectId || req.params.id;
-    const { access, memberRole } = await getProjectAccess(projectId, req.user);
-    if (access === 'none') return res.status(403).json({ error: { code: 'PROJECT_ACCESS_REQUIRED', message: 'You do not have access to this project' } });
-    if (access === 'view') return res.status(403).json({ error: { code: 'PROJECT_READ_ONLY', message: 'You have read-only access to this project' } });
-    req.projectAccess = access;
-    req.projectMemberRole = memberRole;
-    next();
-  } catch (err) {
-    console.error('Project editor check failed:', err);
-    res.status(500).json({ error: { code: 'PROJECT_ACCESS_CHECK_FAILED', message: 'Unable to verify project permissions' } });
-  }
+  return hasPermission('projects.edit')(req, res, async () => {
+    try {
+      const projectId = req.params.projectId || req.params.id;
+      const { access, memberRole } = await getProjectAccess(projectId, req.user);
+      if (access === 'none') return res.status(403).json({ error: { code: 'PROJECT_ACCESS_REQUIRED', message: 'You do not have access to this project' } });
+      if (access === 'view') return res.status(403).json({ error: { code: 'PROJECT_READ_ONLY', message: 'You have read-only access to this project' } });
+      req.projectAccess = access;
+      req.projectMemberRole = memberRole;
+      next();
+    } catch (err) {
+      console.error('Project editor check failed:', err);
+      res.status(500).json({ error: { code: 'PROJECT_ACCESS_CHECK_FAILED', message: 'Unable to verify project permissions' } });
+    }
+  });
 }
