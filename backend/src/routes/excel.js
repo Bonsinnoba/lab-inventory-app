@@ -1,0 +1,245 @@
+import { Router } from 'express';
+import multer from 'multer';
+import { pool } from '../db.js';
+import { writeAuditLog } from '../middleware/audit.js';
+import { buildXlsx, parseXlsx } from '../lib/xlsx.js';
+
+const router = Router();
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 } });
+
+const INVENTORY_COLUMNS = [
+  ['LabOS ID', 'Optional. Leave blank to create a new item; use an existing ID to update that item.'],
+  ['Name', 'Required. Inventory item name.'],
+  ['Type', 'Required. Existing LabOS item type or your configured type.'],
+  ['Category', 'Optional.'],
+  ['SKU', 'Optional.'],
+  ['Initial Quantity', 'Required for new items. Number >= 0.'],
+  ['Current Quantity', 'Optional. Defaults to Initial Quantity for new items.'],
+  ['Unit', 'Optional. Examples: pcs, kg, L, box.'],
+  ['Dimensions', 'Optional.'],
+  ['Status', 'Optional. Defaults to available for new items.'],
+  ['Condition Notes', 'Optional.'],
+  ['Unit Cost', 'Optional. Numeric cost per unit.'],
+  ['Replacement Cost', 'Optional. Numeric replacement cost.'],
+  ['Location', 'Optional. Exact existing location name.'],
+  ['Supplier', 'Optional.'],
+  ['Part Number', 'Optional.'],
+  ['Manufacturer', 'Optional.'],
+  ['Model Number', 'Optional.'],
+  ['Serial Number', 'Optional.'],
+  ['Asset Tag', 'Optional.'],
+  ['Next Maintenance Date', 'Optional. YYYY-MM-DD.'],
+  ['Maintenance Interval Days', 'Optional. Whole number >= 0.'],
+  ['Calibration Interval Days', 'Optional. Whole number >= 0.'],
+  ['Next Calibration Date', 'Optional. YYYY-MM-DD.'],
+];
+
+const INVENTORY_HEADERS = INVENTORY_COLUMNS.map(([name]) => name);
+const NUMERIC_FIELDS = new Set(['Initial Quantity', 'Current Quantity', 'Unit Cost', 'Replacement Cost', 'Maintenance Interval Days', 'Calibration Interval Days']);
+const DATE_FIELDS = new Set(['Next Maintenance Date', 'Next Calibration Date']);
+
+function value(row, header) {
+  const index = INVENTORY_HEADERS.indexOf(header);
+  return index < 0 ? '' : row[index] ?? '';
+}
+
+function asText(v) {
+  return v === null || v === undefined ? '' : String(v).trim();
+}
+
+function asNumber(v, field, rowNumber, errors, { integer = false } = {}) {
+  const text = asText(v);
+  if (!text) return null;
+  const number = Number(text);
+  if (!Number.isFinite(number) || number < 0 || (integer && !Number.isInteger(number))) {
+    errors.push(`${field} must be ${integer ? 'a whole number ' : ''}a number >= 0`);
+    return null;
+  }
+  return number;
+}
+
+function asDate(v, field, errors) {
+  const text = asText(v);
+  if (!text) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    errors.push(`${field} must use YYYY-MM-DD`);
+    return null;
+  }
+  const date = new Date(`${text}T00:00:00Z`);
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== text) {
+    errors.push(`${field} is not a valid date`);
+    return null;
+  }
+  return text;
+}
+
+function normalizeRows(rows) {
+  const [headerRow, ...dataRows] = rows;
+  const headers = (headerRow || []).map(asText);
+  const missing = INVENTORY_HEADERS.filter((header) => !headers.includes(header));
+  if (missing.length) throw new Error(`This is not a LabOS Inventory template. Missing columns: ${missing.join(', ')}`);
+  const indexes = Object.fromEntries(INVENTORY_HEADERS.map((header) => [header, headers.indexOf(header)]));
+  return dataRows
+    .map((row) => INVENTORY_HEADERS.map((header) => row[indexes[header]] ?? ''))
+    .filter((row) => row.some((cell) => asText(cell) !== ''));
+}
+
+async function validateInventoryRows(rows) {
+  const errors = [];
+  const valid = [];
+  const locations = await pool.query('SELECT id, name FROM locations ORDER BY name');
+  const locationMap = new Map(locations.rows.map((row) => [String(row.name).trim().toLowerCase(), row]));
+
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i];
+    const rowNumber = i + 2;
+    const rowErrors = [];
+    const id = asText(value(row, 'LabOS ID')) || null;
+    const name = asText(value(row, 'Name'));
+    const type = asText(value(row, 'Type'));
+    if (!name) rowErrors.push('Name is required');
+    if (!type) rowErrors.push('Type is required');
+
+    const initial = asNumber(value(row, 'Initial Quantity'), 'Initial Quantity', rowNumber, rowErrors);
+    const currentRaw = asText(value(row, 'Current Quantity'));
+    const current = currentRaw ? asNumber(currentRaw, 'Current Quantity', rowNumber, rowErrors) : initial;
+    const unitCost = asNumber(value(row, 'Unit Cost'), 'Unit Cost', rowNumber, rowErrors);
+    const replacementCost = asNumber(value(row, 'Replacement Cost'), 'Replacement Cost', rowNumber, rowErrors);
+    const maintenanceInterval = asNumber(value(row, 'Maintenance Interval Days'), 'Maintenance Interval Days', rowNumber, rowErrors, { integer: true });
+    const calibrationInterval = asNumber(value(row, 'Calibration Interval Days'), 'Calibration Interval Days', rowNumber, rowErrors, { integer: true });
+    const nextMaintenance = asDate(value(row, 'Next Maintenance Date'), 'Next Maintenance Date', rowErrors);
+    const nextCalibration = asDate(value(row, 'Next Calibration Date'), 'Next Calibration Date', rowErrors);
+    if (current !== null && initial !== null && current < 0) rowErrors.push('Current Quantity cannot be negative');
+
+    const locationName = asText(value(row, 'Location'));
+    const location = locationName ? locationMap.get(locationName.toLowerCase()) : null;
+    if (locationName && !location) rowErrors.push(`Location "${locationName}" does not exist`);
+
+    let existing = null;
+    if (id) {
+      const result = await pool.query('SELECT id FROM items WHERE id = $1', [id]);
+      if (!result.rowCount) rowErrors.push(`LabOS ID "${id}" does not exist`);
+      else existing = result.rows[0];
+    }
+
+    if (rowErrors.length) {
+      errors.push({ row: rowNumber, errors: rowErrors });
+      continue;
+    }
+
+    valid.push({
+      rowNumber,
+      id: existing?.id || null,
+      name,
+      type,
+      category: asText(value(row, 'Category')) || null,
+      sku: asText(value(row, 'SKU')) || null,
+      initial_quantity: initial ?? 0,
+      current_quantity: current ?? initial ?? 0,
+      unit: asText(value(row, 'Unit')) || null,
+      dimensions: asText(value(row, 'Dimensions')) || null,
+      status: asText(value(row, 'Status')) || 'available',
+      condition_notes: asText(value(row, 'Condition Notes')) || null,
+      unit_cost: unitCost,
+      replacement_cost: replacementCost,
+      location_id: location?.id || null,
+      supplier: asText(value(row, 'Supplier')) || null,
+      part_number: asText(value(row, 'Part Number')) || null,
+      manufacturer: asText(value(row, 'Manufacturer')) || null,
+      model_number: asText(value(row, 'Model Number')) || null,
+      serial_number: asText(value(row, 'Serial Number')) || null,
+      asset_tag: asText(value(row, 'Asset Tag')) || null,
+      next_maintenance_date: nextMaintenance,
+      maintenance_interval_days: maintenanceInterval,
+      calibration_interval_days: calibrationInterval,
+      next_calibration_date: nextCalibration,
+    });
+  }
+  return { valid, errors };
+}
+
+function inventoryWorkbook() {
+  const instructionRows = [
+    ['LabOS Inventory Import Template', ''],
+    ['How to use', 'Fill the Inventory sheet in Excel, save it as .xlsx, then upload it back to LabOS.'],
+    ['Create', 'Leave LabOS ID blank. Name and Type are required.'],
+    ['Update', 'Put the existing LabOS ID in the row. LabOS will update that item.'],
+    ['Dates', 'Use YYYY-MM-DD for maintenance and calibration dates.'],
+    ['Location', 'Use the exact name of an existing LabOS location.'],
+    ['Safety', 'LabOS validates the entire workbook before changing inventory.'],
+    ['Tip', 'Keep a copy of your original workbook before importing large batches.'],
+  ];
+  const noteRows = INVENTORY_COLUMNS.map(([name, description]) => [name, description]);
+  return buildXlsx({
+    sheets: {
+      Instructions: { rows: instructionRows, widths: [28, 100] },
+      Inventory: { rows: [INVENTORY_HEADERS, ...Array.from({ length: 5 }, () => INVENTORY_HEADERS.map(() => ''))], widths: INVENTORY_HEADERS.map((h) => Math.max(14, Math.min(28, h.length + 4))) },
+      'Field Guide': { rows: [['Field', 'Meaning'], ...noteRows], widths: [32, 90] },
+    },
+  });
+}
+
+function getInventoryRows(parsed) {
+  const sheet = parsed.sheets.find((candidate) => candidate.name.toLowerCase() === 'inventory');
+  if (!sheet) throw new Error('Inventory worksheet not found. Download the current LabOS Inventory template and use its Inventory sheet.');
+  return normalizeRows(sheet.rows);
+}
+
+router.get('/templates/inventory', async (req, res) => {
+  const workbook = inventoryWorkbook();
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="LabOS-Inventory-Template.xlsx"');
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(workbook);
+});
+
+router.post('/inventory/preview', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: { code: 'FILE_REQUIRED', message: 'Upload an .xlsx file' } });
+    if (!req.file.originalname.toLowerCase().endsWith('.xlsx')) return res.status(400).json({ error: { code: 'XLSX_REQUIRED', message: 'Only .xlsx Excel workbooks are supported' } });
+    const parsed = parseXlsx(req.file.buffer);
+    const rows = getInventoryRows(parsed);
+    const result = await validateInventoryRows(rows);
+    res.json({ template: 'inventory-v1', filename: req.file.originalname, total_rows: rows.length, ready_rows: result.valid.length, error_rows: result.errors.length, creates: result.valid.filter((row) => !row.id).length, updates: result.valid.filter((row) => row.id).length, errors: result.errors, preview: result.valid.slice(0, 25) });
+  } catch (err) {
+    console.error(err);
+    res.status(400).json({ error: { code: 'EXCEL_PREVIEW_FAILED', message: err.message || 'Unable to read this Excel workbook' } });
+  }
+});
+
+router.post('/inventory/import', upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: { code: 'FILE_REQUIRED', message: 'Upload an .xlsx file' } });
+  const client = await pool.connect();
+  try {
+    const parsed = parseXlsx(req.file.buffer);
+    const rows = getInventoryRows(parsed);
+    const validation = await validateInventoryRows(rows);
+    if (validation.errors.length) {
+      return res.status(422).json({ error: { code: 'EXCEL_VALIDATION_FAILED', message: 'Fix the validation errors before importing', rows: validation.errors } });
+    }
+    await client.query('BEGIN');
+    let created = 0;
+    let updated = 0;
+    for (const item of validation.valid) {
+      if (item.id) {
+        await client.query(`UPDATE items SET name=$1,type=$2,category=$3,sku=$4,initial_quantity=$5,current_quantity=$6,unit=$7,dimensions=$8,status=$9,condition_notes=$10,unit_cost=$11,replacement_cost=$12,location_id=$13,supplier=$14,part_number=$15,manufacturer=$16,model_number=$17,serial_number=$18,asset_tag=$19,next_maintenance_date=$20,maintenance_interval_days=$21,calibration_interval_days=$22,next_calibration_date=$23 WHERE id=$24`, [item.name,item.type,item.category,item.sku,item.initial_quantity,item.current_quantity,item.unit,item.dimensions,item.status,item.condition_notes,item.unit_cost,item.replacement_cost,item.location_id,item.supplier,item.part_number,item.manufacturer,item.model_number,item.serial_number,item.asset_tag,item.next_maintenance_date,item.maintenance_interval_days,item.calibration_interval_days,item.next_calibration_date,item.id]);
+        updated += 1;
+      } else {
+        const result = await client.query(`INSERT INTO items (name,type,category,sku,initial_quantity,current_quantity,unit,dimensions,status,condition_notes,unit_cost,replacement_cost,location_id,supplier,part_number,manufacturer,model_number,serial_number,asset_tag,next_maintenance_date,maintenance_interval_days,calibration_interval_days,next_calibration_date) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) RETURNING id`, [item.name,item.type,item.category,item.sku,item.initial_quantity,item.current_quantity,item.unit,item.dimensions,item.status,item.condition_notes,item.unit_cost,item.replacement_cost,item.location_id,item.supplier,item.part_number,item.manufacturer,item.model_number,item.serial_number,item.asset_tag,item.next_maintenance_date,item.maintenance_interval_days,item.calibration_interval_days,item.next_calibration_date]);
+        await writeAuditLog({ req, action: 'CREATE', entityType: 'item', entityId: result.rows[0].id, newValue: item });
+        created += 1;
+      }
+    }
+    await client.query('COMMIT');
+    await writeAuditLog({ req, action: 'IMPORT', entityType: 'inventory', entityId: null, metadata: { template: 'inventory-v1', filename: req.file.originalname, rows: validation.valid.length, created, updated } });
+    res.json({ ok: true, template: 'inventory-v1', filename: req.file.originalname, imported: validation.valid.length, created, updated });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(400).json({ error: { code: 'EXCEL_IMPORT_FAILED', message: err.message || 'Inventory import failed' } });
+  } finally {
+    client.release();
+  }
+});
+
+export default router;
