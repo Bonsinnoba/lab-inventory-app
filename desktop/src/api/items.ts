@@ -6,6 +6,7 @@ export interface Item {
   type: string;
   status: 'available' | 'in_use' | 'damaged' | 'needs_repair' | 'needs_replacement' | 'low_stock' | 'retired';
   location_id?: string;
+  storage_location?: string | null;
   current_quantity: number;
   initial_quantity: number;
   unit?: string;
@@ -17,9 +18,6 @@ export interface Item {
   condition_notes?: string;
   next_maintenance_date?: string | null;
   maintenance_interval_days?: number | null;
-  // The item's picture — set explicitly via the "Add/Change picture"
-  // control, independent of any other resources/files attached to
-  // this item (null if none has been set).
   image_resource_id?: string | null;
   manufacturer?: string | null;
   model_number?: string | null;
@@ -39,15 +37,16 @@ export interface Item {
 export async function getItems(filters?: {
   type?: string;
   status?: string;
+  location?: string;
   location_id?: string;
   low_stock?: boolean;
 }): Promise<Item[]> {
   const params = new URLSearchParams();
   if (filters?.type) params.append('type', filters.type);
   if (filters?.status) params.append('status', filters.status);
+  if (filters?.location) params.append('location', filters.location);
   if (filters?.location_id) params.append('location_id', filters.location_id);
   if (filters?.low_stock) params.append('low_stock', 'true');
-  
   const response = await apiFetch(`/items?${params}`);
   if (!response.ok) throw new Error('Failed to fetch items');
   return response.json();
@@ -85,14 +84,10 @@ export interface ItemAssignmentHistoryEntry {
 
 export async function getItemAssignmentHistory(id: string): Promise<ItemAssignmentHistoryEntry[]> {
   const response = await apiFetch(`/items/${id}/assignment-history`);
-  if (!response.ok) throw new Error('Failed to fetch assignment history');
+  if (!response.ok) throw new Error('Failed to fetch item assignment history');
   return response.json();
 }
 
-// Looks up an item by exact SKU match -- this is what powers barcode
-// scanning. A keyboard-wedge barcode scanner just types the scanned
-// code (plus Enter) into whatever input is focused, so any text input
-// wired to call this on submit effectively becomes a scan target.
 export async function getItemBySku(sku: string): Promise<Item> {
   const response = await apiFetch(`/items/by-sku/${encodeURIComponent(sku)}`);
   if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Item not found');
@@ -120,17 +115,13 @@ export async function updateItem(id: string, item: Partial<Item>): Promise<Item>
 }
 
 export async function deleteItem(id: string): Promise<void> {
-  const response = await apiFetch(`/items/${id}`, {
-    method: 'DELETE',
-  });
+  const response = await apiFetch(`/items/${id}`, { method: 'DELETE' });
   if (!response.ok) throw new Error('Failed to delete item');
 }
 
 export async function bulkUpdateItemStatus(ids: string[], status: Item['status']): Promise<{ updated: number }> {
   const response = await apiFetch(`/items/bulk-status`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ids, status }),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids, status }),
   });
   if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Failed to update items');
   return response.json();
@@ -138,9 +129,7 @@ export async function bulkUpdateItemStatus(ids: string[], status: Item['status']
 
 export async function bulkDeleteItems(ids: string[]): Promise<{ deleted: number }> {
   const response = await apiFetch(`/items/bulk-delete`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ids }),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }),
   });
   if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Failed to delete items');
   return response.json();
@@ -197,9 +186,7 @@ export async function createItemMovement(id: string, movement: {
   reference?: string;
 }): Promise<{ item: Item; movement: ItemMovement }> {
   const response = await apiFetch(`/items/${id}/movements`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(movement),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(movement),
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body?.error?.message || body?.error || 'Failed to record movement');
@@ -214,9 +201,7 @@ export async function getMaintenanceRecords(id: string): Promise<MaintenanceReco
 
 export async function createMaintenanceRecord(id: string, record: Partial<MaintenanceRecord>): Promise<MaintenanceRecord> {
   const response = await apiFetch(`/items/${id}/maintenance`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(record),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(record),
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body?.error?.message || body?.error || 'Failed to create maintenance record');
@@ -235,4 +220,3 @@ export async function deleteMaintenanceRecord(itemId: string, maintenanceId: str
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body?.error?.message || body?.error || 'Failed to delete maintenance record');
 }
-
