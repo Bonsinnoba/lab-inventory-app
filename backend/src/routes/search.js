@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
+import { getUserPermissions } from '../middleware/permissions.js';
 
 const router = Router();
 
@@ -16,6 +17,18 @@ const TYPE_QUERIES = {
   experiments: `SELECT e.id, e.project_id, e.title, e.status, e.hypothesis, e.procedure, p.name AS project_name, 1.0 AS rank FROM project_experiments e JOIN projects p ON p.id=e.project_id WHERE (COALESCE(e.title,'') ILIKE '%' || $1 || '%' OR COALESCE(e.hypothesis,'') ILIKE '%' || $1 || '%' OR COALESCE(e.procedure,'') ILIKE '%' || $1 || '%') AND ($3 = 'admin' OR p.owner_id = $2 OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = e.project_id AND pm.user_id = $2)) ORDER BY CASE WHEN lower(e.title)=lower($1) THEN 3 WHEN lower(e.title) LIKE lower($1) || '%' THEN 2 ELSE 1 END DESC, e.updated_at DESC LIMIT 30`,
   blocks: `SELECT b.id, b.project_id, b.title, b.block_type, b.text_content, p.name AS project_name, 1.0 AS rank FROM project_blocks b JOIN projects p ON p.id=b.project_id WHERE (COALESCE(b.title,'') ILIKE '%' || $1 || '%' OR COALESCE(b.text_content,'') ILIKE '%' || $1 || '%') AND ($3 = 'admin' OR p.owner_id = $2 OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = b.project_id AND pm.user_id = $2)) ORDER BY CASE WHEN lower(COALESCE(b.title,''))=lower($1) THEN 3 WHEN lower(COALESCE(b.title,'')) LIKE lower($1) || '%' THEN 2 ELSE 1 END DESC, b.created_at DESC LIMIT 30`,
 };
+
+const TYPE_PERMISSIONS = Object.freeze({
+  projects: 'projects.view',
+  items: 'inventory.view',
+  notes: 'notes.view',
+  transactions: 'finance.view',
+  resources: 'resources.view',
+  users: 'users.view',
+  tasks: 'projects.view',
+  experiments: 'projects.view',
+  blocks: 'projects.view',
+});
 
 // Items and users are global tables and their queries only bind $1.
 // Project-scoped types bind query, user id, and role ($1, $2, $3).
@@ -41,9 +54,11 @@ router.get('/', async (req, res) => {
   if (!q) return res.status(400).json({ error: 'query parameter "q" is required' });
   if (q.length > 200) return res.status(400).json({ error: 'search query is too long' });
   let types = normalizeTypes(req.query.type);
-  if (req.user.role !== 'admin') types = types.filter((type) => type !== 'users');
-  if (types.length === 0) return res.status(400).json({ error: 'at least one permitted search type is required' });
   try {
+    const permissions = await getUserPermissions(req.user.userId, req.user.role);
+    types = types.filter((type) => permissions.has(TYPE_PERMISSIONS[type]));
+    if (types.length === 0) return res.status(403).json({ error: { code: 'PERMISSION_DENIED', message: 'No permitted search types are available' } });
+
     // Do not let one broken category make the entire global search fail.
     const settled = await Promise.allSettled(types.map(async (type) => {
       const result = await pool.query(TYPE_QUERIES[type], queryParams(type, q, req.user.userId, req.user.role));
