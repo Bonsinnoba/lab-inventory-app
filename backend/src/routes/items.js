@@ -7,10 +7,11 @@ import { hasPermission } from '../middleware/permissions.js';
 const router = Router();
 
 router.get('/', async (req, res) => {
-  const { type, status, location_id, low_stock } = req.query;
+  const { type, status, location, location_id, low_stock } = req.query;
   const conditions = []; const values = [];
   if (type) { values.push(type); conditions.push(`i.type = $${values.length}`); }
   if (status) { values.push(status); conditions.push(`i.status = $${values.length}`); }
+  if (location) { values.push(`%${String(location).trim()}%`); conditions.push(`i.storage_location ILIKE $${values.length}`); }
   if (location_id) { values.push(location_id); conditions.push(`i.location_id = $${values.length}`); }
   if (low_stock === 'true') conditions.push(`(i.current_quantity <= (i.initial_quantity * 0.2) OR i.status = 'low_stock')`);
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -29,18 +30,18 @@ router.get('/:id', async (req, res) => {
 });
 
 router.post('/', hasPermission('inventory.create'), async (req, res) => {
-  const { name, type, category, sku, initial_quantity, current_quantity, unit, dimensions, status, condition_notes, unit_cost, replacement_cost, location_id, photo_url, supplier, supplier_id = null, part_number } = req.body;
+  const { name, type, category, sku, initial_quantity, current_quantity, unit, dimensions, status, condition_notes, unit_cost, replacement_cost, location_id, storage_location, photo_url, supplier, supplier_id = null, part_number } = req.body;
   if (!name || !type) return res.status(400).json({ error: 'name and type are required' });
   try {
-    const result = await pool.query(`INSERT INTO items (name,type,category,sku,initial_quantity,current_quantity,unit,dimensions,status,condition_notes,unit_cost,replacement_cost,location_id,photo_url,supplier,supplier_id,part_number) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`, [name,type,category ?? null,sku ?? null,initial_quantity ?? 0,current_quantity ?? initial_quantity ?? 0,unit ?? null,dimensions ?? null,status ?? 'available',condition_notes ?? null,unit_cost ?? null,replacement_cost ?? null,location_id ?? null,photo_url ?? null,supplier ?? null,supplier_id,part_number ?? null]);
+    const result = await pool.query(`INSERT INTO items (name,type,category,sku,initial_quantity,current_quantity,unit,dimensions,status,condition_notes,unit_cost,replacement_cost,location_id,storage_location,photo_url,supplier,supplier_id,part_number) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *`, [name,type,category ?? null,sku ?? null,initial_quantity ?? 0,current_quantity ?? initial_quantity ?? 0,unit ?? null,dimensions ?? null,status ?? 'available',condition_notes ?? null,unit_cost ?? null,replacement_cost ?? null,location_id ?? null,storage_location ? String(storage_location).trim() || null : null,photo_url ?? null,supplier ?? null,supplier_id,part_number ?? null]);
     await writeAuditLog({ req, action: 'CREATE', entityType: 'item', entityId: result.rows[0].id, newValue: result.rows[0] }); res.status(201).json(result.rows[0]);
   } catch (err) { console.error(err); res.status(500).json({ error: err.message || 'Failed to create item' }); }
 });
 
 router.put('/:id', hasPermission('inventory.edit'), async (req, res) => {
-  const fields = ['name','type','category','sku','initial_quantity','unit','dimensions','status','condition_notes','last_checked_at','unit_cost','replacement_cost','location_id','photo_url','next_maintenance_date','maintenance_interval_days','manufacturer','model_number','serial_number','asset_tag','calibration_interval_days','next_calibration_date','assigned_to','supplier','supplier_id','part_number','image_resource_id'];
+  const fields = ['name','type','category','sku','initial_quantity','unit','dimensions','status','condition_notes','last_checked_at','unit_cost','replacement_cost','location_id','storage_location','photo_url','next_maintenance_date','maintenance_interval_days','manufacturer','model_number','serial_number','asset_tag','calibration_interval_days','next_calibration_date','assigned_to','supplier','supplier_id','part_number','image_resource_id'];
   const updates = []; const values = [];
-  for (const field of fields) if (field in req.body) { values.push(req.body[field]); updates.push(`${field} = $${values.length}`); }
+  for (const field of fields) if (field in req.body) { values.push(field === 'storage_location' && req.body[field] ? String(req.body[field]).trim() : req.body[field]); updates.push(`${field} = $${values.length}`); }
   if (!updates.length) return res.status(400).json({ error: 'No valid fields to update' }); values.push(req.params.id);
   try {
     const before = await pool.query('SELECT * FROM items WHERE id = $1', [req.params.id]); if (!before.rowCount) return res.status(404).json({ error: 'Item not found' });
