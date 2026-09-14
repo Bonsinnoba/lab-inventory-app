@@ -5,312 +5,41 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { calculateEngineering, compareCalculations, createEngineeringTest, deleteCalculation, deleteEngineeringTest, getCalculations, getEngineeringTests, saveCalculation } from '../api/engineering';
 import { useToast } from '../contexts/ToastContext';
 
-const input='w-full px-2.5 py-2 bg-bg border border-border rounded-sm text-sm focus:outline-none focus:border-accent';
+const input='w-full px-2.5 py-2 bg-bg border border-border rounded-sm text-sm focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent';
 type Tool='calculator'|'formula'|'electronics'|'graphing'|'tests'|'saved'|'compare';
 const tools:[Tool,string,any][]=[['calculator','Calculator',Calculator],['formula','Formula',Ruler],['electronics','Electronics',Zap],['graphing','Graphing',LineChart],['tests','Engineering Tests',ClipboardCheck],['saved','Saved Calculations',Save],['compare','Compare Results',GitCompare]];
 
-interface WindowProps {
-  children: ReactNode;
-  onClose: () => void;
-  minimized: boolean;
-  setMinimized: (value: boolean) => void;
+interface WindowProps { children: ReactNode; onClose: () => void; minimized: boolean; setMinimized: (value: boolean) => void; }
+type Point={x:number;y:number}; type WindowSize={width:number;height:number}; type ResizeDirection='n'|'s'|'e'|'w'|'ne'|'nw'|'se'|'sw';
+const WINDOW_MARGIN=16, WINDOW_TOP_MIN=48, MIN_WINDOW_WIDTH=480, MIN_WINDOW_HEIGHT=340;
+const DEFAULT_WINDOW_SIZE:WindowSize={width:760,height:560}; const MINIMIZED_WIDTH=200, MINIMIZED_HEIGHT=44;
+function clampPosition(point:Point,width:number,height:number):Point{const maxX=Math.max(WINDOW_MARGIN,window.innerWidth-width-WINDOW_MARGIN),maxY=Math.max(WINDOW_TOP_MIN,window.innerHeight-height-WINDOW_MARGIN);return{x:Math.min(Math.max(WINDOW_MARGIN,point.x),maxX),y:Math.min(Math.max(WINDOW_TOP_MIN,point.y),maxY)}}
+function clampSize(width:number,height:number):WindowSize{const maxWidth=Math.max(MIN_WINDOW_WIDTH,window.innerWidth-WINDOW_MARGIN*2),maxHeight=Math.max(MIN_WINDOW_HEIGHT,window.innerHeight-WINDOW_TOP_MIN-WINDOW_MARGIN);return{width:Math.min(Math.max(MIN_WINDOW_WIDTH,width),maxWidth),height:Math.min(Math.max(MIN_WINDOW_HEIGHT,height),maxHeight)}}
+function clampMiniPosition(point:Point):Point{const maxX=Math.max(WINDOW_MARGIN,window.innerWidth-MINIMIZED_WIDTH-WINDOW_MARGIN),maxY=Math.max(WINDOW_MARGIN,window.innerHeight-MINIMIZED_HEIGHT-WINDOW_MARGIN);return{x:Math.min(Math.max(WINDOW_MARGIN,point.x),maxX),y:Math.min(Math.max(WINDOW_MARGIN,point.y),maxY)}}
+function Window({children,onClose,minimized,setMinimized}:WindowProps){
+ const [size,setSize]=useState<WindowSize>(()=>clampSize(DEFAULT_WINDOW_SIZE.width,DEFAULT_WINDOW_SIZE.height));
+ const [pos,setPos]=useState<Point>(()=>clampPosition({x:Math.round((window.innerWidth-DEFAULT_WINDOW_SIZE.width)/2),y:Math.max(WINDOW_TOP_MIN,Math.round((window.innerHeight-DEFAULT_WINDOW_SIZE.height)/2))},DEFAULT_WINDOW_SIZE.width,DEFAULT_WINDOW_SIZE.height));
+ const [miniPos,setMiniPos]=useState<Point>(()=>clampMiniPosition({x:window.innerWidth-MINIMIZED_WIDTH-WINDOW_MARGIN,y:window.innerHeight-MINIMIZED_HEIGHT-WINDOW_MARGIN}));
+ const dragRef=useRef<any>(null),resizeRef=useRef<any>(null),miniDragRef=useRef<any>(null);
+ useEffect(()=>{const handleResize=()=>{setSize(previous=>{const next=clampSize(previous.width,previous.height);setPos(p=>clampPosition(p,next.width,next.height));return next});setMiniPos(p=>clampMiniPosition(p))};window.addEventListener('resize',handleResize);return()=>window.removeEventListener('resize',handleResize)},[]);
+ const beginDrag=(e:React.PointerEvent<HTMLDivElement>)=>{if(e.button!==0)return;e.preventDefault();e.currentTarget.setPointerCapture(e.pointerId);dragRef.current={pointerId:e.pointerId,startX:e.clientX,startY:e.clientY,left:pos.x,top:pos.y}};
+ const moveDrag=(e:React.PointerEvent<HTMLDivElement>)=>{const d=dragRef.current;if(!d||d.pointerId!==e.pointerId)return;setPos(clampPosition({x:d.left+e.clientX-d.startX,y:d.top+e.clientY-d.startY},size.width,size.height))};
+ const endDrag=(e:React.PointerEvent<HTMLDivElement>)=>{dragRef.current=null;if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId)};
+ const beginResize=(direction:ResizeDirection)=>(e:React.PointerEvent<HTMLDivElement>)=>{if(e.button!==0)return;e.preventDefault();e.stopPropagation();e.currentTarget.setPointerCapture(e.pointerId);resizeRef.current={pointerId:e.pointerId,direction,startX:e.clientX,startY:e.clientY,left:pos.x,top:pos.y,width:size.width,height:size.height}};
+ const moveResize=(e:React.PointerEvent<HTMLDivElement>)=>{const r=resizeRef.current;if(!r||r.pointerId!==e.pointerId)return;const dx=e.clientX-r.startX,dy=e.clientY-r.startY;let width=r.width,height=r.height,left=r.left,top=r.top;if(r.direction.includes('e'))width=r.width+dx;if(r.direction.includes('s'))height=r.height+dy;if(r.direction.includes('w')){width=r.width-dx;left=r.left+dx}if(r.direction.includes('n')){height=r.height-dy;top=r.top+dy}const next=clampSize(width,height);if(r.direction.includes('w'))left=r.left+(r.width-next.width);if(r.direction.includes('n'))top=r.top+(r.height-next.height);setSize(next);setPos(clampPosition({x:left,y:top},next.width,next.height))};
+ const endResize=(e:React.PointerEvent<HTMLDivElement>)=>{resizeRef.current=null;if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId)};
+ const beginMiniDrag=(e:React.PointerEvent<HTMLButtonElement>)=>{if(e.button!==0)return;e.preventDefault();e.currentTarget.setPointerCapture(e.pointerId);miniDragRef.current={pointerId:e.pointerId,startX:e.clientX,startY:e.clientY,left:miniPos.x,top:miniPos.y,moved:false}};
+ const moveMiniDrag=(e:React.PointerEvent<HTMLButtonElement>)=>{const d=miniDragRef.current;if(!d||d.pointerId!==e.pointerId)return;const dx=e.clientX-d.startX,dy=e.clientY-d.startY;if(Math.abs(dx)>3||Math.abs(dy)>3)d.moved=true;setMiniPos(clampMiniPosition({x:d.left+dx,y:d.top+dy}))};
+ const endMiniDrag=(e:React.PointerEvent<HTMLButtonElement>)=>{if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId)};
+ const restoreFromMini=()=>{const moved=miniDragRef.current?.moved??false;miniDragRef.current=null;if(!moved)setMinimized(false)};
+ if(minimized)return <button type="button" onPointerDown={beginMiniDrag} onPointerMove={moveMiniDrag} onPointerUp={endMiniDrag} onPointerCancel={endMiniDrag} onClick={restoreFromMini} style={{left:miniPos.x,top:miniPos.y,width:MINIMIZED_WIDTH,height:MINIMIZED_HEIGHT}} className="fixed z-[80] px-4 bg-surface border border-accent rounded-sm shadow-lg text-sm flex items-center justify-center gap-2 cursor-move select-none touch-none hover:bg-surface-raised focus:outline-none focus:ring-2 focus:ring-accent/50" aria-label="Restore Engineering Tools" title="Drag to move, click to restore"><Calculator size={16}/> Engineering Tools</button>;
+ const handles:Array<[ResizeDirection,string]>= [['n','top-0 left-3 right-3 h-2 cursor-n-resize'],['s','bottom-0 left-3 right-3 h-2 cursor-s-resize'],['e','right-0 top-3 bottom-3 w-2 cursor-e-resize'],['w','left-0 top-3 bottom-3 w-2 cursor-w-resize'],['ne','right-0 top-0 w-3 h-3 cursor-ne-resize'],['nw','left-0 top-0 w-3 h-3 cursor-nw-resize'],['se','right-0 bottom-0 w-3 h-3 cursor-se-resize'],['sw','left-0 bottom-0 w-3 h-3 cursor-sw-resize']];
+ return <div style={{left:pos.x,top:pos.y,width:size.width,height:size.height}} className="fixed z-[70] max-w-[calc(100vw-32px)] max-h-[calc(100vh-64px)] bg-surface border border-border rounded-md shadow-2xl overflow-hidden" role="dialog" aria-label="Engineering Tools" aria-modal="false">
+  <div onPointerDown={beginDrag} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag} className="h-11 px-4 bg-surface-raised border-b border-border flex items-center justify-between cursor-move select-none touch-none"><div className="font-semibold text-sm flex items-center gap-2"><Calculator size={17}/> Engineering Tools</div><div className="flex gap-1"><button type="button" onPointerDown={e=>e.stopPropagation()} onClick={()=>setMinimized(true)} title="Minimize" aria-label="Minimize Engineering Tools" className="p-1.5 hover:bg-bg rounded focus:outline-none focus:ring-2 focus:ring-accent/50"><Minus size={15}/></button><button type="button" onPointerDown={e=>e.stopPropagation()} onClick={onClose} title="Close" aria-label="Close Engineering Tools" className="p-1.5 hover:bg-bg rounded focus:outline-none focus:ring-2 focus:ring-accent/50"><X size={15}/></button></div></div>
+  <div className="h-[calc(100%-44px)] overflow-hidden">{children}</div>{handles.map(([direction,className])=><div key={direction} onPointerDown={beginResize(direction)} onPointerMove={moveResize} onPointerUp={endResize} onPointerCancel={endResize} className={`absolute z-10 ${className}`} aria-hidden="true"/>)}
+ </div>;
 }
-
-type Point = { x: number; y: number };
-type WindowSize = { width: number; height: number };
-type ResizeDirection = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
-
-const WINDOW_MARGIN = 16;
-const WINDOW_TOP_MIN = 48;
-const MIN_WINDOW_WIDTH = 480;
-const MIN_WINDOW_HEIGHT = 340;
-const DEFAULT_WINDOW_SIZE: WindowSize = { width: 760, height: 560 };
-const MINIMIZED_WIDTH = 200;
-const MINIMIZED_HEIGHT = 44;
-
-function clampPosition(point: Point, width: number, height: number): Point {
-  const maxX = Math.max(WINDOW_MARGIN, window.innerWidth - width - WINDOW_MARGIN);
-  const maxY = Math.max(WINDOW_TOP_MIN, window.innerHeight - height - WINDOW_MARGIN);
-  return {
-    x: Math.min(Math.max(WINDOW_MARGIN, point.x), maxX),
-    y: Math.min(Math.max(WINDOW_TOP_MIN, point.y), maxY),
-  };
-}
-
-function clampSize(width: number, height: number): WindowSize {
-  const maxWidth = Math.max(MIN_WINDOW_WIDTH, window.innerWidth - WINDOW_MARGIN * 2);
-  const maxHeight = Math.max(MIN_WINDOW_HEIGHT, window.innerHeight - WINDOW_TOP_MIN - WINDOW_MARGIN);
-  return {
-    width: Math.min(Math.max(MIN_WINDOW_WIDTH, width), maxWidth),
-    height: Math.min(Math.max(MIN_WINDOW_HEIGHT, height), maxHeight),
-  };
-}
-
-function clampMiniPosition(point: Point): Point {
-  const maxX = Math.max(WINDOW_MARGIN, window.innerWidth - MINIMIZED_WIDTH - WINDOW_MARGIN);
-  const maxY = Math.max(WINDOW_MARGIN, window.innerHeight - MINIMIZED_HEIGHT - WINDOW_MARGIN);
-  return {
-    x: Math.min(Math.max(WINDOW_MARGIN, point.x), maxX),
-    y: Math.min(Math.max(WINDOW_MARGIN, point.y), maxY),
-  };
-}
-
-function Window({ children, onClose, minimized, setMinimized }: WindowProps) {
-  const [size, setSize] = useState<WindowSize>(() => clampSize(DEFAULT_WINDOW_SIZE.width, DEFAULT_WINDOW_SIZE.height));
-  const [pos, setPos] = useState<Point>(() => clampPosition({
-    x: Math.round((window.innerWidth - DEFAULT_WINDOW_SIZE.width) / 2),
-    y: Math.max(WINDOW_TOP_MIN, Math.round((window.innerHeight - DEFAULT_WINDOW_SIZE.height) / 2)),
-  }, DEFAULT_WINDOW_SIZE.width, DEFAULT_WINDOW_SIZE.height));
-  const [miniPos, setMiniPos] = useState<Point>(() => clampMiniPosition({
-    x: window.innerWidth - MINIMIZED_WIDTH - WINDOW_MARGIN,
-    y: window.innerHeight - MINIMIZED_HEIGHT - WINDOW_MARGIN,
-  }));
-
-  const dragRef = useRef<{ pointerId: number; startX: number; startY: number; left: number; top: number } | null>(null);
-  const resizeRef = useRef<{
-    pointerId: number;
-    direction: ResizeDirection;
-    startX: number;
-    startY: number;
-    left: number;
-    top: number;
-    width: number;
-    height: number;
-  } | null>(null);
-  const miniDragRef = useRef<{ pointerId: number; startX: number; startY: number; left: number; top: number; moved: boolean } | null>(null);
-
-  useEffect(() => {
-    const handleResize = () => {
-      setSize(previous => {
-        const next = clampSize(previous.width, previous.height);
-        setPos(previousPos => clampPosition(previousPos, next.width, next.height));
-        return next;
-      });
-      setMiniPos(previous => clampMiniPosition(previous));
-    };
-
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
-
-  const beginDrag = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    dragRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      left: pos.x,
-      top: pos.y,
-    };
-  };
-
-  const moveDrag = (event: React.PointerEvent<HTMLDivElement>) => {
-    const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    setPos(clampPosition({
-      x: drag.left + event.clientX - drag.startX,
-      y: drag.top + event.clientY - drag.startY,
-    }, size.width, size.height));
-  };
-
-  const endDrag = (event: React.PointerEvent<HTMLDivElement>) => {
-    dragRef.current = null;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-  };
-
-  const beginResize = (direction: ResizeDirection) => (event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    event.stopPropagation();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    resizeRef.current = {
-      pointerId: event.pointerId,
-      direction,
-      startX: event.clientX,
-      startY: event.clientY,
-      left: pos.x,
-      top: pos.y,
-      width: size.width,
-      height: size.height,
-    };
-  };
-
-  const moveResize = (event: React.PointerEvent<HTMLDivElement>) => {
-    const resize = resizeRef.current;
-    if (!resize || resize.pointerId !== event.pointerId) return;
-
-    const dx = event.clientX - resize.startX;
-    const dy = event.clientY - resize.startY;
-    let width = resize.width;
-    let height = resize.height;
-    let left = resize.left;
-    let top = resize.top;
-
-    if (resize.direction.includes('e')) width = resize.width + dx;
-    if (resize.direction.includes('s')) height = resize.height + dy;
-    if (resize.direction.includes('w')) {
-      width = resize.width - dx;
-      left = resize.left + dx;
-    }
-    if (resize.direction.includes('n')) {
-      height = resize.height - dy;
-      top = resize.top + dy;
-    }
-
-    const nextSize = clampSize(width, height);
-    if (resize.direction.includes('w')) left = resize.left + (resize.width - nextSize.width);
-    if (resize.direction.includes('n')) top = resize.top + (resize.height - nextSize.height);
-
-    setSize(nextSize);
-    setPos(clampPosition({ x: left, y: top }, nextSize.width, nextSize.height));
-  };
-
-  const endResize = (event: React.PointerEvent<HTMLDivElement>) => {
-    resizeRef.current = null;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-  };
-
-  const beginMiniDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    miniDragRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      left: miniPos.x,
-      top: miniPos.y,
-      moved: false,
-    };
-  };
-
-  const moveMiniDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
-    const drag = miniDragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    const dx = event.clientX - drag.startX;
-    const dy = event.clientY - drag.startY;
-    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) drag.moved = true;
-    setMiniPos(clampMiniPosition({ x: drag.left + dx, y: drag.top + dy }));
-  };
-
-  const endMiniDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-  };
-
-  const restoreFromMini = () => {
-    const moved = miniDragRef.current?.moved ?? false;
-    miniDragRef.current = null;
-    if (!moved) setMinimized(false);
-  };
-
-  if (minimized) {
-    return (
-      <button
-        type="button"
-        onPointerDown={beginMiniDrag}
-        onPointerMove={moveMiniDrag}
-        onPointerUp={endMiniDrag}
-        onPointerCancel={endMiniDrag}
-        onClick={restoreFromMini}
-        style={{ left: miniPos.x, top: miniPos.y, width: MINIMIZED_WIDTH, height: MINIMIZED_HEIGHT }}
-        className="fixed z-[80] px-4 bg-surface border border-accent rounded-sm shadow-lg text-sm flex items-center justify-center gap-2 cursor-move select-none touch-none"
-        aria-label="Restore Engineering Tools"
-        title="Drag to move, click to restore"
-      >
-        <Calculator size={16} /> Engineering Tools
-      </button>
-    );
-  }
-
-  const handles: Array<[ResizeDirection, string]> = [
-    ['n', 'top-0 left-3 right-3 h-2 cursor-n-resize'],
-    ['s', 'bottom-0 left-3 right-3 h-2 cursor-s-resize'],
-    ['e', 'right-0 top-3 bottom-3 w-2 cursor-e-resize'],
-    ['w', 'left-0 top-3 bottom-3 w-2 cursor-w-resize'],
-    ['ne', 'right-0 top-0 w-3 h-3 cursor-ne-resize'],
-    ['nw', 'left-0 top-0 w-3 h-3 cursor-nw-resize'],
-    ['se', 'right-0 bottom-0 w-3 h-3 cursor-se-resize'],
-    ['sw', 'left-0 bottom-0 w-3 h-3 cursor-sw-resize'],
-  ];
-
-  return (
-    <div
-      style={{ left: pos.x, top: pos.y, width: size.width, height: size.height }}
-      className="fixed z-[70] max-w-[calc(100vw-32px)] max-h-[calc(100vh-64px)] bg-surface border border-border rounded-md shadow-2xl overflow-hidden"
-      role="dialog"
-      aria-label="Engineering Tools"
-    >
-      <div
-        onPointerDown={beginDrag}
-        onPointerMove={moveDrag}
-        onPointerUp={endDrag}
-        onPointerCancel={endDrag}
-        className="h-11 px-4 bg-surface-raised border-b border-border flex items-center justify-between cursor-move select-none touch-none"
-      >
-        <div className="font-semibold text-sm flex items-center gap-2"><Calculator size={17} /> Engineering Tools</div>
-        <div className="flex gap-1">
-          <button type="button" onPointerDown={event => event.stopPropagation()} onClick={() => setMinimized(true)} title="Minimize" className="p-1.5 hover:bg-bg rounded"><Minus size={15} /></button>
-          <button type="button" onPointerDown={event => event.stopPropagation()} onClick={onClose} title="Close" className="p-1.5 hover:bg-bg rounded"><X size={15} /></button>
-        </div>
-      </div>
-      <div className="h-[calc(100%-44px)] overflow-hidden">{children}</div>
-      {handles.map(([direction, className]) => (
-        <div
-          key={direction}
-          onPointerDown={beginResize(direction)}
-          onPointerMove={moveResize}
-          onPointerUp={endResize}
-          onPointerCancel={endResize}
-          className={`absolute z-10 ${className}`}
-          aria-hidden="true"
-        />
-      ))}
-    </div>
-  );
-}
-
 function Field({label,value,onChange,type='number'}:{label:string;value:string;onChange:(v:string)=>void;type?:string}){return <label className="text-xs text-text-secondary">{label}<input type={type} step="any" value={value} onChange={e=>onChange(e.target.value)} className={`${input} mt-1`}/></label>}
-
-function Electronics({onResult}:{onResult:(r:any)=>void}){
-  const [mode,setMode]=useState<'ohm'|'power'|'divider'|'led'>('ohm');
-  const [v,setV]=useState<Record<string,string>>({});
-  const run=async()=>{
-    const maps:any={ohm:['ohms_law',{current_A:Number(v.i),resistance_ohm:Number(v.r)}],power:['power_vi',{voltage_V:Number(v.v),current_A:Number(v.i)}],divider:['voltage_divider',{vin_V:Number(v.v),r1_ohm:Number(v.r1),r2_ohm:Number(v.r2)}],led:['led_resistor',{supply_V:Number(v.vs),forward_V:Number(v.vf),current_A:Number(v.i)}]};
-    const [formula,inputs]=maps[mode] as [string,Record<string,number>];
-    onResult(await calculateEngineering(formula,inputs));
-  };
-  return <div><select className={input} value={mode} onChange={e=>{setMode(e.target.value as any);setV({})}}><option value="ohm">Ohm's Law</option><option value="power">Power</option><option value="divider">Voltage Divider</option><option value="led">LED Resistor</option></select><div className="grid sm:grid-cols-3 gap-3 mt-3">{mode==='ohm'&&<><Field label="Current (A)" value={v.i||''} onChange={x=>setV({...v,i:x})}/><Field label="Resistance (ohm)" value={v.r||''} onChange={x=>setV({...v,r:x})}/></>}{mode==='power'&&<><Field label="Voltage (V)" value={v.v||''} onChange={x=>setV({...v,v:x})}/><Field label="Current (A)" value={v.i||''} onChange={x=>setV({...v,i:x})}/></>}{mode==='divider'&&<><Field label="Vin (V)" value={v.v||''} onChange={x=>setV({...v,v:x})}/><Field label="R1 (ohm)" value={v.r1||''} onChange={x=>setV({...v,r1:x})}/><Field label="R2 (ohm)" value={v.r2||''} onChange={x=>setV({...v,r2:x})}/></>}{mode==='led'&&<><Field label="Supply (V)" value={v.vs||''} onChange={x=>setV({...v,vs:x})}/><Field label="Forward (V)" value={v.vf||''} onChange={x=>setV({...v,vf:x})}/><Field label="Current (A)" value={v.i||''} onChange={x=>setV({...v,i:x})}/></>}</div><button onClick={run} className="mt-4 px-3 py-2 bg-accent text-bg rounded-sm text-sm">Calculate</button></div>;
-}
-
-interface EngineeringToolsProps {open:boolean;minimized:boolean;onClose:()=>void;onMinimize:()=>void;}
-
-export default function EngineeringToolsPage({open,minimized,onClose,onMinimize}:EngineeringToolsProps){
-  const [tool,setTool]=useState<Tool>('calculator');
-  const [last,setLast]=useState<any>(null);
-  const [title,setTitle]=useState('');
-  const [projectId,setProjectId]=useState('');
-  const [graph,setGraph]=useState('10,20\n20,35\n30,28\n40,50');
-  const [test,setTest]=useState({title:'',description:'',status:'planned',conclusion:''});
-  const qc=useQueryClient();
-  const {showToast}=useToast();
-  const calcs=useQuery({queryKey:['engineering-calculations'],queryFn:getCalculations,enabled:open});
-  const tests=useQuery({queryKey:['engineering-tests'],queryFn:getEngineeringTests,enabled:open});
-  const save=useMutation({mutationFn:()=>saveCalculation({title:title||'Engineering calculation',project_id:projectId||null,category:'engineering',formula:last.formula,inputs:last.inputs,result_numeric:last.result_numeric,result_unit:last.result_unit}),onSuccess:()=>{qc.invalidateQueries({queryKey:['engineering-calculations']});showToast('Calculation saved')}});
-  const addTest=useMutation({mutationFn:()=>createEngineeringTest({...test,project_id:projectId||null}),onSuccess:()=>{setTest({title:'',description:'',status:'planned',conclusion:''});qc.invalidateQueries({queryKey:['engineering-tests']});showToast('Engineering test saved')}});
-  const delCalc=useMutation({mutationFn:deleteCalculation,onSuccess:()=>qc.invalidateQueries({queryKey:['engineering-calculations']})});
-  const delTest=useMutation({mutationFn:deleteEngineeringTest,onSuccess:()=>qc.invalidateQueries({queryKey:['engineering-tests']})});
-  const compare=async()=>{const ids=(calcs.data||[]).slice(0,5).map((c:any)=>c.id);if(ids.length<2)return showToast('Save at least two calculations first','error');const rows=await compareCalculations(ids);showToast(rows.map((r:any)=>`${r.title}: ${r.result_numeric??r.result_text} ${r.result_unit}`).join(' | '));};
-  const points=useMemo(()=>graph.split(/\r?\n/).map(x=>x.split(',').map(Number)).filter(a=>a.length===2&&a.every(Number.isFinite)),[graph]);
-  const maxX=Math.max(1,...points.map(p=>p[0])),maxY=Math.max(1,...points.map(p=>p[1]));
-  const body=tool==='electronics'?<Electronics onResult={setLast}/>:tool==='calculator'?<Electronics onResult={setLast}/>:tool==='formula'?<div className="space-y-2 text-sm"><div className="font-medium">Formula Catalog</div><div className="p-3 bg-surface-raised border border-border rounded-sm">V = I × R</div><div className="p-3 bg-surface-raised border border-border rounded-sm">P = V × I</div><div className="p-3 bg-surface-raised border border-border rounded-sm">Vout = Vin × R2 / (R1 + R2)</div><div className="p-3 bg-surface-raised border border-border rounded-sm">R = (Vs − Vf) / I</div></div>:tool==='graphing'?<div><textarea className={`${input} min-h-28`} value={graph} onChange={e=>setGraph(e.target.value)} placeholder="x,y per line"/><div className="mt-3 border border-border bg-bg rounded-sm p-2"><svg viewBox="0 0 500 240" className="w-full h-56"><polyline fill="none" stroke="currentColor" strokeWidth="2" points={points.map(p=>`${(p[0]/maxX)*470+15},${225-(p[1]/maxY)*200}`).join(' ')}/>{points.map((p,i)=><circle key={i} cx={(p[0]/maxX)*470+15} cy={225-(p[1]/maxY)*200} r="4" fill="currentColor"/>)}</svg></div></div>:tool==='tests'?<div><div className="grid gap-2"><input className={input} placeholder="Test title" value={test.title} onChange={e=>setTest({...test,title:e.target.value})}/><textarea className={input} placeholder="Description" value={test.description} onChange={e=>setTest({...test,description:e.target.value})}/><select className={input} value={test.status} onChange={e=>setTest({...test,status:e.target.value})}><option>planned</option><option>running</option><option>passed</option><option>failed</option><option>cancelled</option></select><textarea className={input} placeholder="Conclusion" value={test.conclusion} onChange={e=>setTest({...test,conclusion:e.target.value})}/><button disabled={!test.title.trim()} onClick={()=>addTest.mutate()} className="px-3 py-2 bg-accent text-bg rounded-sm text-sm">Save test</button></div><div className="mt-4 space-y-2">{(tests.data||[]).map((t:any)=><div key={t.id} className="p-2 border border-border rounded-sm text-xs flex justify-between"><span><b>{t.title}</b> · {t.status}{t.conclusion?` · ${t.conclusion}`:''}</span><button onClick={()=>delTest.mutate(t.id)} className="text-status-danger">×</button></div>)}</div></div>:tool==='saved'?<div className="space-y-2">{(calcs.data||[]).map((c:any)=><div key={c.id} className="p-3 border border-border rounded-sm text-xs flex justify-between"><span><b>{c.title}</b> · {c.result_numeric??c.result_text} {c.result_unit}<div className="text-text-secondary mt-1">{c.formula}</div></span><button onClick={()=>delCalc.mutate(c.id)}><Trash2 size={14}/></button></div>)}{!calcs.data?.length&&<div className="text-sm text-text-secondary">No saved calculations.</div>}</div>:<div className="space-y-3"><p className="text-sm text-text-secondary">Compare the latest saved calculations.</p><button onClick={compare} className="px-3 py-2 bg-accent text-bg rounded-sm text-sm flex items-center gap-2"><GitCompare size={15}/> Compare latest</button></div>;
-  if(!open)return null;
-  return <Window onClose={onClose} minimized={minimized} setMinimized={onMinimize}><div className="grid grid-cols-[155px_1fr] max-h-[72vh]"><nav className="p-2 border-r border-border bg-surface-raised space-y-1">{tools.map(([id,label,Icon])=><button key={id} onClick={()=>setTool(id)} className={`w-full flex items-center gap-2 px-2 py-2 rounded text-xs text-left ${tool===id?'bg-accent text-bg':'text-text-secondary hover:bg-bg'}`}><Icon size={14}/>{label}</button>)}</nav><main className="p-4 overflow-auto"><div className="text-sm font-medium mb-3">{tools.find(x=>x[0]===tool)?.[1]}</div>{body}{last&&<section className="mt-4 p-3 bg-surface-raised border border-border rounded-sm"><div className="text-xs text-text-secondary">Result</div><div className="text-2xl font-mono mt-1">{Number(last.result_numeric).toPrecision(8)} {last.result_unit}</div><div className="grid sm:grid-cols-2 gap-2 mt-3"><Field label="Saved title" value={title} onChange={setTitle} type="text"/><Field label="Project ID (optional)" value={projectId} onChange={setProjectId} type="text"/></div><button onClick={()=>save.mutate()} className="mt-3 px-3 py-2 border border-border rounded-sm text-xs flex gap-2 items-center"><Save size={14}/> Save calculation</button></section>}</main></div></Window>;
-}
+function Electronics({onResult}:{onResult:(r:any)=>void}){const [mode,setMode]=useState<'ohm'|'power'|'divider'|'led'>('ohm');const [v,setV]=useState<Record<string,string>>({});const run=async()=>{const maps:any={ohm:['ohms_law',{current_A:Number(v.i),resistance_ohm:Number(v.r)}],power:['power_vi',{voltage_V:Number(v.v),current_A:Number(v.i)}],divider:['voltage_divider',{vin_V:Number(v.v),r1_ohm:Number(v.r1),r2_ohm:Number(v.r2)}],led:['led_resistor',{supply_V:Number(v.vs),forward_V:Number(v.vf),current_A:Number(v.i)}]};const [formula,inputs]=maps[mode] as [string,Record<string,number>];onResult(await calculateEngineering(formula,inputs))};return <div><select aria-label="Engineering calculation" className={input} value={mode} onChange={e=>{setMode(e.target.value as any);setV({})}}><option value="ohm">Ohm's Law</option><option value="power">Power</option><option value="divider">Voltage Divider</option><option value="led">LED Resistor</option></select><div className="grid sm:grid-cols-3 gap-3 mt-3">{mode==='ohm'&&<><Field label="Current (A)" value={v.i||''} onChange={x=>setV({...v,i:x})}/><Field label="Resistance (ohm)" value={v.r||''} onChange={x=>setV({...v,r:x})}/></>}{mode==='power'&&<><Field label="Voltage (V)" value={v.v||''} onChange={x=>setV({...v,v:x})}/><Field label="Current (A)" value={v.i||''} onChange={x=>setV({...v,i:x})}/></>}{mode==='divider'&&<><Field label="Vin (V)" value={v.v||''} onChange={x=>setV({...v,v:x})}/><Field label="R1 (ohm)" value={v.r1||''} onChange={x=>setV({...v,r1:x})}/><Field label="R2 (ohm)" value={v.r2||''} onChange={x=>setV({...v,r2:x})}/></>}{mode==='led'&&<><Field label="Supply (V)" value={v.vs||''} onChange={x=>setV({...v,vs:x})}/><Field label="Forward (V)" value={v.vf||''} onChange={x=>setV({...v,vf:x})}/><Field label="Current (A)" value={v.i||''} onChange={x=>setV({...v,i:x})}/></>}</div><button onClick={run} className="mt-4 px-3 py-2 bg-accent text-bg rounded-sm text-sm font-medium focus:outline-none focus:ring-2 focus:ring-accent/50">Calculate</button></div>}
+interface EngineeringToolsProps{open:boolean;minimized:boolean;onClose:()=>void;onMinimize:()=>void}
+export default function EngineeringToolsPage({open,minimized,onClose,onMinimize}:EngineeringToolsProps){const [tool,setTool]=useState<Tool>('calculator');const [last,setLast]=useState<any>(null);const [title,setTitle]=useState('');const [projectId,setProjectId]=useState('');const [graph,setGraph]=useState('10,20\n20,35\n30,28\n40,50');const [test,setTest]=useState({title:'',description:'',status:'planned',conclusion:''});const qc=useQueryClient();const {showToast}=useToast();const calcs=useQuery({queryKey:['engineering-calculations'],queryFn:getCalculations,enabled:open});const tests=useQuery({queryKey:['engineering-tests'],queryFn:getEngineeringTests,enabled:open});const save=useMutation({mutationFn:()=>saveCalculation({title:title||'Engineering calculation',project_id:projectId||null,category:'engineering',formula:last.formula,inputs:last.inputs,result_numeric:last.result_numeric,result_unit:last.result_unit}),onSuccess:()=>{qc.invalidateQueries({queryKey:['engineering-calculations']});showToast('Calculation saved')}});const addTest=useMutation({mutationFn:()=>createEngineeringTest({...test,project_id:projectId||null}),onSuccess:()=>{setTest({title:'',description:'',status:'planned',conclusion:''});qc.invalidateQueries({queryKey:['engineering-tests']});showToast('Engineering test saved')}});const delCalc=useMutation({mutationFn:deleteCalculation,onSuccess:()=>qc.invalidateQueries({queryKey:['engineering-calculations']})});const delTest=useMutation({mutationFn:deleteEngineeringTest,onSuccess:()=>qc.invalidateQueries({queryKey:['engineering-tests']})});const compare=async()=>{const ids=(calcs.data||[]).slice(0,5).map((c:any)=>c.id);if(ids.length<2)return showToast('Save at least two calculations first','error');const rows=await compareCalculations(ids);showToast(rows.map((r:any)=>`${r.title}: ${r.result_numeric??r.result_text} ${r.result_unit}`).join(' | '))};const points=useMemo(()=>graph.split(/\r?\n/).map(x=>x.split(',').map(Number)).filter(a=>a.length===2&&a.every(Number.isFinite)),[graph]);const maxX=Math.max(1,...points.map(p=>p[0])),maxY=Math.max(1,...points.map(p=>p[1]));const body=tool==='electronics'?<Electronics onResult={setLast}/>:tool==='calculator'?<Electronics onResult={setLast}/>:tool==='formula'?<div className="space-y-2 text-sm"><div className="font-medium">Formula Catalog</div>{['V = I × R','P = V × I','Vout = Vin × R2 / (R1 + R2)','R = (Vs − Vf) / I'].map(f=><div key={f} className="p-3 bg-surface-raised border border-border rounded-sm">{f}</div>)}</div>:tool==='graphing'?<div><textarea aria-label="Graph data" className={`${input} min-h-28`} value={graph} onChange={e=>setGraph(e.target.value)} placeholder="x,y per line"/><div className="mt-3 border border-border bg-bg rounded-sm p-2"><svg viewBox="0 0 500 240" className="w-full h-56"><polyline fill="none" stroke="currentColor" strokeWidth="2" points={points.map(p=>`${p[0]/maxX*470+15},${225-p[1]/maxY*200}`).join(' ')}/>{points.map((p,i)=><circle key={i} cx={p[0]/maxX*470+15} cy={225-p[1]/maxY*200} r="4" fill="currentColor"/>)}</svg></div></div>:tool==='tests'?<div><div className="grid gap-2"><input className={input} placeholder="Test title" aria-label="Test title" value={test.title} onChange={e=>setTest({...test,title:e.target.value})}/><textarea className={input} placeholder="Description" aria-label="Test description" value={test.description} onChange={e=>setTest({...test,description:e.target.value})}/><select className={input} aria-label="Test status" value={test.status} onChange={e=>setTest({...test,status:e.target.value})}><option>planned</option><option>running</option><option>passed</option><option>failed</option><option>cancelled</option></select><textarea className={input} placeholder="Conclusion" aria-label="Test conclusion" value={test.conclusion} onChange={e=>setTest({...test,conclusion:e.target.value})}/><button disabled={!test.title.trim()||addTest.isPending} onClick={()=>addTest.mutate()} className="px-3 py-2 bg-accent text-bg rounded-sm text-sm disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-accent/50">{addTest.isPending?'Saving…':'Save test'}</button></div><div className="mt-4 space-y-2">{(tests.data||[]).map((t:any)=><div key={t.id} className="p-2 border border-border rounded-sm text-xs flex justify-between gap-3"><span><b>{t.title}</b> · {t.status}{t.conclusion?` · ${t.conclusion}`:''}</span><button aria-label={`Delete test ${t.title}`} disabled={delTest.isPending} onClick={()=>delTest.mutate(t.id)} className="text-status-danger p-1 rounded focus:outline-none focus:ring-2 focus:ring-accent/50"><X size={14}/></button></div>)}{tests.isError&&<div className="text-sm text-status-danger">Unable to load engineering tests.</div>}{tests.isLoading&&<div className="text-sm text-text-secondary">Loading tests…</div>}</div></div>:tool==='saved'?<div className="space-y-2">{calcs.isLoading&&<div className="text-sm text-text-secondary">Loading saved calculations…</div>}{(calcs.data||[]).map((c:any)=><div key={c.id} className="p-3 border border-border rounded-sm text-xs flex justify-between gap-3"><span><b>{c.title}</b> · {c.result_numeric??c.result_text} {c.result_unit}<div className="text-text-secondary mt-1">{c.formula}</div></span><button aria-label={`Delete calculation ${c.title}`} disabled={delCalc.isPending} onClick={()=>delCalc.mutate(c.id)} className="p-1 rounded focus:outline-none focus:ring-2 focus:ring-accent/50"><Trash2 size={14}/></button></div>)}{!calcs.data?.length&&!calcs.isLoading&&<div className="text-sm text-text-secondary">No saved calculations.</div>}{calcs.isError&&<div className="text-sm text-status-danger">Unable to load saved calculations.</div>}</div>:<div className="space-y-3"><p className="text-sm text-text-secondary">Compare the latest saved calculations.</p><button onClick={compare} disabled={calcs.isFetching} className="px-3 py-2 bg-accent text-bg rounded-sm text-sm flex items-center gap-2 disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-accent/50"><GitCompare size={15}/> {calcs.isFetching?'Loading…':'Compare latest'}</button></div>;if(!open)return null;return <Window onClose={onClose} minimized={minimized} setMinimized={onMinimize}><div className="grid grid-cols-[155px_1fr] max-h-[72vh]"><nav className="p-2 border-r border-border bg-surface-raised space-y-1" aria-label="Engineering tools"><div className="px-2 pt-1 pb-2 text-[10px] uppercase tracking-[0.14em] text-text-secondary">Tools</div>{tools.map(([id,label,Icon])=><button key={id} onClick={()=>setTool(id)} aria-current={tool===id?'page':undefined} className={`w-full flex items-center gap-2 px-2 py-2 rounded text-xs text-left focus:outline-none focus:ring-2 focus:ring-accent/50 ${tool===id?'bg-accent text-bg':'text-text-secondary hover:bg-bg'}`}><Icon size={14}/>{label}</button>)}</nav><main className="p-4 overflow-auto"><div className="flex items-center justify-between gap-3 mb-3"><div><div className="text-[10px] uppercase tracking-[0.14em] text-text-secondary">Engineering workspace</div><div className="text-sm font-medium">{tools.find(x=>x[0]===tool)?.[1]}</div></div>{last&&<span className="text-xs text-status-ok">Result ready</span>}</div>{body}{last&&<section className="mt-4 p-3 bg-surface-raised border border-border rounded-sm"><div className="text-xs text-text-secondary">Result</div><div className="text-2xl font-mono mt-1">{Number(last.result_numeric).toPrecision(8)} {last.result_unit}</div><div className="grid sm:grid-cols-2 gap-2 mt-3"><Field label="Saved title" value={title} onChange={setTitle} type="text"/><Field label="Project ID (optional)" value={projectId} onChange={setProjectId} type="text"/></div><button onClick={()=>save.mutate()} disabled={save.isPending} className="mt-3 px-3 py-2 border border-border rounded-sm text-xs flex gap-2 items-center disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-accent/50"><Save size={14}/>{save.isPending?'Saving…':'Save calculation'}</button></section>}</main></div></Window>}
