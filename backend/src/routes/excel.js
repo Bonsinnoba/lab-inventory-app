@@ -152,7 +152,7 @@ router.get('/templates/inventory', async (req, res) => {
 
 router.get('/inventory/export', async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM items ORDER BY name ASC');
+    const result = await pool.query('SELECT i.*, l.name AS location_name FROM items i LEFT JOIN locations l ON l.id = i.location_id ORDER BY i.name ASC');
     const workbook = inventoryWorkbook(result.rows);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="LabOS-Inventory-${new Date().toISOString().slice(0, 10)}.xlsx"`);
