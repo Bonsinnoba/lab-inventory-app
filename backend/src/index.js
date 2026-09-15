@@ -82,7 +82,7 @@ app.use('/api/operations', authenticateToken, operationsProjectBoundary, (req,re
 app.use('/api/system', authenticateToken, systemRouter);
 app.use('/api/experience', authenticateToken, experienceRouter);
 app.use('/api/phase4', authenticateToken, (req,res,next) => { if(['GET','HEAD','OPTIONS'].includes(req.method)) return hasPermission('inventory.view')(req,res,next); if(req.method==='POST') return hasPermission('inventory.create')(req,res,next); if(['PATCH','PUT'].includes(req.method)) return hasPermission('inventory.edit')(req,res,next); if(req.method==='DELETE') return hasPermission('inventory.delete')(req,res,next); return next(); }, phase4Router);
-app.use('/api/excel', authenticateToken, (req,res,next) => { if (req.path === '/inventory/export') return hasPermission('inventory.view')(req,res,next); if (req.path.startsWith('/inventory/') && req.method === 'POST') return hasPermission('inventory.import')(req,res,next); next(); }, excelRouter);
+app.use('/api/excel', authenticateToken, (req,res,next) => { if (req.path === '/inventory/export') return hasPermission('inventory.view')(req,res,() => hasPermission('reports.export')(req,res,next)); if (req.path.startsWith('/inventory/') && req.method === 'POST') return hasPermission('inventory.import')(req,res,next); next(); }, excelRouter);
 app.use('/api/excel/purchases', authenticateToken, excelPurchasesRouter);
 app.use('/api/excel/finance', authenticateToken, excelFinanceRouter);
 void requireRole;
