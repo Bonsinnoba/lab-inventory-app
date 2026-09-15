@@ -41,7 +41,9 @@ router.get('/overview', async (req, res) => {
         FROM project_resource_requirements r JOIN projects p ON p.id=r.project_id LEFT JOIN items i ON i.id=r.preferred_item_id
         WHERE r.status NOT IN ('fulfilled','cancelled') ORDER BY r.required_by NULLS LAST,p.name,r.name LIMIT 100`),
     ]);
-    res.json({summary: counts.rows[0], low_stock: lowStock.rows, calibration_due: calibration.rows, maintenance_due: maintenance.rows, equipment: equipment.rows, missing_bom: missingBom.rows, requirements: requirements.rows});
+    const summary = { ...counts.rows[0] };
+    if (!req.permissions?.has('finance.view')) summary.stock_value = null;
+    res.json({summary, low_stock: lowStock.rows, calibration_due: calibration.rows, maintenance_due: maintenance.rows, equipment: equipment.rows, missing_bom: missingBom.rows, requirements: requirements.rows});
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to load operations overview' }); }
 });
 
