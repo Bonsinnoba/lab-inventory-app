@@ -73,7 +73,7 @@ app.use('/api/connectors', authenticateToken, connectorsRouter);
 app.use('/api/locations', authenticateToken, locationsRouter);
 app.use('/api/audit', authenticateToken, auditRouter);
 app.use('/api/collaboration', authenticateToken, collaborationRouter);
-app.use('/api/knowledge', authenticateToken, knowledgeRouter);
+app.use('/api/knowledge', authenticateToken, (req,res,next) => { const path=req.path; if(path==='/overview'||path==='/tags') return hasPermission('notes.view')(req,res,() => hasPermission('resources.view')(req,res,next)); if(path==='/findings'||path.startsWith('/findings/')||path==='/results'||path.startsWith('/results/')||path==='/relationships'||path.startsWith('/relationships/')) { if(['GET','HEAD','OPTIONS'].includes(req.method)) return hasPermission('projects.view')(req,res,next); return hasPermission('projects.edit')(req,res,next); } if(path==='/search') return hasPermission('projects.view')(req,res,() => hasPermission('engineering.view')(req,res,next)); return next(); }, knowledgeRouter);
 app.use('/api/reports', authenticateToken, reportsRouter);
 app.use('/api/automation', authenticateToken, automationRouter);
 app.use('/api/engineering', authenticateToken, engineeringRouter);
