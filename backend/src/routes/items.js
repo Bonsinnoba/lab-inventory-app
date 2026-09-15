@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
 import { writeAuditLog } from '../middleware/audit.js';
-import { requireRole } from '../middleware/auth.js';
+import { getUserPermissions } from '../middleware/permissions.js';
 import { hasPermission } from '../middleware/permissions.js';
 
 const router = Router();
@@ -23,8 +23,9 @@ router.get('/:id', async (req, res) => {
   try {
     const item = await pool.query(`SELECT i.*, u.username AS assigned_to_username FROM items i LEFT JOIN users u ON u.id = i.assigned_to WHERE i.id = $1`, [req.params.id]);
     if (!item.rowCount) return res.status(404).json({ error: 'Item not found' });
-    const transactions = await pool.query('SELECT * FROM transactions WHERE item_id = $1 ORDER BY date DESC', [req.params.id]);
-    const notes = await pool.query('SELECT * FROM notes WHERE item_id = $1 ORDER BY created_at DESC', [req.params.id]);
+    const permissions = await getUserPermissions(req.user.userId, req.user.role);
+    const transactions = permissions.has('finance.view') ? await pool.query('SELECT * FROM transactions WHERE item_id = $1 ORDER BY date DESC', [req.params.id]) : { rows: [] };
+    const notes = permissions.has('notes.view') ? await pool.query('SELECT * FROM notes WHERE item_id = $1 ORDER BY created_at DESC', [req.params.id]) : { rows: [] };
     res.json({ ...item.rows[0], transactions: transactions.rows, notes: notes.rows });
   } catch (err) { console.error(err); res.status(500).json({ error: err.message || 'Failed to fetch item' }); }
 });
