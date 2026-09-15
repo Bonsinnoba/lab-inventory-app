@@ -57,19 +57,36 @@ export function requireRole(...allowedRoles) {
   return async (req, res, next) => {
     if (!req.user) return res.status(401).json({ error: { code: 'AUTH_REQUIRED', message: 'Authentication required' } });
 
-    // Project membership management used to be an admin-only exception.
-    // Keep every other role-gated endpoint unchanged, while allowing the
-    // new granular permission to govern these specific project member routes.
+    // Project membership management is delegated by permission, but remains
+    // scoped to projects the caller can actually edit/manage.
     const projectMemberRoute = req.path.endsWith('/member-candidates') ||
       (req.path.includes('/members') && !req.path.includes('/tasks') && !req.path.includes('/experiments'));
     if (projectMemberRoute && allowedRoles.includes('admin')) {
       try {
         const permissions = await getUserPermissions(req.user.userId, req.user.role);
-        if (permissions.has('projects.manage_members')) {
-          req.permissions = permissions;
-          return next();
+        if (!permissions.has('projects.manage_members')) {
+          return res.status(403).json({ error: { code: 'PERMISSION_DENIED', message: 'Permission required: projects.manage_members', permission: 'projects.manage_members' } });
         }
-        return res.status(403).json({ error: { code: 'PERMISSION_DENIED', message: 'Permission required: projects.manage_members', permission: 'projects.manage_members' } });
+
+        const projectId = req.params.projectId || req.params.id;
+        const project = await pool.query(`
+          SELECT p.owner_id, pm.member_role
+          FROM projects p
+          LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $2
+          WHERE p.id = $1`, [projectId, req.user.userId]);
+        if (!project.rowCount) return res.status(404).json({ error: { code: 'PROJECT_NOT_FOUND', message: 'Project not found' } });
+
+        const row = project.rows[0];
+        const canManageProject = req.user.role === 'admin' ||
+          row.owner_id === req.user.userId ||
+          row.member_role === 'lead' ||
+          row.member_role === 'member';
+        if (!canManageProject) {
+          return res.status(403).json({ error: { code: 'PROJECT_EDITOR_REQUIRED', message: 'You must be a project editor to manage members' } });
+        }
+
+        req.permissions = permissions;
+        return next();
       } catch (err) {
         return next(err);
       }
