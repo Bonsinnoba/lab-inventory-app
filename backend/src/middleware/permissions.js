@@ -37,6 +37,15 @@ export function hasPermission(permission) {
       if (!user.rowCount || !user.rows[0].is_active) return res.status(403).json({ error: { code: 'ACCOUNT_DISABLED', message: 'Account is disabled' } });
       const permissions = await getUserPermissions(req.user.userId, user.rows[0].role);
       if (!permissions.has(permission)) return res.status(403).json({ error: { code: 'PERMISSION_DENIED', message: `Permission required: ${permission}`, permission } });
+
+      // Role management is granular, but administrator assignment remains an
+      // administrator-only operation. Otherwise a delegated role manager could
+      // grant themselves admin indirectly by creating or promoting an account.
+      if ((permission === 'users.create' || permission === 'users.edit') &&
+          req.body?.role === 'admin' && user.rows[0].role !== 'admin') {
+        return res.status(403).json({ error: { code: 'ADMIN_ROLE_REQUIRED', message: 'Only an administrator can assign the admin role', permission: 'users.manage_roles' } });
+      }
+
       req.permissions = permissions; next();
     } catch (err) { next(err); }
   };
