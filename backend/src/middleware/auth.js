@@ -57,14 +57,12 @@ export function requireRole(...allowedRoles) {
   return async (req, res, next) => {
     if (!req.user) return res.status(401).json({ error: { code: 'AUTH_REQUIRED', message: 'Authentication required' } });
 
-    if (allowedRoles.includes(req.user.role)) {
-      // Project membership management used to be an admin-only exception.
-      // Keep every other role-gated endpoint unchanged, while allowing the
-      // new granular permission to govern these specific project member routes.
-      const projectMemberRoute = req.path.endsWith('/member-candidates') ||
-        (req.path.includes('/members') && !req.path.includes('/tasks') && !req.path.includes('/experiments'));
-      if (!projectMemberRoute) return next();
-
+    // Project membership management used to be an admin-only exception.
+    // Keep every other role-gated endpoint unchanged, while allowing the
+    // new granular permission to govern these specific project member routes.
+    const projectMemberRoute = req.path.endsWith('/member-candidates') ||
+      (req.path.includes('/members') && !req.path.includes('/tasks') && !req.path.includes('/experiments'));
+    if (projectMemberRoute && allowedRoles.includes('admin')) {
       try {
         const permissions = await getUserPermissions(req.user.userId, req.user.role);
         if (permissions.has('projects.manage_members')) {
@@ -77,6 +75,7 @@ export function requireRole(...allowedRoles) {
       }
     }
 
+    if (allowedRoles.includes(req.user.role)) return next();
     return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Insufficient permissions' } });
   };
 }
