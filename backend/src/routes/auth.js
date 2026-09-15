@@ -52,6 +52,16 @@ router.get('/me', authenticateToken, async (req, res) => {
   catch (err) { console.error(err); res.status(500).json({ error: 'Failed to get current user' }); }
 });
 
+router.get('/me/permissions', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT id, username, role, is_active FROM users WHERE id = $1', [req.user.userId]);
+    if (!result.rowCount || !result.rows[0].is_active) return res.status(403).json({ error: 'Account is disabled' });
+    const user = result.rows[0];
+    const effective = await getUserPermissions(user.id, user.role);
+    res.json({ user: { id: user.id, username: user.username, role: user.role }, permissions: PERMISSIONS.map((permission) => ({ permission, effective: effective.has(permission) })) });
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to load current permissions' }); }
+});
+
 router.patch('/me/profile', authenticateToken, async (req, res) => {
   const displayName = req.body?.display_name == null ? null : String(req.body.display_name).trim();
   const email = req.body?.email == null || String(req.body.email).trim() === '' ? null : String(req.body.email).trim().toLowerCase();
