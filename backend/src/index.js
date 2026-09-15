@@ -53,7 +53,6 @@ app.get('/api/health', async (req, res) => { let database='ok', storage='ok'; tr
 app.get('/api/meta', authenticateToken, (req,res) => res.json({name:'LabOS API',version:config.apiVersion,environment:config.nodeEnv,server_time:new Date().toISOString()}));
 app.use('/api/auth', authRouter);
 app.use('/api', authenticateToken);
-app.use('/api', (req,res,next) => { if (req.user?.role==='viewer'&&!['GET','HEAD','OPTIONS'].includes(req.method)) return res.status(403).json({error:{code:'READ_ONLY_ROLE',message:'Viewer accounts have read-only access'}}); next(); });
 app.use('/api/items', authenticateToken, (req,res,next) => { if(['GET','HEAD','OPTIONS'].includes(req.method)) return hasPermission('inventory.view')(req,res,next); if(req.method==='POST') return hasPermission('inventory.create')(req,res,next); if(['PUT','PATCH'].includes(req.method)) return hasPermission('inventory.edit')(req,res,next); if(req.method==='DELETE') return hasPermission('inventory.delete')(req,res,next); return next(); }, itemsRouter);
 app.use('/api/transactions', authenticateToken, transactionsRouter);
 app.use('/api/projects', authenticateToken, projectWorkspaceRouter);
