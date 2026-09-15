@@ -1,6 +1,7 @@
 import jwt from 'jsonwebtoken';
 import { config } from '../config.js';
 import { pool } from '../db.js';
+import { getUserPermissions } from './permissions.js';
 
 export async function authenticateToken(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -53,11 +54,29 @@ export async function authenticateToken(req, res, next) {
 }
 
 export function requireRole(...allowedRoles) {
-  return (req, res, next) => {
+  return async (req, res, next) => {
     if (!req.user) return res.status(401).json({ error: { code: 'AUTH_REQUIRED', message: 'Authentication required' } });
-    if (!allowedRoles.includes(req.user.role)) {
-      return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Insufficient permissions' } });
+
+    if (allowedRoles.includes(req.user.role)) {
+      // Project membership management used to be an admin-only exception.
+      // Keep every other role-gated endpoint unchanged, while allowing the
+      // new granular permission to govern these specific project member routes.
+      const projectMemberRoute = req.path.endsWith('/member-candidates') ||
+        (req.path.includes('/members') && !req.path.includes('/tasks') && !req.path.includes('/experiments'));
+      if (!projectMemberRoute) return next();
+
+      try {
+        const permissions = await getUserPermissions(req.user.userId, req.user.role);
+        if (permissions.has('projects.manage_members')) {
+          req.permissions = permissions;
+          return next();
+        }
+        return res.status(403).json({ error: { code: 'PERMISSION_DENIED', message: 'Permission required: projects.manage_members', permission: 'projects.manage_members' } });
+      } catch (err) {
+        return next(err);
+      }
     }
-    next();
+
+    return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Insufficient permissions' } });
   };
 }
