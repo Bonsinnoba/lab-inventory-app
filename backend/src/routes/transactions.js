@@ -1,5 +1,4 @@
 import { Router } from 'express';
-import { requireRole } from '../middleware/auth.js';
 import { hasPermission } from '../middleware/permissions.js';
 import { writeAuditLog } from '../middleware/audit.js';
 import { requireProjectEditForTransaction, requireExistingTransactionProjectEdit } from '../middleware/project-transaction-boundary.js';
@@ -49,6 +48,6 @@ router.put('/:id', hasPermission('finance.edit'), requireExistingTransactionProj
   values.push(req.params.id); try { const result = await pool.query(`UPDATE transactions SET ${updates.join(', ')} WHERE id = $${values.length} RETURNING *`, values); await writeAuditLog({ req, action: 'UPDATE', entityType: 'transaction', entityId: req.params.id, oldValue: current.rows[0], newValue: result.rows[0] }); res.json(result.rows[0]); } catch (err) { console.error(err); res.status(500).json({ error: err.message || 'Failed to update transaction' }); }
 });
 
-router.delete('/:id', hasPermission('finance.delete'), requireRole('admin'), async (req, res) => { try { const result = await pool.query('DELETE FROM transactions WHERE id = $1 RETURNING *', [req.params.id]); if (!result.rowCount) return res.status(404).json({ error: 'Transaction not found' }); await writeAuditLog({ req, action: 'DELETE', entityType: 'transaction', entityId: req.params.id, oldValue: result.rows[0] }); res.status(204).send(); } catch (err) { console.error(err); res.status(500).json({ error: err.message || 'Failed to delete transaction' }); } });
+router.delete('/:id', hasPermission('finance.delete'), async (req, res) => { try { const result = await pool.query('DELETE FROM transactions WHERE id = $1 RETURNING *', [req.params.id]); if (!result.rowCount) return res.status(404).json({ error: 'Transaction not found' }); await writeAuditLog({ req, action: 'DELETE', entityType: 'transaction', entityId: req.params.id, oldValue: result.rows[0] }); res.status(204).send(); } catch (err) { console.error(err); res.status(500).json({ error: err.message || 'Failed to delete transaction' }); } });
 
 export default router;
