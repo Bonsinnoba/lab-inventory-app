@@ -6,9 +6,10 @@ import { config } from '../config.js';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
 import { writeAuditLog } from '../middleware/audit.js';
 import { loginRateLimit } from '../middleware/security.js';
-import { PERMISSIONS, getUserPermissions, rolePermissions } from '../middleware/permissions.js';
+import { PERMISSIONS, getUserPermissions, rolePermissions, hasPermission } from '../middleware/permissions.js';
 
 const router = Router();
+const ROLES = ['admin', 'researcher', 'technician', 'viewer', 'member'];
 
 function issueToken(user) { return jwt.sign({ userId: user.id }, config.jwtSecret, { expiresIn: config.jwtExpiresIn }); }
 
@@ -69,21 +70,25 @@ router.patch('/me/password', authenticateToken, async (req, res) => {
   catch (err) { console.error(err); res.status(500).json({ error: 'Failed to update password' }); }
 });
 
-router.post('/users', authenticateToken, requireRole('admin'), async (req, res) => {
+router.post('/users', authenticateToken, hasPermission('users.create'), async (req, res) => {
   const { username, password, role = 'member' } = req.body;
   if (!username?.trim() || !password) return res.status(400).json({ error: 'username and password are required' });
-  if (!['admin', 'researcher', 'technician', 'viewer', 'member'].includes(role)) return res.status(400).json({ error: 'invalid role' });
+  if (!ROLES.includes(role)) return res.status(400).json({ error: 'invalid role' });
   if (password.length < 8 || password.length > 128) return res.status(400).json({ error: 'password must be between 8 and 128 characters' });
   if (username.trim().length < 3 || username.trim().length > 64) return res.status(400).json({ error: 'username must be between 3 and 64 characters' });
+  const actorPermissions = req.permissions || await getUserPermissions(req.user.userId, req.user.role);
+  if (role === 'admin' && !actorPermissions.has('users.manage_roles')) return res.status(403).json({ error: { code: 'PERMISSION_DENIED', message: 'Permission required: users.manage_roles', permission: 'users.manage_roles' } });
   try { const passwordHash = await bcrypt.hash(password, 12); const result = await pool.query(`INSERT INTO users (username, password_hash, role) VALUES ($1, $2, $3) RETURNING id, username, role, created_at`, [username.trim(), passwordHash, role]); await writeAuditLog({ req, action: 'CREATE', entityType: 'user', entityId: result.rows[0].id, newValue: result.rows[0] }); res.status(201).json({ user: result.rows[0] }); }
   catch (err) { console.error(err); if (err.code === '23505') return res.status(409).json({ error: 'Username already exists' }); res.status(500).json({ error: 'Failed to create user' }); }
 });
 
-router.patch('/users/:id', authenticateToken, requireRole('admin'), async (req, res) => {
+router.patch('/users/:id', authenticateToken, hasPermission('users.edit'), async (req, res) => {
   const { role, is_active } = req.body;
-  if (role !== undefined && !['admin', 'researcher', 'technician', 'viewer', 'member'].includes(role)) return res.status(400).json({ error: 'invalid role' });
+  if (role !== undefined && !ROLES.includes(role)) return res.status(400).json({ error: 'invalid role' });
   if (is_active !== undefined && typeof is_active !== 'boolean') return res.status(400).json({ error: 'is_active must be boolean' });
   if (req.params.id === req.user.userId && is_active === false) return res.status(400).json({ error: 'You cannot disable your own account' });
+  const actorPermissions = req.permissions || await getUserPermissions(req.user.userId, req.user.role);
+  if (role !== undefined && !actorPermissions.has('users.manage_roles')) return res.status(403).json({ error: { code: 'PERMISSION_DENIED', message: 'Permission required: users.manage_roles', permission: 'users.manage_roles' } });
   try {
     const current = await pool.query('SELECT id, username, role, is_active FROM users WHERE id = $1', [req.params.id]); if (!current.rowCount) return res.status(404).json({ error: 'User not found' });
     const before = current.rows[0]; const nextRole = role ?? before.role; const nextActive = is_active ?? before.is_active;
@@ -94,17 +99,17 @@ router.patch('/users/:id', authenticateToken, requireRole('admin'), async (req, 
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to update user' }); }
 });
 
-router.post('/users/:id/password', authenticateToken, requireRole('admin'), async (req, res) => {
+router.post('/users/:id/password', authenticateToken, hasPermission('users.reset_password'), async (req, res) => {
   const { new_password } = req.body || {};
   if (!new_password) return res.status(400).json({ error: 'new_password is required' });
   if (new_password.length < 8 || new_password.length > 128) return res.status(400).json({ error: 'new password must be between 8 and 128 characters' });
-  try { const target = await pool.query('SELECT id, username FROM users WHERE id = $1', [req.params.id]); if (!target.rowCount) return res.status(404).json({ error: 'User not found' }); const passwordHash = await bcrypt.hash(new_password, 12); await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [passwordHash, req.params.id]); await writeAuditLog({ req, action: 'UPDATE', entityType: 'user_password', entityId: req.params.id, metadata: { username: target.rows[0].username, reset_by_admin: true } }); res.json({ message: 'Password reset successfully' }); }
+  try { const target = await pool.query('SELECT id, username FROM users WHERE id = $1', [req.params.id]); if (!target.rowCount) return res.status(404).json({ error: 'User not found' }); const passwordHash = await bcrypt.hash(new_password, 12); await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [passwordHash, req.params.id]); await writeAuditLog({ req, action: 'UPDATE', entityType: 'user_password', entityId: req.params.id, metadata: { username: target.rows[0].username, reset_by_admin: req.user.role === 'admin' } }); res.json({ message: 'Password reset successfully' }); }
   catch (err) { console.error(err); res.status(500).json({ error: 'Failed to reset password' }); }
 });
 
-router.get('/users', authenticateToken, requireRole('admin'), async (req, res) => { const result = await pool.query('SELECT id, username, role, is_active, last_login_at, created_at FROM users ORDER BY username'); res.json(result.rows); });
+router.get('/users', authenticateToken, hasPermission('users.view'), async (req, res) => { const result = await pool.query('SELECT id, username, role, is_active, last_login_at, created_at FROM users ORDER BY username'); res.json(result.rows); });
 
-router.get('/users/:id/permissions', authenticateToken, requireRole('admin'), async (req, res) => {
+router.get('/users/:id/permissions', authenticateToken, hasPermission('users.manage_permissions'), async (req, res) => {
   const target = await pool.query('SELECT id, username, role FROM users WHERE id = $1', [req.params.id]);
   if (!target.rowCount) return res.status(404).json({ error: 'User not found' });
   const user = target.rows[0];
@@ -114,12 +119,17 @@ router.get('/users/:id/permissions', authenticateToken, requireRole('admin'), as
   res.json({ user, permissions: PERMISSIONS.map((permission) => ({ permission, baseline: rolePermissions(user.role).has(permission), effect: overrideMap.get(permission) || 'inherited', effective: effective.has(permission) })) });
 });
 
-router.put('/users/:id/permissions', authenticateToken, requireRole('admin'), async (req, res) => {
+router.put('/users/:id/permissions', authenticateToken, hasPermission('users.manage_permissions'), async (req, res) => {
   const target = await pool.query('SELECT id, username, role FROM users WHERE id = $1', [req.params.id]);
   if (!target.rowCount) return res.status(404).json({ error: 'User not found' });
   const entries = Array.isArray(req.body?.overrides) ? req.body.overrides : [];
   const invalid = entries.find((entry) => !PERMISSIONS.includes(entry?.permission) || !['grant', 'deny'].includes(entry?.effect));
   if (invalid) return res.status(400).json({ error: 'Invalid permission override' });
+  const actorPermissions = req.permissions || await getUserPermissions(req.user.userId, req.user.role);
+  if (req.user.role !== 'admin') {
+    const escalation = entries.find((entry) => !actorPermissions.has(entry.permission));
+    if (escalation) return res.status(403).json({ error: { code: 'PERMISSION_ESCALATION_BLOCKED', message: `You cannot manage permission: ${escalation.permission}`, permission: escalation.permission } });
+  }
   const deduped = new Map(entries.map((entry) => [entry.permission, entry.effect]));
   const client = await pool.connect();
   try {
