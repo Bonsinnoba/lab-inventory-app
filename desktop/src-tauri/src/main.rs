@@ -13,8 +13,12 @@ fn main() {
 
     tauri::Builder::default()
         .setup(|app| {
-            local_db::initialize(&app.handle())
-                .map_err(|err| Box::<dyn std::error::Error>::from(err))?;
+            local_db::initialize(&app.handle()).map_err(|err| {
+                Box::<dyn std::error::Error>::from(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    err,
+                ))
+            })?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![local_db::local_database_status])
