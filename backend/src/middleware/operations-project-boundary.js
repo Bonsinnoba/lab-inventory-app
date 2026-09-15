@@ -9,7 +9,7 @@ import { getProjectAccess } from './project-access.js';
  */
 export async function operationsProjectBoundary(req, res, next) {
   try {
-    const access = await getProjectAccess;
+    const access = getProjectAccess;
     const projectPermissions = await pool.query(
       `SELECT p.id
        FROM projects p
