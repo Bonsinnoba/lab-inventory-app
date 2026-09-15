@@ -5,7 +5,7 @@ import { writeAuditLog } from '../middleware/audit.js';
 
 const router = Router();
 
-router.get('/activity', hasPermission('projects.view'), async (req, res) => {
+router.get('/activity', hasPermission('reports.view'), async (req, res) => {
   const limit = Math.min(Math.max(Number(req.query.limit) || 40, 1), 100);
   const before = req.query.before || null;
   const values = [limit];
