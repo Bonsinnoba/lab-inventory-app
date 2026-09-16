@@ -24,6 +24,18 @@ export default defineConfig(async () => ({
         return null;
       },
     },
+    {
+      name: "labos-resource-viewer-extension-fix",
+      enforce: "pre",
+      transform(code: string, id: string) {
+        const normalizedId = id.replace(/\\/g, "/");
+        if (!normalizedId.endsWith("/src/components/ResourceViewerModal.tsx")) return null;
+        const legacy = "function extension(r: Resource) { const name=r.name||r.original_filename||''; return name.split('.').pop()?.toLowerCase()||''; }";
+        const replacement = "function extension(r: Resource) { const name=(r.name||r.original_filename||'').trim(); const match=name.match(/\\.([a-z0-9]{2,8})$/i); return match ? match[1].toLowerCase() : ''; }";
+        if (!code.includes(legacy)) return null;
+        return { code: code.replace(legacy, replacement), map: null };
+      },
+    },
   ],
   base: "./",
   clearScreen: false,
