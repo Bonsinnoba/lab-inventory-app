@@ -31,6 +31,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             local_db::local_database_status,
+            local_db::save_local_snapshot_with_sync,
             local_inventory::list_local_inventory,
             local_inventory::upsert_local_inventory_item,
             local_inventory::adjust_local_inventory,
