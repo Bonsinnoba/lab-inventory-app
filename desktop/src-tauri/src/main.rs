@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod local_db;
+mod local_inventory;
 
 fn main() {
     let show = tauri::CustomMenuItem::new("show".to_string(), "Show");
@@ -19,9 +20,20 @@ fn main() {
                     err,
                 ))
             })?;
+            local_inventory::initialize(&app.handle()).map_err(|err| {
+                Box::<dyn std::error::Error>::from(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    err,
+                ))
+            })?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![local_db::local_database_status])
+        .invoke_handler(tauri::generate_handler![
+            local_db::local_database_status,
+            local_inventory::list_local_inventory,
+            local_inventory::upsert_local_inventory_item,
+            local_inventory::adjust_local_inventory
+        ])
         .system_tray(tauri::SystemTray::new().with_menu(tray_menu))
         .on_system_tray_event(|app, event| match event {
             tauri::SystemTrayEvent::LeftClick {
