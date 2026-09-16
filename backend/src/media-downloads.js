@@ -71,20 +71,24 @@ function run(command, args, { jobId, onProgress } = {}) {
 async function getStopState(jobId) { const r = await pool.query('SELECT cancel_requested,status,stop_requested_status FROM resource_download_jobs WHERE id=$1', [jobId]); if (!r.rowCount) return 'cancelled'; const row = r.rows[0]; return row.stop_requested_status || (row.cancel_requested ? 'cancelled' : null); }
 async function cleanMediaFiles(dir, base) { const entries = await fs.readdir(dir).catch(() => []); await Promise.all(entries.filter(n => n.startsWith(`${base}.`) && !/^thumbnail\./i.test(n)).map(n => fs.rm(path.join(dir, n), { force: true }))); }
 
+function isSupportedVideoUrl(value) {
+  try {
+    const host = new URL(value).hostname.toLowerCase().replace(/^www\./, '');
+    return host === 'youtube.com' || host === 'youtu.be' || host.endsWith('.youtube.com') || host === 'facebook.com' || host.endsWith('.facebook.com') || host === 'fb.watch' || host === 'instagram.com' || host.endsWith('.instagram.com');
+  } catch { return false; }
+}
+
 export async function ensureYouTubeThumbnail(resource) {
-  if (!resource?.id || !resource?.url) return null;
-  let url; try { url = new URL(resource.url); } catch { return null; }
-  const host = url.hostname.toLowerCase().replace(/^www\./, '');
-  if (host !== 'youtube.com' && host !== 'youtu.be' && !host.endsWith('.youtube.com')) return null;
+  if (!resource?.id || !resource?.url || !isSupportedVideoUrl(resource.url)) return null;
   const dir = resolveStoragePath(resource.id); await fs.mkdir(dir, { recursive: true });
   const existing = (await fs.readdir(dir).catch(() => [])).find(name => /^thumbnail\.(jpg|jpeg|png|webp)$/i.test(name));
   if (existing) return `/api/media-downloads/${resource.id}/thumbnail`;
   const outputTemplate = path.join(dir, 'thumbnail.%(ext)s');
-  await run(YTDLP, [...ytDlpRuntimeArgs(), '--skip-download', '--write-thumbnail', '--no-playlist', '--restrict-filenames', '-o', outputTemplate, resource.url]);
+  await run(YTDLP, [...ytDlpRuntimeArgs(), '--skip-download', '--write-thumbnail', '--convert-thumbnails', 'jpg', '--no-playlist', '--restrict-filenames', '-o', outputTemplate, resource.url]);
   const filename = (await fs.readdir(dir).catch(() => [])).find(name => /^thumbnail\.(jpg|jpeg|png|webp)$/i.test(name));
-  if (!filename) throw new Error('yt-dlp completed but no YouTube thumbnail was found');
+  if (!filename) throw new Error('yt-dlp completed but no supported video thumbnail was found');
   const stat = await fs.stat(path.join(dir, filename));
-  if (!stat.isFile() || stat.size <= 0) throw new Error('yt-dlp produced an empty YouTube thumbnail');
+  if (!stat.isFile() || stat.size <= 0) throw new Error('yt-dlp produced an empty social video thumbnail');
   return `/api/media-downloads/${resource.id}/thumbnail`;
 }
 
@@ -96,7 +100,7 @@ async function startJob(job) {
   const dir = resolveStoragePath(resource.id); await fs.mkdir(dir, { recursive: true });
   const base = (resource.name || 'video').replace(/[<>:\"/\\|?*\x00-\x1F]/g, '_').trim() || 'video';
 
-  if (/(?:youtube\.com|youtu\.be)/i.test(resource.url)) {
+  if (isSupportedVideoUrl(resource.url)) {
     const thumbnailUrl = await ensureYouTubeThumbnail(resource);
     if (thumbnailUrl && resource.thumbnail_url !== thumbnailUrl) await pool.query('UPDATE resources SET thumbnail_url=$1,updated_at=CURRENT_TIMESTAMP WHERE id=$2', [thumbnailUrl, resource.id]);
   }
