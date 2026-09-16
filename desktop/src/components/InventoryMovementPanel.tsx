@@ -9,6 +9,7 @@ interface Props { item: Item; }
 const options: { type: MovementType; label: string; icon: typeof ArrowDownToLine }[] = [
   { type: 'receive', label: 'Receive', icon: ArrowDownToLine }, { type: 'checkout', label: 'Check Out', icon: ArrowUpFromLine },
   { type: 'return', label: 'Return', icon: ArrowDownToLine }, { type: 'consume', label: 'Consume', icon: ArrowUpFromLine },
+  { type: 'adjust', label: 'Adjust', icon: ArrowRightLeft },
   { type: 'damage', label: 'Damage', icon: Wrench }, { type: 'loss', label: 'Loss', icon: ArrowUpFromLine },
   { type: 'repair_out', label: 'Send to Repair', icon: Wrench }, { type: 'repair_in', label: 'Return from Repair', icon: Wrench },
   { type: 'transfer', label: 'Transfer Location', icon: ArrowRightLeft },
@@ -30,10 +31,10 @@ export default function InventoryMovementPanel({ item }: Props) {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <select value={type} onChange={e => setType(e.target.value as MovementType)} className="bg-bg border border-border rounded-sm px-3 py-2 text-sm">{options.map(o => <option key={o.type} value={o.type}>{o.label}</option>)}</select>
         <input type="number" min="0.001" step="any" value={quantity} onChange={e => setQuantity(e.target.value)} className="bg-bg border border-border rounded-sm px-3 py-2 text-sm" placeholder="Quantity" />
-        {type === 'transfer' ? <input value={toLocation} onChange={e => setToLocation(e.target.value)} className="bg-bg border border-border rounded-sm px-3 py-2 text-sm" placeholder="Destination container..." /> : <input value={reason} onChange={e => setReason(e.target.value)} className="bg-bg border border-border rounded-sm px-3 py-2 text-sm" placeholder="Reason (optional)" />}
+        {type === 'transfer' ? <input value={toLocation} onChange={e => setToLocation(e.target.value)} className="bg-bg border border-border rounded-sm px-3 py-2 text-sm" placeholder="Destination container..." /> : <input value={reason} onChange={e => setReason(e.target.value)} className="bg-bg border border-border rounded-sm px-3 py-2 text-sm" placeholder={type === 'adjust' ? 'Reason (required)' : 'Reason (optional)'} />}
       </div>
       {type === 'transfer' && <input value={reason} onChange={e => setReason(e.target.value)} className="mt-3 w-full bg-bg border border-border rounded-sm px-3 py-2 text-sm" placeholder="Reason (optional)" />}
-      <button onClick={() => mutation.mutate()} disabled={mutation.isPending || !quantity || (type === 'transfer' && !toLocation.trim())} className="mt-4 px-4 py-2 bg-accent text-bg rounded-sm text-sm font-medium disabled:opacity-50">{mutation.isPending ? 'Recording...' : 'Record Movement'}</button>
+      <button onClick={() => mutation.mutate()} disabled={mutation.isPending || !quantity || (type === 'transfer' && !toLocation.trim()) || (type === 'adjust' && !reason.trim())} className="mt-4 px-4 py-2 bg-accent text-bg rounded-sm text-sm font-medium disabled:opacity-50">{mutation.isPending ? 'Recording...' : 'Record Movement'}</button>
       <p className="text-xs text-text-secondary mt-3">An item has one primary storage container. A transfer changes that free-form container label; partial quantities do not create separate per-location stock.</p>
     </div>
     <div className="bg-surface border border-border rounded-md overflow-hidden">
