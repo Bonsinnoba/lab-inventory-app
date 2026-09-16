@@ -7,8 +7,8 @@ const items: { id: Exclude<DockableContent, null | 'music' | 'media'>; icon: typ
   { id: 'notebook', icon: BookOpen, label: 'Notebook' },
   { id: 'search', icon: Search, label: 'Search' },
 ];
-const buttonClass = 'relative w-9 h-9 flex items-center justify-center rounded-md transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-1 focus-visible:ring-offset-surface';
-const activeClass = 'bg-accent/12 text-accent';
+const buttonClass = 'relative w-9 h-9 flex items-center justify-center rounded-lg transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-1 focus-visible:ring-offset-surface';
+const activeClass = 'bg-accent/12 text-accent shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-accent)_18%,transparent)]';
 const idleClass = 'text-text-secondary hover:text-text-primary hover:bg-surface-raised';
 function ToolButton({ label, active = false, onClick, children }: { label: string; active?: boolean; onClick: () => void; children: React.ReactNode }) {
   return <button type="button" onClick={onClick} title={active ? `Close ${label}` : label} aria-label={active ? `Close ${label}` : label} aria-pressed={active} className={`${buttonClass} ${active ? activeClass : idleClass}`}>
@@ -16,17 +16,17 @@ function ToolButton({ label, active = false, onClick, children }: { label: strin
   </button>;
 }
 export default function ActivityRail({ active, onSelect, engineeringOpen = false, musicOpen = false, mediaOpen = false }: ActivityRailProps) {
-  return <aside className="desktop-activity-rail w-12 flex-shrink-0 bg-surface border-l border-border flex flex-col items-center py-3 gap-1" aria-label="Workspace tools">
+  return <aside className="desktop-activity-rail w-12 flex-shrink-0 bg-surface border-l border-border flex flex-col items-center py-2.5 gap-1" aria-label="Workspace tools">
     <div className="flex flex-col items-center gap-1" role="toolbar" aria-label="Docked workspace tools">
-      {items.map(({ id, icon: Icon, label }) => <ToolButton key={id} label={label} active={active === id} onClick={() => onSelect(active === id ? null : id)}><Icon size={19} strokeWidth={active === id ? 2.2 : 2} aria-hidden="true" /></ToolButton>)}
+      {items.map(({ id, icon: Icon, label }) => <ToolButton key={id} label={label} active={active === id} onClick={() => onSelect(active === id ? null : id)}><Icon size={18} strokeWidth={active === id ? 2.2 : 2} aria-hidden="true" /></ToolButton>)}
     </div>
-    <div className="w-9 my-2 border-t border-border" aria-hidden="true" />
+    <div className="w-7 my-2 border-t border-border/80" aria-hidden="true" />
     <div className="flex flex-col items-center gap-1" role="group" aria-label="Engineering tools">
-      <ToolButton label="Engineering Tools" active={engineeringOpen} onClick={() => window.dispatchEvent(new CustomEvent('labos:engineering-tools'))}><Calculator size={19} strokeWidth={engineeringOpen ? 2.2 : 2} aria-hidden="true" /></ToolButton>
+      <ToolButton label="Engineering Tools" active={engineeringOpen} onClick={() => window.dispatchEvent(new CustomEvent('labos:engineering-tools'))}><Calculator size={18} strokeWidth={engineeringOpen ? 2.2 : 2} aria-hidden="true" /></ToolButton>
     </div>
-    <div className="mt-auto pt-2 border-t border-border w-9 flex flex-col items-center gap-1" role="group" aria-label="Media tools">
-      <ToolButton label="Music Player" active={musicOpen} onClick={() => onSelect(musicOpen ? null : 'music')}><Music2 size={19} strokeWidth={musicOpen ? 2.2 : 2} aria-hidden="true" /></ToolButton>
-      <ToolButton label="Media Manager" active={mediaOpen} onClick={() => onSelect(mediaOpen ? null : 'media')}><FolderOpen size={19} strokeWidth={mediaOpen ? 2.2 : 2} aria-hidden="true" /></ToolButton>
+    <div className="mt-auto pt-2 border-t border-border/80 w-8 flex flex-col items-center gap-1" role="group" aria-label="Media tools">
+      <ToolButton label="Music Player" active={musicOpen} onClick={() => onSelect(musicOpen ? null : 'music')}><Music2 size={18} strokeWidth={musicOpen ? 2.2 : 2} aria-hidden="true" /></ToolButton>
+      <ToolButton label="Media Manager" active={mediaOpen} onClick={() => onSelect(mediaOpen ? null : 'media')}><FolderOpen size={18} strokeWidth={mediaOpen ? 2.2 : 2} aria-hidden="true" /></ToolButton>
     </div>
   </aside>;
 }
