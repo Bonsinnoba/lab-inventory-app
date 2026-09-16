@@ -11,7 +11,7 @@ let activeSync:Promise<number>|null=null;
 let runtimeState:SyncRuntimeState={status:'idle',lastSuccessAt:null,lastError:null};
 const listeners=new Set<(state:SyncRuntimeState)=>void>();
 
-function loadRuntimeState():SyncRuntimeState{try{if(typeof localStorage==='undefined')return runtimeState;const raw=localStorage.getItem(STATUS_KEY);if(!raw)return runtimeState;const parsed=JSON.parse(raw) as Partial<SyncRuntimeState>;return {status:'idle',lastSuccessAt:typeof parsed.lastSuccessAt==='string'?parsed.lastSuccessAt:null,lastError:typeof parsed.lastError==='string'?parsed.lastError:null};}catch{return runtimeState;}}
+function loadRuntimeState():SyncRuntimeState{try{if(typeof localStorage==='undefined')return runtimeState;const raw=localStorage.getItem(STATUS_KEY);if(!raw)return runtimeState;const parsed=JSON.parse(raw) as Partial<SyncRuntimeState>;const lastError=typeof parsed.lastError==='string'&&parsed.lastError?parsed.lastError:null;return {status:lastError?'error':'idle',lastSuccessAt:typeof parsed.lastSuccessAt==='string'?parsed.lastSuccessAt:null,lastError};}catch{return runtimeState;}}
 runtimeState=loadRuntimeState();
 function publish(patch:Partial<SyncRuntimeState>){runtimeState={...runtimeState,...patch};try{localStorage.setItem(STATUS_KEY,JSON.stringify({lastSuccessAt:runtimeState.lastSuccessAt,lastError:runtimeState.lastError}));}catch{}listeners.forEach(listener=>listener(runtimeState));}
 export function getSyncRuntimeState():SyncRuntimeState{return runtimeState;}
