@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use tauri::AppHandle;
 
 use crate::local_db;
@@ -36,21 +36,4 @@ pub fn cache_local_inventory_snapshot(app: AppHandle, snapshot_json: String) -> 
     )
     .map_err(|err| format!("Unable to cache local inventory snapshot: {err}"))?;
     Ok(())
-}
-
-trait OptionalRow<T> {
-    fn optional(self) -> Result<Option<T>, rusqlite::Error>;
-}
-
-impl<T, F> OptionalRow<T> for Result<T, rusqlite::Error>
-where
-    F: FnOnce(&rusqlite::Row<'_>) -> Result<T, rusqlite::Error>,
-{
-    fn optional(self) -> Result<Option<T>, rusqlite::Error> {
-        match self {
-            Ok(value) => Ok(Some(value)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(err) => Err(err),
-        }
-    }
 }
