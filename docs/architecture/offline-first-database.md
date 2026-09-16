@@ -2,7 +2,7 @@
 
 ## Status
 
-Architecture foundation established on `main`.
+Architecture foundation and the first local inventory repository boundary are established on `main`.
 
 The target architecture is:
 
@@ -25,7 +25,7 @@ Each desktop installation must remain usable without internet access. PostgreSQL
 
 The existing backend is PostgreSQL-specific. `backend/src/db.js` creates a `pg.Pool`, and the API routes query PostgreSQL directly. The existing migration history also contains PostgreSQL-specific features such as UUID generation, `TIMESTAMPTZ`, arrays, JSONB, GIN indexes, views, PL/pgSQL functions and triggers.
 
-The desktop currently talks to a local HTTP API and has no local database layer. The Tauri application now has the first local SQLite foundation, but application data has **not** been moved to SQLite yet.
+The desktop now has a local SQLite foundation and a first local inventory repository. Application-wide migration to SQLite is **not** complete yet.
 
 ## Local SQLite responsibilities
 
@@ -82,7 +82,7 @@ For example, an inventory action should be represented as an operation such as:
 ```text
 change_id
  device_id
- entity_type = item_movement
+ entity_type = inventory_movement
  entity_id
  operation = create
  payload = movement details
@@ -100,6 +100,37 @@ current_quantity = 117
 because two offline devices can otherwise overwrite each other's work.
 
 Every synchronization operation therefore needs a stable idempotency key (`change_id`). Retrying the same operation after a network failure must not duplicate the business action.
+
+## Inventory local repository foundation
+
+The desktop now has a SQLite-specific inventory module at `desktop/src-tauri/src/local_inventory.rs`.
+
+It provides:
+
+- a local inventory item table
+- a local append-oriented movement table
+- local inventory listing
+- controlled item upsert for hydration/bootstrap
+- atomic inventory quantity adjustment
+- movement recording in the same transaction as the quantity update
+- a durable `sync_outbox` record in that same transaction
+- stable `change_id` and movement identifiers generated locally
+- validation preventing zero adjustments and negative resulting quantities
+
+The important transaction boundary is:
+
+```text
+SQLite transaction
+  ├─ update local quantity
+  ├─ append inventory movement
+  └─ enqueue sync operation
+       ↓
+     COMMIT
+```
+
+If the transaction fails, none of those three effects should be committed.
+
+`current_quantity` is retained as a local working value for fast reads, while movement operations are the synchronization facts. The future server sync layer should transmit the movement operation rather than treating a local quantity snapshot as the business operation.
 
 ## Excel workflows
 
@@ -211,10 +242,10 @@ The desktop should therefore stop growing direct assumptions about PostgreSQL re
 ## Implementation sequence
 
 1. Keep the existing PostgreSQL backend working.
-2. Introduce the local SQLite database foundation.
-3. Define the canonical logical entity/operation contracts.
-4. Build SQLite migrations for the local working schema.
-5. Move inventory first because it is the clearest offline-first workload.
+2. Introduce the local SQLite database foundation. **Done.**
+3. Define the canonical logical entity/operation contracts. **Inventory operation boundary started.**
+4. Build SQLite migrations for the local working schema. **Inventory local schema foundation started.**
+5. Move inventory first because it is the clearest offline-first workload. **Repository foundation started; UI migration remains.**
 6. Add purchases and Excel imports.
 7. Add projects/notes/resources/knowledge.
 8. Add the durable sync engine and server idempotency handling.
