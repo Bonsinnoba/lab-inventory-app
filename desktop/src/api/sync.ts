@@ -7,12 +7,21 @@ type PullResponse = { items?:unknown[]; deleted_item_ids?:string[]; next_cursor?
 export type SyncRuntimeState = { status:'offline'|'syncing'|'idle'|'error'; lastSuccessAt:string|null; lastError:string|null };
 
 const STATUS_KEY='labos.sync.status.v1';
+const RETRY_KEY='labos.sync.retry.v1';
+const RETRY_DELAYS_MS=[5000,15000,30000,60000,120000,300000];
 let activeSync:Promise<number>|null=null;
+let failureStreak=0;
+let nextRetryAt=0;
 let runtimeState:SyncRuntimeState={status:'idle',lastSuccessAt:null,lastError:null};
 const listeners=new Set<(state:SyncRuntimeState)=>void>();
 
 function loadRuntimeState():SyncRuntimeState{try{if(typeof localStorage==='undefined')return runtimeState;const raw=localStorage.getItem(STATUS_KEY);if(!raw)return runtimeState;const parsed=JSON.parse(raw) as Partial<SyncRuntimeState>;const lastError=typeof parsed.lastError==='string'&&parsed.lastError?parsed.lastError:null;return {status:lastError?'error':'idle',lastSuccessAt:typeof parsed.lastSuccessAt==='string'?parsed.lastSuccessAt:null,lastError};}catch{return runtimeState;}}
 runtimeState=loadRuntimeState();
+function loadRetryState(){try{if(typeof localStorage==='undefined')return;const raw=localStorage.getItem(RETRY_KEY);if(!raw)return;const parsed=JSON.parse(raw) as {retryAt?:unknown;streak?:unknown};const retryAt=typeof parsed.retryAt==='number'?parsed.retryAt:0;failureStreak=typeof parsed.streak==='number'&&parsed.streak>0?Math.floor(parsed.streak):0;nextRetryAt=retryAt>Date.now()?retryAt:0;}catch{failureStreak=0;nextRetryAt=0;}}
+loadRetryState();
+function persistRetryState(){try{localStorage.setItem(RETRY_KEY,JSON.stringify({retryAt:nextRetryAt,streak:failureStreak}));}catch{}}
+function clearRetryState(){failureStreak=0;nextRetryAt=0;try{localStorage.removeItem(RETRY_KEY);}catch{}}
+function scheduleRetry(){const delay=RETRY_DELAYS_MS[Math.min(failureStreak,RETRY_DELAYS_MS.length-1)];failureStreak+=1;nextRetryAt=Date.now()+delay;persistRetryState();}
 function publish(patch:Partial<SyncRuntimeState>){runtimeState={...runtimeState,...patch};try{localStorage.setItem(STATUS_KEY,JSON.stringify({lastSuccessAt:runtimeState.lastSuccessAt,lastError:runtimeState.lastError}));}catch{}listeners.forEach(listener=>listener(runtimeState));}
 export function getSyncRuntimeState():SyncRuntimeState{return runtimeState;}
 export function subscribeSyncStatus(listener:(state:SyncRuntimeState)=>void):()=>void{listeners.add(listener);listener(runtimeState);return()=>listeners.delete(listener);}
@@ -21,14 +30,14 @@ export async function getPendingSyncCount():Promise<number>{try{const status=awa
 export async function getSyncConflictCount():Promise<number>{try{const status=await invoke<{sync_conflict_count:number}>('local_database_status');return Number(status.sync_conflict_count||0);}catch{return 0;}}
 export async function listSyncConflicts():Promise<unknown[]>{try{return await invoke<unknown[]>('list_sync_conflicts');}catch{return [];}}
 export async function resolveSyncConflict(changeId:string,resolution:'keep_local'|'accept_server'|'dismiss'):Promise<void>{await invoke('resolve_sync_conflict',{changeId,resolution});}
-export async function syncPendingChanges():Promise<number>{if(activeSync)return activeSync;activeSync=runSync().finally(()=>{activeSync=null;});return activeSync;}
+export async function syncPendingChanges(force=false):Promise<number>{if(activeSync)return activeSync;if(!force&&nextRetryAt>Date.now()){return 0;}activeSync=runSync().finally(()=>{activeSync=null;});return activeSync;}
 
 async function runSync():Promise<number>{
   if(typeof navigator!=='undefined'&&!navigator.onLine){publish({status:'offline'});return 0;}
   publish({status:'syncing',lastError:null});
   let changes:PendingChange[]=[];
   try{changes=await invoke<PendingChange[]>('list_pending_sync_changes',{limit:100});}
-  catch(error){const message=error instanceof Error?error.message:String(error);publish({status:'error',lastError:message});return 0;}
+  catch(error){const message=error instanceof Error?error.message:String(error);publish({status:'error',lastError:message});scheduleRetry();return 0;}
   let syncedCount=0;
   let syncSucceeded=true;
   if(changes.length){
@@ -52,17 +61,19 @@ async function runSync():Promise<number>{
         const message=await getApiErrorMessage(response,'Unable to synchronize local changes');
         for(const change of changes)await invoke('record_sync_failure',{changeId:change.change_id,error:message}).catch(()=>undefined);
         publish({status:'error',lastError:message});
+        scheduleRetry();
       }
     }catch(error){
       syncSucceeded=false;
       const message=error instanceof Error?error.message:String(error);
       for(const change of changes)await invoke('record_sync_failure',{changeId:change.change_id,error:message}).catch(()=>undefined);
       publish({status:'error',lastError:message});
+      scheduleRetry();
     }
   }
   const pullSucceeded=await pullServerInventory();
-  if(!pullSucceeded){syncSucceeded=false;publish({status:'error',lastError:runtimeState.lastError||'Unable to download the latest server changes'});}
-  if(syncSucceeded&&pullSucceeded)publish({status:'idle',lastSuccessAt:new Date().toISOString(),lastError:null});
+  if(!pullSucceeded){syncSucceeded=false;publish({status:'error',lastError:runtimeState.lastError||'Unable to download the latest server changes'});scheduleRetry();}
+  if(syncSucceeded&&pullSucceeded){clearRetryState();publish({status:'idle',lastSuccessAt:new Date().toISOString(),lastError:null});}
   else if(runtimeState.status!=='error')publish({status:'error',lastError:runtimeState.lastError||'Some changes could not be synchronized'});
   return syncedCount;
 }
