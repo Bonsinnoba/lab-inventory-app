@@ -1,4 +1,5 @@
 import { apiFetch } from './http';
+import { getLocalInventoryOrRemote } from './local-inventory';
 
 export interface Item {
   id: string; name: string; type: string;
@@ -13,13 +14,18 @@ export interface Item {
   created_at: string; updated_at: string;
 }
 
-export async function getItems(filters?: { type?: string; status?: string; location?: string; location_id?: string; low_stock?: boolean }): Promise<Item[]> {
+async function getItemsRemote(filters?: { type?: string; status?: string; location?: string; location_id?: string; low_stock?: boolean }): Promise<Item[]> {
   const params = new URLSearchParams();
   if (filters?.type) params.append('type', filters.type); if (filters?.status) params.append('status', filters.status);
   if (filters?.location) params.append('location', filters.location); if (filters?.location_id) params.append('location_id', filters.location_id);
   if (filters?.low_stock) params.append('low_stock', 'true');
   const response = await apiFetch(`/items?${params}`); if (!response.ok) throw new Error('Failed to fetch items'); return response.json();
 }
+
+export async function getItems(filters?: { type?: string; status?: string; location?: string; location_id?: string; low_stock?: boolean }): Promise<Item[]> {
+  return getLocalInventoryOrRemote(() => getItemsRemote(filters), filters);
+}
+
 export async function getItem(id: string): Promise<Item> { const response = await apiFetch(`/items/${id}`); if (!response.ok) throw new Error('Failed to fetch item'); return response.json(); }
 export interface ItemHistoryEntry { id: string; item_id: string; field_name: string; old_value: string | null; new_value: string | null; changed_at: string; }
 export async function getItemHistory(id: string): Promise<ItemHistoryEntry[]> { const response = await apiFetch(`/items/${id}/history`); if (!response.ok) throw new Error('Failed to fetch item history'); return response.json(); }
