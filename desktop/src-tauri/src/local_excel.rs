@@ -58,7 +58,7 @@ pub fn import_local_inventory_rows(app: AppHandle, rows_json: String) -> Result<
                 next["created_at"] = snapshot[index].get("created_at").cloned().unwrap_or(Value::Null);
             }
             if next.get("updated_at").is_none() || next.get("updated_at") == Some(&Value::Null) {
-                next["updated_at"] = Value::String(js_timestamp());
+                next["updated_at"] = snapshot[index].get("updated_at").cloned().unwrap_or(Value::Null);
             }
             snapshot[index] = next.clone();
             let payload = serde_json::json!({"id": item_id, "patch": next, "item": snapshot[index]});
@@ -70,9 +70,6 @@ pub fn import_local_inventory_rows(app: AppHandle, rows_json: String) -> Result<
             ).map_err(|e| format!("Unable to queue inventory update: {e}"))?;
             updated += 1;
         } else {
-            let now = js_timestamp();
-            next["created_at"] = Value::String(now.clone());
-            next["updated_at"] = Value::String(now);
             snapshot.push(next.clone());
             let change_id: String = tx.query_row("SELECT lower(hex(randomblob(16)))", [], |r| r.get(0))
                 .map_err(|e| format!("Unable to create sync change id: {e}"))?;
@@ -97,13 +94,4 @@ pub fn import_local_inventory_rows(app: AppHandle, rows_json: String) -> Result<
         "created": created,
         "updated": updated
     }))
-}
-
-fn js_timestamp() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    format!("{}Z", millis)
 }
