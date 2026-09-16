@@ -105,7 +105,7 @@ export async function getLocalInventoryOrRemote(
   filters?: { type?: string; status?: string; location?: string; location_id?: string; low_stock?: boolean },
 ): Promise<Item[]> {
   const local = await getLocalInventorySnapshot();
-  if (local && local.length > 0) return applyInventoryFilters(local, filters);
+  if (local !== null) return applyInventoryFilters(local, filters);
 
   const remote = await remoteLoader();
   await cacheLocalInventorySnapshot(remote);
