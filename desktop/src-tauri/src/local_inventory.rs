@@ -6,7 +6,7 @@ use crate::local_db;
 
 const INVENTORY_SCHEMA_VERSION: &str = "002_local_inventory";
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct LocalInventoryItem {
     pub item_id: String,
     pub sku: Option<String>,
@@ -170,6 +170,7 @@ pub fn adjust_local_inventory(
         return Err("Inventory adjustment reason is required".to_string());
     }
 
+    let item_id = input.item_id.clone();
     let mut conn = connection(&app)?;
     ensure_inventory_schema(&conn)?;
 
@@ -180,7 +181,7 @@ pub fn adjust_local_inventory(
     let previous_quantity: f64 = tx
         .query_row(
             "SELECT current_quantity FROM local_inventory_items WHERE item_id = ?1",
-            [&input.item_id],
+            [&item_id],
             |row| row.get(0),
         )
         .map_err(|err| format!("Unable to read local inventory quantity: {err}"))?;
@@ -201,7 +202,7 @@ pub fn adjust_local_inventory(
             updated_at = CURRENT_TIMESTAMP
         WHERE item_id = ?2
         "#,
-        params![new_quantity, input.item_id],
+        params![new_quantity, &item_id],
     )
     .map_err(|err| format!("Unable to update local inventory quantity: {err}"))?;
 
@@ -213,11 +214,11 @@ pub fn adjust_local_inventory(
         "#,
         params![
             movement_id,
-            input.item_id,
+            &item_id,
             input.delta,
             new_quantity,
-            input.reason,
-            input.reference
+            &input.reason,
+            &input.reference
         ],
     )
     .map_err(|err| format!("Unable to record local inventory movement: {err}"))?;
@@ -232,11 +233,11 @@ pub fn adjust_local_inventory(
 
     let payload = serde_json::json!({
         "movement_id": movement_id,
-        "item_id": input.item_id,
+        "item_id": &item_id,
         "delta": input.delta,
         "quantity_after": new_quantity,
-        "reason": input.reason,
-        "reference": input.reference,
+        "reason": &input.reason,
+        "reference": &input.reference,
     });
 
     tx.execute(
@@ -245,7 +246,7 @@ pub fn adjust_local_inventory(
             (change_id, device_id, entity_type, entity_id, operation, payload_json)
         VALUES (?1, ?2, 'inventory_movement', ?3, 'create', ?4)
         "#,
-        params![change_id, device_id, input.item_id, payload.to_string()],
+        params![change_id, device_id, &item_id, payload.to_string()],
     )
     .map_err(|err| format!("Unable to queue inventory movement for sync: {err}"))?;
 
@@ -254,7 +255,7 @@ pub fn adjust_local_inventory(
 
     Ok(InventoryAdjustmentResult {
         change_id,
-        item_id: input.item_id,
+        item_id,
         previous_quantity,
         new_quantity,
         delta: input.delta,
