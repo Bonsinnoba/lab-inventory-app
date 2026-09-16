@@ -34,9 +34,9 @@ function prepareLocalVideo(resource: Resource): Resource {
   };
 }
 
-function installPanelResizer() {
+function installPanelResizer(): (() => void) | null {
   const marker = Array.from(document.querySelectorAll<HTMLElement>('h1,h2,h3,h4,div,span')).find((el) => el.textContent?.trim() === 'Select resource');
-  if (!marker) return () => {};
+  if (!marker) return null;
 
   let right: HTMLElement | null = marker;
   let split: HTMLElement | null = null;
@@ -65,7 +65,7 @@ function installPanelResizer() {
     right = parent;
   }
 
-  if (!split || !left || !rightPanel || split.dataset.labosResizable === 'true') return () => {};
+  if (!split || !left || !rightPanel || split.dataset.labosResizable === 'true') return null;
   split.dataset.labosResizable = 'true';
   const computed = getComputedStyle(split);
   const isGrid = computed.display === 'grid';
@@ -158,14 +158,14 @@ export default function ResourceViewerModalLocal({ resource, resources = [], onC
   const preparedResources = resources.map(prepare);
 
   useEffect(() => {
-    let cleanup = () => {};
+    let cleanup: (() => void) | null = null;
     const timers = [50, 200, 500].map((delay) => window.setTimeout(() => {
       const installedCleanup = installPanelResizer();
-      if (installedCleanup !== (() => {})) cleanup = installedCleanup;
+      if (installedCleanup) cleanup = installedCleanup;
     }, delay));
     return () => {
       timers.forEach(window.clearTimeout);
-      cleanup();
+      cleanup?.();
     };
   }, [resource.id]);
 
