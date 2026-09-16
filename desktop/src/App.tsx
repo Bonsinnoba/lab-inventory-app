@@ -93,12 +93,13 @@ function AppContent() {
   useEffect(() => {
     if (!isAuthenticated) return;
     const run = () => { void syncPendingChanges(); };
+    const recover = () => { void syncPendingChanges(true); };
     run();
     const timer = window.setInterval(run, 15000);
-    window.addEventListener('online', run);
+    window.addEventListener('online', recover);
     return () => {
       window.clearInterval(timer);
-      window.removeEventListener('online', run);
+      window.removeEventListener('online', recover);
     };
   }, [isAuthenticated]);
 
