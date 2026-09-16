@@ -8,139 +8,29 @@ const DB_FILE: &str = "labos-local.db";
 const LOCAL_SCHEMA_VERSION: &str = "001_offline_foundation";
 
 #[derive(Debug, Serialize)]
-pub struct LocalDatabaseStatus {
-    pub path: String,
-    pub device_id: String,
-    pub schema_version: String,
-    pub pending_sync_count: i64,
-}
-
+pub struct LocalDatabaseStatus { pub path: String, pub device_id: String, pub schema_version: String, pub pending_sync_count: i64 }
 #[derive(Debug, Deserialize)]
-pub struct LocalSyncWriteInput {
-    pub snapshot_json: String,
-    pub change_id: String,
-    pub entity_type: String,
-    pub entity_id: Option<String>,
-    pub operation: String,
-    pub payload_json: String,
-    pub state_key: Option<String>,
-    pub state_json: Option<String>,
-}
+pub struct LocalSyncWriteInput { pub snapshot_json: String, pub change_id: String, pub entity_type: String, pub entity_id: Option<String>, pub operation: String, pub payload_json: String, pub state_key: Option<String>, pub state_json: Option<String> }
 
-fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app_data_dir(&app.config())
-        .ok_or_else(|| "Unable to resolve LabOS app-data directory".to_string())?;
-    fs::create_dir_all(&dir)
-        .map_err(|err| format!("Unable to create local data directory: {err}"))?;
-    Ok(dir.join(DB_FILE))
-}
-
-pub fn open_local_connection(app: &AppHandle) -> Result<Connection, String> {
-    let path = database_path(app)?;
-    let connection = Connection::open(&path)
-        .map_err(|err| format!("Unable to open local SQLite database: {err}"))?;
-    connection.pragma_update(None, "foreign_keys", true).map_err(|err| format!("Unable to enable SQLite foreign keys: {err}"))?;
-    connection.pragma_update(None, "journal_mode", "WAL").map_err(|err| format!("Unable to enable SQLite WAL mode: {err}"))?;
-    connection.pragma_update(None, "synchronous", "NORMAL").map_err(|err| format!("Unable to configure SQLite synchronous mode: {err}"))?;
-    Ok(connection)
-}
-
-fn open_connection(app: &AppHandle) -> Result<(Connection, PathBuf), String> {
-    let path = database_path(app)?;
-    let connection = open_local_connection(app)?;
-    Ok((connection, path))
-}
-
-fn ensure_schema(connection: &Connection) -> Result<(), String> {
-    connection.execute_batch(r#"
-        CREATE TABLE IF NOT EXISTS local_schema_migrations (
-            version TEXT PRIMARY KEY,
-            applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS device_identity (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            device_id TEXT NOT NULL UNIQUE,
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS sync_state (key TEXT PRIMARY KEY, value TEXT);
-        CREATE TABLE IF NOT EXISTS sync_outbox (
-            change_id TEXT PRIMARY KEY,
-            device_id TEXT NOT NULL,
-            entity_type TEXT NOT NULL,
-            entity_id TEXT,
-            operation TEXT NOT NULL,
-            payload_json TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            attempt_count INTEGER NOT NULL DEFAULT 0,
-            last_attempt_at TEXT,
-            last_error TEXT,
-            synced_at TEXT
-        );
-        CREATE INDEX IF NOT EXISTS idx_sync_outbox_pending ON sync_outbox(synced_at, created_at);
-        CREATE INDEX IF NOT EXISTS idx_sync_outbox_entity ON sync_outbox(entity_type, entity_id, created_at);
-    "#).map_err(|err| format!("Unable to initialize local SQLite schema: {err}"))?;
-
-    let applied: Option<String> = connection.query_row(
-        "SELECT version FROM local_schema_migrations WHERE version = ?1",
-        [LOCAL_SCHEMA_VERSION], |row| row.get(0)
-    ).optional().map_err(|err| format!("Unable to inspect local schema version: {err}"))?;
-    if applied.is_none() {
-        connection.execute("INSERT INTO local_schema_migrations(version) VALUES (?1)", [LOCAL_SCHEMA_VERSION])
-            .map_err(|err| format!("Unable to record local schema version: {err}"))?;
-    }
-    connection.execute(
-        "INSERT OR IGNORE INTO device_identity(id, device_id) VALUES (1, lower(hex(randomblob(16))))", []
-    ).map_err(|err| format!("Unable to initialize device identity: {err}"))?;
-    Ok(())
-}
-
-pub fn initialize(app: &AppHandle) -> Result<(), String> {
-    let (connection, _) = open_connection(app)?;
-    ensure_schema(&connection)
-}
-
+fn database_path(app: &AppHandle) -> Result<PathBuf, String> { let dir=app_data_dir(&app.config()).ok_or_else(|| "Unable to resolve LabOS app-data directory".to_string())?; fs::create_dir_all(&dir).map_err(|e| format!("Unable to create local data directory: {e}"))?; Ok(dir.join(DB_FILE)) }
+pub fn open_local_connection(app: &AppHandle) -> Result<Connection, String> { let path=database_path(app)?; let connection=Connection::open(&path).map_err(|e| format!("Unable to open local SQLite database: {e}"))?; connection.pragma_update(None,"foreign_keys",true).map_err(|e| format!("Unable to enable SQLite foreign keys: {e}"))?; connection.pragma_update(None,"journal_mode","WAL").map_err(|e| format!("Unable to enable SQLite WAL mode: {e}"))?; connection.pragma_update(None,"synchronous","NORMAL").map_err(|e| format!("Unable to configure SQLite synchronous mode: {e}"))?; Ok(connection) }
+fn open_connection(app:&AppHandle)->Result<(Connection,PathBuf),String>{let path=database_path(app)?;Ok((open_local_connection(app)?,path))}
+fn ensure_schema(connection:&Connection)->Result<(),String>{connection.execute_batch(r#"
+CREATE TABLE IF NOT EXISTS local_schema_migrations(version TEXT PRIMARY KEY,applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS device_identity(id INTEGER PRIMARY KEY CHECK(id=1),device_id TEXT NOT NULL UNIQUE,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS sync_state(key TEXT PRIMARY KEY,value TEXT);
+CREATE TABLE IF NOT EXISTS sync_outbox(change_id TEXT PRIMARY KEY,device_id TEXT NOT NULL,entity_type TEXT NOT NULL,entity_id TEXT,operation TEXT NOT NULL,payload_json TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,attempt_count INTEGER NOT NULL DEFAULT 0,last_attempt_at TEXT,last_error TEXT,synced_at TEXT);
+CREATE INDEX IF NOT EXISTS idx_sync_outbox_pending ON sync_outbox(synced_at,created_at);
+CREATE INDEX IF NOT EXISTS idx_sync_outbox_entity ON sync_outbox(entity_type,entity_id,created_at);
+"#).map_err(|e|format!("Unable to initialize local SQLite schema: {e}"))?; let applied:Option<String>=connection.query_row("SELECT version FROM local_schema_migrations WHERE version=?1",[LOCAL_SCHEMA_VERSION],|r|r.get(0)).optional().map_err(|e|format!("Unable to inspect local schema version: {e}"))?; if applied.is_none(){connection.execute("INSERT INTO local_schema_migrations(version) VALUES(?1)",[LOCAL_SCHEMA_VERSION]).map_err(|e|format!("Unable to record local schema version: {e}"))?;} connection.execute("INSERT OR IGNORE INTO device_identity(id,device_id) VALUES(1,lower(hex(randomblob(16))))",[]).map_err(|e|format!("Unable to initialize device identity: {e}"))?; Ok(())}
+pub fn initialize(app:&AppHandle)->Result<(),String>{let(connection,_)=open_connection(app)?;ensure_schema(&connection)}
 #[tauri::command]
-pub fn local_database_status(app: AppHandle) -> Result<LocalDatabaseStatus, String> {
-    let (connection, path) = open_connection(&app)?;
-    ensure_schema(&connection)?;
-    let device_id: String = connection.query_row("SELECT device_id FROM device_identity WHERE id = 1", [], |row| row.get(0))
-        .map_err(|err| format!("Unable to read device identity: {err}"))?;
-    let pending_sync_count: i64 = connection.query_row("SELECT COUNT(*) FROM sync_outbox WHERE synced_at IS NULL", [], |row| row.get(0))
-        .map_err(|err| format!("Unable to read sync queue state: {err}"))?;
-    Ok(LocalDatabaseStatus { path: path.to_string_lossy().into_owned(), device_id, schema_version: LOCAL_SCHEMA_VERSION.to_string(), pending_sync_count })
-}
-
+pub fn local_database_status(app:AppHandle)->Result<LocalDatabaseStatus,String>{let(connection,path)=open_connection(&app)?;ensure_schema(&connection)?;let device_id:String=connection.query_row("SELECT device_id FROM device_identity WHERE id=1",[],|r|r.get(0)).map_err(|e|format!("Unable to read device identity: {e}"))?;let pending:i64=connection.query_row("SELECT COUNT(*) FROM sync_outbox WHERE synced_at IS NULL",[],|r|r.get(0)).map_err(|e|format!("Unable to read sync queue state: {e}"))?;Ok(LocalDatabaseStatus{path:path.to_string_lossy().into_owned(),device_id,schema_version:LOCAL_SCHEMA_VERSION.to_string(),pending_sync_count:pending})}
 #[tauri::command]
-pub fn save_local_snapshot_with_sync(app: AppHandle, input: LocalSyncWriteInput) -> Result<(), String> {
-    if input.snapshot_json.trim().is_empty() { return Err("Local inventory snapshot cannot be empty".to_string()); }
-    serde_json::from_str::<serde_json::Value>(&input.snapshot_json).map_err(|err| format!("Invalid local inventory snapshot JSON: {err}"))?;
-    serde_json::from_str::<serde_json::Value>(&input.payload_json).map_err(|err| format!("Invalid sync payload JSON: {err}"))?;
-    if let Some(state_json) = &input.state_json {
-        serde_json::from_str::<serde_json::Value>(state_json).map_err(|err| format!("Invalid local state JSON: {err}"))?;
-    }
-
-    let mut conn = open_local_connection(&app)?;
-    ensure_schema(&conn)?;
-    let tx = conn.transaction().map_err(|err| format!("Unable to begin local sync transaction: {err}"))?;
-    let device_id: String = tx.query_row("SELECT device_id FROM device_identity WHERE id = 1", [], |row| row.get(0))
-        .map_err(|err| format!("Unable to read device identity: {err}"))?;
-
-    tx.execute(
-        "INSERT INTO sync_state(key, value) VALUES ('inventory_snapshot', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        [&input.snapshot_json]
-    ).map_err(|err| format!("Unable to save local inventory snapshot: {err}"))?;
-
-    if let (Some(key), Some(value)) = (&input.state_key, &input.state_json) {
-        tx.execute(
-            "INSERT INTO sync_state(key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![key, value]
-        ).map_err(|err| format!("Unable to save local state: {err}"))?;
-    }
-
-    tx.execute(
-        "INSERT INTO sync_outbox(change_id, device_id, entity_type, entity_id, operation, payload_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![input.change_id, device_id, input.entity_type, input.entity_id, input.operation, input.payload_json]
-    ).map_err(|err| format!("Unable to queue local change for sync: {err}"))?;
-    tx.commit().map_err(|err| format!("Unable to commit local snapshot and sync change: {err}"))?;
-    Ok(())
-}
+pub fn save_local_snapshot_with_sync(app:AppHandle,input:LocalSyncWriteInput)->Result<(),String>{if input.snapshot_json.trim().is_empty(){return Err("Local inventory snapshot cannot be empty".into())} serde_json::from_str::<serde_json::Value>(&input.snapshot_json).map_err(|e|format!("Invalid local inventory snapshot JSON: {e}"))?;serde_json::from_str::<serde_json::Value>(&input.payload_json).map_err(|e|format!("Invalid sync payload JSON: {e}"))?;if let Some(s)=&input.state_json{serde_json::from_str::<serde_json::Value>(s).map_err(|e|format!("Invalid local state JSON: {e}"))?;}let mut conn=open_local_connection(&app)?;ensure_schema(&conn)?;let tx=conn.transaction().map_err(|e|format!("Unable to begin local sync transaction: {e}"))?;let device_id:String=tx.query_row("SELECT device_id FROM device_identity WHERE id=1",[],|r|r.get(0)).map_err(|e|format!("Unable to read device identity: {e}"))?;tx.execute("INSERT INTO sync_state(key,value) VALUES('inventory_snapshot',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[&input.snapshot_json]).map_err(|e|format!("Unable to save local inventory snapshot: {e}"))?;if let(Some(k),Some(v))=(&input.state_key,&input.state_json){tx.execute("INSERT INTO sync_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![k,v]).map_err(|e|format!("Unable to save local state: {e}"))?;}tx.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES(?1,?2,?3,?4,?5,?6)",params![input.change_id,device_id,input.entity_type,input.entity_id,input.operation,input.payload_json]).map_err(|e|format!("Unable to queue local change for sync: {e}"))?;tx.commit().map_err(|e|format!("Unable to commit local snapshot and sync change: {e}"))?;Ok(())}
+#[tauri::command]
+pub fn list_pending_sync_changes(app:AppHandle,limit:Option<i64>)->Result<Vec<serde_json::Value>,String>{let(conn,_)=open_connection(&app)?;ensure_schema(&conn)?;let limit=limit.unwrap_or(50).clamp(1,500);let mut stmt=conn.prepare("SELECT change_id,device_id,entity_type,entity_id,operation,payload_json,created_at,attempt_count,last_error FROM sync_outbox WHERE synced_at IS NULL ORDER BY created_at ASC LIMIT ?1").map_err(|e|format!("Unable to prepare sync queue query: {e}"))?;let rows=stmt.query_map([limit],|r|{let payload:String=r.get(5)?;let payload_json=serde_json::from_str::<serde_json::Value>(&payload).unwrap_or(serde_json::Value::Null);Ok(serde_json::json!({"change_id":r.get::<_,String>(0)?,"device_id":r.get::<_,String>(1)?,"entity_type":r.get::<_,String>(2)?,"entity_id":r.get::<_,Option<String>>(3)?,"operation":r.get::<_,String>(4)?,"payload":payload_json,"created_at":r.get::<_,String>(6)?,"attempt_count":r.get::<_,i64>(7)?,"last_error":r.get::<_,Option<String>>(8)?}))}).map_err(|e|format!("Unable to read sync queue: {e}"))?;rows.map(|r|r.map_err(|e|format!("Unable to decode sync queue row: {e}"))).collect()}
+#[tauri::command]
+pub fn mark_sync_changes_synced(app:AppHandle,change_ids:Vec<String>)->Result<(),String>{if change_ids.is_empty(){return Ok(())}let mut conn=open_local_connection(&app)?;ensure_schema(&conn)?;let tx=conn.transaction().map_err(|e|format!("Unable to begin sync acknowledgement: {e}"))?;for id in change_ids{tx.execute("UPDATE sync_outbox SET synced_at=CURRENT_TIMESTAMP,last_error=NULL WHERE change_id=?1",[id]).map_err(|e|format!("Unable to mark sync change complete: {e}"))?;}tx.commit().map_err(|e|format!("Unable to commit sync acknowledgement: {e}"))?;Ok(())}
+#[tauri::command]
+pub fn record_sync_failure(app:AppHandle,change_id:String,error:String)->Result<(),String>{let conn=open_local_connection(&app)?;ensure_schema(&conn)?;conn.execute("UPDATE sync_outbox SET attempt_count=attempt_count+1,last_attempt_at=CURRENT_TIMESTAMP,last_error=?2 WHERE change_id=?1",params![change_id,error]).map_err(|e|format!("Unable to record sync failure: {e}"))?;Ok(())}
