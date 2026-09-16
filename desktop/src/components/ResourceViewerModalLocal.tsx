@@ -41,6 +41,7 @@ function installPanelResizer() {
   let right: HTMLElement | null = marker;
   let split: HTMLElement | null = null;
   let left: HTMLElement | null = null;
+  let rightPanel: HTMLElement | null = null;
 
   for (let i = 0; i < 8 && right; i += 1) {
     const parent = right.parentElement;
@@ -58,20 +59,22 @@ function installPanelResizer() {
     if (candidate && rr.width > 180 && rr.height > 200) {
       split = parent;
       left = candidate;
+      rightPanel = right;
       break;
     }
     right = parent;
   }
 
-  if (!split || !left || !right || split.dataset.labosResizable === 'true') return () => {};
+  if (!split || !left || !rightPanel || split.dataset.labosResizable === 'true') return () => {};
   split.dataset.labosResizable = 'true';
-  const rightPanel = right;
   const computed = getComputedStyle(split);
   const isGrid = computed.display === 'grid';
   const originalTemplate = split.style.gridTemplateColumns;
   const originalLeftWidth = left.style.width;
   const originalRightWidth = rightPanel.style.width;
-  const originalFlex = left.style.flexBasis;
+  const originalLeftFlex = left.style.flex;
+  const originalRightFlex = rightPanel.style.flex;
+  const originalRightMinWidth = rightPanel.style.minWidth;
 
   split.style.position = split.style.position === 'static' ? 'relative' : split.style.position;
   const divider = document.createElement('div');
@@ -107,10 +110,9 @@ function installPanelResizer() {
       split!.style.gridTemplateColumns = `${nextLeft}px minmax(0, 1fr)`;
     } else {
       left!.style.flex = '0 0 auto';
-      left!.style.flexBasis = `${nextLeft}px`;
       left!.style.width = `${nextLeft}px`;
-      rightPanel.style.flex = '1 1 auto';
-      rightPanel.style.minWidth = '0';
+      rightPanel!.style.flex = '1 1 auto';
+      rightPanel!.style.minWidth = '0';
     }
     setDividerPosition();
   };
@@ -142,8 +144,10 @@ function installPanelResizer() {
     divider.remove();
     split!.style.gridTemplateColumns = originalTemplate;
     left!.style.width = originalLeftWidth;
-    left!.style.flexBasis = originalFlex;
-    rightPanel.style.width = originalRightWidth;
+    left!.style.flex = originalLeftFlex;
+    rightPanel!.style.width = originalRightWidth;
+    rightPanel!.style.flex = originalRightFlex;
+    rightPanel!.style.minWidth = originalRightMinWidth;
     delete split!.dataset.labosResizable;
   };
 }
@@ -154,8 +158,15 @@ export default function ResourceViewerModalLocal({ resource, resources = [], onC
   const preparedResources = resources.map(prepare);
 
   useEffect(() => {
-    const timers = [50, 200, 500].map((delay) => window.setTimeout(installPanelResizer, delay));
-    return () => timers.forEach(window.clearTimeout);
+    let cleanup = () => {};
+    const timers = [50, 200, 500].map((delay) => window.setTimeout(() => {
+      const installedCleanup = installPanelResizer();
+      if (installedCleanup !== (() => {})) cleanup = installedCleanup;
+    }, delay));
+    return () => {
+      timers.forEach(window.clearTimeout);
+      cleanup();
+    };
   }, [resource.id]);
 
   return (
