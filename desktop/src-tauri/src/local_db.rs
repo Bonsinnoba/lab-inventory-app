@@ -1,5 +1,5 @@
-use rusqlite::{Connection, OptionalExtension};
-use serde::Serialize;
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use tauri::{api::path::app_data_dir, AppHandle};
@@ -13,6 +13,16 @@ pub struct LocalDatabaseStatus {
     pub device_id: String,
     pub schema_version: String,
     pub pending_sync_count: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LocalSyncWriteInput {
+    pub snapshot_json: String,
+    pub change_id: String,
+    pub entity_type: String,
+    pub entity_id: Option<String>,
+    pub operation: String,
+    pub payload_json: String,
 }
 
 fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -145,4 +155,55 @@ pub fn local_database_status(app: AppHandle) -> Result<LocalDatabaseStatus, Stri
         schema_version: LOCAL_SCHEMA_VERSION.to_string(),
         pending_sync_count,
     })
+}
+
+#[tauri::command]
+pub fn save_local_snapshot_with_sync(
+    app: AppHandle,
+    input: LocalSyncWriteInput,
+) -> Result<(), String> {
+    if input.snapshot_json.trim().is_empty() {
+        return Err("Local inventory snapshot cannot be empty".to_string());
+    }
+    serde_json::from_str::<serde_json::Value>(&input.snapshot_json)
+        .map_err(|err| format!("Invalid local inventory snapshot JSON: {err}"))?;
+    serde_json::from_str::<serde_json::Value>(&input.payload_json)
+        .map_err(|err| format!("Invalid sync payload JSON: {err}"))?;
+
+    let conn = open_local_connection(&app)?;
+    ensure_schema(&conn)?;
+    let tx = conn
+        .transaction()
+        .map_err(|err| format!("Unable to begin local sync transaction: {err}"))?;
+
+    let device_id: String = tx
+        .query_row("SELECT device_id FROM device_identity WHERE id = 1", [], |row| row.get(0))
+        .map_err(|err| format!("Unable to read device identity: {err}"))?;
+
+    tx.execute(
+        "INSERT INTO sync_state(key, value) VALUES ('inventory_snapshot', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [&input.snapshot_json],
+    )
+    .map_err(|err| format!("Unable to save local inventory snapshot: {err}"))?;
+
+    tx.execute(
+        r#"
+        INSERT INTO sync_outbox
+            (change_id, device_id, entity_type, entity_id, operation, payload_json)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+        params![
+            input.change_id,
+            device_id,
+            input.entity_type,
+            input.entity_id,
+            input.operation,
+            input.payload_json
+        ],
+    )
+    .map_err(|err| format!("Unable to queue local change for sync: {err}"))?;
+
+    tx.commit()
+        .map_err(|err| format!("Unable to commit local snapshot and sync change: {err}"))?;
+    Ok(())
 }
