@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 
 interface PaginationProps {
   page: number;
@@ -29,18 +30,20 @@ export default function Pagination({ page, pageSize, totalPages, total, onPageCh
   if (total === 0) return null;
   const start = (page - 1) * pageSize + 1;
   const end = Math.min(page * pageSize, total);
+  const controlClass = 'inline-flex h-8 items-center justify-center rounded-md border border-border bg-surface-raised px-2 text-xs text-text-secondary transition-colors hover:border-accent hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-35';
   return (
-    <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 mt-2 text-[10px] text-text-secondary">
-      <span className="whitespace-nowrap">Showing {start}–{end} of {total}</span>
-      <div className="flex items-center gap-1 ml-auto">
-        <label className="text-[10px] whitespace-nowrap">Per view
-          <select value={pageSize} onChange={(e) => onPageSizeChange(Number(e.target.value))} className="ml-1 bg-surface border border-border rounded px-1 py-0.5 text-[10px]">
+    <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3 text-xs text-text-secondary">
+      <span className="whitespace-nowrap">Showing <strong className="font-medium text-text-primary">{start}–{end}</strong> of {total}</span>
+      <div className="ml-auto flex items-center gap-2">
+        <label className="flex h-8 items-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-surface px-2 text-xs">
+          <span>Per page</span>
+          <select value={pageSize} onChange={(e) => onPageSizeChange(Number(e.target.value))} aria-label="Items per page" className="bg-transparent text-text-primary outline-none">
             <option value={6}>6</option><option value={12}>12</option><option value={24}>24</option><option value={48}>48</option>
           </select>
         </label>
-        <button disabled={page <= 1} onClick={() => onPageChange(page - 1)} className="px-1.5 py-0.5 border border-border rounded disabled:opacity-40">Prev</button>
-        <span className="min-w-[30px] text-center">{page} / {totalPages}</span>
-        <button disabled={page >= totalPages} onClick={() => onPageChange(page + 1)} className="px-1.5 py-0.5 border border-border rounded disabled:opacity-40">Next</button>
+        <button type="button" disabled={page <= 1} onClick={() => onPageChange(page - 1)} className={controlClass} aria-label="Previous page" title="Previous page"><ChevronLeft size={15} /></button>
+        <span className="min-w-[56px] text-center font-mono text-[11px] text-text-primary" aria-label={`Page ${page} of ${totalPages}`}>{page} / {totalPages}</span>
+        <button type="button" disabled={page >= totalPages} onClick={() => onPageChange(page + 1)} className={controlClass} aria-label="Next page" title="Next page"><ChevronRight size={15} /></button>
       </div>
     </div>
   );
