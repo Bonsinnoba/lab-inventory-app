@@ -1,179 +1,39 @@
 import { useQuery } from '@tanstack/react-query';
 import { getProjects, Project } from '../api/projects';
 import { Skeleton } from '../components/Skeleton';
-import { Plus, RefreshCw, FolderKanban } from 'lucide-react';
+import { Plus, RefreshCw, FolderKanban, ArrowRight } from 'lucide-react';
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import AddProjectModal from '../components/AddProjectModal';
 
-const statusColors = {
-  active: 'var(--color-status-ok)',
-  completed: 'var(--color-accent)',
-  on_hold: 'var(--color-status-warn)',
-  cancelled: 'var(--color-status-danger)',
-};
-
-const statusLabels = {
-  active: 'Active',
-  completed: 'Completed',
-  on_hold: 'On Hold',
-  cancelled: 'Cancelled',
-} as const;
-
-const formatDate = (value?: string | null) => {
-  if (!value) return '—';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(date);
-};
-
-const priorityClasses: Record<string, string> = {
-  high: 'text-status-danger border-status-danger/25 bg-status-danger/5',
-  medium: 'text-status-warning border-status-warning/25 bg-status-warning/5',
-  normal: 'text-text-secondary border-border bg-surface-raised',
-  low: 'text-text-secondary border-border bg-surface-raised',
-};
+const statusColors = { active: 'var(--color-status-ok)', completed: 'var(--color-accent)', on_hold: 'var(--color-status-warn)', cancelled: 'var(--color-status-danger)' };
+const statusLabels = { active: 'Active', completed: 'Completed', on_hold: 'On Hold', cancelled: 'Cancelled' } as const;
+const formatDate = (value?: string | null) => { if (!value) return '—'; const date = new Date(value); if (Number.isNaN(date.getTime())) return value; return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(date); };
+const priorityClasses: Record<string, string> = { high: 'text-status-danger border-status-danger/25 bg-status-danger/5', medium: 'text-status-warning border-status-warning/25 bg-status-warning/5', normal: 'text-text-secondary border-border bg-surface-raised', low: 'text-text-secondary border-border bg-surface-raised' };
 
 export default function ProjectsPage() {
-  const { data: projects = [], isLoading, error, refetch, isFetching } = useQuery<Project[]>({
-    queryKey: ['projects'],
-    queryFn: getProjects,
-  });
-
+  const { data: projects = [], isLoading, error, refetch, isFetching } = useQuery<Project[]>({ queryKey: ['projects'], queryFn: getProjects });
   const [showAddModal, setShowAddModal] = useState(false);
   const navigate = useNavigate();
 
-  return (
-    <div className="page-frame">
-      <header className="dashboard-hero rounded-lg p-5 md:p-6 mb-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div className="min-w-0">
-          <div className="page-kicker">ENGINEERING WORKSPACES</div>
-          <h1 className="page-title text-2xl md:text-3xl mt-1">Projects</h1>
-          <p className="page-subtitle mt-1 max-w-2xl">Plan work, run experiments and connect the lab's hardware and knowledge.</p>
-          {!isLoading && !error && <div className="mt-3 text-[11px] font-mono uppercase tracking-wider text-text-secondary">{projects.length} {projects.length === 1 ? 'workspace' : 'workspaces'}</div>}
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            type="button"
-            onClick={() => refetch()}
-            disabled={isFetching}
-            aria-label="Refresh projects"
-            title="Refresh projects"
-            className="ui-button ui-button-sm px-2.5 disabled:opacity-50"
-          >
-            <RefreshCw size={15} className={isFetching ? 'animate-spin' : ''} />
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowAddModal(true)}
-            className="ui-button ui-button-primary ui-button-sm"
-          >
-            <Plus size={16} />
-            Add Project
-          </button>
-        </div>
-      </header>
+  return <div className="page-frame">
+    <header className="dashboard-hero rounded-lg p-5 md:p-6 mb-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+      <div className="min-w-0"><div className="page-kicker">ENGINEERING WORKSPACES</div><h1 className="page-title text-2xl md:text-3xl mt-1">Projects</h1><p className="page-subtitle mt-1 max-w-2xl">Plan work, run experiments and connect the lab's hardware and knowledge.</p>{!isLoading && !error && <div className="mt-3 inline-flex items-center rounded-full border border-border bg-surface-raised px-2.5 py-1 text-[10px] font-mono uppercase tracking-wider text-text-secondary">{projects.length} {projects.length === 1 ? 'workspace' : 'workspaces'}</div>}</div>
+      <div className="flex items-center gap-2 shrink-0"><button type="button" onClick={() => refetch()} disabled={isFetching} aria-label="Refresh projects" title="Refresh projects" className="ui-button ui-button-sm px-2.5 disabled:opacity-50"><RefreshCw size={15} className={isFetching ? 'animate-spin' : ''} /></button><button type="button" onClick={() => setShowAddModal(true)} className="ui-button ui-button-primary ui-button-sm"><Plus size={16} /> Add Project</button></div>
+    </header>
 
-      <section className="bg-surface border border-border rounded-md overflow-hidden" aria-label="Projects list">
-        <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-border bg-surface-raised/60">
-          <div className="flex items-center gap-2 min-w-0">
-            <FolderKanban size={15} className="text-accent shrink-0" />
-            <span className="text-xs font-semibold uppercase tracking-wider text-text-secondary">Project register</span>
-          </div>
-          {!isLoading && !error && projects.length > 0 && <span className="text-[10px] font-mono text-text-secondary">SELECT A ROW TO OPEN</span>}
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[680px]">
-            <thead className="bg-surface-raised border-b border-border">
-              <tr>
-                <th scope="col" className="text-left px-4 py-3 text-text-secondary text-[11px] uppercase tracking-wider font-semibold">Project</th>
-                <th scope="col" className="text-left px-4 py-3 text-text-secondary text-[11px] uppercase tracking-wider font-semibold">Status</th>
-                <th scope="col" className="text-left px-4 py-3 text-text-secondary text-[11px] uppercase tracking-wider font-semibold">Priority</th>
-                <th scope="col" className="text-left px-4 py-3 text-text-secondary text-[11px] uppercase tracking-wider font-semibold">Due</th>
-                <th scope="col" className="text-right px-4 py-3 text-text-secondary text-[11px] uppercase tracking-wider font-semibold font-mono">Remaining</th>
-              </tr>
-            </thead>
-            <tbody>
-              {isLoading ? (
-                Array.from({ length: 5 }).map((_, i) => (
-                  <tr key={i} className="border-b border-border last:border-0">
-                    {Array.from({ length: 5 }).map((_, j) => (
-                      <td key={j} className="px-4 py-3.5"><Skeleton className="h-4 w-full" /></td>
-                    ))}
-                  </tr>
-                ))
-              ) : error ? (
-                <tr>
-                  <td colSpan={5} className="px-6 py-14 text-center" role="alert">
-                    <div className="mx-auto max-w-sm">
-                      <p className="text-sm font-medium text-status-danger">Projects couldn't be loaded.</p>
-                      <p className="text-xs text-text-secondary mt-1.5">Check the connection and try again.</p>
-                      <button type="button" onClick={() => refetch()} className="ui-button ui-button-sm mt-4">
-                        <RefreshCw size={14} /> Try again
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ) : projects.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="px-6 py-16 text-center">
-                    <div className="mx-auto max-w-sm">
-                      <div className="mx-auto w-10 h-10 rounded-full border border-border bg-surface-raised flex items-center justify-center text-accent">
-                        <FolderKanban size={19} />
-                      </div>
-                      <p className="text-sm font-medium mt-3">No projects yet</p>
-                      <p className="text-xs text-text-secondary mt-1">Create a project to start organizing experiments, tasks and lab work.</p>
-                      <button type="button" onClick={() => setShowAddModal(true)} className="ui-button ui-button-primary ui-button-sm mt-4">
-                        <Plus size={15} /> New Project
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ) : (
-                projects.map((project: Project) => {
-                  const budget = parseFloat(String(project.budget || 0));
-                  const totalSpent = parseFloat(String(project.total_spent || 0));
-                  const remaining = project.budget ? budget - totalSpent : null;
-                  const priority = String(project.priority || 'normal').toLowerCase();
-
-                  return (
-                    <tr
-                      key={project.id}
-                      onClick={() => navigate(`/projects/${project.id}`)}
-                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate(`/projects/${project.id}`); } }}
-                      tabIndex={0}
-                      role="link"
-                      aria-label={`Open project ${project.name}`}
-                      className="border-b border-border last:border-0 hover:bg-surface-raised transition-colors cursor-pointer focus:outline-none focus-visible:bg-surface-raised focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60"
-                    >
-                      <td className="px-4 py-4">
-                        <div className="font-medium text-text-primary truncate max-w-[420px]">{project.name}</div>
-                        {project.description && <div className="mt-0.5 max-w-[420px] truncate text-xs text-text-secondary">{project.description}</div>}
-                      </td>
-                      <td className="px-4 py-4">
-                        <div className="flex items-center gap-2">
-                          <span className="w-2 h-2 rounded-full shrink-0" aria-hidden="true" style={{ backgroundColor: statusColors[project.status], boxShadow: `0 0 8px ${statusColors[project.status]}66` }} />
-                          <span className="text-sm">{statusLabels[project.status]}</span>
-                        </div>
-                      </td>
-                      <td className="px-4 py-4">
-                        <span className={`inline-flex items-center rounded border px-2 py-0.5 text-[10px] uppercase tracking-wider font-medium ${priorityClasses[priority] || priorityClasses.normal}`}>{priority.replace(/_/g, ' ')}</span>
-                      </td>
-                      <td className="px-4 py-4 text-sm text-text-secondary whitespace-nowrap">{formatDate(project.due_date)}</td>
-                      <td className="px-4 py-4 text-right font-mono tabular-nums">
-                        {remaining !== null ? <span className={remaining < 0 ? 'text-status-danger' : 'text-text-primary'}>{remaining < 0 ? '−' : ''}${Math.abs(remaining).toFixed(2)}</span> : <span className="text-text-secondary">N/A</span>}
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      {showAddModal && <AddProjectModal onClose={() => setShowAddModal(false)} />}
-    </div>
-  );
+    <section className="bg-surface border border-border rounded-md overflow-hidden shadow-sm" aria-label="Projects list">
+      <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-border bg-surface-raised/60"><div className="flex items-center gap-2 min-w-0"><FolderKanban size={15} className="text-accent shrink-0" /><span className="text-xs font-semibold uppercase tracking-wider text-text-secondary">Project register</span></div>{!isLoading && !error && projects.length > 0 && <span className="hidden sm:inline text-[10px] font-mono text-text-secondary">SELECT A ROW TO OPEN</span>}</div>
+      <div className="overflow-x-auto"><table className="w-full min-w-[720px]"><thead className="bg-surface-raised border-b border-border"><tr><th scope="col" className="text-left px-4 py-3 text-text-secondary text-[11px] uppercase tracking-wider font-semibold">Project</th><th scope="col" className="text-left px-4 py-3 text-text-secondary text-[11px] uppercase tracking-wider font-semibold">Status</th><th scope="col" className="text-left px-4 py-3 text-text-secondary text-[11px] uppercase tracking-wider font-semibold">Priority</th><th scope="col" className="text-left px-4 py-3 text-text-secondary text-[11px] uppercase tracking-wider font-semibold">Due</th><th scope="col" className="text-right px-4 py-3 text-text-secondary text-[11px] uppercase tracking-wider font-semibold font-mono">Remaining</th><th scope="col" className="w-10 px-3 py-3" aria-label="Open" /></tr></thead>
+      <tbody>{isLoading ? Array.from({ length: 5 }).map((_, i) => <tr key={i} className="border-b border-border last:border-0">{Array.from({ length: 6 }).map((_, j) => <td key={j} className="px-4 py-3.5"><Skeleton className="h-4 w-full" /></td>)}</tr>) : error ? <tr><td colSpan={6} className="px-6 py-14 text-center" role="alert"><div className="mx-auto max-w-sm"><p className="text-sm font-medium text-status-danger">Projects couldn't be loaded.</p><p className="text-xs text-text-secondary mt-1.5">Check the connection and try again.</p><button type="button" onClick={() => refetch()} className="ui-button ui-button-sm mt-4"><RefreshCw size={14} /> Try again</button></div></td></tr> : projects.length === 0 ? <tr><td colSpan={6} className="px-6 py-16 text-center"><div className="mx-auto max-w-sm"><div className="mx-auto w-10 h-10 rounded-full border border-border bg-surface-raised flex items-center justify-center text-accent"><FolderKanban size={19} /></div><p className="text-sm font-medium mt-3">No projects yet</p><p className="text-xs text-text-secondary mt-1">Create a project to start organizing experiments, tasks and lab work.</p><button type="button" onClick={() => setShowAddModal(true)} className="ui-button ui-button-primary ui-button-sm mt-4"><Plus size={15} /> New Project</button></div></td></tr> : projects.map((project: Project) => { const budget = parseFloat(String(project.budget || 0)); const totalSpent = parseFloat(String(project.total_spent || 0)); const remaining = project.budget ? budget - totalSpent : null; const priority = String(project.priority || 'normal').toLowerCase(); return <tr key={project.id} onClick={() => navigate(`/projects/${project.id}`)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate(`/projects/${project.id}`); } }} tabIndex={0} role="link" aria-label={`Open project ${project.name}`} className="group border-b border-border last:border-0 hover:bg-surface-raised transition-colors cursor-pointer focus:outline-none focus-visible:bg-surface-raised focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60">
+        <td className="px-4 py-4"><div className="flex items-center gap-3 min-w-0"><span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-surface-raised text-accent group-hover:border-accent/40"><FolderKanban size={15} /></span><div className="min-w-0"><div className="font-medium text-text-primary truncate max-w-[390px]">{project.name}</div>{project.description && <div className="mt-0.5 max-w-[390px] truncate text-xs text-text-secondary">{project.description}</div>}</div></div></td>
+        <td className="px-4 py-4"><div className="flex items-center gap-2"><span className="w-2 h-2 rounded-full shrink-0" aria-hidden="true" style={{ backgroundColor: statusColors[project.status], boxShadow: `0 0 8px ${statusColors[project.status]}66` }} /><span className="text-sm">{statusLabels[project.status]}</span></div></td>
+        <td className="px-4 py-4"><span className={`inline-flex items-center rounded border px-2 py-0.5 text-[10px] uppercase tracking-wider font-medium ${priorityClasses[priority] || priorityClasses.normal}`}>{priority.replace(/_/g, ' ')}</span></td>
+        <td className="px-4 py-4 text-sm text-text-secondary whitespace-nowrap">{formatDate(project.due_date)}</td>
+        <td className="px-4 py-4 text-right font-mono tabular-nums">{remaining !== null ? <span className={remaining < 0 ? 'text-status-danger' : 'text-text-primary'}>{remaining < 0 ? '−' : ''}${Math.abs(remaining).toFixed(2)}</span> : <span className="text-text-secondary">N/A</span>}</td>
+        <td className="px-3 py-4 text-right"><ArrowRight size={15} className="ml-auto text-text-secondary opacity-40 transition-all group-hover:opacity-100 group-hover:text-accent" aria-hidden="true" /></td>
+      </tr>; })}</tbody></table></div>
+    </section>
+    {showAddModal && <AddProjectModal onClose={() => setShowAddModal(false)} />}
+  </div>;
 }
