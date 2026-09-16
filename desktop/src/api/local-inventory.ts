@@ -1,13 +1,10 @@
 import { invoke } from '@tauri-apps/api/tauri';
 import type { Item } from './items';
 
-const isTauri = () => Boolean((window as any).__TAURI__);
-
 export async function getLocalInventorySnapshot(): Promise<Item[] | null> {
-  if (!isTauri()) return null;
-  const raw = await invoke<string | null>('get_local_inventory_snapshot');
-  if (!raw) return null;
   try {
+    const raw = await invoke<string | null>('get_local_inventory_snapshot');
+    if (!raw) return null;
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed as Item[] : null;
   } catch {
@@ -16,8 +13,11 @@ export async function getLocalInventorySnapshot(): Promise<Item[] | null> {
 }
 
 export async function cacheLocalInventorySnapshot(items: Item[]): Promise<void> {
-  if (!isTauri()) return;
-  await invoke('cache_local_inventory_snapshot', { snapshotJson: JSON.stringify(items) });
+  try {
+    await invoke('cache_local_inventory_snapshot', { snapshotJson: JSON.stringify(items) });
+  } catch {
+    // Web development mode has no Tauri IPC; the remote API remains the source there.
+  }
 }
 
 export async function getLocalInventoryOrRemote(
@@ -25,9 +25,7 @@ export async function getLocalInventoryOrRemote(
   filters?: { type?: string; status?: string; location?: string; location_id?: string; low_stock?: boolean },
 ): Promise<Item[]> {
   const local = await getLocalInventorySnapshot();
-  if (local && local.length > 0) {
-    return applyInventoryFilters(local, filters);
-  }
+  if (local && local.length > 0) return applyInventoryFilters(local, filters);
 
   const remote = await remoteLoader();
   await cacheLocalInventorySnapshot(remote);
