@@ -273,6 +273,12 @@ function AppContent() {
             </div>
           </main>
         </div>
+        {rightPanelContent && rightPanelContent !== 'music' && (
+          <RightPanel title={rightPanelTitles[rightPanelContent]} hideHeader onClose={() => setRightPanelContent(null)}>
+            {renderRightPanelContent()}
+          </RightPanel>
+        )}
+        <ActivityRail active={rightPanelContent} engineeringOpen={engineeringToolsOpen} musicOpen={rightPanelContent === 'music'} mediaOpen={rightPanelContent === 'media'} onSelect={selectDock} />
       </div>
 
       {musicDockOpen && (
@@ -281,13 +287,7 @@ function AppContent() {
         </div>
       )}
       {musicDockOpen && musicMinimized && <MusicMiniPlayer onRestore={restoreMusic} onClose={closeMusic} />}
-      {rightPanelContent && rightPanelContent !== 'music' && (
-        <RightPanel title={rightPanelTitles[rightPanelContent]} hideHeader onClose={() => setRightPanelContent(null)}>
-          {renderRightPanelContent()}
-        </RightPanel>
-      )}
       <EngineeringToolsPage open={engineeringToolsOpen} minimized={engineeringToolsMinimized} onClose={() => setEngineeringToolsOpen(false)} onMinimize={() => setEngineeringToolsMinimized(true)} />
-      <ActivityRail active={rightPanelContent} engineeringOpen={engineeringToolsOpen} musicOpen={rightPanelContent === 'music'} mediaOpen={rightPanelContent === 'media'} onSelect={selectDock} />
       <MobileNav />
       {mobileScanOpen && <ScanLookupModal onClose={() => setMobileScanOpen(false)} />}
       <CommandPalette open={commandPaletteOpen} onClose={() => setCommandPaletteOpen(false)} />
