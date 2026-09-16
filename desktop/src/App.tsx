@@ -60,6 +60,7 @@ function AppContent() {
   const [musicMinimized, setMusicMinimized] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [mobileScanOpen, setMobileScanOpen] = useState(false);
+  const [desktopScanOpen, setDesktopScanOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [engineeringToolsOpen, setEngineeringToolsOpen] = useState(false);
   const [engineeringToolsMinimized, setEngineeringToolsMinimized] = useState(false);
@@ -230,7 +231,7 @@ function AppContent() {
         <Sidebar user={user} onLogout={handleLogout} />
         <MobileDrawer open={mobileMenuOpen} onClose={() => setMobileMenuOpen(false)} user={user} onLogout={handleLogout} />
         <div className="flex-1 flex flex-col min-w-0 min-h-0">
-          <TopBar title={getPageTitle()} onOpenCommandPalette={() => setCommandPaletteOpen(true)} />
+          <TopBar title={getPageTitle()} onOpenCommandPalette={() => setCommandPaletteOpen(true)} onScan={() => setDesktopScanOpen(true)} />
           <MobileHeader title={getPageTitle()} onMenu={() => setMobileMenuOpen(true)} onScan={() => setMobileScanOpen(true)} />
           <main className="app-main flex-1 overflow-auto pb-safe">
             <div key={location.pathname} className="animate-fade-in h-full">
@@ -291,6 +292,7 @@ function AppContent() {
       <EngineeringToolsPage open={engineeringToolsOpen} minimized={engineeringToolsMinimized} onClose={() => setEngineeringToolsOpen(false)} onMinimize={() => setEngineeringToolsMinimized(true)} />
       <MobileNav />
       {mobileScanOpen && <ScanLookupModal onClose={() => setMobileScanOpen(false)} />}
+      {desktopScanOpen && <ScanLookupModal onClose={() => setDesktopScanOpen(false)} />}
       <CommandPalette open={commandPaletteOpen} onClose={() => setCommandPaletteOpen(false)} />
     </>
   );
