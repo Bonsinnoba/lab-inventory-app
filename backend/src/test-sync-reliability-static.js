@@ -9,6 +9,7 @@ const app = read('../desktop/src/App.tsx');
 const syncStatus = read('../desktop/src/components/SyncStatus.tsx');
 const localDb = read('../desktop/src-tauri/src/local_db.rs');
 const localInventory = read('../desktop/src/api/local-inventory.ts');
+const localExcel = read('../desktop/src-tauri/src/local_excel.rs');
 const tauriConfig = read('../desktop/src-tauri/tauri.conf.json');
 const viteConfig = read('../desktop/vite.config.ts');
 
@@ -35,6 +36,8 @@ const checks = [
   ['server pull merge is transactional', localDb.includes('apply_server_inventory_pull') && localDb.includes('let tx=conn.transaction()')],
   ['pending local items are protected during pull', localDb.includes("WHERE synced_at IS NULL AND entity_type='item'") && localDb.includes('if(pending.contains(&item_id)){continue;}')],
   ['item updates include base timestamp', localInventory.includes('base_updated_at:baseUpdatedAt')],
+  ['Excel updates include base timestamp', localExcel.includes('base_updated_at') && localExcel.includes('base_updated_at: base_updated_at')],
+  ['Excel import is transactional', localExcel.includes('let tx = conn.transaction()') && localExcel.includes('tx.commit()')],
   ['desktop pull pages until complete', desktopSync.includes('for(let page=0;page<100;page++)') && desktopSync.includes('body.has_more')],
   ['Tauri dev URL matches Vite dev server', tauriConfig.includes('"devPath": "http://localhost:1420"') && viteConfig.includes('port: 1420')],
 ];
