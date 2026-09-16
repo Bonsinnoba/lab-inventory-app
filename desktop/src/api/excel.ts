@@ -13,6 +13,7 @@ export type InventoryImportPreview = {
   updates: number;
   errors: Array<{ row: number; errors: string[] }>;
   preview: Array<Record<string, unknown>>;
+  valid_rows?: Array<Record<string, unknown>>;
 };
 
 const INVENTORY_HEADERS = [
@@ -51,7 +52,8 @@ export async function previewInventoryExcel(file: File): Promise<InventoryImport
     return response.json();
   }
   const rows = await parseInventoryWorkbook(file);
-  return validateLocalInventoryRows(rows, file.name, local);
+  const result = validateLocalInventoryRows(rows, file.name, local);
+  return { ...result, valid_rows: undefined };
 }
 
 export async function importInventoryExcel(file: File): Promise<{ imported: number; created: number; updated: number }> {
@@ -63,13 +65,14 @@ export async function importInventoryExcel(file: File): Promise<{ imported: numb
   }
 
   const rows = await parseInventoryWorkbook(file);
-  const preview = validateLocalInventoryRows(rows, file.name, local);
-  if (preview.error_rows > 0) throw new Error(preview.errors.map((item) => `Row ${item.row}: ${item.errors.join('; ')}`).join('\n'));
+  const validation = validateLocalInventoryRows(rows, file.name, local);
+  if (validation.error_rows > 0) throw new Error(validation.errors.map((item) => `Row ${item.row}: ${item.errors.join('; ')}`).join('\n'));
 
   const now = new Date().toISOString();
-  const prepared = preview.preview.map((row) => {
+  const prepared = (validation.valid_rows || []).map((row) => {
     const item = { ...row } as Record<string, unknown>;
     if (!item.id) {
+      item.id = crypto.randomUUID();
       item.created_at = now;
       item.updated_at = now;
     } else {
@@ -96,7 +99,8 @@ async function parseInventoryWorkbook(file: File): Promise<WorkbookRow[]> {
   const workbook = decodeText(await readZipEntry(zip, 'xl/workbook.xml'));
   const rels = decodeText(await readZipEntry(zip, 'xl/_rels/workbook.xml.rels'));
   const inventoryTarget = findInventorySheetTarget(workbook, rels);
-  const sheetXml = decodeText(await readZipEntry(zip, normalizeZipPath(`xl/${inventoryTarget}`)));
+  const sheetPath = inventoryTarget.startsWith('xl/') ? inventoryTarget : `xl/${inventoryTarget}`;
+  const sheetXml = decodeText(await readZipEntry(zip, normalizeZipPath(sheetPath)));
   const sharedStrings = zip.has('xl/sharedStrings.xml')
     ? parseSharedStrings(decodeText(await readZipEntry(zip, 'xl/sharedStrings.xml')))
     : [];
@@ -176,6 +180,7 @@ function validateLocalInventoryRows(rows: WorkbookRow[], filename: string, local
     updates: valid.filter((row) => !!row.id).length,
     errors,
     preview: valid.slice(0, 25),
+    valid_rows: valid,
   };
 }
 
