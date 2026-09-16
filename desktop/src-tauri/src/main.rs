@@ -2,6 +2,7 @@
 
 mod local_db;
 mod local_inventory;
+mod local_inventory_cache;
 
 fn main() {
     let show = tauri::CustomMenuItem::new("show".to_string(), "Show");
@@ -32,7 +33,9 @@ fn main() {
             local_db::local_database_status,
             local_inventory::list_local_inventory,
             local_inventory::upsert_local_inventory_item,
-            local_inventory::adjust_local_inventory
+            local_inventory::adjust_local_inventory,
+            local_inventory_cache::get_local_inventory_snapshot,
+            local_inventory_cache::cache_local_inventory_snapshot
         ])
         .system_tray(tauri::SystemTray::new().with_menu(tray_menu))
         .on_system_tray_event(|app, event| match event {
