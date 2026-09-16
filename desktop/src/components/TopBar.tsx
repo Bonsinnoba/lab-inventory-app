@@ -1,11 +1,11 @@
-import { Search, Command } from 'lucide-react';
+import { Search, Command, ScanLine } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import NotificationCenter from './NotificationCenter';
 import SyncStatus from './SyncStatus';
 
-interface TopBarProps { title: string; onOpenCommandPalette: () => void; }
+interface TopBarProps { title: string; onOpenCommandPalette: () => void; onScan: () => void; }
 
-export default function TopBar({ title, onOpenCommandPalette }: TopBarProps) {
+export default function TopBar({ title, onOpenCommandPalette, onScan }: TopBarProps) {
   return (
     <header className="desktop-topbar h-14 bg-surface border-b border-border flex items-center justify-between px-4 md:px-6 gap-4">
       <div className="min-w-0 flex items-center gap-3">
@@ -17,6 +17,16 @@ export default function TopBar({ title, onOpenCommandPalette }: TopBarProps) {
       </div>
 
       <div className="flex items-center gap-1.5 ml-auto">
+        <button
+          type="button"
+          onClick={onScan}
+          className="flex items-center gap-2 px-2.5 py-1.5 rounded-sm text-text-secondary hover:text-text-primary hover:bg-surface-raised transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+          title="Scan Item"
+          aria-label="Scan Item"
+        >
+          <ScanLine size={18} aria-hidden="true" />
+          <span className="hidden sm:inline text-xs font-medium">Scan Item</span>
+        </button>
         <SyncStatus />
         <NotificationCenter />
 
