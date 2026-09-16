@@ -9,6 +9,8 @@ const app = read('../desktop/src/App.tsx');
 const syncStatus = read('../desktop/src/components/SyncStatus.tsx');
 const localDb = read('../desktop/src-tauri/src/local_db.rs');
 const localInventory = read('../desktop/src/api/local-inventory.ts');
+const tauriConfig = read('../desktop/src-tauri/tauri.conf.json');
+const viteConfig = read('../desktop/vite.config.ts');
 
 const checks = [
   ['server sync push endpoint exists', sync.includes("router.post('/push'")],
@@ -34,12 +36,13 @@ const checks = [
   ['pending local items are protected during pull', localDb.includes("WHERE synced_at IS NULL AND entity_type='item'") && localDb.includes('if(pending.contains(&item_id)){continue;}')],
   ['item updates include base timestamp', localInventory.includes('base_updated_at:baseUpdatedAt')],
   ['desktop pull pages until complete', desktopSync.includes('for(let page=0;page<100;page++)') && desktopSync.includes('body.has_more')],
+  ['Tauri dev URL matches Vite dev server', tauriConfig.includes('"devPath": "http://localhost:1420"') && viteConfig.includes('port: 1420')],
 ];
 
 let failed = 0;
 for (const [name, ok] of checks) {
   console.log(`${ok ? 'PASS' : 'FAIL'}: ${name}`);
-  if (!ok) failed++;
+  if (failed) failed++;
 }
 if (failed) {
   console.error(`SYNC RELIABILITY STATIC TESTS FAILED: ${checks.length - failed}/${checks.length}`);
