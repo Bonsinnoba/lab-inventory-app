@@ -22,6 +22,9 @@
         "scope": ["http://localhost:4000/*"]
       }
     },
+    "systemTray": {
+      "iconPath": "icons/icon.ico"
+    },
     "bundle": {
       "active": true,
       "targets": "all",
