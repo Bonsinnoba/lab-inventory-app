@@ -1,4 +1,4 @@
-import { Box, ChevronDown, DollarSign, FileBarChart, Layers, LogOut, PanelLeftClose, PanelLeftOpen, Sun, User, Users, BookOpen, Settings, LayoutDashboard, Download, Moon, Library } from 'lucide-react';
+import { Box, Brain, ChevronDown, DollarSign, FileBarChart, Layers, LogOut, Microscope, PanelLeftClose, PanelLeftOpen, Sun, User, Users, BookOpen, Settings, LayoutDashboard, Download, Moon, TreasureChest } from 'lucide-react';
 import { useState, useCallback, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useTheme } from '../contexts/ThemeContext';
@@ -7,12 +7,12 @@ const primaryItems = [
   { icon: LayoutDashboard, label: 'Dashboard', path: '/dashboard' }, { icon: Layers, label: 'Projects', path: '/projects' }, { icon: BookOpen, label: 'Notebook', path: '/notebook' }, { icon: Download, label: 'Downloads', path: '/downloads' }, { icon: Users, label: 'Collaboration', path: '/collaboration' }, { icon: DollarSign, label: 'Financials', path: '/financials' }, { icon: FileBarChart, label: 'Reports', path: '/reports' },
 ];
 const standaloneItems = [
-  { icon: BookOpen, label: 'Knowledge', path: '/knowledge' },
-  { icon: Library, label: 'Resources', path: '/resources' },
+  { icon: Brain, label: 'Knowledge', path: '/knowledge' },
+  { icon: TreasureChest, label: 'Resources', path: '/resources' },
   { icon: Box, label: 'Inventory', path: '/inventory' },
 ];
 const groups = [
-  { id: 'laboratory', label: 'Laboratory', icon: Box, children: [{ label: 'Operations', path: '/operations' }, { label: 'Intelligence', path: '/lab-intelligence' }] },
+  { id: 'laboratory', label: 'Laboratory', icon: Microscope, children: [{ label: 'Operations', path: '/operations' }, { label: 'Intelligence', path: '/lab-intelligence' }] },
 ];
 interface SidebarProps { user?: { username: string; display_name?: string | null; role: string } | null; onLogout?: () => void; }
 const MIN_WIDTH = 200, MAX_WIDTH = 400, DEFAULT_WIDTH = 256, COLLAPSED_WIDTH = 76;
