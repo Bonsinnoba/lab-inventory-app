@@ -1,4 +1,4 @@
-import { Box, ChevronDown, DollarSign, FileBarChart, Layers, LogOut, PanelLeftClose, PanelLeftOpen, Sun, User, Users, BookOpen, Settings, LayoutDashboard, Download, Moon } from 'lucide-react';
+import { Box, ChevronDown, DollarSign, FileBarChart, Layers, LogOut, PanelLeftClose, PanelLeftOpen, Sun, User, Users, BookOpen, Settings, LayoutDashboard, Download, Moon, Library } from 'lucide-react';
 import { useState, useCallback, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useTheme } from '../contexts/ThemeContext';
@@ -6,9 +6,13 @@ import { useTheme } from '../contexts/ThemeContext';
 const primaryItems = [
   { icon: LayoutDashboard, label: 'Dashboard', path: '/dashboard' }, { icon: Layers, label: 'Projects', path: '/projects' }, { icon: BookOpen, label: 'Notebook', path: '/notebook' }, { icon: Download, label: 'Downloads', path: '/downloads' }, { icon: Users, label: 'Collaboration', path: '/collaboration' }, { icon: DollarSign, label: 'Financials', path: '/financials' }, { icon: FileBarChart, label: 'Reports', path: '/reports' },
 ];
+const standaloneItems = [
+  { icon: BookOpen, label: 'Knowledge', path: '/knowledge' },
+  { icon: Library, label: 'Resources', path: '/resources' },
+  { icon: Box, label: 'Inventory', path: '/inventory' },
+];
 const groups = [
-  { id: 'knowledge', label: 'Knowledge', icon: BookOpen, children: [{ label: 'Knowledge', path: '/knowledge' }, { label: 'Resources', path: '/resources' }] },
-  { id: 'laboratory', label: 'Laboratory', icon: Box, children: [{ label: 'Inventory', path: '/inventory' }, { label: 'Operations', path: '/operations' }, { label: 'Intelligence', path: '/lab-intelligence' }] },
+  { id: 'laboratory', label: 'Laboratory', icon: Box, children: [{ label: 'Operations', path: '/operations' }, { label: 'Intelligence', path: '/lab-intelligence' }] },
 ];
 interface SidebarProps { user?: { username: string; display_name?: string | null; role: string } | null; onLogout?: () => void; }
 const MIN_WIDTH = 200, MAX_WIDTH = 400, DEFAULT_WIDTH = 256, COLLAPSED_WIDTH = 76;
@@ -25,7 +29,7 @@ export default function Sidebar({ user, onLogout }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSED_KEY) === 'true');
   const [width, setWidth] = useState(() => { const saved = Number(localStorage.getItem(WIDTH_KEY)); return Number.isFinite(saved) && saved >= MIN_WIDTH && saved <= MAX_WIDTH ? saved : DEFAULT_WIDTH; });
   const [isResizing, setIsResizing] = useState(false);
-  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({ knowledge: true, laboratory: true });
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({ laboratory: true });
 
   useEffect(() => { localStorage.setItem(WIDTH_KEY, String(width)); }, [width]);
   useEffect(() => { localStorage.setItem(COLLAPSED_KEY, String(collapsed)); if (!collapsed) { setShowCollapsedProfile(false); setShowCollapsedGroup(null); } setTooltip(null); }, [collapsed]);
@@ -55,7 +59,8 @@ export default function Sidebar({ user, onLogout }: SidebarProps) {
       <div className="p-3 border-b border-border sidebar-brand-row"><div className="min-w-0"><div className="labos-brand" aria-label="LabOS">LAB<span>OS</span></div><div className="text-[10px] text-text-secondary font-mono mt-1 tracking-wider sidebar-brand-subtitle">LABORATORY OPERATING SYSTEM</div></div><button type="button" onClick={() => setCollapsed(value => !value)} onMouseEnter={event => showTooltip(event, collapsed ? 'Expand sidebar' : 'Collapse sidebar')} onMouseLeave={hideTooltip} onFocus={event => showTooltip(event, collapsed ? 'Expand sidebar' : 'Collapse sidebar')} onBlur={hideTooltip} className="sidebar-collapse-button" aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}>{collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}</button></div>
       <nav className="flex-1 p-2 overflow-y-auto sidebar-nav">
         {primaryItems.map(item => renderLink(item))}<div className="sidebar-section-divider" aria-hidden="true" />
-        {groups.map(group => { const Icon = group.icon; const active = group.children.some(child => location.pathname === child.path || location.pathname.startsWith(`${child.path}/`)); const collapsedOpen = showCollapsedGroup === group.id; return <div key={group.id} className="mt-1"><button type="button" onClick={event => collapsed ? openCollapsedGroupMenu(event, group.id) : setOpenGroups(current => ({ ...current, [group.id]: !current[group.id] }))} onMouseEnter={event => collapsed && showTooltip(event, group.label)} onMouseLeave={hideTooltip} onFocus={event => collapsed && showTooltip(event, group.label)} onBlur={hideTooltip} aria-label={collapsed ? group.label : undefined} aria-expanded={collapsed ? collapsedOpen : openGroups[group.id]} className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-left transition-colors text-text-secondary hover:bg-surface-raised hover:text-text-primary"><Icon size={19} aria-hidden="true" /><span className="text-sm sidebar-nav-label flex-1">{group.label}</span>{!collapsed && <ChevronDown size={15} className={`transition-transform ${openGroups[group.id] ? '' : '-rotate-90'}`} aria-hidden="true" />}</button>{!collapsed && openGroups[group.id] && group.children.map(child => renderLink(child, true))}</div>; })}
+        {standaloneItems.map(item => renderLink(item))}
+        {groups.map(group => { const Icon = group.icon; const collapsedOpen = showCollapsedGroup === group.id; return <div key={group.id} className="mt-1"><button type="button" onClick={event => collapsed ? openCollapsedGroupMenu(event, group.id) : setOpenGroups(current => ({ ...current, [group.id]: !current[group.id] }))} onMouseEnter={event => collapsed && showTooltip(event, group.label)} onMouseLeave={hideTooltip} onFocus={event => collapsed && showTooltip(event, group.label)} onBlur={hideTooltip} aria-label={collapsed ? group.label : undefined} aria-expanded={collapsed ? collapsedOpen : openGroups[group.id]} className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-left transition-colors text-text-secondary hover:bg-surface-raised hover:text-text-primary"><Icon size={19} aria-hidden="true" /><span className="text-sm sidebar-nav-label flex-1">{group.label}</span>{!collapsed && <ChevronDown size={15} className={`transition-transform ${openGroups[group.id] ? '' : '-rotate-90'}`} aria-hidden="true" />}</button>{!collapsed && openGroups[group.id] && group.children.map(child => renderLink(child, true))}</div>; })}
         {user?.role === 'admin' && renderLink({ icon: User, label: 'Users', path: '/users' })}
       </nav>
       {collapsed && showCollapsedGroup && <><div className="fixed inset-0 z-40" aria-hidden="true" onMouseDown={() => setShowCollapsedGroup(null)} /><div role="menu" aria-label={`${groups.find(group => group.id === showCollapsedGroup)?.label || 'Group'} menu`} className="fixed left-[86px] z-50 w-64 rounded-xl border border-border bg-surface-raised shadow-2xl p-2.5" style={{ top: collapsedGroupTop }}>{(() => { const group = groups.find(item => item.id === showCollapsedGroup); if (!group) return null; return <><div className="px-3 py-2 mb-1"><p className="text-sm font-semibold text-text-primary">{group.label}</p><p className="text-xs text-text-secondary mt-0.5">Navigate to {group.label.toLowerCase()}</p></div><div className="h-px bg-border my-1" aria-hidden="true" />{group.children.map(child => { const active = location.pathname === child.path || location.pathname.startsWith(`${child.path}/`); return <Link key={child.path} to={child.path} role="menuitem" onClick={() => setShowCollapsedGroup(null)} className={`w-full flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${active ? 'bg-accent text-bg' : 'text-text-secondary hover:bg-surface hover:text-text-primary'}`}><span>{child.label}</span>{active && <span className="text-[10px] font-mono uppercase tracking-wider">Current</span>}</Link>; })}</>; })()}</div></>}
