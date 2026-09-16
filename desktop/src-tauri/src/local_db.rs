@@ -23,7 +23,7 @@ fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join(DB_FILE))
 }
 
-fn open_connection(app: &AppHandle) -> Result<(Connection, PathBuf), String> {
+pub fn open_local_connection(app: &AppHandle) -> Result<Connection, String> {
     let path = database_path(app)?;
     let connection = Connection::open(&path)
         .map_err(|err| format!("Unable to open local SQLite database: {err}"))?;
@@ -38,6 +38,12 @@ fn open_connection(app: &AppHandle) -> Result<(Connection, PathBuf), String> {
         .pragma_update(None, "synchronous", "NORMAL")
         .map_err(|err| format!("Unable to configure SQLite synchronous mode: {err}"))?;
 
+    Ok(connection)
+}
+
+fn open_connection(app: &AppHandle) -> Result<(Connection, PathBuf), String> {
+    let path = database_path(app)?;
+    let connection = open_local_connection(app)?;
     Ok((connection, path))
 }
 
