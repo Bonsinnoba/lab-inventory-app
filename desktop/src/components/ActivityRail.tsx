@@ -7,9 +7,9 @@ const items: { id: Exclude<DockableContent, null | 'music' | 'media'>; icon: typ
   { id: 'notebook', icon: BookOpen, label: 'Notebook' },
   { id: 'search', icon: Search, label: 'Search' },
 ];
-const buttonClass = 'relative w-9 h-9 flex items-center justify-center rounded-lg transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-1 focus-visible:ring-offset-surface';
-const activeClass = 'bg-accent/12 text-accent shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-accent)_18%,transparent)]';
-const idleClass = 'text-text-secondary hover:text-text-primary hover:bg-surface-raised';
+const buttonClass = 'relative w-9 h-9 flex items-center justify-center rounded-lg border border-transparent transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-1 focus-visible:ring-offset-surface';
+const activeClass = 'bg-accent/12 text-accent border-accent/20';
+const idleClass = 'text-text-secondary hover:text-text-primary hover:bg-surface-raised hover:border-border';
 function ToolButton({ label, active = false, onClick, children }: { label: string; active?: boolean; onClick: () => void; children: React.ReactNode }) {
   return <button type="button" onClick={onClick} title={active ? `Close ${label}` : label} aria-label={active ? `Close ${label}` : label} aria-pressed={active} className={`${buttonClass} ${active ? activeClass : idleClass}`}>
     {active && <span aria-hidden="true" className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-r-full bg-accent" />}{children}
