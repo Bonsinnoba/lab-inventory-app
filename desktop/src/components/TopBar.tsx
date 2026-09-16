@@ -1,6 +1,7 @@
 import { Search, Command } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import NotificationCenter from './NotificationCenter';
+import SyncStatus from './SyncStatus';
 
 interface TopBarProps { title: string; onOpenCommandPalette: () => void; }
 
@@ -16,6 +17,7 @@ export default function TopBar({ title, onOpenCommandPalette }: TopBarProps) {
       </div>
 
       <div className="flex items-center gap-1.5 ml-auto">
+        <SyncStatus />
         <NotificationCenter />
 
         <button
