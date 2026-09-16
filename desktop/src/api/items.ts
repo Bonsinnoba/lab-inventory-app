@@ -1,5 +1,13 @@
 import { apiFetch } from './http';
-import { getLocalInventoryOrRemote } from './local-inventory';
+import {
+  bulkDeleteLocalInventoryItems,
+  bulkUpdateLocalInventoryStatus,
+  createLocalInventoryItem,
+  deleteLocalInventoryItem,
+  getLocalInventoryOrRemote,
+  getLocalInventorySnapshot,
+  updateLocalInventoryItem,
+} from './local-inventory';
 
 export interface Item {
   id: string; name: string; type: string;
@@ -32,11 +40,65 @@ export async function getItemHistory(id: string): Promise<ItemHistoryEntry[]> { 
 export interface ItemAssignmentHistoryEntry { id: string; action: string; old_assignee_username?: string | null; new_assignee_username?: string | null; actor_username?: string | null; created_at: string; }
 export async function getItemAssignmentHistory(id: string): Promise<ItemAssignmentHistoryEntry[]> { const response = await apiFetch(`/items/${id}/assignment-history`); if (!response.ok) throw new Error('Failed to fetch item assignment history'); return response.json(); }
 export async function getItemBySku(sku: string): Promise<Item> { const response = await apiFetch(`/items/by-sku/${encodeURIComponent(sku)}`); if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Item not found'); return response.json(); }
-export async function createItem(item: Omit<Item, 'id' | 'created_at' | 'updated_at'>): Promise<Item> { const response = await apiFetch('/items', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(item) }); if (!response.ok) throw new Error('Failed to create item'); return response.json(); }
-export async function updateItem(id: string, item: Partial<Item>): Promise<Item> { const response = await apiFetch(`/items/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(item) }); if (!response.ok) throw new Error('Failed to update item'); return response.json(); }
-export async function deleteItem(id: string): Promise<void> { const response = await apiFetch(`/items/${id}`, { method: 'DELETE' }); if (!response.ok) throw new Error('Failed to delete item'); }
-export async function bulkUpdateItemStatus(ids: string[], status: Item['status']): Promise<{ updated: number }> { const response = await apiFetch('/items/bulk-status', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids, status }) }); if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Failed to update items'); return response.json(); }
-export async function bulkDeleteItems(ids: string[]): Promise<{ deleted: number }> { const response = await apiFetch('/items/bulk-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) }); if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Failed to delete items'); return response.json(); }
+
+export async function createItem(item: Omit<Item, 'id' | 'created_at' | 'updated_at'>): Promise<Item> {
+  const local = await createLocalInventoryItem(item);
+  if (local) return local;
+
+  const response = await apiFetch('/items', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(item) });
+  if (!response.ok) throw new Error('Failed to create item');
+  const created: Item = await response.json();
+  const snapshot = await getLocalInventorySnapshot();
+  if (snapshot) {
+    const next = [...snapshot, created];
+    const { cacheLocalInventorySnapshot } = await import('./local-inventory');
+    await cacheLocalInventorySnapshot(next);
+  }
+  return created;
+}
+
+export async function updateItem(id: string, item: Partial<Item>): Promise<Item> {
+  const local = await updateLocalInventoryItem(id, item);
+  if (local) return local;
+
+  const response = await apiFetch(`/items/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(item) });
+  if (!response.ok) throw new Error('Failed to update item');
+  const updated: Item = await response.json();
+  const snapshot = await getLocalInventorySnapshot();
+  if (snapshot) {
+    const next = snapshot.map((existing) => existing.id === id ? updated : existing);
+    const { cacheLocalInventorySnapshot } = await import('./local-inventory');
+    await cacheLocalInventorySnapshot(next);
+  }
+  return updated;
+}
+
+export async function deleteItem(id: string): Promise<void> {
+  if (await deleteLocalInventoryItem(id)) return;
+  const response = await apiFetch(`/items/${id}`, { method: 'DELETE' });
+  if (!response.ok) throw new Error('Failed to delete item');
+  const snapshot = await getLocalInventorySnapshot();
+  if (snapshot) {
+    const { cacheLocalInventorySnapshot } = await import('./local-inventory');
+    await cacheLocalInventorySnapshot(snapshot.filter((item) => item.id !== id));
+  }
+}
+
+export async function bulkUpdateItemStatus(ids: string[], status: Item['status']): Promise<{ updated: number }> {
+  const local = await bulkUpdateLocalInventoryStatus(ids, status);
+  if (local !== null) return { updated: local };
+  const response = await apiFetch('/items/bulk-status', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids, status }) });
+  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Failed to update items');
+  return response.json();
+}
+
+export async function bulkDeleteItems(ids: string[]): Promise<{ deleted: number }> {
+  const local = await bulkDeleteLocalInventoryItems(ids);
+  if (local !== null) return { deleted: local };
+  const response = await apiFetch('/items/bulk-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) });
+  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Failed to delete items');
+  return response.json();
+}
 
 export type MovementType = 'receive' | 'checkout' | 'return' | 'consume' | 'adjust' | 'transfer' | 'damage' | 'loss' | 'repair_out' | 'repair_in';
 export interface ItemMovement {
