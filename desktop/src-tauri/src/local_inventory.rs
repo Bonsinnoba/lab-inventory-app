@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 use crate::local_db;
 
-const INVENTORY_SCHEMA_VERSION: &str = "002_local_inventory";
+const INVENTORY_SCHEMA_VERSION: &str = "003_local_inventory_movements";
 #[derive(Debug, Deserialize, Serialize)]
 pub struct LocalInventoryItem { pub item_id: String, pub sku: Option<String>, pub name: String, pub description: Option<String>, pub unit: Option<String>, pub current_quantity: f64, pub reorder_level: Option<f64>, pub updated_at: String }
 #[derive(Debug, Deserialize)]
