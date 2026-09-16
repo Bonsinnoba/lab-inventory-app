@@ -18,6 +18,7 @@ export default {
         'accent-dim': 'var(--color-accent-dim)',
         'status-ok': 'var(--color-status-ok)',
         'status-warn': 'var(--color-status-warn)',
+        'status-warning': 'var(--color-status-warn)',
         'status-danger': 'var(--color-status-danger)',
         'status-neutral': 'var(--color-status-neutral)',
       },
