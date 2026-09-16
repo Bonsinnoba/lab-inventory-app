@@ -54,14 +54,15 @@ pub fn import_local_inventory_rows(app: AppHandle, rows_json: String) -> Result<
                 .iter()
                 .position(|item| item.get("id").and_then(Value::as_str) == Some(item_id.as_str()))
                 .ok_or_else(|| format!("LabOS ID \"{item_id}\" does not exist in local inventory"))?;
+            let base_updated_at = snapshot[index].get("updated_at").cloned().unwrap_or(Value::Null);
             if next.get("created_at").is_none() || next.get("created_at") == Some(&Value::Null) {
                 next["created_at"] = snapshot[index].get("created_at").cloned().unwrap_or(Value::Null);
             }
             if next.get("updated_at").is_none() || next.get("updated_at") == Some(&Value::Null) {
-                next["updated_at"] = snapshot[index].get("updated_at").cloned().unwrap_or(Value::Null);
+                next["updated_at"] = base_updated_at.clone();
             }
             snapshot[index] = next.clone();
-            let payload = serde_json::json!({"id": item_id, "patch": next, "item": snapshot[index]});
+            let payload = serde_json::json!({"id": item_id, "patch": next, "item": snapshot[index], "base_updated_at": base_updated_at});
             let change_id: String = tx.query_row("SELECT lower(hex(randomblob(16)))", [], |r| r.get(0))
                 .map_err(|e| format!("Unable to create sync change id: {e}"))?;
             tx.execute(
@@ -71,7 +72,7 @@ pub fn import_local_inventory_rows(app: AppHandle, rows_json: String) -> Result<
             updated += 1;
         } else {
             snapshot.push(next.clone());
-            let change_id: String = tx.query_row("SELECT lower(hex(randomblob(16)))", [], |r| r.get(0))
+            let change_id: String = tx.query_row("SELECT lower(hex(randomblob(16)))", [], |r| r.get::<_, String>(0))
                 .map_err(|e| format!("Unable to create sync change id: {e}"))?;
             tx.execute(
                 "INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES (?1,?2,'item',?3,'create',?4)",
