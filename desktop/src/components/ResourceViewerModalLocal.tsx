@@ -34,49 +34,71 @@ function prepareLocalVideo(resource: Resource): Resource {
   };
 }
 
+function findViewerSplit(marker: HTMLElement) {
+  let ancestor: HTMLElement | null = marker.parentElement;
+  for (let depth = 0; ancestor && depth < 12; depth += 1) {
+    const ancestorRect = ancestor.getBoundingClientRect();
+    const children = Array.from(ancestor.children).filter(
+      (child): child is HTMLElement => child instanceof HTMLElement && child !== marker && getComputedStyle(child).display !== 'none',
+    );
+
+    const large = children.filter((child) => {
+      const rect = child.getBoundingClientRect();
+      return rect.width >= 220 && rect.height >= 180;
+    });
+
+    const pairs: Array<{ left: HTMLElement; right: HTMLElement; score: number }> = [];
+    for (const right of large) {
+      const rightRect = right.getBoundingClientRect();
+      if (!(right.contains(marker) || right === marker || marker.contains(right))) continue;
+      for (const left of large) {
+        if (left === right) continue;
+        const leftRect = left.getBoundingClientRect();
+        const verticalOverlap = Math.min(leftRect.bottom, rightRect.bottom) - Math.max(leftRect.top, rightRect.top);
+        const horizontalGap = rightRect.left - leftRect.right;
+        if (leftRect.right > rightRect.left || verticalOverlap < Math.min(leftRect.height, rightRect.height) * 0.55) continue;
+        if (horizontalGap < -4 || horizontalGap > 48) continue;
+        const coverage = (leftRect.width + rightRect.width + Math.max(0, horizontalGap)) / Math.max(1, ancestorRect.width);
+        const score = Math.abs(1 - coverage) + Math.abs(leftRect.top - rightRect.top) / Math.max(1, ancestorRect.height);
+        pairs.push({ left, right, score });
+      }
+    }
+
+    if (pairs.length) {
+      pairs.sort((a, b) => a.score - b.score);
+      const best = pairs[0];
+      return { split: ancestor, left: best.left, right: best.right };
+    }
+
+    ancestor = ancestor.parentElement;
+  }
+  return null;
+}
+
 function installPanelResizer(): (() => void) | null {
-  const marker = Array.from(document.querySelectorAll<HTMLElement>('h1,h2,h3,h4,div,span')).find((el) => el.textContent?.trim() === 'Select resource');
+  const marker = Array.from(document.querySelectorAll<HTMLElement>('h1,h2,h3,h4,div,span')).find(
+    (el) => el.textContent?.trim() === 'Select resource' && el.getBoundingClientRect().width > 0,
+  );
   if (!marker) return null;
 
-  let right: HTMLElement | null = marker;
-  let split: HTMLElement | null = null;
-  let left: HTMLElement | null = null;
-  let rightPanel: HTMLElement | null = null;
+  const found = findViewerSplit(marker);
+  if (!found) return null;
 
-  for (let i = 0; i < 8 && right; i += 1) {
-    const parent = right.parentElement;
-    if (!parent) break;
-    const siblings = Array.from(parent.children).filter((child): child is HTMLElement => child instanceof HTMLElement && child !== right);
-    const candidates = siblings.filter((child) => {
-      const r = child.getBoundingClientRect();
-      return r.width > 180 && r.height > 200;
-    });
-    const rr = right.getBoundingClientRect();
-    const candidate = candidates.find((child) => {
-      const r = child.getBoundingClientRect();
-      return r.right <= rr.left + 24 && Math.abs(r.top - rr.top) < 80;
-    });
-    if (candidate && rr.width > 180 && rr.height > 200) {
-      split = parent;
-      left = candidate;
-      rightPanel = right;
-      break;
-    }
-    right = parent;
-  }
+  const { split, left, right } = found;
+  if (split.dataset.labosResizable === 'true') return null;
 
-  if (!split || !left || !rightPanel || split.dataset.labosResizable === 'true') return null;
   split.dataset.labosResizable = 'true';
   const computed = getComputedStyle(split);
   const isGrid = computed.display === 'grid';
   const originalTemplate = split.style.gridTemplateColumns;
   const originalLeftWidth = left.style.width;
-  const originalRightWidth = rightPanel.style.width;
   const originalLeftFlex = left.style.flex;
-  const originalRightFlex = rightPanel.style.flex;
-  const originalRightMinWidth = rightPanel.style.minWidth;
+  const originalRightWidth = right.style.width;
+  const originalRightFlex = right.style.flex;
+  const originalRightMinWidth = right.style.minWidth;
 
-  split.style.position = split.style.position === 'static' ? 'relative' : split.style.position;
+  if (getComputedStyle(split).position === 'static') split.style.position = 'relative';
+
   const divider = document.createElement('div');
   divider.setAttribute('aria-label', 'Resize viewer panels');
   divider.setAttribute('role', 'separator');
@@ -86,53 +108,71 @@ function installPanelResizer(): (() => void) | null {
     position: 'absolute',
     top: '0',
     bottom: '0',
-    width: '12px',
-    transform: 'translateX(-50%)',
-    zIndex: '30',
+    width: '18px',
+    marginLeft: '-9px',
+    zIndex: '9999',
     cursor: 'col-resize',
     touchAction: 'none',
+    pointerEvents: 'auto',
     background: 'transparent',
   });
 
   const setDividerPosition = () => {
-    const l = left!.getBoundingClientRect();
-    const s = split!.getBoundingClientRect();
-    divider.style.left = `${l.right - s.left}px`;
+    const leftRect = left.getBoundingClientRect();
+    const splitRect = split.getBoundingClientRect();
+    divider.style.left = `${leftRect.right - splitRect.left}px`;
   };
 
   const apply = (clientX: number) => {
-    const s = split!.getBoundingClientRect();
+    const splitRect = split.getBoundingClientRect();
     const minLeft = 280;
     const minRight = 280;
-    const maxLeft = s.width - minRight;
-    const nextLeft = Math.max(minLeft, Math.min(maxLeft, clientX - s.left));
+    const maxLeft = Math.max(minLeft, splitRect.width - minRight);
+    const nextLeft = Math.max(minLeft, Math.min(maxLeft, clientX - splitRect.left));
+
     if (isGrid) {
-      split!.style.gridTemplateColumns = `${nextLeft}px minmax(0, 1fr)`;
+      split.style.gridTemplateColumns = `${nextLeft}px minmax(${minRight}px, 1fr)`;
     } else {
-      left!.style.flex = '0 0 auto';
-      left!.style.width = `${nextLeft}px`;
-      rightPanel!.style.flex = '1 1 auto';
-      rightPanel!.style.minWidth = '0';
+      left.style.flex = `0 0 ${nextLeft}px`;
+      left.style.width = `${nextLeft}px`;
+      right.style.flex = '1 1 auto';
+      right.style.minWidth = `${minRight}px`;
     }
     setDividerPosition();
   };
 
-  const onPointerMove = (event: PointerEvent) => apply(event.clientX);
-  const stop = () => {
-    window.removeEventListener('pointermove', onPointerMove);
-    window.removeEventListener('pointerup', stop);
+  let dragging = false;
+  let activePointerId: number | null = null;
+
+  const onPointerMove = (event: PointerEvent) => {
+    if (!dragging || (activePointerId !== null && event.pointerId !== activePointerId)) return;
+    apply(event.clientX);
+  };
+
+  const stop = (event?: PointerEvent) => {
+    if (event && activePointerId !== null && event.pointerId !== activePointerId) return;
+    dragging = false;
+    activePointerId = null;
     document.body.style.userSelect = '';
     document.body.style.cursor = '';
   };
+
   const start = (event: PointerEvent) => {
     event.preventDefault();
-    window.addEventListener('pointermove', onPointerMove);
-    window.addEventListener('pointerup', stop);
+    event.stopPropagation();
+    dragging = true;
+    activePointerId = event.pointerId;
+    try { divider.setPointerCapture(event.pointerId); } catch { /* pointer capture is optional */ }
     document.body.style.userSelect = 'none';
     document.body.style.cursor = 'col-resize';
+    apply(event.clientX);
   };
 
   divider.addEventListener('pointerdown', start);
+  divider.addEventListener('pointermove', onPointerMove);
+  divider.addEventListener('pointerup', stop);
+  divider.addEventListener('pointercancel', stop);
+  divider.addEventListener('lostpointercapture', () => stop());
   split.appendChild(divider);
   requestAnimationFrame(setDividerPosition);
   window.addEventListener('resize', setDividerPosition);
@@ -141,14 +181,17 @@ function installPanelResizer(): (() => void) | null {
     stop();
     window.removeEventListener('resize', setDividerPosition);
     divider.removeEventListener('pointerdown', start);
+    divider.removeEventListener('pointermove', onPointerMove);
+    divider.removeEventListener('pointerup', stop);
+    divider.removeEventListener('pointercancel', stop);
     divider.remove();
-    split!.style.gridTemplateColumns = originalTemplate;
-    left!.style.width = originalLeftWidth;
-    left!.style.flex = originalLeftFlex;
-    rightPanel!.style.width = originalRightWidth;
-    rightPanel!.style.flex = originalRightFlex;
-    rightPanel!.style.minWidth = originalRightMinWidth;
-    delete split!.dataset.labosResizable;
+    split.style.gridTemplateColumns = originalTemplate;
+    left.style.width = originalLeftWidth;
+    left.style.flex = originalLeftFlex;
+    right.style.width = originalRightWidth;
+    right.style.flex = originalRightFlex;
+    right.style.minWidth = originalRightMinWidth;
+    delete split.dataset.labosResizable;
   };
 }
 
@@ -159,10 +202,11 @@ export default function ResourceViewerModalLocal({ resource, resources = [], onC
 
   useEffect(() => {
     let cleanup: (() => void) | null = null;
-    const timers = [50, 200, 500].map((delay) => window.setTimeout(() => {
-      const installedCleanup = installPanelResizer();
-      if (installedCleanup) cleanup = installedCleanup;
-    }, delay));
+    const install = () => {
+      cleanup?.();
+      cleanup = installPanelResizer();
+    };
+    const timers = [0, 50, 150, 300, 600].map((delay) => window.setTimeout(install, delay));
     return () => {
       timers.forEach(window.clearTimeout);
       cleanup?.();
