@@ -42,7 +42,7 @@ const checks = [
 let failed = 0;
 for (const [name, ok] of checks) {
   console.log(`${ok ? 'PASS' : 'FAIL'}: ${name}`);
-  if (failed) failed++;
+  if (!ok) failed++;
 }
 if (failed) {
   console.error(`SYNC RELIABILITY STATIC TESTS FAILED: ${checks.length - failed}/${checks.length}`);
