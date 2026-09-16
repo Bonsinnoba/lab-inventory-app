@@ -1,6 +1,7 @@
 import ResourceViewerModal from './ResourceViewerModal';
 import type { Resource } from '../api/resources';
 import { getLocalMediaUrl } from '../api/mediaDownloads';
+import { useEffect } from 'react';
 
 interface Props {
   resource: Resource;
@@ -33,10 +34,129 @@ function prepareLocalVideo(resource: Resource): Resource {
   };
 }
 
+function installPanelResizer() {
+  const marker = Array.from(document.querySelectorAll<HTMLElement>('h1,h2,h3,h4,div,span')).find((el) => el.textContent?.trim() === 'Select resource');
+  if (!marker) return () => {};
+
+  let right: HTMLElement | null = marker;
+  let split: HTMLElement | null = null;
+  let left: HTMLElement | null = null;
+
+  for (let i = 0; i < 8 && right; i += 1) {
+    const parent = right.parentElement;
+    if (!parent) break;
+    const siblings = Array.from(parent.children).filter((child): child is HTMLElement => child instanceof HTMLElement && child !== right);
+    const candidates = siblings.filter((child) => {
+      const r = child.getBoundingClientRect();
+      return r.width > 180 && r.height > 200;
+    });
+    const rr = right.getBoundingClientRect();
+    const candidate = candidates.find((child) => {
+      const r = child.getBoundingClientRect();
+      return r.right <= rr.left + 24 && Math.abs(r.top - rr.top) < 80;
+    });
+    if (candidate && rr.width > 180 && rr.height > 200) {
+      split = parent;
+      left = candidate;
+      break;
+    }
+    right = parent;
+  }
+
+  if (!split || !left || !right || split.dataset.labosResizable === 'true') return () => {};
+  split.dataset.labosResizable = 'true';
+  const rightPanel = right;
+  const computed = getComputedStyle(split);
+  const isGrid = computed.display === 'grid';
+  const originalTemplate = split.style.gridTemplateColumns;
+  const originalLeftWidth = left.style.width;
+  const originalRightWidth = rightPanel.style.width;
+  const originalFlex = left.style.flexBasis;
+
+  split.style.position = split.style.position === 'static' ? 'relative' : split.style.position;
+  const divider = document.createElement('div');
+  divider.setAttribute('aria-label', 'Resize viewer panels');
+  divider.setAttribute('role', 'separator');
+  divider.tabIndex = 0;
+  divider.dataset.labosPanelResizer = 'true';
+  Object.assign(divider.style, {
+    position: 'absolute',
+    top: '0',
+    bottom: '0',
+    width: '12px',
+    transform: 'translateX(-50%)',
+    zIndex: '30',
+    cursor: 'col-resize',
+    touchAction: 'none',
+    background: 'transparent',
+  });
+
+  const setDividerPosition = () => {
+    const l = left!.getBoundingClientRect();
+    const s = split!.getBoundingClientRect();
+    divider.style.left = `${l.right - s.left}px`;
+  };
+
+  const apply = (clientX: number) => {
+    const s = split!.getBoundingClientRect();
+    const minLeft = 280;
+    const minRight = 280;
+    const maxLeft = s.width - minRight;
+    const nextLeft = Math.max(minLeft, Math.min(maxLeft, clientX - s.left));
+    if (isGrid) {
+      split!.style.gridTemplateColumns = `${nextLeft}px minmax(0, 1fr)`;
+    } else {
+      left!.style.flex = '0 0 auto';
+      left!.style.flexBasis = `${nextLeft}px`;
+      left!.style.width = `${nextLeft}px`;
+      rightPanel.style.flex = '1 1 auto';
+      rightPanel.style.minWidth = '0';
+    }
+    setDividerPosition();
+  };
+
+  const onPointerMove = (event: PointerEvent) => apply(event.clientX);
+  const stop = () => {
+    window.removeEventListener('pointermove', onPointerMove);
+    window.removeEventListener('pointerup', stop);
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
+  };
+  const start = (event: PointerEvent) => {
+    event.preventDefault();
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', stop);
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+  };
+
+  divider.addEventListener('pointerdown', start);
+  split.appendChild(divider);
+  requestAnimationFrame(setDividerPosition);
+  window.addEventListener('resize', setDividerPosition);
+
+  return () => {
+    stop();
+    window.removeEventListener('resize', setDividerPosition);
+    divider.removeEventListener('pointerdown', start);
+    divider.remove();
+    split!.style.gridTemplateColumns = originalTemplate;
+    left!.style.width = originalLeftWidth;
+    left!.style.flexBasis = originalFlex;
+    rightPanel.style.width = originalRightWidth;
+    delete split!.dataset.labosResizable;
+  };
+}
+
 export default function ResourceViewerModalLocal({ resource, resources = [], onClose, onEdit }: Props) {
   const prepare = (item: Resource) => isDownloadedVideo(item) ? prepareLocalVideo(item) : item;
   const preparedResource = prepare(resource);
   const preparedResources = resources.map(prepare);
+
+  useEffect(() => {
+    const timers = [50, 200, 500].map((delay) => window.setTimeout(installPanelResizer, delay));
+    return () => timers.forEach(window.clearTimeout);
+  }, [resource.id]);
 
   return (
     <ResourceViewerModal
