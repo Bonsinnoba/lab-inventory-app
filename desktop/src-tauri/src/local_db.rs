@@ -170,7 +170,7 @@ pub fn save_local_snapshot_with_sync(
     serde_json::from_str::<serde_json::Value>(&input.payload_json)
         .map_err(|err| format!("Invalid sync payload JSON: {err}"))?;
 
-    let conn = open_local_connection(&app)?;
+    let mut conn = open_local_connection(&app)?;
     ensure_schema(&conn)?;
     let tx = conn
         .transaction()
