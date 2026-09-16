@@ -1,16 +1,282 @@
 import { invoke } from '@tauri-apps/api/tauri';
 import type { Item, ItemMovement, MovementType } from './items';
 
-export async function getLocalInventorySnapshot(): Promise<Item[] | null> { try { const raw=await invoke<string|null>('get_local_inventory_snapshot'); if(!raw)return null; const parsed=JSON.parse(raw); return Array.isArray(parsed)?parsed as Item[]:null; } catch{return null;} }
-export async function cacheLocalInventorySnapshot(items:Item[]):Promise<void>{try{await invoke('cache_local_inventory_snapshot',{snapshotJson:JSON.stringify(items)});}catch{}}
-export async function cacheLocalItemMovements(id:string,movements:ItemMovement[]):Promise<void>{try{await invoke('cache_local_inventory_movements',{itemId:id,movementsJson:JSON.stringify(movements)});}catch{}}
-async function saveSnapshotWithSync(snapshot:Item[],change:{entity_type:string;entity_id?:string;operation:string;payload:unknown}):Promise<void>{await invoke('save_local_snapshot_with_sync',{input:{snapshotJson:JSON.stringify(snapshot),changeId:crypto.randomUUID().replaceAll('-',''),entityType:change.entity_type,entityId:change.entity_id??null,operation:change.operation,payloadJson:JSON.stringify(change.payload),stateKey:null,stateJson:null}})}
-export async function createLocalInventoryItem(item:Omit<Item,'id'|'created_at'|'updated_at'>):Promise<Item|null>{const local=await getLocalInventorySnapshot();if(!local)return null;const now=new Date().toISOString();const created:Item={...item,id:crypto.randomUUID(),created_at:now,updated_at:now};await saveSnapshotWithSync([...local,created],{entity_type:'item',entity_id:created.id,operation:'create',payload:created});return created;}
-export async function updateLocalInventoryItem(id:string,patch:Partial<Item>):Promise<Item|null>{const local=await getLocalInventorySnapshot();if(!local)return null;const index=local.findIndex(i=>i.id===id);if(index<0)throw new Error('Item not found in local inventory');const updated:Item={...local[index],...patch,id,updated_at:new Date().toISOString()};const next=[...local];next[index]=updated;await saveSnapshotWithSync(next,{entity_type:'item',entity_id:id,operation:'update',payload:{id,patch,item:updated}});return updated;}
-export async function deleteLocalInventoryItem(id:string):Promise<boolean>{const local=await getLocalInventorySnapshot();if(!local)return false;if(!local.some(i=>i.id===id))throw new Error('Item not found in local inventory');await saveSnapshotWithSync(local.filter(i=>i.id!==id),{entity_type:'item',entity_id:id,operation:'delete',payload:{id}});return true;}
-export async function bulkUpdateLocalInventoryStatus(ids:string[],status:Item['status']):Promise<number|null>{const local=await getLocalInventorySnapshot();if(!local)return null;const set=new Set(ids);let count=0;const next=local.map(i=>{if(!set.has(i.id))return i;count++;return {...i,status,updated_at:new Date().toISOString()}});if(!count)return 0;await saveSnapshotWithSync(next,{entity_type:'item',operation:'bulk_status',payload:{ids,status}});return count;}
-export async function bulkDeleteLocalInventoryItems(ids:string[]):Promise<number|null>{const local=await getLocalInventorySnapshot();if(!local)return null;const set=new Set(ids);const deleted=local.filter(i=>set.has(i.id)).map(i=>i.id);if(!deleted.length)return 0;await saveSnapshotWithSync(local.filter(i=>!set.has(i.id)),{entity_type:'item',operation:'bulk_delete',payload:{ids:deleted}});return deleted.length;}
-export async function getLocalItemMovements(id:string):Promise<ItemMovement[]|null>{try{const raw=await invoke<string[]|null>('list_local_inventory_movements',{itemId:id});if(raw===null)return null;return raw.map(v=>JSON.parse(v) as ItemMovement);}catch{return null;}}
-export async function createLocalItemMovement(id:string,movement:{movement_type:MovementType;quantity:number;to_storage_location?:string;to_location_id?:string;project_id?:string;reason?:string;reference?:string}):Promise<{item:Item;movement:ItemMovement}|null>{const local=await getLocalInventorySnapshot();if(!local)return null;const index=local.findIndex(i=>i.id===id);if(index<0)throw new Error('Item not found in local inventory');const quantity=Number(movement.quantity);if(!Number.isFinite(quantity)||quantity<=0)throw new Error('Quantity must be greater than zero');const allowed:MovementType[]=['receive','checkout','return','consume','adjust','transfer','damage','loss','repair_out','repair_in'];if(!allowed.includes(movement.movement_type))throw new Error('Invalid movement type');const incoming=new Set<MovementType>(['receive','return','repair_in']);const outgoing=new Set<MovementType>(['checkout','consume','damage','loss','repair_out']);const before=Number(local[index].current_quantity);let after=before;if(incoming.has(movement.movement_type))after+=quantity;else if(outgoing.has(movement.movement_type))after-=quantity;else if(movement.movement_type==='adjust')after=quantity;if(after<0)throw new Error('Movement would make stock negative');if(movement.movement_type==='transfer'&&!movement.to_storage_location?.trim()&&!movement.to_location_id)throw new Error('A destination location is required for transfers');const now=new Date().toISOString();const movementRecord:ItemMovement={id:crypto.randomUUID(),item_id:id,movement_type:movement.movement_type,quantity,quantity_before:before,quantity_after:after,from_location_id:local[index].location_id??null,to_location_id:movement.to_location_id??null,from_storage_location:local[index].storage_location??null,to_storage_location:movement.movement_type==='transfer'?(movement.to_storage_location?.trim()||null):(local[index].storage_location??null),project_id:movement.project_id??null,reason:movement.reason??null,reference:movement.reference??null,created_at:now};const updated:Item={...local[index],current_quantity:after,storage_location:movementRecord.to_storage_location??local[index].storage_location,location_id:movement.to_location_id??local[index].location_id,updated_at:now};const next=[...local];next[index]=updated;const history=await getLocalItemMovements(id)??[];await invoke('save_local_inventory_movement',{input:{snapshotJson:JSON.stringify(next),movementJson:JSON.stringify(movementRecord),changeId:crypto.randomUUID().replaceAll('-',''),itemId:id}});void history;return{item:updated,movement:movementRecord};}
-export async function getLocalInventoryOrRemote(remoteLoader:()=>Promise<Item[]>,filters?:{type?:string;status?:string;location?:string;location_id?:string;low_stock?:boolean}):Promise<Item[]>{const local=await getLocalInventorySnapshot();if(local!==null)return applyInventoryFilters(local,filters);const remote=await remoteLoader();await cacheLocalInventorySnapshot(remote);return applyInventoryFilters(remote,filters);}
-function applyInventoryFilters(items:Item[],filters?:{type?:string;status?:string;location?:string;location_id?:string;low_stock?:boolean}):Item[]{if(!filters)return items;const query=filters.location?.trim().toLowerCase();return items.filter(item=>{if(filters.type&&item.type!==filters.type)return false;if(filters.status&&item.status!==filters.status)return false;if(filters.location_id&&item.location_id!==filters.location_id)return false;if(filters.low_stock&&item.status!=='low_stock'&&!(item.current_quantity<=0))return false;if(query&&!`${item.storage_location||''}`.toLowerCase().includes(query))return false;return true;});}
+export async function getLocalInventorySnapshot(): Promise<Item[] | null> {
+  try {
+    const raw = await invoke<string | null>('get_local_inventory_snapshot');
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed as Item[] : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function cacheLocalInventorySnapshot(items: Item[]): Promise<void> {
+  try {
+    await invoke('cache_local_inventory_snapshot', { snapshotJson: JSON.stringify(items) });
+  } catch {
+    // Web development mode has no Tauri IPC; the remote API remains the source there.
+  }
+}
+
+export async function cacheLocalItemMovements(id: string, movements: ItemMovement[]): Promise<void> {
+  try {
+    await invoke('cache_local_inventory_movements', {
+      itemId: id,
+      movementsJson: JSON.stringify(movements),
+    });
+  } catch {
+    // Web development mode has no Tauri IPC.
+  }
+}
+
+async function saveSnapshotWithSync(
+  snapshot: Item[],
+  change: { entity_type: string; entity_id?: string; operation: string; payload: unknown },
+): Promise<void> {
+  await invoke('save_local_snapshot_with_sync', {
+    input: {
+      snapshotJson: JSON.stringify(snapshot),
+      changeId: crypto.randomUUID().replaceAll('-', ''),
+      entityType: change.entity_type,
+      entityId: change.entity_id ?? null,
+      operation: change.operation,
+      payloadJson: JSON.stringify(change.payload),
+      stateKey: null,
+      stateJson: null,
+    },
+  });
+}
+
+export async function createLocalInventoryItem(
+  item: Omit<Item, 'id' | 'created_at' | 'updated_at'>,
+): Promise<Item | null> {
+  const local = await getLocalInventorySnapshot();
+  if (!local) return null;
+
+  const now = new Date().toISOString();
+  const created: Item = {
+    ...item,
+    id: crypto.randomUUID(),
+    created_at: now,
+    updated_at: now,
+  };
+
+  await saveSnapshotWithSync([...local, created], {
+    entity_type: 'item',
+    entity_id: created.id,
+    operation: 'create',
+    payload: created,
+  });
+  return created;
+}
+
+export async function updateLocalInventoryItem(id: string, patch: Partial<Item>): Promise<Item | null> {
+  const local = await getLocalInventorySnapshot();
+  if (!local) return null;
+
+  const index = local.findIndex((item) => item.id === id);
+  if (index < 0) throw new Error('Item not found in local inventory');
+
+  const updated: Item = {
+    ...local[index],
+    ...patch,
+    id,
+    updated_at: new Date().toISOString(),
+  };
+  const next = [...local];
+  next[index] = updated;
+
+  await saveSnapshotWithSync(next, {
+    entity_type: 'item',
+    entity_id: id,
+    operation: 'update',
+    payload: { id, patch, item: updated },
+  });
+  return updated;
+}
+
+export async function deleteLocalInventoryItem(id: string): Promise<boolean> {
+  const local = await getLocalInventorySnapshot();
+  if (!local) return false;
+  if (!local.some((item) => item.id === id)) throw new Error('Item not found in local inventory');
+
+  await saveSnapshotWithSync(local.filter((item) => item.id !== id), {
+    entity_type: 'item',
+    entity_id: id,
+    operation: 'delete',
+    payload: { id },
+  });
+  return true;
+}
+
+export async function bulkUpdateLocalInventoryStatus(ids: string[], status: Item['status']): Promise<number | null> {
+  const local = await getLocalInventorySnapshot();
+  if (!local) return null;
+
+  const set = new Set(ids);
+  let count = 0;
+  const next = local.map((item) => {
+    if (!set.has(item.id)) return item;
+    count += 1;
+    return { ...item, status, updated_at: new Date().toISOString() };
+  });
+  if (!count) return 0;
+
+  await saveSnapshotWithSync(next, {
+    entity_type: 'item',
+    operation: 'bulk_status',
+    payload: { ids, status },
+  });
+  return count;
+}
+
+export async function bulkDeleteLocalInventoryItems(ids: string[]): Promise<number | null> {
+  const local = await getLocalInventorySnapshot();
+  if (!local) return null;
+
+  const set = new Set(ids);
+  const deleted = local.filter((item) => set.has(item.id)).map((item) => item.id);
+  if (!deleted.length) return 0;
+
+  await saveSnapshotWithSync(local.filter((item) => !set.has(item.id)), {
+    entity_type: 'item',
+    operation: 'bulk_delete',
+    payload: { ids: deleted },
+  });
+  return deleted.length;
+}
+
+export async function getLocalItemMovements(id: string): Promise<ItemMovement[] | null> {
+  try {
+    const raw = await invoke<string[] | null>('list_local_inventory_movements', { itemId: id });
+    if (raw !== null) return raw.map((value) => JSON.parse(value) as ItemMovement);
+
+    // Once this item is present in the local working copy, an empty movement list
+    // is authoritative too. Do not fall back to the server merely because there
+    // are no movement records yet.
+    const snapshot = await getLocalInventorySnapshot();
+    if (snapshot?.some((item) => item.id === id)) return [];
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export async function createLocalItemMovement(
+  id: string,
+  movement: {
+    movement_type: MovementType;
+    quantity: number;
+    to_storage_location?: string;
+    to_location_id?: string;
+    project_id?: string;
+    reason?: string;
+    reference?: string;
+  },
+): Promise<{ item: Item; movement: ItemMovement } | null> {
+  const local = await getLocalInventorySnapshot();
+  if (!local) return null;
+
+  const index = local.findIndex((item) => item.id === id);
+  if (index < 0) throw new Error('Item not found in local inventory');
+
+  const quantity = Number(movement.quantity);
+  if (!Number.isFinite(quantity) || quantity <= 0) throw new Error('Quantity must be greater than zero');
+
+  const allowed: MovementType[] = [
+    'receive', 'checkout', 'return', 'consume', 'adjust', 'transfer',
+    'damage', 'loss', 'repair_out', 'repair_in',
+  ];
+  if (!allowed.includes(movement.movement_type)) throw new Error('Invalid movement type');
+
+  const incoming = new Set<MovementType>(['receive', 'return', 'repair_in']);
+  const outgoing = new Set<MovementType>(['checkout', 'consume', 'damage', 'loss', 'repair_out']);
+  const before = Number(local[index].current_quantity);
+  let after = before;
+
+  if (incoming.has(movement.movement_type)) after += quantity;
+  else if (outgoing.has(movement.movement_type)) after -= quantity;
+  else if (movement.movement_type === 'adjust') after = quantity;
+
+  if (after < 0) throw new Error('Movement would make stock negative');
+  if (
+    movement.movement_type === 'transfer' &&
+    !movement.to_storage_location?.trim() &&
+    !movement.to_location_id
+  ) {
+    throw new Error('A destination location is required for transfers');
+  }
+
+  const now = new Date().toISOString();
+  const movementRecord: ItemMovement = {
+    id: crypto.randomUUID(),
+    item_id: id,
+    movement_type: movement.movement_type,
+    quantity,
+    quantity_before: before,
+    quantity_after: after,
+    from_location_id: local[index].location_id ?? null,
+    to_location_id: movement.to_location_id ?? null,
+    from_storage_location: local[index].storage_location ?? null,
+    to_storage_location:
+      movement.movement_type === 'transfer'
+        ? (movement.to_storage_location?.trim() || null)
+        : (local[index].storage_location ?? null),
+    project_id: movement.project_id ?? null,
+    reason: movement.reason ?? null,
+    reference: movement.reference ?? null,
+    created_at: now,
+  };
+
+  const updated: Item = {
+    ...local[index],
+    current_quantity: after,
+    storage_location: movementRecord.to_storage_location ?? local[index].storage_location,
+    location_id: movement.to_location_id ?? local[index].location_id,
+    updated_at: now,
+  };
+  const next = [...local];
+  next[index] = updated;
+
+  await invoke('save_local_inventory_movement', {
+    input: {
+      snapshotJson: JSON.stringify(next),
+      movementJson: JSON.stringify(movementRecord),
+      changeId: crypto.randomUUID().replaceAll('-', ''),
+      itemId: id,
+    },
+  });
+
+  return { item: updated, movement: movementRecord };
+}
+
+export async function getLocalInventoryOrRemote(
+  remoteLoader: () => Promise<Item[]>,
+  filters?: { type?: string; status?: string; location?: string; location_id?: string; low_stock?: boolean },
+): Promise<Item[]> {
+  const local = await getLocalInventorySnapshot();
+  if (local !== null) return applyInventoryFilters(local, filters);
+
+  const remote = await remoteLoader();
+  await cacheLocalInventorySnapshot(remote);
+  return applyInventoryFilters(remote, filters);
+}
+
+function applyInventoryFilters(
+  items: Item[],
+  filters?: { type?: string; status?: string; location?: string; location_id?: string; low_stock?: boolean },
+): Item[] {
+  if (!filters) return items;
+  const query = filters.location?.trim().toLowerCase();
+  return items.filter((item) => {
+    if (filters.type && item.type !== filters.type) return false;
+    if (filters.status && item.status !== filters.status) return false;
+    if (filters.location_id && item.location_id !== filters.location_id) return false;
+    if (filters.low_stock && item.status !== 'low_stock' && !(item.current_quantity <= 0)) return false;
+    if (query && !`${item.storage_location || ''}`.toLowerCase().includes(query)) return false;
+    return true;
+  });
+}
