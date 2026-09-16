@@ -234,7 +234,9 @@ export async function createLocalItemMovement(
   const updated: Item = {
     ...local[index],
     current_quantity: after,
-    storage_location: movementRecord.to_storage_location ?? local[index].storage_location,
+    // Transfer semantics mirror the server: a location-only transfer clears
+    // the storage-location value; a storage transfer keeps the item location.
+    storage_location: movementRecord.to_storage_location,
     location_id: movement.to_location_id ?? local[index].location_id,
     updated_at: now,
   };
