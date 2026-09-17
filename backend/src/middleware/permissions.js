@@ -24,6 +24,9 @@ export function rolePermissions(role) { return new Set(ROLE_BASELINES[role] || [
 
 export async function getUserPermissions(userId, role) {
   const permissions = rolePermissions(role);
+  // Administrator access is defined by the role baseline and is not reduced by
+  // per-user overrides. Overrides remain available for non-administrator roles.
+  if (role === 'admin') return permissions;
   const result = await pool.query('SELECT permission, effect FROM user_permission_overrides WHERE user_id = $1', [userId]);
   for (const row of result.rows) { if (row.effect === 'grant') permissions.add(row.permission); if (row.effect === 'deny') permissions.delete(row.permission); }
   return permissions;
