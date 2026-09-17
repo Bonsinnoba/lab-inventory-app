@@ -1,0 +1,104 @@
+name: LabOS Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build (for example v2.2.1)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate release version
+        shell: pwsh
+        run: |
+          $tagVersion = $env:RELEASE_TAG -replace '^v', ''
+          $desktop = Get-Content desktop/package.json -Raw | ConvertFrom-Json
+          $backend = Get-Content backend/package.json -Raw | ConvertFrom-Json
+          $tauri = Get-Content desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $cargo = Get-Content desktop/src-tauri/Cargo.toml -Raw
+
+          $versions = @{
+            'desktop/package.json' = $desktop.version
+            'backend/package.json' = $backend.version
+            'desktop/src-tauri/tauri.conf.json' = $tauri.package.version
+          }
+
+          foreach ($entry in $versions.GetEnumerator()) {
+            if ($entry.Value -ne $tagVersion) {
+              throw "$($entry.Key) is version $($entry.Value), but release tag is $tagVersion."
+            }
+          }
+
+          if ($cargo -notmatch "(?m)^version\s*=\s*\"$([regex]::Escape($tagVersion))\"\s*$") {
+            throw "desktop/src-tauri/Cargo.toml does not match release version $tagVersion."
+          }
+
+          Write-Host "Release version validated: $tagVersion"
+
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build LabOS desktop
+        working-directory: desktop
+        run: npm run tauri:build
+
+      - name: Generate checksums
+        shell: pwsh
+        run: |
+          $bundle = Join-Path $PWD 'desktop/src-tauri/target/release/bundle'
+          $files = Get-ChildItem $bundle -Recurse -File | Where-Object {
+            $_.Extension -in '.msi', '.exe' -and $_.FullName -notlike '*-debug-*'
+          }
+
+          if (-not $files) {
+            throw "No Windows release installers were produced under $bundle."
+          }
+
+          $checksumPath = Join-Path $PWD 'LabOS-SHA256SUMS.txt'
+          $lines = foreach ($file in $files) {
+            $hash = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($file.Name)"
+          }
+          $lines | Sort-Object | Set-Content -Path $checksumPath -Encoding utf8
+          Get-Content $checksumPath
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: LabOS ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          files: |
+            desktop/src-tauri/target/release/bundle/**/*.msi
+            desktop/src-tauri/target/release/bundle/**/*.exe
+            LabOS-SHA256SUMS.txt
