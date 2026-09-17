@@ -269,7 +269,9 @@ async function readZipEntry(zip: Map<string, ZipEntry>, name: string): Promise<U
   const DecompressionStreamCtor = (globalThis as any).DecompressionStream;
   if (!DecompressionStreamCtor) throw new Error('This desktop runtime cannot decompress this Excel workbook');
   const stream = new DecompressionStreamCtor('deflate-raw');
-  const response = new Response(new Blob([entry.compressed]).stream().pipeThrough(stream));
+  const compressedBuffer = new ArrayBuffer(entry.compressed.byteLength);
+  new Uint8Array(compressedBuffer).set(entry.compressed);
+  const response = new Response(new Blob([compressedBuffer]).stream().pipeThrough(stream));
   return new Uint8Array(await response.arrayBuffer());
 }
 
