@@ -1,0 +1,15 @@
+{
+  "package": {
+    "productName": "LabOS Preview"
+  },
+  "tauri": {
+    "bundle": {
+      "identifier": "com.lab-inventory.app.preview"
+    },
+    "windows": [
+      {
+        "title": "LabOS Preview"
+      }
+    ]
+  }
+}
