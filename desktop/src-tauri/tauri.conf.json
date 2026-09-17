@@ -28,7 +28,8 @@
     "bundle": {
       "active": true,
       "targets": "all",
-      "identifier": "com.lab-inventory.app"
+      "identifier": "com.lab-inventory.app",
+      "icon": ["icons/icon.ico"]
     },
     "security": {
       "csp": null
