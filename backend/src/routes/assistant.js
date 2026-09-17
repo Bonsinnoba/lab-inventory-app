@@ -485,8 +485,8 @@ router.post('/chat',async(req,res)=>{
     res.setHeader('Connection','keep-alive');
     res.setHeader('X-Accel-Buffering','no');
 
-    const forceContextTool=/\b(how many|count|exists?|list|show|which|who|when|where|how much|how many|experiment|experiments|task|tasks|note|notes|resource|resources|inventory|item|items|budget|expense|expenses|transaction|transactions|activity|members?|quantity|status|details|project)\b/i.test(message)&&context.scope!=='none';const chat=ai.chats.create({model:MODEL_NAME,history,config:{tools:[{functionDeclarations:availableTools.map(t=>({name:t.name,description:t.description,parametersJsonSchema:t.parameters}))}],systemInstruction:scopedSystemInstruction(context),...(forceContextTool?{toolConfig:{functionCallingConfig:{mode:'ANY'}}}:{})}});
-    let response=await chat.sendMessage({message,config:{abortSignal:abortController.signal}});
+    const forceContextTool=/\b(how many|count|exists?|list|show|which|who|when|where|how much|experiment|experiments|task|tasks|note|notes|resource|resources|inventory|item|items|budget|expense|expenses|transaction|transactions|activity|members?|quantity|status|details|project)\b/i.test(message)&&context.scope!=='none';const chatConfig={tools:[{functionDeclarations:availableTools.map(t=>({name:t.name,description:t.description,parametersJsonSchema:t.parameters}))}],systemInstruction:scopedSystemInstruction(context),...(forceContextTool?{toolConfig:{functionCallingConfig:{mode:'ANY'}}}:{})};const chat=ai.chats.create({model:MODEL_NAME,history,config:chatConfig});
+    let response=await chat.sendMessage({message,config:{...chatConfig,abortSignal:abortController.signal}});
     let toolCalls=response.functionCalls;
     let toolRounds=0;
     const allSources=[];
@@ -523,7 +523,7 @@ router.post('/chat',async(req,res)=>{
           parts.push({functionResponse:{name:call.name,response:{error:safeMessage}}});
         }
       }
-      response=await chat.sendMessage({message:parts,config:{abortSignal:abortController.signal}});
+      response=await chat.sendMessage({message:parts,config:{...chatConfig,abortSignal:abortController.signal}});
       toolCalls=response.functionCalls;
     }
 
