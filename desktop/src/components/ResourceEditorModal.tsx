@@ -159,7 +159,7 @@ export default function ResourceEditorModal({ resource, onClose, onSaved }: Prop
     runCommand('formatBlock', tag);
   };
 
-  const commandButton = (command: string, label: string) => (event: React.MouseEvent<HTMLButtonElement>) => {
+  const commandButton = (command: string) => (event: React.MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
     runCommand(command);
     setActiveTool(command);
@@ -211,10 +211,10 @@ export default function ResourceEditorModal({ resource, onClose, onSaved }: Prop
   const renderDocxTools = () => (
     <aside className="flex w-14 shrink-0 flex-col items-center border-r border-border bg-surface-raised py-2">
       <div className="flex flex-col items-center gap-1">
-        <ToolButton label="Bold" active={activeTool === 'bold'} onMouseDown={commandButton('bold', 'Bold')}><Bold size={17} /></ToolButton>
-        <ToolButton label="Italic" active={activeTool === 'italic'} onMouseDown={commandButton('italic', 'Italic')}><Italic size={17} /></ToolButton>
-        <ToolButton label="Underline" active={activeTool === 'underline'} onMouseDown={commandButton('underline', 'Underline')}><Underline size={17} /></ToolButton>
-        <ToolButton label="Strikethrough" active={activeTool === 'strikeThrough'} onMouseDown={commandButton('strikeThrough', 'Strikethrough')}><Strikethrough size={17} /></ToolButton>
+        <ToolButton label="Bold" active={activeTool === 'bold'} onMouseDown={commandButton('bold')}><Bold size={17} /></ToolButton>
+        <ToolButton label="Italic" active={activeTool === 'italic'} onMouseDown={commandButton('italic')}><Italic size={17} /></ToolButton>
+        <ToolButton label="Underline" active={activeTool === 'underline'} onMouseDown={commandButton('underline')}><Underline size={17} /></ToolButton>
+        <ToolButton label="Strikethrough" active={activeTool === 'strikeThrough'} onMouseDown={commandButton('strikeThrough')}><Strikethrough size={17} /></ToolButton>
       </div>
 
       <div className="my-2 h-px w-8 bg-border" />
@@ -229,16 +229,16 @@ export default function ResourceEditorModal({ resource, onClose, onSaved }: Prop
       <div className="my-2 h-px w-8 bg-border" />
 
       <div className="flex flex-col items-center gap-1">
-        <ToolButton label="Bulleted list" active={activeTool === 'insertUnorderedList'} onMouseDown={commandButton('insertUnorderedList', 'Bulleted list')}><List size={17} /></ToolButton>
-        <ToolButton label="Numbered list" active={activeTool === 'insertOrderedList'} onMouseDown={commandButton('insertOrderedList', 'Numbered list')}><ListOrdered size={17} /></ToolButton>
+        <ToolButton label="Bulleted list" active={activeTool === 'insertUnorderedList'} onMouseDown={commandButton('insertUnorderedList')}><List size={17} /></ToolButton>
+        <ToolButton label="Numbered list" active={activeTool === 'insertOrderedList'} onMouseDown={commandButton('insertOrderedList')}><ListOrdered size={17} /></ToolButton>
       </div>
 
       <div className="my-2 h-px w-8 bg-border" />
 
       <div className="flex flex-col items-center gap-1">
-        <ToolButton label="Align left" active={activeTool === 'justifyLeft'} onMouseDown={commandButton('justifyLeft', 'Align left')}><AlignLeft size={17} /></ToolButton>
-        <ToolButton label="Align center" active={activeTool === 'justifyCenter'} onMouseDown={commandButton('justifyCenter', 'Align center')}><AlignCenter size={17} /></ToolButton>
-        <ToolButton label="Align right" active={activeTool === 'justifyRight'} onMouseDown={commandButton('justifyRight', 'Align right')}><AlignRight size={17} /></ToolButton>
+        <ToolButton label="Align left" active={activeTool === 'justifyLeft'} onMouseDown={commandButton('justifyLeft')}><AlignLeft size={17} /></ToolButton>
+        <ToolButton label="Align center" active={activeTool === 'justifyCenter'} onMouseDown={commandButton('justifyCenter')}><AlignCenter size={17} /></ToolButton>
+        <ToolButton label="Align right" active={activeTool === 'justifyRight'} onMouseDown={commandButton('justifyRight')}><AlignRight size={17} /></ToolButton>
       </div>
 
       <div className="my-2 h-px w-8 bg-border" />
@@ -246,9 +246,9 @@ export default function ResourceEditorModal({ resource, onClose, onSaved }: Prop
       <div className="flex flex-col items-center gap-1">
         <ToolButton label="Add link" onMouseDown={insertLink}><Link size={17} /></ToolButton>
         <ToolButton label="Remove link" onMouseDown={removeLink}><Unlink size={17} /></ToolButton>
-        <ToolButton label="Undo" onMouseDown={commandButton('undo', 'Undo')}><Undo2 size={17} /></ToolButton>
-        <ToolButton label="Redo" onMouseDown={commandButton('redo', 'Redo')}><Redo2 size={17} /></ToolButton>
-        <ToolButton label="Clear formatting" onMouseDown={commandButton('removeFormat', 'Clear formatting')}><Check size={17} /></ToolButton>
+        <ToolButton label="Undo" onMouseDown={commandButton('undo')}><Undo2 size={17} /></ToolButton>
+        <ToolButton label="Redo" onMouseDown={commandButton('redo')}><Redo2 size={17} /></ToolButton>
+        <ToolButton label="Clear formatting" onMouseDown={commandButton('removeFormat')}><Check size={17} /></ToolButton>
       </div>
     </aside>
   );
