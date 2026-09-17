@@ -1,4 +1,4 @@
-name: LabOS project activity pagination
+name: LabOS assistant context repair
 on:
   push:
     branches: [main]
@@ -9,31 +9,40 @@ jobs:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Patch project activity
-        shell: python
-        run: |
-          from pathlib import Path
-          import re
-          path = Path('desktop/src/pages/ProjectDetailPage.tsx')
-          text = path.read_text(encoding='utf-8')
-          pattern = r'function Activity\\(\\{activity,projectId\\}:any\\)\\{.*?\\nfunction Empty\\(\\{text\\}:\\{text:string\\}\\)\\{'
-          replacement = '''function Activity({activity,projectId}:any){
- const qc=useQueryClient();const {showToast}=useToast();const {data:comments=[]}=useQuery({queryKey:['project-comments',projectId],queryFn:()=>getProjectComments(projectId),enabled:!!projectId});const [body,setBody]=useState('');const [activityPage,setActivityPage]=useState(1);const activityPageSize=8;const activityPageCount=Math.max(1,Math.ceil(activity.length/activityPageSize));const activityPageItems=activity.slice((activityPage-1)*activityPageSize,activityPage*activityPageSize);
- useEffect(()=>{setActivityPage(page=>Math.min(page,activityPageCount));},[activity.length,activityPageCount]);
- const create=useMutation({mutationFn:()=>createProjectComment(projectId,body),onSuccess:()=>{setBody('');qc.invalidateQueries({queryKey:['project-comments',projectId]});qc.invalidateQueries({queryKey:['collaboration-activity']});showToast('Comment posted')},onError:(e)=>showToast(normalizeClientError(e,'Failed to post comment').message,'error')});const del=useMutation({mutationFn:(id:string)=>deleteProjectComment(projectId,id),onSuccess:()=>{qc.invalidateQueries({queryKey:['project-comments',projectId]});showToast('Comment deleted')},onError:(e)=>showToast(normalizeClientError(e,'Failed to delete comment').message,'error')});
- return <div className="space-y-4"><section className="bg-surface border border-border rounded-md divide-y divide-border"><div className="p-4 border-b border-border flex items-center justify-between gap-3"><div><h3 className="font-semibold flex items-center gap-2"><History size={17}/>Activity</h3><div className="text-xs text-text-secondary mt-1">{activity.length} {activity.length===1?'event':'events'}</div></div>{activity.length>activityPageSize&&<span className="text-[10px] font-mono text-text-secondary">PAGE {activityPage} / {activityPageCount}</span>}</div>{activityPageItems.map((a:any)=><div key={a.id} className="p-4 flex gap-3"><History size={17} className="text-text-secondary mt-0.5"/><div><div className="text-sm"><strong>{a.actor_username||'System'}</strong> {a.action.toLowerCase()} {a.entity_type.replace('project_','')}</div><div className="text-xs text-text-secondary mt-1">{new Date(a.created_at).toLocaleString()}</div></div></div>)}{!activity.length&&<Empty text="No project activity has been recorded yet."/>}{activity.length>activityPageSize&&<div className="p-3 border-t border-border flex items-center justify-between gap-3"><span className="text-xs text-text-secondary">Showing {((activityPage-1)*activityPageSize)+1}–{Math.min(activityPage*activityPageSize,activity.length)} of {activity.length}</span><div className="flex items-center gap-1.5"><button type="button" disabled={activityPage===1} onClick={()=>setActivityPage(page=>Math.max(1,page-1))} className="ui-button ui-button-sm disabled:opacity-40">Previous</button><button type="button" disabled={activityPage===activityPageCount} onClick={()=>setActivityPage(page=>Math.min(activityPageCount,page+1))} className="ui-button ui-button-sm disabled:opacity-40">Next</button></div></div>}</section><section className="bg-surface border border-border rounded-md overflow-hidden"><div className="p-4 border-b border-border"><h3 className="font-semibold flex items-center gap-2"><MessageSquare size={17}/>Discussion</h3></div><div className="p-4 space-y-3">{comments.map((c:any)=><div key={c.id} className="flex gap-3"><div className="w-8 h-8 rounded-full bg-accent/10 text-accent flex items-center justify-center flex-shrink-0"><Users size={15}/></div><div className="min-w-0 flex-1"><div className="text-sm"><strong>{c.author_username||'Unknown'}</strong><span className="text-xs text-text-secondary ml-2">{new Date(c.created_at).toLocaleString()}</span></div><div className="mt-1 text-sm whitespace-pre-wrap">{c.body}</div><button onClick={()=>del.mutate(c.id)} className="text-xs text-text-secondary hover:text-status-danger mt-1">Delete</button></div></div>)}{!comments.length&&<div className="text-sm text-text-secondary">No discussion yet.</div>}<div className="pt-3 border-t border-border flex flex-col md:flex-row gap-2"><textarea value={body} onChange={e=>setBody(e.target.value)} placeholder="Write a project update or question…" className="flex-1 px-3 py-2 bg-bg border border-border rounded-sm text-sm min-h-20"/><button disabled={!body.trim()||create.isPending} onClick={()=>create.mutate()} className="px-4 py-2 bg-accent text-bg rounded-sm text-sm self-start">Post comment</button></div></div></section></div>}
-function Empty({text}:{text:string}){'''
-          match = re.search(pattern, text, flags=re.S)
-          if not match:
-              raise SystemExit('Activity block not found')
-          path.write_text(text[:match.start()] + replacement + text[match.end():], encoding='utf-8')
-      - name: Commit fix and remove workflow
-        shell: bash
-        run: |
-          rm -f .github/workflows/project-activity-pagination.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add desktop/src/pages/ProjectDetailPage.tsx .github/workflows/project-activity-pagination.yml
-          git diff --cached --quiet || git commit -m "fix: paginate project activity"
-          git push origin main
+      - name: Patch assistant context behavior
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const path = 'backend/src/routes/assistant.js';
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const { data: file } = await github.rest.repos.getContent({ owner, repo, path, ref: 'main' });
+            const content = Buffer.from(file.content, 'base64').toString('utf8');
+
+            const oldInstruction = '- Never invent inventory quantities, project figures, dates, people, files, or other laboratory facts. Use tools when factual lab data is needed.';
+            const newInstruction = '- Never invent inventory quantities, project figures, dates, people, files, or other laboratory facts. Use tools when factual lab data is needed. When context is enabled and a question asks about laboratory data covered by the available tools, you MUST call the relevant tool before answering.';
+            if (!content.includes(oldInstruction)) core.setFailed('Assistant safety instruction anchor not found');
+            else {
+              let updated = content.replace(oldInstruction, newInstruction);
+
+              const oldChat = "const chat=ai.chats.create({model:MODEL_NAME,history,config:{tools:[{functionDeclarations:availableTools.map(t=>({name:t.name,description:t.description,parametersJsonSchema:t.parameters}))}],systemInstruction:scopedSystemInstruction(context)}});";
+              const newChat = "const forceContextTool=/\\b(how many|count|exists?|list|show|which|who|when|where|how much|how many|experiment|experiments|task|tasks|note|notes|resource|resources|inventory|item|items|budget|expense|expenses|transaction|transactions|activity|members?|quantity|status|details|project)\\b/i.test(message)&&context.scope!=='none';const chat=ai.chats.create({model:MODEL_NAME,history,config:{tools:[{functionDeclarations:availableTools.map(t=>({name:t.name,description:t.description,parametersJsonSchema:t.parameters}))}],systemInstruction:scopedSystemInstruction(context),...(forceContextTool?{toolConfig:{functionCallingConfig:{mode:'ANY'}}}:{})}});";
+              if (!updated.includes(oldChat)) core.setFailed('Assistant chat configuration anchor not found');
+              else {
+                updated = updated.replace(oldChat, newChat);
+                const { data: current } = await github.rest.repos.getContent({ owner, repo, path, ref: 'main' });
+                await github.rest.repos.createOrUpdateFileContents({
+                  owner,
+                  repo,
+                  path,
+                  message: 'fix: force factual assistant context tool use',
+                  content: Buffer.from(updated, 'utf8').toString('base64'),
+                  sha: current.sha,
+                  branch: 'main'
+                });
+              }
+            }
+
+            const workflowPath = '.github/workflows/project-activity-pagination.yml';
+            const { data: workflowFile } = await github.rest.repos.getContent({ owner, repo, path: workflowPath, ref: 'main' });
+            await github.rest.repos.deleteFile({ owner, repo, path: workflowPath, message: 'chore: remove temporary assistant context repair workflow', sha: workflowFile.sha, branch: 'main' });
