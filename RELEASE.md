@@ -37,7 +37,7 @@ From `desktop/`, build Preview with:
 npm run tauri:build:preview
 ```
 
-The underlying Tauri CLI supports configuration overlays for separate application flavours; the Preview overlay changes only the product name, application identifier, and window title. citeturn0search0turn0search2
+The Tauri CLI supports configuration overlays for separate application flavours; the Preview overlay changes only the product name, application identifier, and window title.
 
 ## Media runtime
 
