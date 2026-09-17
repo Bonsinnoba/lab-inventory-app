@@ -10,7 +10,8 @@
     "build:web": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "tauri:build:preview": "tauri build --config src-tauri/tauri.preview.conf.json"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.0.0",
