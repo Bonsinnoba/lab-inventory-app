@@ -71,7 +71,7 @@ router.get('/projects/pull',async(req,res,next)=>{
     const visibility=req.user.role==='admin'?'':'WHERE (p.owner_id=$1 OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id=p.id AND pm.user_id=$1))';
     const projects=await pool.query(`SELECT p.* FROM projects p ${visibility} ORDER BY p.updated_at DESC`,values);
     const ids=projects.rows.map(p=>p.id);
-    if(!ids.length)return res.json({projects:[],deleted_project_ids:[]});
+    const deletedRows=await pool.query("SELECT entity_id FROM sync_tombstones WHERE entity_type='project' ORDER BY deleted_at DESC LIMIT 500"); if(!ids.length)return res.json({projects:[],deleted_project_ids:deletedRows.rows.map(r=>r.entity_id)});
     const [tasks,experiments,bom,items]=await Promise.all([
       pool.query('SELECT * FROM project_tasks WHERE project_id=ANY($1::uuid[]) ORDER BY created_at',[ids]),
       pool.query('SELECT * FROM project_experiments WHERE project_id=ANY($1::uuid[]) ORDER BY updated_at DESC',[ids]),
@@ -81,7 +81,7 @@ router.get('/projects/pull',async(req,res,next)=>{
     const by=(rows,key)=>{const m=new Map();for(const row of rows){const id=row[key];if(!m.has(id))m.set(id,[]);m.get(id).push(row);}return m;};
     const taskMap=by(tasks.rows,'project_id'),experimentMap=by(experiments.rows,'project_id'),bomMap=by(bom.rows,'project_id'),itemMap=by(items.rows,'project_id');
     res.setHeader('Cache-Control','no-store');
-    res.json({projects:projects.rows.map(p=>({...p,tasks:taskMap.get(p.id)||[],experiments:experimentMap.get(p.id)||[],bom:bomMap.get(p.id)||[],items:itemMap.get(p.id)||[]})),deleted_project_ids:[]});
+    res.json({projects:projects.rows.map(p=>({...p,tasks:taskMap.get(p.id)||[],experiments:experimentMap.get(p.id)||[],bom:bomMap.get(p.id)||[],items:itemMap.get(p.id)||[]})),deleted_project_ids:deletedRows.rows.map(r=>r.entity_id)});
   }catch(error){next(error);}
 });
 router.get('/pull',async(req,res,next)=>{try{const raw=typeof req.query.since==='string'?req.query.since.trim():'';let cursor=null;if(raw){cursor=decodePullCursor(raw);if(!cursor){const legacy=new Date(raw);if(Number.isNaN(legacy.getTime()))return res.status(400).json({error:{code:'INVALID_SYNC_CURSOR',message:'since must be a valid inventory sync cursor'}});cursor={at:legacy.toISOString(),type:'',id:''};}}const limit=Math.min(500,Math.max(1,Number(req.query.limit||500)));const values=cursor?[cursor.at,cursor.type,cursor.id,limit+1]:[limit+1];const where=cursor?`WHERE event_at > $1 OR (event_at = $1 AND (event_type > $2 OR (event_type = $2 AND event_id > $3)))`:'';const result=await pool.query(`SELECT event_type,event_id,event_at,item,deleted FROM (SELECT 'item'::text AS event_type,id::text AS event_id,updated_at AS event_at,to_jsonb(items) AS item,false AS deleted FROM items UNION ALL SELECT 'delete'::text AS event_type,entity_id::text AS event_id,deleted_at AS event_at,NULL::jsonb AS item,true AS deleted FROM sync_tombstones WHERE entity_type='item') events ${where} ORDER BY event_at ASC,event_type ASC,event_id ASC LIMIT $${values.length}`,values);const rows=result.rows;const hasMore=rows.length>limit;const page=hasMore?rows.slice(0,limit):rows;const last=page[page.length-1];const nextCursor=last?encodePullCursor(last.event_at,last.event_type,last.event_id):(cursor?raw:null);res.setHeader('Cache-Control','no-store');res.json({items:page.filter(row=>!row.deleted).map(row=>row.item),deleted_item_ids:page.filter(row=>row.deleted).map(row=>row.event_id),next_cursor:nextCursor,has_more:hasMore});}catch(error){next(error);}});
