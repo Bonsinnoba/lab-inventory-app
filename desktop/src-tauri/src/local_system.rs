@@ -69,7 +69,11 @@ pub fn update_local_daily_use_preferences(
 
     target.insert(
         "updated_at".into(),
-        json!(std::time::SystemTime::now()\n            .duration_since(std::time::UNIX_EPOCH)\n            .map_err(|e| e.to_string())?\n            .as_secs()\n            .to_string()),
+        json!(std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_secs()
+            .to_string()),
     );
     write_preferences(&app, &current)
 }
