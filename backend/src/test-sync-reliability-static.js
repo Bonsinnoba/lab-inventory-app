@@ -111,3 +111,8 @@ assert(sync.includes("project_work_attachment"), 'project attachment tombstones 
 assert(sync.includes("attachments"), 'project attachment pull mapping is missing');
 assert(localProjects.includes('deleted_project_attachment_ids'), 'local attachment tombstone merge is missing');
 assert(syncApi.includes('deletedProjectAttachmentIds'), 'desktop attachment tombstones are not passed to local pull');
+
+assert(sync.includes('project_task_experiment'), 'task/experiment sync config is missing');
+assert(sync.includes('project_task_experiments'), 'task/experiment pull is missing');
+assert(localProjects.includes('create_local_project_task_experiment'), 'local task/experiment command is missing');
+assert(projectsApi.includes('create_local_project_task_experiment'), 'desktop task/experiment API is not local-first');
