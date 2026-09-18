@@ -52,3 +52,27 @@ pub fn search_local_knowledge(app:AppHandle,q:String)->Result<Value,String>{let 
 pub fn get_local_knowledge_overview(app:AppHandle)->Result<Value,String>{let c=conn(&app)?;let s=load(&c)?;let findings=arr(&s,"findings");let results=arr(&s,"results");let notes_raw: String=c.query_row("SELECT value FROM sync_state WHERE key='notes_state'",[],|r|r.get::<_,String>(0)).optional().map_err(|e|e.to_string())?.unwrap_or_else(||"[]".to_string());let notes_state:Value=serde_json::from_str(&notes_raw).unwrap_or(json!([]));let notes=notes_state.as_array().cloned().unwrap_or_default();let resources_raw: String=c.query_row("SELECT value FROM sync_state WHERE key='resources_state'",[],|r|r.get::<_,String>(0)).optional().map_err(|e|e.to_string())?.unwrap_or_else(||"[]".to_string());let resources_state:Value=serde_json::from_str(&resources_raw).unwrap_or(json!([]));let resources=resources_state.as_array().cloned().unwrap_or_default();Ok(json!({"counts":{"notes":notes.len(),"resources":resources.len()},"categories":[],"recent_notes":notes.iter().rev().take(5).cloned().collect::<Vec<_>>(),"recent_resources":resources.iter().rev().take(5).cloned().collect::<Vec<_>>(),"findings":findings.len(),"results":results.len()}))}
 #[tauri::command]
 pub fn get_local_knowledge_tags(app:AppHandle)->Result<Vec<Value>,String>{let c=conn(&app)?;let s=load(&c)?;let mut tags=std::collections::BTreeMap::<String,(i64,i64)>::new();for v in arr(&s,"findings"){if let Some(a)=v.get("tags").and_then(Value::as_array){for t in a.iter().filter_map(Value::as_str){tags.entry(t.into()).or_insert((0,0)).0+=1;}}}for v in arr(&s,"results"){if let Some(a)=v.get("tags").and_then(Value::as_array){for t in a.iter().filter_map(Value::as_str){tags.entry(t.into()).or_insert((0,0)).1+=1;}}}Ok(tags.into_iter().map(|(tag,(note_count,result_count))|json!({"tag":tag,"note_count":note_count,"resource_count":result_count})).collect())}
+
+
+#[tauri::command]
+pub fn apply_server_knowledge_pull(app:AppHandle,findings:Vec<Value>,results:Vec<Value>,relationships:Vec<Value>,deletedFindingIds:Vec<String>,deletedResultIds:Vec<String>,deletedRelationshipIds:Vec<String>)->Result<(),String>{
+ let mut c=conn(&app)?;let mut s=load(&c)?;
+ fn pending(c:&Connection,typ:&str,id:&str)->Result<bool,String>{Ok(c.query_row("SELECT 1 FROM sync_outbox WHERE entity_type=?1 AND entity_id=?2 LIMIT 1",params![typ,id],|r|r.get::<_,i64>(0)).optional().map_err(|e|format!("Unable to inspect pending knowledge change: {e}"))?.is_some())}
+ fn merge(c:&Connection,s:&mut Value,key:&str,typ:&str,incoming:Vec<Value>)->Result<(),String>{
+   let mut current=arr(s,key);
+   for value in incoming{
+     let Some(id)=value.get("id").and_then(Value::as_str) else {continue};
+     if pending(c,typ,id)?{continue;}
+     if let Some(existing)=current.iter_mut().find(|v|v.get("id").and_then(Value::as_str)==Some(id)){*existing=value;}else{current.push(value);}
+   }
+   s[key]=Value::Array(current);Ok(())
+ }
+ fn remove(c:&Connection,s:&mut Value,key:&str,typ:&str,ids:Vec<String>)->Result<(),String>{
+   let mut current=arr(s,key);
+   current.retain(|v|{let id=v.get("id").and_then(Value::as_str).unwrap_or("");!ids.iter().any(|x|x==id)&&!pending(c,typ,id).unwrap_or(false)});
+   s[key]=Value::Array(current);Ok(())
+ }
+ merge(&c,&mut s,"findings","finding",findings)?;merge(&c,&mut s,"results","knowledge_result",results)?;merge(&c,&mut s,"relationships","knowledge_relationship",relationships)?;
+ remove(&c,&mut s,"findings","finding",deletedFindingIds)?;remove(&c,&mut s,"results","knowledge_result",deletedResultIds)?;remove(&c,&mut s,"relationships","knowledge_relationship",deletedRelationshipIds)?;
+ save(&mut c,&s,None)
+}
