@@ -3,6 +3,7 @@ import { pool } from '../db.js';
 import { getUserPermissions } from '../middleware/permissions.js';
 import { writeAuditLog } from '../middleware/audit.js';
 import { getResourceAccess } from '../middleware/resource-access.js';
+import { getProjectAccess } from '../middleware/project-access.js';
 const router=Router();
 const ITEM_FIELDS=['name','type','category','sku','initial_quantity','current_quantity','unit','dimensions','status','condition_notes','unit_cost','replacement_cost','location_id','storage_location','photo_url','supplier','supplier_id','part_number','next_maintenance_date','maintenance_interval_days','manufacturer','model_number','serial_number','asset_tag','calibration_interval_days','next_calibration_date','assigned_to','image_resource_id','created_at','updated_at'];
 const MOVEMENT_TYPES=new Set(['receive','checkout','return','consume','adjust','transfer','damage','loss','repair_out','repair_in']); const INCOMING=new Set(['receive','return','repair_in']); const OUTGOING=new Set(['checkout','consume','damage','loss','repair_out']);
