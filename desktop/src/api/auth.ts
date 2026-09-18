@@ -19,6 +19,16 @@ export type AuthResponse = {
   token: string;
 };
 
+export type LocalAuthStatus = {
+  bootstrapped: boolean;
+  authenticated: boolean;
+  user: User | null;
+};
+
+export async function getLocalAuthStatus(): Promise<LocalAuthStatus | null> {
+  return localInvoke<LocalAuthStatus>('local_auth_status');
+}
+
 export async function login(username: string, password: string): Promise<AuthResponse> {
   const local = await localInvoke<AuthResponse>('local_login', { username, password });
   if (local !== null) return local;
