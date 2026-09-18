@@ -217,17 +217,17 @@ pub fn create_local_resource_link(app: AppHandle, url: String, name: Option<Stri
     let youtube=if url.contains("youtube.com")||url.contains("youtu.be"){youtube_id(&url)}else{None};
     let file_type=if youtube.is_some(){"youtube"}else{"other"};
     let thumbnail_url=youtube.as_ref().map(|id|format!("https://img.youtube.com/vi/{id}/hqdefault.jpg"));
-    let resource=LocalResource{id:id.clone(),name:name.filter(|n|!n.trim().is_empty()).unwrap_or_else(||url.clone()),kind:"link".into(),file_type:file_type.into(),original_filename:None,mime_type:None,size_bytes:None,url:Some(url),thumbnail_url,local_media_path:None,local_media_filename:None,local_media_mime_type:None,local_media_size_bytes:None,local_media_downloaded_at:None,parent_resource_id:None,relative_path:None,item_id,project_id,note_id,item_name:None,project_name:None,note_title:None,category:Some(category),description:Some(description),tags,updated_at:timestamp.clone(),created_at:timestamp,derived_from_resource_id:None};
+    let resource=LocalResource{id:id.clone(),name:name.filter(|n|!n.trim().is_empty()).unwrap_or_else(||url.clone()),kind:"link".into(),file_type:file_type.into(),original_filename:None,mime_type:None,size_bytes:None,url:Some(url),thumbnail_url,local_media_path:None,local_media_filename:None,local_media_mime_type:None,local_media_size_bytes:None,local_media_downloaded_at:None,parent_resource_id,relative_path:None,item_id,project_id,note_id,item_name:None,project_name:None,note_title:None,category:Some(category),description:Some(description),tags,updated_at:timestamp.clone(),created_at:timestamp,derived_from_resource_id:None};
     resources.push(resource.clone());
     save_with_change(&mut conn, &resources, &id, "create", &serde_json::json!({"resource": resource}))?;
     Ok(resource)
 }
 
 #[tauri::command]
-pub fn create_local_resource_folder(app: AppHandle, name: String, item_id: Option<String>, project_id: Option<String>, note_id: Option<String>, category: Option<String>, description: Option<String>, tags: Option<Vec<String>>) -> Result<LocalResource, String> {
+pub fn create_local_resource_folder(app: AppHandle, name: String, item_id: Option<String>, project_id: Option<String>, note_id: Option<String>, parent_resource_id: Option<String>, category: Option<String>, description: Option<String>, tags: Option<Vec<String>>) -> Result<LocalResource, String> {
     if name.trim().is_empty() { return Err("name is required".into()); }
     let mut conn=open_local_connection(&app)?; ensure_schema(&conn)?;
-    let mut resources=read_resources(&conn)?; validate_parent(&resources,&item_id,&project_id,&note_id,&None)?;
+    let mut resources=read_resources(&conn)?; validate_parent(&resources,&item_id,&project_id,&note_id,&parent_resource_id)?;
     let (category,description,tags)=metadata(category,description,tags); let id=new_id(&conn)?; let timestamp=now(&conn)?;
     let resource=LocalResource{id:id.clone(),name:name.trim().to_string(),kind:"folder".into(),file_type:"schematic_folder".into(),original_filename:None,mime_type:None,size_bytes:None,url:None,thumbnail_url:None,local_media_path:None,local_media_filename:None,local_media_mime_type:None,local_media_size_bytes:None,local_media_downloaded_at:None,parent_resource_id:None,relative_path:None,item_id,project_id,note_id,item_name:None,project_name:None,note_title:None,category:Some(category),description:Some(description),tags,updated_at:timestamp.clone(),created_at:timestamp,derived_from_resource_id:None};
     resources.push(resource.clone()); save_with_change(&mut conn, &resources, &id, "create", &serde_json::json!({"resource": resource}))?; Ok(resource)
