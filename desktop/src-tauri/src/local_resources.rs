@@ -247,7 +247,7 @@ pub fn update_local_resource_metadata(app: AppHandle, id: String, category: Opti
 
 #[tauri::command]
 pub fn delete_local_resource(app: AppHandle, id: String) -> Result<(), String> {
-    let conn=open_local_connection(&app)?; ensure_schema(&conn)?; let mut resources=read_resources(&conn)?;
+    let mut conn=open_local_connection(&app)?; ensure_schema(&conn)?; let mut resources=read_resources(&conn)?;
     if !resources.iter().any(|r|r.id==id) { return Err("Resource not found".into()); }
     if resources.iter().any(|r|r.parent_resource_id.as_deref()==Some(id.as_str())) { return Err("Cannot delete a folder that still contains resources".into()); }
     let deleted = resources.iter().find(|r| r.id==id).cloned().ok_or_else(||"Resource not found".to_string())?; resources.retain(|r| r.id!=id); save_with_change(&mut conn, &resources, &id, "delete", &serde_json::json!({"resource": deleted}))?; Ok(())
