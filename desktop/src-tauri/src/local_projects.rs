@@ -163,7 +163,7 @@ pub fn update_local_project_task(app:AppHandle,project_id:String,record_id:Strin
 pub fn delete_local_project_task(app:AppHandle,project_id:String,record_id:String)->Result<(),String>{nested_delete(app,project_id,"tasks",record_id,"project_task")}
 
 #[tauri::command]
-pub fn create_local_project_experiment(app:AppHandle,project_id:String,record:Value)->Result<Value,String>{nested_create(app,project_id,"experiments",record,"project_experiment")}
+pub fn create_local_project_experiment(app:AppHandle,project_id:String,mut record:Value)->Result<Value,String>{record["measurements"]=json!([]);record["observations"]=json!([]);nested_create(app,project_id,"experiments",record,"project_experiment")}
 #[tauri::command]
 pub fn update_local_project_experiment(app:AppHandle,project_id:String,record_id:String,patch:Value)->Result<Value,String>{nested_update(app,project_id,"experiments",record_id,patch,"project_experiment")}
 #[tauri::command]
@@ -246,7 +246,7 @@ pub fn unlink_local_project_item(app:AppHandle,project_id:String,item_id:String)
 
 
 #[tauri::command]
-pub fn apply_server_project_pull(app: AppHandle, projects_json: String, deleted_project_ids: Vec<String>, deleted_project_task_ids: Vec<String>, deleted_project_experiment_ids: Vec<String>, deleted_project_bom_ids: Vec<String>, deleted_project_block_ids: Vec<String>, deleted_project_connector_ids: Vec<String>) -> Result<(), String> {
+pub fn apply_server_project_pull(app: AppHandle, projects_json: String, deleted_project_ids: Vec<String>, deleted_project_task_ids: Vec<String>, deleted_project_experiment_ids: Vec<String>, deleted_project_bom_ids: Vec<String>, deleted_project_block_ids: Vec<String>, deleted_project_connector_ids: Vec<String>, deleted_project_measurement_ids: Vec<String>, deleted_project_observation_ids: Vec<String>) -> Result<(), String> {
     let incoming: Vec<Value> = serde_json::from_str(&projects_json).map_err(|e| format!("Invalid server project payload: {e}"))?;
     let deleted: std::collections::HashSet<String> = deleted_project_ids.into_iter().collect();
     let mut c = conn(&app)?;
@@ -268,6 +268,21 @@ pub fn apply_server_project_pull(app: AppHandle, projects_json: String, deleted_
                 let pending_key = match key { "tasks"=>"project_task", "experiments"=>"project_experiment", "bom"=>"project_bom", "blocks"=>"project_block", "connectors"=>"project_connector", _=>"" };
                 let deleted_ids: std::collections::HashSet<String> = match key { "tasks"=>deleted_project_task_ids.iter().cloned().collect(), "experiments"=>deleted_project_experiment_ids.iter().cloned().collect(), "bom"=>deleted_project_bom_ids.iter().cloned().collect(), "blocks"=>deleted_project_block_ids.iter().cloned().collect(), "connectors"=>deleted_project_connector_ids.iter().cloned().collect(), _=>std::collections::HashSet::new() };
                 let mut merged = project.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
+                if key=="experiments" {
+                    for exp in &mut merged {
+                        let eid=exp.get("id").and_then(Value::as_str).unwrap_or_default();
+                        let oldexp=existing.get("experiments").and_then(Value::as_array).and_then(|a|a.iter().find(|v|v.get("id").and_then(Value::as_str)==Some(eid))).cloned().unwrap_or_else(||json!({}));
+                        for sub in ["measurements","observations"] {
+                            let et=if sub=="measurements"{"project_experiment_measurement"}else{"project_experiment_observation"};
+                            let dels:std::collections::HashSet<String>=if sub=="measurements"{deleted_project_measurement_ids.iter().cloned().collect()}else{deleted_project_observation_ids.iter().cloned().collect()};
+                            let mut subrows=exp.get(sub).and_then(Value::as_array).cloned().unwrap_or_default();
+                            let oldrows=oldexp.get(sub).and_then(Value::as_array).cloned().unwrap_or_default();
+                            subrows.retain(|v|{let rid=v.get("id").and_then(Value::as_str).unwrap_or_default();!dels.contains(rid)||pending.contains(&format!("{et}:{rid}"))});
+                            for oldrow in oldrows{if let Some(rid)=oldrow.get("id").and_then(Value::as_str){if pending.contains(&format!("{et}:{rid}"))&&!subrows.iter().any(|v|v.get("id").and_then(Value::as_str)==Some(rid)){subrows.push(oldrow);}}}
+                            exp[sub]=Value::Array(subrows);
+                        }
+                    }
+                }
                 merged.retain(|v| { let rid=v.get("id").and_then(Value::as_str).unwrap_or_default(); !deleted_ids.contains(rid) || pending.contains(&format!("{pending_key}:{rid}")) });
                 for old in existing.get(key).and_then(Value::as_array).cloned().unwrap_or_default() {
                     if let Some(id) = old.get("id").and_then(Value::as_str) {
@@ -283,3 +298,15 @@ pub fn apply_server_project_pull(app: AppHandle, projects_json: String, deleted_
     }
     save(&mut c, &projects, Vec::new())
 }
+
+fn nested_create_nested(app:AppHandle,project_id:String,parent_key:&str,key:&str,parent_id:String,mut record:Value,entity_type:&str)->Result<Value,String>{let mut c=conn(&app)?;let mut projects=load(&c)?;let p=projects.iter_mut().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;let mut parents=nested_get(p,parent_key);let parent=parents.iter_mut().find(|x|x.get("id").and_then(Value::as_str)==Some(parent_id.as_str())).ok_or("Parent record not found")?;let rid=id();let ts=now(&c)?;record["id"]=json!(&rid);record["created_at"]=json!(&ts);record["updated_at"]=json!(&ts);let mut rows=nested_get(parent,key);rows.push(record.clone());parent[key]=Value::Array(rows);p[parent_key]=Value::Array(parents);p["updated_at"]=json!(&ts);save(&mut c,&projects,vec![(id(),entity_type.into(),rid,"create".into(),record.clone())])?;Ok(record)}
+fn nested_delete_nested(app:AppHandle,project_id:String,parent_key:&str,key:&str,parent_id:String,record_id:String,entity_type:&str)->Result<(),String>{let mut c=conn(&app)?;let mut projects=load(&c)?;let p=projects.iter_mut().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;let mut parents=nested_get(p,parent_key);let parent=parents.iter_mut().find(|x|x.get("id").and_then(Value::as_str)==Some(parent_id.as_str())).ok_or("Parent record not found")?;let mut rows=nested_get(parent,key);let before=rows.iter().find(|x|x.get("id").and_then(Value::as_str)==Some(record_id.as_str())).cloned().ok_or("Record not found")?;rows.retain(|x|x.get("id").and_then(Value::as_str)!=Some(record_id.as_str()));parent[key]=Value::Array(rows);p[parent_key]=Value::Array(parents);p["updated_at"]=json!(now(&c)?);save(&mut c,&projects,vec![(id(),entity_type.into(),record_id,"delete".into(),json!({"record":before}))])}
+
+#[tauri::command]
+pub fn create_local_project_experiment_measurement(app:AppHandle,project_id:String,experiment_id:String,record:Value)->Result<Value,String>{let mut r=record;r["experiment_id"]=json!(experiment_id);nested_create_nested(app,project_id,"experiments","measurements",experiment_id,r,"project_experiment_measurement")}
+#[tauri::command]
+pub fn delete_local_project_experiment_measurement(app:AppHandle,project_id:String,experiment_id:String,record_id:String)->Result<(),String>{nested_delete_nested(app,project_id,"experiments","measurements",experiment_id,record_id,"project_experiment_measurement")}
+#[tauri::command]
+pub fn create_local_project_experiment_observation(app:AppHandle,project_id:String,experiment_id:String,record:Value)->Result<Value,String>{let mut r=record;r["experiment_id"]=json!(experiment_id);nested_create_nested(app,project_id,"experiments","observations",experiment_id,r,"project_experiment_observation")}
+#[tauri::command]
+pub fn delete_local_project_experiment_observation(app:AppHandle,project_id:String,experiment_id:String,record_id:String)->Result<(),String>{nested_delete_nested(app,project_id,"experiments","observations",experiment_id,record_id,"project_experiment_observation")}
