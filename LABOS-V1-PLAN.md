@@ -858,6 +858,7 @@ The following items are known and should not be forgotten:
 - Some local-first implementations currently use JSON blobs in `sync_state`; review before V1.
 - Local project owner identity is not yet backed by a finalized local admin identity.
 - Local project workspace currently returns simplified/empty data for some central-only fields.
+- Project experiment task links and task/experiment resource attachments are now represented in local project state and the sync protocol; actual runtime/offline verification is still pending.
 - Local resource upload/file storage is not yet equivalent to central resource storage; central file/media handling remains distinct.
 - Resource sync mappings are now implemented for offline link/folder creation, metadata updates, deletion, server pull, tombstones, and pending-local protection; actual file upload/media acquisition remains central.
 - Desktop global search now has a local-first path for inventory, projects, tasks, experiments, notes, and resources; central search remains the hybrid source for users and other explicitly central information.
@@ -933,6 +934,10 @@ Only after that boundary is complete, the remaining local-first domains and cent
 
 Local-first finance runtime is now implemented on main for transactions, budget periods, and funding sources. Desktop finance CRUD prefers local SQLite-backed state and queues mutations to the sync outbox. Central synchronization now accepts and pulls these records, including tombstone propagation. Finance summaries and Excel operations remain central-derived services until their local equivalents are explicitly implemented and verified.
 
+
+### Project Experiment Work — implementation progress
+
+Project experiment measurements and observations are local-first and sync-aware. Task↔experiment links now have a stable server sync identity and local Tauri CRUD. Project task/experiment resource attachments are local-first for metadata/linking while the underlying resource/media boundary remains unchanged. Experiment revision history remains a server-derived history until a local revision model is explicitly implemented and verified.
 
 ### Project Canvas — implementation progress
 
