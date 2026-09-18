@@ -74,9 +74,9 @@ export async function createBlock(
 
 export async function updateBlock(
   blockId: string,
-  block: Partial<Pick<CanvasBlock, 'x' | 'y' | 'width' | 'height' | 'title' | 'text_content'>>
+  block: Partial<Pick<CanvasBlock, 'x' | 'y' | 'width' | 'height' | 'title' | 'text_content'>> & { project_id?: string }
 ): Promise<CanvasBlock> {
-  const localBlock=await local<CanvasBlock>('update_local_project_block',{projectId:(block as any).project_id,recordId:blockId,patch:block});
+  const localBlock=await local<CanvasBlock>('update_local_project_block',{projectId:block.project_id,recordId:blockId,patch:block});
   if(localBlock!==null)return localBlock;
   const response = await apiFetch(`/blocks/${blockId}`, {
     method: 'PUT',
