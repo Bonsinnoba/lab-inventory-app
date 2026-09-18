@@ -18,10 +18,17 @@ if (isProduction && jwtSecret.length < 32) {
   throw new Error('JWT_SECRET must be at least 32 characters in production');
 }
 
-const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173,http://localhost:1420,http://tauri.localhost')
+const configuredOrigins = (process.env.ALLOWED_ORIGINS || '')
   .split(',')
   .map((origin) => origin.trim())
   .filter(Boolean);
+
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:1420',
+  'http://tauri.localhost',
+  ...configuredOrigins,
+].filter((origin, index, origins) => origins.indexOf(origin) === index);
 
 export const config = {
   nodeEnv: process.env.NODE_ENV || 'development',
