@@ -20,6 +20,8 @@ const searchApi = read('../desktop/src/api/search.ts');
 const tauriMain = read('../desktop/src-tauri/src/main.rs');
 const localAuth = read('../desktop/src-tauri/src/local_auth.rs');
 const authApi = read('../desktop/src/api/auth.ts');
+const localSystem = read('../desktop/src-tauri/src/local_system.rs');
+const systemApi = read('../desktop/src/api/system.ts');
 const tauriConfig = read('../desktop/src-tauri/tauri.conf.json');
 const viteConfig = read('../desktop/vite.config.ts');
 
