@@ -1,6 +1,7 @@
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashSet;
 use tauri::AppHandle;
 use crate::local_db::open_local_connection;
 
@@ -175,9 +176,27 @@ pub fn cache_local_resources(app: AppHandle, resources_json: String) -> Result<u
     let conn = open_local_connection(&app)?;
     ensure_schema(&conn)?;
     let mut current = read_resources(&conn)?;
+    let pending: HashSet<String> = {
+        let mut stmt = conn.prepare("SELECT entity_id FROM sync_outbox WHERE synced_at IS NULL AND entity_type='resource' AND entity_id IS NOT NULL")
+            .map_err(|e| format!("Unable to inspect pending resource changes: {e}"))?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| format!("Unable to inspect pending resource changes: {e}"))?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
     for incoming_resource in incoming {
+        if pending.contains(&incoming_resource.id) { continue; }
         if let Some(existing) = current.iter_mut().find(|r| r.id == incoming_resource.id) {
+            let local_media_path = existing.local_media_path.clone();
+            let local_media_filename = existing.local_media_filename.clone();
+            let local_media_mime_type = existing.local_media_mime_type.clone();
+            let local_media_size_bytes = existing.local_media_size_bytes;
+            let local_media_downloaded_at = existing.local_media_downloaded_at.clone();
             *existing = incoming_resource;
+            existing.local_media_path = local_media_path;
+            existing.local_media_filename = local_media_filename;
+            existing.local_media_mime_type = local_media_mime_type;
+            existing.local_media_size_bytes = local_media_size_bytes;
+            existing.local_media_downloaded_at = local_media_downloaded_at;
         } else {
             current.push(incoming_resource);
         }
@@ -232,6 +251,50 @@ pub fn delete_local_resource(app: AppHandle, id: String) -> Result<(), String> {
     if !resources.iter().any(|r|r.id==id) { return Err("Resource not found".into()); }
     if resources.iter().any(|r|r.parent_resource_id.as_deref()==Some(id.as_str())) { return Err("Cannot delete a folder that still contains resources".into()); }
     resources.retain(|r| r.id!=id); write_resources(&conn,&resources)?; Ok(())
+}
+
+#[tauri::command]
+pub fn apply_server_resource_pull(app: AppHandle, resources_json: String, deleted_resource_ids: Vec<String>) -> Result<(), String> {
+    let incoming: Vec<LocalResource> = serde_json::from_str(&resources_json)
+        .map_err(|e| format!("Invalid server resources payload: {e}"))?;
+    let mut conn = open_local_connection(&app)?;
+    ensure_schema(&conn)?;
+    let tx = conn.transaction().map_err(|e| format!("Unable to begin server resource merge: {e}"))?;
+    let raw: String = tx.query_row("SELECT value FROM sync_state WHERE key=?1", [STATE_KEY], |r| r.get(0))
+        .optional().map_err(|e| format!("Unable to read local resources: {e}"))?
+        .unwrap_or_else(|| "[]".to_string());
+    let mut current: Vec<LocalResource> = serde_json::from_str(&raw)
+        .map_err(|e| format!("Invalid local resources state: {e}"))?;
+    let mut pending = HashSet::new();
+    {
+        let mut stmt = tx.prepare("SELECT entity_id FROM sync_outbox WHERE synced_at IS NULL AND entity_type='resource' AND entity_id IS NOT NULL")
+            .map_err(|e| format!("Unable to inspect pending resource changes: {e}"))?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| format!("Unable to inspect pending resource changes: {e}"))?;
+        for row in rows { pending.insert(row.map_err(|e| format!("Unable to read pending resource id: {e}"))?); }
+    }
+    let deleted: HashSet<String> = deleted_resource_ids.into_iter().collect();
+    current.retain(|r| !deleted.contains(&r.id) || pending.contains(&r.id));
+    for incoming_resource in incoming {
+        if pending.contains(&incoming_resource.id) { continue; }
+        if let Some(existing) = current.iter_mut().find(|r| r.id == incoming_resource.id) {
+            let local_media_path = existing.local_media_path.clone();
+            let local_media_filename = existing.local_media_filename.clone();
+            let local_media_mime_type = existing.local_media_mime_type.clone();
+            let local_media_size_bytes = existing.local_media_size_bytes;
+            let local_media_downloaded_at = existing.local_media_downloaded_at.clone();
+            *existing = incoming_resource;
+            existing.local_media_path = local_media_path;
+            existing.local_media_filename = local_media_filename;
+            existing.local_media_mime_type = local_media_mime_type;
+            existing.local_media_size_bytes = local_media_size_bytes;
+            existing.local_media_downloaded_at = local_media_downloaded_at;
+        } else {
+            current.push(incoming_resource);
+        }
+    }
+    write_resources(&tx, &current)?;
+    tx.commit().map_err(|e| format!("Unable to commit server resource merge: {e}"))
 }
 
 #[tauri::command]
