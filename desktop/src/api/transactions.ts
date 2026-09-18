@@ -1,4 +1,6 @@
 import { apiFetch } from './http';
+import { invoke } from '@tauri-apps/api/tauri';
+const isTauri=()=>typeof window!=='undefined'&&Boolean((window as any).__TAURI_IPC__);
 
 export interface Transaction {
   id: string;
@@ -43,28 +45,7 @@ export interface TransactionSummary {
   };
 }
 
-export async function getTransactions(filters?: {
-  type?: string;
-  direction?: string;
-  item_id?: string;
-  project_id?: string;
-  budget_period_id?: string;
-  from?: string;
-  to?: string;
-}): Promise<Transaction[]> {
-  const params = new URLSearchParams();
-  if (filters?.type) params.append('type', filters.type);
-  if (filters?.direction) params.append('direction', filters.direction);
-  if (filters?.item_id) params.append('item_id', filters.item_id);
-  if (filters?.project_id) params.append('project_id', filters.project_id);
-  if (filters?.budget_period_id) params.append('budget_period_id', filters.budget_period_id);
-  if (filters?.from) params.append('from', filters.from);
-  if (filters?.to) params.append('to', filters.to);
-  
-  const response = await apiFetch(`/transactions?${params}`);
-  if (!response.ok) throw new Error('Failed to fetch transactions');
-  return response.json();
-}
+export async function getTransactions(filters?: any): Promise<Transaction[]> { if(isTauri()&&!filters){try{return await invoke<Transaction[]>('get_local_transactions')}catch{}} const params=new URLSearchParams(); if(filters)Object.entries(filters).forEach(([k,v])=>v&&params.append(k,String(v))); const response=await apiFetch(`/transactions?${params}`); if(!response.ok)throw new Error('Failed to fetch transactions'); return response.json(); }
 
 export async function getTransactionSummary(filters?: {
   from?: string;
@@ -81,29 +62,8 @@ export async function getTransactionSummary(filters?: {
   return response.json();
 }
 
-export async function createTransaction(transaction: Omit<Transaction, 'id' | 'created_at' | 'updated_at'>): Promise<Transaction> {
-  const response = await apiFetch(`/transactions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(transaction),
-  });
-  if (!response.ok) throw new Error('Failed to create transaction');
-  return response.json();
-}
+export async function createTransaction(transaction: Omit<Transaction,'id'|'created_at'|'updated_at'>): Promise<Transaction> { if(isTauri())try{return await invoke<Transaction>('create_local_transaction',{transaction})}catch{} const response=await apiFetch('/transactions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(transaction)});if(!response.ok)throw new Error('Failed to create transaction');return response.json(); }
 
-export async function updateTransaction(id: string, transaction: Partial<Transaction>): Promise<Transaction> {
-  const response = await apiFetch(`/transactions/${id}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(transaction),
-  });
-  if (!response.ok) throw new Error('Failed to update transaction');
-  return response.json();
-}
+export async function updateTransaction(id:string,transaction:Partial<Transaction>):Promise<Transaction>{if(isTauri())try{return await invoke<Transaction>('update_local_transaction',{id,transaction})}catch{} const response=await apiFetch(`/transactions/${id}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(transaction)});if(!response.ok)throw new Error('Failed to update transaction');return response.json();}
 
-export async function deleteTransaction(id: string): Promise<void> {
-  const response = await apiFetch(`/transactions/${id}`, {
-    method: 'DELETE',
-  });
-  if (!response.ok) throw new Error('Failed to delete transaction');
-}
+export async function deleteTransaction(id:string):Promise<void>{if(isTauri())try{await invoke('delete_local_transaction',{id});return}catch{} const response=await apiFetch(`/transactions/${id}`,{method:'DELETE'});if(!response.ok)throw new Error('Failed to delete transaction');}
