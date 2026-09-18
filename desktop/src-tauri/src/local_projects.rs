@@ -347,7 +347,7 @@ pub fn apply_server_project_pull(app: AppHandle, projects_json: String, deleted_
             for oldrow in old_task_experiments{if let Some(rid)=oldrow.get("id").and_then(Value::as_str){if pending.contains(&format!("project_task_experiment:{rid}"))&&!task_experiments.iter().any(|v|v.get("id").and_then(Value::as_str)==Some(rid)){task_experiments.push(oldrow);}}}
             project["task_experiments"]=Value::Array(task_experiments);
             for key in ["tasks","experiments","bom","blocks","connectors","requirements"] {
-                let pending_key = match key { "tasks"=>"project_task", "experiments"=>"project_experiment", "bom"=>"project_bom", "blocks"=>"project_block", "connectors"=>"project_connector", _=>"" };
+                let pending_key = match key { "tasks"=>"project_task", "experiments"=>"project_experiment", "bom"=>"project_bom", "blocks"=>"project_block", "connectors"=>"project_connector", "requirements"=>"project_resource_requirement", _=>"" };
                 let deleted_ids: std::collections::HashSet<String> = match key { "tasks"=>deleted_project_task_ids.iter().cloned().collect(), "experiments"=>deleted_project_experiment_ids.iter().cloned().collect(), "bom"=>deleted_project_bom_ids.iter().cloned().collect(), "blocks"=>deleted_project_block_ids.iter().cloned().collect(), "connectors"=>deleted_project_connector_ids.iter().cloned().collect(), "requirements"=>deleted_project_requirement_ids.iter().cloned().collect(), _=>std::collections::HashSet::new() };
                 let mut merged = project.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
                 if key=="tasks" || key=="experiments" {
