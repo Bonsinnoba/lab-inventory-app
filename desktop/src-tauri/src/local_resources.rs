@@ -147,7 +147,7 @@ fn validate_parent(resources: &[LocalResource], item_id: &Option<String>, projec
 
 #[tauri::command]
 pub fn list_local_resources(app: AppHandle, item_id: Option<String>, project_id: Option<String>, note_id: Option<String>, parent_resource_id: Option<String>) -> Result<Vec<LocalResource>, String> {
-    let conn = open_local_connection(&app)?;
+    let mut conn = open_local_connection(&app)?;
     ensure_schema(&conn)?;
     let mut resources = read_resources(&conn)?;
     resources.retain(|r| {
@@ -226,7 +226,7 @@ pub fn create_local_resource_link(app: AppHandle, url: String, name: Option<Stri
 #[tauri::command]
 pub fn create_local_resource_folder(app: AppHandle, name: String, item_id: Option<String>, project_id: Option<String>, note_id: Option<String>, category: Option<String>, description: Option<String>, tags: Option<Vec<String>>) -> Result<LocalResource, String> {
     if name.trim().is_empty() { return Err("name is required".into()); }
-    let conn=open_local_connection(&app)?; ensure_schema(&conn)?;
+    let mut conn=open_local_connection(&app)?; ensure_schema(&conn)?;
     let mut resources=read_resources(&conn)?; validate_parent(&resources,&item_id,&project_id,&note_id,&None)?;
     let (category,description,tags)=metadata(category,description,tags); let id=new_id(&conn)?; let timestamp=now(&conn)?;
     let resource=LocalResource{id:id.clone(),name:name.trim().to_string(),kind:"folder".into(),file_type:"schematic_folder".into(),original_filename:None,mime_type:None,size_bytes:None,url:None,thumbnail_url:None,local_media_path:None,local_media_filename:None,local_media_mime_type:None,local_media_size_bytes:None,local_media_downloaded_at:None,parent_resource_id:None,relative_path:None,item_id,project_id,note_id,item_name:None,project_name:None,note_title:None,category:Some(category),description:Some(description),tags,updated_at:timestamp.clone(),created_at:timestamp,derived_from_resource_id:None};
