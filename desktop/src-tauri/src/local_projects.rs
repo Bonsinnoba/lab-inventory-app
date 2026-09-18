@@ -193,6 +193,6 @@ pub fn link_local_project_item(app:AppHandle,project_id:String,item_id:String,al
 #[tauri::command]
 pub fn unlink_local_project_item(app:AppHandle,project_id:String,item_id:String)->Result<(),String>{
     let mut c=conn(&app)?;let mut projects=load(&c)?;let p=projects.iter_mut().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
-    let mut items=nested_get(p,"items");items.retain(|x|x.get("item_id").and_then(Value::as_str)!=Some(item_id.as_str()));p["items"]=Value::Array(items);p["updated_at"]=json!(now());
+    let mut items=nested_get(p,"items");items.retain(|x|x.get("item_id").and_then(Value::as_str)!=Some(item_id.as_str()));p["items"]=Value::Array(items);p["updated_at"]=json!(now(&c)?);
     save(&mut c,&projects,vec![(id(),"project_item".into(),item_id,"delete".into(),json!({"project_id":project_id}))])
 }
