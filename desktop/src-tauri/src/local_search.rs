@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use tauri::AppHandle;
 use crate::local_db;
 
-const LOCAL_TYPES: [&str; 7] = ["items","projects","notes","resources","tasks","experiments","findings"];
+const LOCAL_TYPES: [&str; 8] = ["items","projects","notes","resources","tasks","experiments","findings","transactions"];
 
 fn load_state(conn: &Connection, key: &str) -> Result<Value, String> {
     let raw: Option<String> = conn.query_row("SELECT value FROM sync_state WHERE key=?1", [key], |r| r.get(0))
@@ -24,6 +24,7 @@ fn decorate(kind: &str, value: &Value) -> Value {
         "tasks" => json!({"id":value.get("id"),"type":"task","title":value.get("title").cloned().unwrap_or(json!("Task")),"subtitle":format!("{} · {}",value.get("project_name").and_then(Value::as_str).unwrap_or("Project"),value.get("status").and_then(Value::as_str).unwrap_or("todo")),"rank":1.0,"data":value}),
         "experiments" => json!({"id":value.get("id"),"type":"experiment","title":value.get("title").cloned().unwrap_or(json!("Experiment")),"subtitle":format!("{} · {}",value.get("project_name").and_then(Value::as_str).unwrap_or("Project"),value.get("status").and_then(Value::as_str).unwrap_or("planned")),"rank":1.0,"data":value}),
         "findings" => json!({"id":value.get("id"),"type":"finding","title":value.get("title").cloned().unwrap_or(json!("Finding")),"subtitle":value.get("status").cloned().unwrap_or(json!("draft")),"rank":1.0,"data":value}),
+        "transactions" => json!({"id":value.get("id"),"type":"transaction","title":value.get("description").or_else(||value.get("reference")).cloned().unwrap_or(json!("Transaction")),"subtitle":format!("{} · {}",value.get("type").and_then(Value::as_str).unwrap_or("transaction"),value.get("amount").map(|v|v.to_string()).unwrap_or_default()),"rank":1.0,"data":value}),
         _ => json!({"id":value.get("id"),"type":kind,"title":value.get("name").or_else(||value.get("title")).cloned().unwrap_or(json!("Result")),"subtitle":"","rank":1.0,"data":value}),
     }
 }
@@ -66,6 +67,9 @@ pub fn global_local_search(app: AppHandle, query: String, types: Option<Vec<Stri
     if requested.iter().any(|t| t == "resources") {
         if let Some(values) = load_state(&conn, "resources_state")?.as_array().cloned() { push_matches(&mut results, "resources", values, &q); }
     }
+    if requested.iter().any(|t| t == "transactions") {
+        if let Some(values) = load_state(&conn, "transactions_state")?.as_array().cloned() { push_matches(&mut results, "transactions", values, &q); }
+    }
     if requested.iter().any(|t| t == "findings") {
         if let Some(state) = load_state(&conn, "knowledge_state")?.as_object().cloned() {
             if let Some(values) = state.get("findings").and_then(Value::as_array).cloned() { push_matches(&mut results, "findings", values, &q); }
@@ -75,7 +79,7 @@ pub fn global_local_search(app: AppHandle, query: String, types: Option<Vec<Stri
     let mut counts=serde_json::Map::new();
     for result in &results {
         if let Some(kind)=result.get("type").and_then(Value::as_str) {
-            let key=match kind {"item"=>"items","project"=>"projects","note"=>"notes","resource"=>"resources","task"=>"tasks","experiment"=>"experiments","finding"=>"findings",_=>kind};
+            let key=match kind {"item"=>"items","project"=>"projects","note"=>"notes","resource"=>"resources","task"=>"tasks","experiment"=>"experiments","finding"=>"findings","transaction"=>"transactions",_=>kind};
             let n=counts.entry(key.to_string()).or_insert(json!(0)); *n=json!(n.as_i64().unwrap_or(0)+1);
         }
     }
