@@ -25,6 +25,7 @@ export interface ProjectExperiment { id:string; project_id:string; title:string;
 export interface ProjectItem { project_id:string; item_id:string; allocated_quantity:string|number; notes:string; name:string; type:string; item_status:string; current_quantity:string|number; unit?:string|null; sku?:string|null; location_name?:string|null; }
 export interface ProjectWorkspace { members:ProjectMember[]; tasks:ProjectTask[]; experiments:ProjectExperiment[]; items:ProjectItem[]; notes:any[]; resources:any[]; activity:any[]; permissions?:{access:'admin'|'edit'|'view'; member_role:string; can_edit:boolean}; }
 export interface UserCandidate { id:string; username:string; role:string; }
+export interface ResourceRequirement { id:string; project_id:string; project_name?:string; name:string; requirement_type:string; quantity:number|string; unit?:string|null; required_by?:string|null; status:string; preferred_item_id?:string|null; preferred_item_name?:string|null; preferred_quantity?:number|string|null; notes?:string; }
 export interface ProjectBomItem { id:string; project_id:string; name:string; part_number?:string|null; required_quantity:number|string; unit?:string|null; preferred_item_id?:string|null; alternative_item_id?:string|null; notes:string; preferred_item_name?:string|null; preferred_item_quantity?:number|string|null; alternative_item_name?:string|null; alternative_item_quantity?:number|string|null; }
 
 export async function getProjects(): Promise<Project[]> { const local=await localInvoke<Project[]>('list_local_projects'); if(local!==null)return local; const r=await apiFetch('/projects'); if(!r.ok)throw await apiError(r,'Failed to fetch projects'); return r.json(); }
@@ -71,6 +72,31 @@ export async function repeatProjectExperiment(id:string,experimentId:string):Pro
 export async function getProjectExperimentHistory(id:string,experimentId:string):Promise<any[]>{const r=await apiFetch(`/projects/${id}/experiments/${experimentId}/history`);if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to fetch experiment history'));return r.json();}
 export async function linkProjectItem(id:string,item_id:string,allocated_quantity:number,notes=''):Promise<ProjectItem>{const local=await localInvoke<ProjectItem>('link_local_project_item',{projectId:id,itemId:item_id,allocatedQuantity:allocated_quantity,notes});if(local!==null)return local;const r=await apiFetch(`/projects/${id}/items`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({item_id,allocated_quantity,notes})});if(!r.ok)throw await apiError(r,'Failed to link inventory item');return r.json();}
 export async function unlinkProjectItem(id:string,itemId:string):Promise<void>{const local=await localInvoke<void>('unlink_local_project_item',{projectId:id,itemId});if(local!==null)return;const r=await apiFetch(`/projects/${id}/items/${itemId}`,{method:'DELETE'});if(!r.ok)throw await apiError(r,'Failed to unlink inventory item');}
+export async function getProjectRequirements(id?:string):Promise<ResourceRequirement[]> {
+  const local=await localInvoke<ResourceRequirement[]>('get_local_resource_requirements',{projectId:id??null});
+  if(local!==null)return local;
+  const r=await apiFetch(`/operations/requirements${id?`?project_id=${encodeURIComponent(id)}`:''}`);
+  if(!r.ok)throw await apiError(r,'Failed to fetch resource requirements'); return r.json();
+}
+export async function createProjectRequirement(id:string,data:Partial<ResourceRequirement>):Promise<ResourceRequirement>{
+  const local=await localInvoke<ResourceRequirement>('create_local_resource_requirement',{projectId:id,record:data});
+  if(local!==null)return local;
+  const r=await apiFetch('/operations/requirements',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...data,project_id:id})});
+  if(!r.ok)throw await apiError(r,'Failed to create resource requirement'); return r.json();
+}
+export async function updateProjectRequirement(id:string,requirementId:string,data:Partial<ResourceRequirement>):Promise<ResourceRequirement>{
+  const local=await localInvoke<ResourceRequirement>('update_local_resource_requirement',{projectId:id,recordId:requirementId,patch:data});
+  if(local!==null)return local;
+  const r=await apiFetch(`/operations/requirements/${requirementId}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+  if(!r.ok)throw await apiError(r,'Failed to update resource requirement'); return r.json();
+}
+export async function deleteProjectRequirement(id:string,requirementId:string):Promise<void>{
+  const local=await localInvoke<void>('delete_local_resource_requirement',{projectId:id,recordId:requirementId});
+  if(local!==null)return;
+  const r=await apiFetch(`/operations/requirements/${requirementId}`,{method:'DELETE'});
+  if(!r.ok)throw await apiError(r,'Failed to delete resource requirement');
+}
+
 export async function getProjectBom(id:string):Promise<ProjectBomItem[]>{const local=await localInvoke<ProjectBomItem[]>('get_local_project_bom',{projectId:id});if(local!==null)return local;const r=await apiFetch(`/projects/${id}/bom`);if(!r.ok)throw await apiError(r,'Failed to fetch project BOM');return r.json();}
 export async function createProjectBomItem(id:string,data:Partial<ProjectBomItem>):Promise<ProjectBomItem>{const local=await localInvoke<ProjectBomItem>('create_local_project_bom',{projectId:id,record:data});if(local!==null)return local;const r=await apiFetch(`/projects/${id}/bom`,{method:'POST',body:JSON.stringify(data)});if(!r.ok)throw await apiError(r,'Failed to create BOM item');return r.json();}
 export async function updateProjectBomItem(id:string,bomId:string,data:Partial<ProjectBomItem>):Promise<ProjectBomItem>{const local=await localInvoke<ProjectBomItem>('update_local_project_bom',{projectId:id,recordId:bomId,patch:data});if(local!==null)return local;const r=await apiFetch(`/projects/${id}/bom/${bomId}`,{method:'PATCH',body:JSON.stringify(data)});if(!r.ok)throw await apiError(r,'Failed to update BOM item');return r.json();}
