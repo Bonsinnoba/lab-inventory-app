@@ -101,3 +101,8 @@ if (failed) {
   process.exit(1);
 }
 console.log(`SYNC RELIABILITY STATIC TESTS PASSED: ${checks.length}/${checks.length}`);
+
+assert(sync.includes("project_work_attachment"), 'project attachment sync config is missing');
+assert(sync.includes("project_work_attachments"), 'project attachment pull is missing');
+assert(localProjects.includes('create_local_project_attachment'), 'local project attachment command is missing');
+assert(projectsApi.includes("create_local_project_attachment"), 'desktop project attachment API is not local-first');
