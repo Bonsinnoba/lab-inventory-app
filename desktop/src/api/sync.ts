@@ -6,6 +6,7 @@ type SyncResult = { change_id:string; status:'synced'|'failed'|'rejected'; resul
 type LocationPullResponse = { locations?:unknown[]; deleted_location_ids?:string[] };
 type EngineeringPullResponse = { calculations?:unknown[]; tests?:unknown[]; deleted_calculation_ids?:string[]; deleted_test_ids?:string[] };
 type PullResponse = { items?:unknown[]; deleted_item_ids?:string[]; next_cursor?:string|null; has_more?:boolean };
+type KnowledgePullResponse = { findings?:unknown[]; results?:unknown[]; relationships?:unknown[]; deleted?:{finding?:string[];knowledge_result?:string[];knowledge_relationship?:string[]} };
 export type SyncRuntimeState = { status:'offline'|'syncing'|'idle'|'error'; lastSuccessAt:string|null; lastError:string|null };
 
 const STATUS_KEY='labos.sync.status.v1';
@@ -79,7 +80,8 @@ async function runSync():Promise<number>{
   const financePullSucceeded=await pullServerFinance();
   const locationPullSucceeded=await pullServerLocations();
   const engineeringPullSucceeded=await pullServerEngineering();
-  const pullSucceeded=inventoryPullSucceeded&&projectPullSucceeded&&resourcePullSucceeded&&financePullSucceeded&&locationPullSucceeded&&engineeringPullSucceeded;
+  const knowledgePullSucceeded=await pullServerKnowledge();
+  const pullSucceeded=inventoryPullSucceeded&&projectPullSucceeded&&resourcePullSucceeded&&financePullSucceeded&&locationPullSucceeded&&engineeringPullSucceeded&&knowledgePullSucceeded;
   if(!pullSucceeded){syncSucceeded=false;publish({status:'error',lastError:runtimeState.lastError||'Unable to download the latest server changes'});scheduleRetry();}
   if(syncSucceeded&&pullSucceeded){clearRetryState();publish({status:'idle',lastSuccessAt:new Date().toISOString(),lastError:null});}
   else if(runtimeState.status!=='error')publish({status:'error',lastError:runtimeState.lastError||'Some changes could not be synchronized'});
@@ -146,6 +148,25 @@ async function pullServerEngineering():Promise<boolean>{
     if(!response.ok){publish({status:'error',lastError:await getApiErrorMessage(response,'Unable to download engineering changes')});return false;}
     const body=await response.json() as EngineeringPullResponse;
     await invoke('apply_server_engineering_pull',{calculations:Array.isArray(body.calculations)?body.calculations:[],tests:Array.isArray(body.tests)?body.tests:[],deletedCalculationIds:Array.isArray(body.deleted_calculation_ids)?body.deleted_calculation_ids:[],deletedTestIds:Array.isArray(body.deleted_test_ids)?body.deleted_test_ids:[]});
+    return true;
+  }catch(error){publish({status:'error',lastError:error instanceof Error?error.message:String(error)});return false;}
+}
+
+async function pullServerKnowledge():Promise<boolean>{
+  if(typeof navigator!=='undefined'&&!navigator.onLine)return false;
+  try{
+    const response=await apiFetch('/knowledge/sync/pull',{method:'GET',cache:'no-store'});
+    if(!response.ok){publish({status:'error',lastError:await getApiErrorMessage(response,'Unable to download knowledge changes')});return false;}
+    const body=await response.json() as KnowledgePullResponse;
+    const deleted=body.deleted||{};
+    await invoke('apply_server_knowledge_pull',{
+      findings:Array.isArray(body.findings)?body.findings:[],
+      results:Array.isArray(body.results)?body.results:[],
+      relationships:Array.isArray(body.relationships)?body.relationships:[],
+      deletedFindingIds:Array.isArray(deleted.finding)?deleted.finding:[],
+      deletedResultIds:Array.isArray(deleted.knowledge_result)?deleted.knowledge_result:[],
+      deletedRelationshipIds:Array.isArray(deleted.knowledge_relationship)?deleted.knowledge_relationship:[]
+    });
     return true;
   }catch(error){publish({status:'error',lastError:error instanceof Error?error.message:String(error)});return false;}
 }
