@@ -55,24 +55,58 @@ function validateProjectRecord(entityType,record){
   }
 }
 async function applyProjectEntity(client,change,user){
-  const entityType=change.entity_type,cfg=PROJECT_ENTITY_CONFIG[entityType],payload=object(change.payload,'Project sync payload');
+  const entityType=change.entity_type;
+  const cfg=PROJECT_ENTITY_CONFIG[entityType];
+  const payload=object(change.payload,'Project sync payload');
   const record=payload.project||payload.item||payload.record||payload;
   const entityId=id(record.id||payload.id||change.entity_id,'Project entity ID');
   let projectId=entityType==='project'?entityId:record.project_id;
-  if(!projectId){const existing=await client.query('SELECT project_id FROM '+cfg.table+' WHERE id=$1',[entityId]);projectId=existing.rows[0]?.project_id||null;}
+  if(!projectId){
+    const existing=await client.query('SELECT project_id FROM '+cfg.table+' WHERE id=$1',[entityId]);
+    projectId=existing.rows[0]?.project_id||null;
+  }
   if(entityType!=='project'&&!(await canEditProject(client,projectId,user)))fail(403,'PROJECT_ACCESS_DENIED','You do not have edit access to this project');
   if(entityType==='project'&&change.operation!=='create'&&!(await canEditProject(client,entityId,user)))fail(403,'PROJECT_ACCESS_DENIED','You do not have edit access to this project');
   validateProjectRecord(entityType,record);
+
   if(change.operation==='create'){
     const existing=await client.query('SELECT * FROM '+cfg.table+' WHERE id=$1',[entityId]);
     if(existing.rowCount)return existing.rows[0];
+    if(entityType!=='project'&&!projectId)fail(400,'INVALID_PROJECT_REFERENCE','project_id is required');
     const values=[entityId],columns=['id'];
     for(const field of cfg.fields){
       if(field==='owner_id'&&entityType==='project'&&!record.owner_id){columns.push(field);values.push(user.userId);continue;}
       if(Object.prototype.hasOwnProperty.call(record,field)){columns.push(field);values.push(record[field]??null);}
     }
-    if(entityType!=='project'&&!projectId)fail(400,'INVALID_PROJECT_REFERENCE','project_id is required');
-    const result=await client.query('INSERT INTO '+cfg.table+' ('+columns.join(',')+') VALUES ('+values.map((_,i)=>'const payload=object(change.payload,'Item payload');const itemId=id(payload.id||change.entity_id,'Item ID');if(change.operation==='create'){const values=[itemId],columns=['id'];for(const field of ITEM_FIELDS)if(Object.prototype.hasOwnProperty.call(payload,field)){columns.push(field);values.push(payload[field]??null);}if((await client.query('SELECT id FROM items WHERE id=$1',[itemId])).rowCount)fail(409,'ITEM_ALREADY_EXISTS',`Item ${itemId} already exists`);return(await client.query(`INSERT INTO items (${columns.join(',')}) VALUES (${values.map((_,i)=>`$${i+1}`).join(',')}) RETURNING *`,values)).rows[0];}if(change.operation==='update'){const patch=object(payload.patch||payload.item||payload,'Item update');const updates=[],values=[];const before=(await client.query('SELECT * FROM items WHERE id=$1 FOR UPDATE',[itemId]));if(!before.rowCount)fail(409,'ITEM_NOT_FOUND',`Item ${itemId} does not exist on the server`);const base=payload.base_updated_at;if(base&&!payload.conflict_resolution){const serverAt=new Date(before.rows[0].updated_at);const baseAt=new Date(base);if(Number.isNaN(baseAt.getTime())||Number.isNaN(serverAt.getTime())||serverAt.getTime()!==baseAt.getTime())fail(409,'SYNC_CONFLICT',`Item ${itemId} changed on the server after this offline edit`);}for(const field of ITEM_FIELDS)if(field!=='id'&&field!=='created_at'&&field!=='updated_at'&&Object.prototype.hasOwnProperty.call(patch,field)){values.push(patch[field]??null);updates.push(`${field}=$${values.length}`);}updates.push('updated_at=now()');values.push(itemId);return(await client.query(`UPDATE items SET ${updates.join(',')} WHERE id=$${values.length} RETURNING *`,values)).rows[0];}if(change.operation==='delete'){const result=await client.query('DELETE FROM items WHERE id=$1 RETURNING id',[itemId]);if(result.rowCount)await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) VALUES('item',$1) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()",[itemId]);return{deleted:Boolean(result.rowCount),id:itemId};}fail(400,'UNSUPPORTED_ITEM_OPERATION',`Unsupported item operation: ${change.operation}`);}
+    if(entityType==='project_connector'){
+      const checks=await client.query('SELECT id,project_id FROM project_blocks WHERE id=ANY($1::uuid[])',[ [record.source_block_id,record.target_block_id] ]);
+      if(checks.rowCount!==2||checks.rows.some(row=>row.project_id!==projectId))fail(400,'INVALID_PROJECT_CONNECTOR','Connector blocks must belong to this project');
+    }
+    const placeholders=values.map((_,i)=>'$'+(i+1)).join(',');
+    return (await client.query('INSERT INTO '+cfg.table+' ('+columns.join(',')+') VALUES ('+placeholders+') RETURNING *',values)).rows[0];
+  }
+
+  if(change.operation==='update'){
+    const existing=await client.query('SELECT * FROM '+cfg.table+' WHERE id=$1 FOR UPDATE',[entityId]);
+    if(!existing.rowCount)fail(409,'PROJECT_ENTITY_NOT_FOUND',entityType+' '+entityId+' does not exist on the server');
+    const updates=[],values=[];
+    for(const field of cfg.fields){
+      if(['project_id','created_by','owner_id'].includes(field))continue;
+      if(Object.prototype.hasOwnProperty.call(record,field)){values.push(record[field]??null);updates.push(field+'=$'+values.length);}
+    }
+    if(!updates.length)return existing.rows[0];
+    updates.push('updated_at=now()');values.push(entityId);
+    return (await client.query('UPDATE '+cfg.table+' SET '+updates.join(',')+' WHERE id=$'+values.length+' RETURNING *',values)).rows[0];
+  }
+
+  if(change.operation==='delete'){
+    const result=await client.query('DELETE FROM '+cfg.table+' WHERE id=$1 RETURNING id',[entityId]);
+    if(result.rowCount)await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) VALUES($1,$2) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()",[entityType,entityId]);
+    return {deleted:Boolean(result.rowCount),id:entityId};
+  }
+  fail(400,'UNSUPPORTED_PROJECT_OPERATION','Unsupported project operation: '+change.operation);
+}
+
 async function applyMovement(client,change,userId){const payload=object(change.payload,'Movement payload');const itemId=id(payload.item_id||change.entity_id,'Movement item ID');const movementId=id(payload.id,'Movement ID');const type=String(payload.movement_type||'');const quantity=number(payload.quantity,'Movement quantity');if(!MOVEMENT_TYPES.has(type))fail(400,'INVALID_MOVEMENT_TYPE','Invalid movement type');if(quantity<=0)fail(400,'INVALID_QUANTITY','Quantity must be greater than zero');const existing=await client.query('SELECT * FROM item_movements WHERE id=$1',[movementId]);if(existing.rowCount)return{movement:existing.rows[0],item:(await client.query('SELECT * FROM items WHERE id=$1',[itemId])).rows[0]};const itemResult=await client.query('SELECT * FROM items WHERE id=$1 FOR UPDATE',[itemId]);if(!itemResult.rowCount)fail(409,'ITEM_NOT_FOUND',`Item ${itemId} does not exist on the server`);const item=itemResult.rows[0];let next=number(item.current_quantity,'Current quantity');if(INCOMING.has(type))next+=quantity;else if(OUTGOING.has(type))next-=quantity;else if(type==='adjust')next=quantity;if(next<0)fail(409,'INSUFFICIENT_STOCK','Movement would make stock negative');const destinationStorage=type==='transfer'?(payload.to_storage_location?String(payload.to_storage_location).trim():null):(item.storage_location??null);const destinationLocation=type==='transfer'?(payload.to_location_id||item.location_id||null):(payload.to_location_id||null);if(type==='transfer'&&!destinationStorage&&!destinationLocation)fail(400,'TRANSFER_LOCATION_REQUIRED','A destination location is required for transfers');const movement=(await client.query(`INSERT INTO item_movements (id,item_id,movement_type,quantity,quantity_before,quantity_after,from_location_id,to_location_id,from_storage_location,to_storage_location,project_id,reason,reference,performed_by,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,COALESCE($15,now())) RETURNING *`,[movementId,itemId,type,quantity,Number(item.current_quantity),next,item.location_id||null,destinationLocation,item.storage_location||null,destinationStorage,payload.project_id||null,payload.reason||null,payload.reference||null,userId,payload.created_at||null])).rows[0];const updated=(await client.query('UPDATE items SET current_quantity=$1,storage_location=$2,location_id=COALESCE($3,location_id),updated_at=now() WHERE id=$4 RETURNING *',[next,destinationStorage,destinationLocation,itemId])).rows[0];return{movement,item:updated};}
 async function applyChange(client,change,userId){if(projectEntityType(change.entity_type))return applyProjectEntity(client,change,{userId,role:change.__role});if(change.entity_type==='resource')return applyResourceEntity(client,change,{userId,role:change.__role});if(FINANCE_CONFIG[change.entity_type])return applyFinanceEntity(client,change,{userId,role:change.__role});if(change.operation==='bulk_status'){const p=object(change.payload,'Bulk status payload');const ids=Array.isArray(p.ids)?p.ids:[];if(!ids.length||typeof p.status!=='string')fail(400,'INVALID_BULK_STATUS','ids and status are required');return{updated:Number((await client.query('UPDATE items SET status=$1,updated_at=now() WHERE id=ANY($2::uuid[])',[p.status,ids])).rowCount)};}if(change.operation==='bulk_delete'){const p=object(change.payload,'Bulk delete payload');const ids=Array.isArray(p.ids)?p.ids:[];if(!ids.length)return{deleted:0};const result=await client.query('DELETE FROM items WHERE id=ANY($1::uuid[]) RETURNING id', [ids]);for(const row of result.rows)await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) VALUES('item',$1) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()",[row.id]);return{deleted:Number(result.rowCount)};}if(change.entity_type==='item')return applyItem(client,change);if(change.entity_type==='item_movement'&&change.operation==='create')return applyMovement(client,change,userId);fail(400,'UNSUPPORTED_SYNC_CHANGE',`Unsupported sync change: ${change.entity_type}/${change.operation}`);}
 router.get('/finance/pull',async(req,res,next)=>{try{const permissions=await getUserPermissions(req.user.userId,req.user.role);if(!permissions.has('finance.view'))return res.status(403).json({error:{code:'PERMISSION_DENIED',message:'Permission required: finance.view'}});const [transactions,budget_periods,funding_sources]=await Promise.all([pool.query('SELECT * FROM transactions ORDER BY updated_at DESC NULLS LAST,created_at DESC'),pool.query('SELECT * FROM budget_periods ORDER BY start_date DESC NULLS LAST,created_at DESC'),pool.query('SELECT * FROM funding_sources ORDER BY created_at DESC')]);const tomb=await pool.query("SELECT entity_type,entity_id FROM sync_tombstones WHERE entity_type IN ('transaction','budget_period','funding_source') ORDER BY deleted_at DESC LIMIT 1000");const deleted={transaction:[],budget_period:[],funding_source:[]};for(const r of tomb.rows)if(deleted[r.entity_type])deleted[r.entity_type].push(r.entity_id);res.setHeader('Cache-Control','no-store');res.json({transactions:transactions.rows,budget_periods:budget_periods.rows,funding_sources:funding_sources.rows,deleted});}catch(e){next(e);}});
