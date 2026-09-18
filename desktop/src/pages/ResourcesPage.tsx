@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getAllResources, uploadFile, createLink, deleteResource, Resource, getResourceDownloadUrl, isLocalResourceRuntime } from '../api/resources'; import { getItems } from '../api/items'; import { getProjects } from '../api/projects'; import { getNotes } from '../api/notes';
-import { queueVideoDownload, downloadYouTubeThumbnail, getLocalThumbnailUrl, DownloadQuality } from '../api/mediaDownloads'; import { useState, useRef } from 'react';
+import { queueVideoDownload, downloadYouTubeThumbnail, getLocalThumbnailUrl, DownloadQuality } from '../api/mediaDownloads'; import { useState, useRef, useEffect } from 'react';
 import { Upload, Link as LinkIcon, File, Folder, Trash2, Play, CheckCircle2, Youtube, RefreshCw } from 'lucide-react'; import ResourceViewerModalLocal from '../components/ResourceViewerModalLocal'; import ResourceEditorModal from '../components/ResourceEditorModal'; import { useToast } from '../contexts/ToastContext';
 type ParentType='none'|'item'|'project'|'note'; type VideoSource='youtube'|'facebook'|'instagram'|null;
 function getVideoSource(url:string):VideoSource{try{const host=new URL(url).hostname.replace(/^www\./,'').toLowerCase();if(host==='youtube.com'||host.endsWith('.youtube.com')||host==='youtu.be')return'youtube';if(host==='facebook.com'||host.endsWith('.facebook.com')||host==='fb.watch')return'facebook';if(host==='instagram.com'||host.endsWith('.instagram.com'))return'instagram';}catch{}return null;}
