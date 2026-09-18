@@ -23,7 +23,7 @@ import systemRouter from './routes/system.js'; import experienceRouter from './r
 import { startMediaDownloadWorker, stopMediaDownloadWorker } from './media-downloads.js';
 
 dotenv.config(); const app=express(); app.disable('x-powered-by'); app.use(requestId); app.use(securityHeaders); app.use(requestTimeout(config.requestTimeoutMs)); app.set('trust proxy',process.env.TRUST_PROXY==='true'?1:false);
-app.use(cors({origin(origin,callback){if(!origin||origin==='null'||config.allowedOrigins.includes(origin))return callback(null,true);return callback(new Error('Origin not allowed by CORS'));},maxAge:86400})); app.use(express.json({limit:`${config.maxJsonMb}mb`})); app.use('/api',apiRateLimit());
+app.use(cors({origin(origin,callback){if(!origin||origin==='null'||origin.startsWith('tauri://')||config.allowedOrigins.includes(origin))return callback(null,true);return callback(new Error('Origin not allowed by CORS'));},maxAge:86400})); app.use(express.json({limit:`${config.maxJsonMb}mb`})); app.use('/api',apiRateLimit());
 app.get('/api/health',async(req,res)=>{let database='ok',storage='ok';try{await pool.query('SELECT 1');}catch{database='error'}try{await fs.access(config.storageDir||'./storage');}catch{storage='error'}const healthy=database==='ok'&&storage==='ok';res.setHeader('Cache-Control','no-store');res.status(healthy?200:503).json({status:healthy?'ok':'degraded',version:config.apiVersion,services:{api:'ok',database,storage},timestamp:new Date().toISOString()});});
 app.get('/api/meta',authenticateToken,(req,res)=>res.json({name:'LabOS API',version:config.apiVersion,environment:config.nodeEnv,server_time:new Date().toISOString()})); app.use('/api/auth',authRouter); app.use('/api',authenticateToken);
 app.use('/api/sync',authenticateToken,syncRouter);
