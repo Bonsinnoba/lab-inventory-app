@@ -859,7 +859,7 @@ The following items are known and should not be forgotten:
 - Local project owner identity is not yet backed by a finalized local admin identity.
 - Local project workspace currently returns simplified/empty data for some central-only fields.
 - Local resource upload/file storage is not yet equivalent to central resource storage; central file/media handling remains distinct.
-- Resource sync mappings are not yet fully defined.
+- Resource sync mappings are now implemented for offline link/folder creation, metadata updates, deletion, server pull, tombstones, and pending-local protection; actual file upload/media acquisition remains central.
 - Search still needs explicit local-first implementation.
 - Local authentication/bootstrap is not yet complete.
 - Location `item_count` needs reconciliation with local inventory.
@@ -905,6 +905,16 @@ The project has already established substantial foundations for:
 - first-pass local resource metadata.
 
 The next major work is **not a release tag**.
+
+For execution, the detailed phases above are consolidated into five working phases:
+
+1. **Local LabOS Runtime** — formalize Desktop → Local Backend → SQLite, including local bootstrap/auth/session/settings.
+2. **Local-First Application** — complete and verify workstation-owned domains, local search, and classify remaining desktop APIs.
+3. **Sync + Central Services** — complete sync mappings/conflicts/recovery and keep media acquisition/processing central.
+4. **V1 Verification + Fresh Install** — full offline/online verification, build checks, fresh SQLite bootstrap, administrator creation, and Production/Preview isolation.
+5. **V1 Re-Release** — final UI/UX polish, regression pass, production/preview builds, checksums, tag, and GitHub release.
+
+The current implementation work is in **Phase 2 — Local-First Application**.
 
 The next work is to finish the architectural boundary:
 
