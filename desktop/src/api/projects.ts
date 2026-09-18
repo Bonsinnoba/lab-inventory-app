@@ -32,13 +32,15 @@ export async function getProjectFinancialSummary():Promise<ProjectFinancialSumma
   const local=await localInvoke<Project[]>('list_local_projects');
   if(local!==null){
     const { getTransactions } = await import('./transactions');
-    const transactions = await getTransactions();
+    const { getItems } = await import('./items');
+    const [transactions, inventory] = await Promise.all([getTransactions(), getItems()]);
     return Promise.all(local.map(async (p) => {
       const projectTransactions = transactions.filter((t:any) => t.project_id === p.id);
       const actual_expense = projectTransactions.filter((t:any) => t.direction === 'expense').reduce((sum:number,t:any)=>sum+Number(t.amount||0),0);
       const project_income = projectTransactions.filter((t:any) => t.direction === 'income').reduce((sum:number,t:any)=>sum+Number(t.amount||0),0);
       const workspace = await getProjectWorkspace(p.id).catch(() => ({items:[]} as any));
-      const allocated_inventory_value = (workspace.items||[]).reduce((sum:number,item:any)=>sum + Number(item.allocated_quantity||0) * Number(item.unit_cost||0), 0);
+      const costByItem = new Map((inventory||[]).map((item:any) => [item.id, Number(item.unit_cost||0)]));
+      const allocated_inventory_value = (workspace.items||[]).reduce((sum:number,item:any)=>sum + Number(item.allocated_quantity||0) * (costByItem.get(item.item_id)||0), 0);
       const budget = p.budget==null ? null : Number(p.budget);
       const net_spend = actual_expense - project_income;
       return {
