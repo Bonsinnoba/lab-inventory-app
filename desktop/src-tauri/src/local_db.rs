@@ -19,7 +19,8 @@ fn open_connection(app:&AppHandle)->Result<(Connection,PathBuf),String>{let path
 fn ensure_schema(connection:&Connection)->Result<(),String>{connection.execute_batch(r#"
 CREATE TABLE IF NOT EXISTS local_schema_migrations(version TEXT PRIMARY KEY,applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS device_identity(id INTEGER PRIMARY KEY CHECK(id=1),device_id TEXT NOT NULL UNIQUE,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS sync_state(key TEXT PRIMARY KEY,value TEXT);\nINSERT OR IGNORE INTO sync_state(key,value) VALUES('inventory_snapshot','[]');
+CREATE TABLE IF NOT EXISTS sync_state(key TEXT PRIMARY KEY,value TEXT);
+INSERT OR IGNORE INTO sync_state(key,value) VALUES('inventory_snapshot','[]');
 CREATE TABLE IF NOT EXISTS sync_outbox(change_id TEXT PRIMARY KEY,device_id TEXT NOT NULL,entity_type TEXT NOT NULL,entity_id TEXT,operation TEXT NOT NULL,payload_json TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,attempt_count INTEGER NOT NULL DEFAULT 0,last_attempt_at TEXT,last_error TEXT,synced_at TEXT);
 CREATE INDEX IF NOT EXISTS idx_sync_outbox_pending ON sync_outbox(synced_at,created_at);
 CREATE INDEX IF NOT EXISTS idx_sync_outbox_entity ON sync_outbox(entity_type,entity_id,created_at);
