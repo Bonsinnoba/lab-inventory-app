@@ -10,7 +10,8 @@ export type LocalBackendCapability =
   | 'locations'
   | 'resources'
   | 'finance'
-  | 'search';
+  | 'search'
+  | 'engineering';
 
 const CAPABILITIES: ReadonlySet<LocalBackendCapability> = new Set([
   'auth',
@@ -23,6 +24,7 @@ const CAPABILITIES: ReadonlySet<LocalBackendCapability> = new Set([
   'resources',
   'finance',
   'search',
+  'engineering',
 ]);
 
 /**
