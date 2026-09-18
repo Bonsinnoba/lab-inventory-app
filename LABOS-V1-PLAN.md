@@ -935,6 +935,10 @@ Only after that boundary is complete, the remaining local-first domains and cent
 Local-first finance runtime is now implemented on main for transactions, budget periods, and funding sources. Desktop finance CRUD prefers local SQLite-backed state and queues mutations to the sync outbox. Central synchronization now accepts and pulls these records, including tombstone propagation. Finance summaries and Excel operations remain central-derived services until their local equivalents are explicitly implemented and verified.
 
 
+### Local Authentication / Bootstrap — implementation progress
+
+The local Tauri runtime now owns the V1 workstation authentication boundary: first-run administrator bootstrap, local login/session, current-user lookup, logout, password change, and profile update. Passwords are stored using Argon2id-compatible password hashes rather than a hard-coded credential. The desktop authentication API prefers this local runtime under Tauri and falls back to the central API only for non-Tauri/browser contexts. Actual fresh-install/offline runtime verification is still required.
+
 ### Project Experiment Work — implementation progress
 
 Project experiment measurements and observations are local-first and sync-aware. Task↔experiment links now have a stable server sync identity and local Tauri CRUD. Project task/experiment resource attachments are local-first for metadata/linking while the underlying resource/media boundary remains unchanged. Experiment revision history remains a server-derived history until a local revision model is explicitly implemented and verified.
