@@ -1,4 +1,11 @@
+import { invoke } from '@tauri-apps/api/tauri';
 import { apiFetch, getApiErrorMessage } from './http';
+
+function isTauriRuntime(): boolean { return typeof window !== 'undefined' && !!(window as any).__TAURI_IPC__; }
+async function localInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T | null> {
+  if (!isTauriRuntime()) return null;
+  return invoke<T>(command, args);
+}
 
 export interface ProjectFinancialSummary {
   project_id: string; name: string; budget: number | string | null; actual_expense: number; project_income: number; net_spend: number; allocated_inventory_value: number; budget_remaining: number | null; budget_used_percent: number | null;
