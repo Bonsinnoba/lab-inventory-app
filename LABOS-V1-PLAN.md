@@ -946,3 +946,8 @@ Project experiment measurements and observations are local-first and sync-aware.
 ### Project Canvas — implementation progress
 
 Project canvas metadata is now local-first on main. Desktop canvas reads and block/connector mutations use the local SQLite project runtime when running under Tauri and queue explicit project_block/project_connector outbox changes. Central sync accepts these entities, enforces project edit access, pulls current canvas state with project workspace data, and propagates canvas tombstones back to workstations. Canvas media/file storage remains subject to the existing central resource/media boundary.
+
+### Local workstation settings — implementation progress
+
+Daily-use preferences are now explicitly workstation-local. Under Tauri, the desktop reads and writes notification/music preferences through the local SQLite runtime rather than treating the central `/system/daily-preferences` endpoint as the normal path. Values are validated and persisted in local `sync_state`; they are intentionally not sync-outbox entities because these are per-workstation preferences. System health and administrator export remain central services.
+
