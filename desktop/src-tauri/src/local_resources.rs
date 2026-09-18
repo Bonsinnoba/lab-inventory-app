@@ -208,7 +208,7 @@ pub fn cache_local_resources(app: AppHandle, resources_json: String) -> Result<u
 #[tauri::command]
 pub fn create_local_resource_link(app: AppHandle, url: String, name: Option<String>, item_id: Option<String>, project_id: Option<String>, note_id: Option<String>, category: Option<String>, description: Option<String>, tags: Option<Vec<String>>) -> Result<LocalResource, String> {
     if url.trim().is_empty() { return Err("url is required".into()); }
-    let conn = open_local_connection(&app)?;
+    let mut conn = open_local_connection(&app)?;
     ensure_schema(&conn)?;
     let mut resources = read_resources(&conn)?;
     validate_parent(&resources,&item_id,&project_id,&note_id,&None)?;
@@ -235,7 +235,7 @@ pub fn create_local_resource_folder(app: AppHandle, name: String, item_id: Optio
 
 #[tauri::command]
 pub fn update_local_resource_metadata(app: AppHandle, id: String, category: Option<String>, description: Option<String>, tags: Option<Vec<String>>) -> Result<LocalResource, String> {
-    let conn=open_local_connection(&app)?; ensure_schema(&conn)?; let mut resources=read_resources(&conn)?;
+    let mut conn=open_local_connection(&app)?; ensure_schema(&conn)?; let mut resources=read_resources(&conn)?;
     let (category,description,tags)=metadata(category,description,tags);
     let timestamp=now(&conn)?;
     let resource=resources.iter_mut().find(|r|r.id==id).ok_or_else(||"Resource not found".to_string())?;
