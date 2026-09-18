@@ -230,7 +230,7 @@ pub fn create_local_resource_folder(app: AppHandle, name: String, item_id: Optio
     let mut resources=read_resources(&conn)?; validate_parent(&resources,&item_id,&project_id,&note_id,&None)?;
     let (category,description,tags)=metadata(category,description,tags); let id=new_id(&conn)?; let timestamp=now(&conn)?;
     let resource=LocalResource{id:id.clone(),name:name.trim().to_string(),kind:"folder".into(),file_type:"schematic_folder".into(),original_filename:None,mime_type:None,size_bytes:None,url:None,thumbnail_url:None,local_media_path:None,local_media_filename:None,local_media_mime_type:None,local_media_size_bytes:None,local_media_downloaded_at:None,parent_resource_id:None,relative_path:None,item_id,project_id,note_id,item_name:None,project_name:None,note_title:None,category:Some(category),description:Some(description),tags,updated_at:timestamp.clone(),created_at:timestamp,derived_from_resource_id:None};
-    resources.push(resource.clone()); write_resources(&conn,&resources)?; Ok(resource)
+    resources.push(resource.clone()); save_with_change(&mut conn, &resources, &id, "create", &serde_json::json!({"resource": resource}))?; Ok(resource)
 }
 
 #[tauri::command]
@@ -250,7 +250,7 @@ pub fn delete_local_resource(app: AppHandle, id: String) -> Result<(), String> {
     let conn=open_local_connection(&app)?; ensure_schema(&conn)?; let mut resources=read_resources(&conn)?;
     if !resources.iter().any(|r|r.id==id) { return Err("Resource not found".into()); }
     if resources.iter().any(|r|r.parent_resource_id.as_deref()==Some(id.as_str())) { return Err("Cannot delete a folder that still contains resources".into()); }
-    resources.retain(|r| r.id!=id); write_resources(&conn,&resources)?; Ok(())
+    let deleted = resources.iter().find(|r| r.id==id).cloned().ok_or_else(||"Resource not found".to_string())?; resources.retain(|r| r.id!=id); save_with_change(&mut conn, &resources, &id, "delete", &serde_json::json!({"resource": deleted}))?; Ok(())
 }
 
 #[tauri::command]
