@@ -112,8 +112,9 @@ async function pullServerProjects():Promise<boolean>{
   try{
     const response=await apiFetch('/sync/projects/pull',{method:'GET',cache:'no-store'});
     if(!response.ok){publish({status:'error',lastError:await getApiErrorMessage(response,'Unable to download project changes')});return false;}
-    const body=await response.json() as {projects?:unknown[];deleted_project_ids?:string[]};
-    await invoke('apply_server_project_pull',{projectsJson:JSON.stringify(Array.isArray(body.projects)?body.projects:[]),deletedProjectIds:Array.isArray(body.deleted_project_ids)?body.deleted_project_ids:[]});
+    const body=await response.json() as {projects?:unknown[];deleted_project_ids?:string[];deleted_project_entities?:Record<string,string[]>};
+    const deleted=body.deleted_project_entities||{};
+    await invoke('apply_server_project_pull',{projectsJson:JSON.stringify(Array.isArray(body.projects)?body.projects:[]),deletedProjectIds:Array.isArray(body.deleted_project_ids)?body.deleted_project_ids:[],deletedProjectTaskIds:Array.isArray(deleted.project_task)?deleted.project_task:[],deletedProjectExperimentIds:Array.isArray(deleted.project_experiment)?deleted.project_experiment:[],deletedProjectBomIds:Array.isArray(deleted.project_bom)?deleted.project_bom:[],deletedProjectBlockIds:Array.isArray(deleted.project_block)?deleted.project_block:[],deletedProjectConnectorIds:Array.isArray(deleted.project_connector)?deleted.project_connector:[]});
     return true;
   }catch(error){publish({status:'error',lastError:error instanceof Error?error.message:String(error)});return false;}
 }
