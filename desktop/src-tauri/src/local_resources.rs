@@ -77,6 +77,19 @@ fn write_resources(conn: &rusqlite::Connection, resources: &[LocalResource]) -> 
     Ok(())
 }
 
+fn save_with_change(conn: &mut rusqlite::Connection, resources: &[LocalResource], entity_id: &str, operation: &str, payload: &Value) -> Result<(), String> {
+    let tx = conn.transaction().map_err(|e| format!("Unable to begin local resource transaction: {e}"))?;
+    write_resources(&tx, resources)?;
+    let device_id: String = tx.query_row("SELECT device_id FROM device_identity WHERE id=1", [], |r| r.get(0))
+        .map_err(|e| format!("Unable to read device identity: {e}"))?;
+    let change_id = new_id(&tx)?;
+    tx.execute(
+        "INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES(?1,?2,'resource',?3,?4,?5)",
+        params![change_id, device_id, entity_id, operation, payload.to_string()],
+    ).map_err(|e| format!("Unable to queue local resource change: {e}"))?;
+    tx.commit().map_err(|e| format!("Unable to commit local resource change: {e}"))
+}
+
 fn now(conn: &rusqlite::Connection) -> Result<String, String> {
     conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')", [], |r| r.get(0))
         .map_err(|e| format!("Unable to create resource timestamp: {e}"))
@@ -186,7 +199,9 @@ pub fn create_local_resource_link(app: AppHandle, url: String, name: Option<Stri
     let file_type=if youtube.is_some(){"youtube"}else{"other"};
     let thumbnail_url=youtube.as_ref().map(|id|format!("https://img.youtube.com/vi/{id}/hqdefault.jpg"));
     let resource=LocalResource{id:id.clone(),name:name.filter(|n|!n.trim().is_empty()).unwrap_or_else(||url.clone()),kind:"link".into(),file_type:file_type.into(),original_filename:None,mime_type:None,size_bytes:None,url:Some(url),thumbnail_url,local_media_path:None,local_media_filename:None,local_media_mime_type:None,local_media_size_bytes:None,local_media_downloaded_at:None,parent_resource_id:None,relative_path:None,item_id,project_id,note_id,item_name:None,project_name:None,note_title:None,category:Some(category),description:Some(description),tags,updated_at:timestamp.clone(),created_at:timestamp,derived_from_resource_id:None};
-    resources.push(resource.clone()); write_resources(&conn,&resources)?; Ok(resource)
+    resources.push(resource.clone());
+    save_with_change(&mut conn, &resources, &id, "create", &serde_json::json!({"resource": resource}))?;
+    Ok(resource)
 }
 
 #[tauri::command]
@@ -206,7 +221,9 @@ pub fn update_local_resource_metadata(app: AppHandle, id: String, category: Opti
     let timestamp=now(&conn)?;
     let resource=resources.iter_mut().find(|r|r.id==id).ok_or_else(||"Resource not found".to_string())?;
     resource.category=Some(category); resource.description=Some(description); resource.tags=tags; resource.updated_at=timestamp;
-    let result=resource.clone(); write_resources(&conn,&resources)?; Ok(result)
+    let result=resource.clone();
+    save_with_change(&mut conn, &resources, &id, "update", &serde_json::json!({"resource": result}))?;
+    Ok(result)
 }
 
 #[tauri::command]
