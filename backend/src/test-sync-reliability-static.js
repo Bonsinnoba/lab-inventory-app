@@ -9,6 +9,7 @@ const app = read('../desktop/src/App.tsx');
 const syncStatus = read('../desktop/src/components/SyncStatus.tsx');
 const localDb = read('../desktop/src-tauri/src/local_db.rs');
 const localInventory = read('../desktop/src/api/local-inventory.ts');
+const itemsApi = read('../desktop/src/api/items.ts');
 const localExcel = read('../desktop/src-tauri/src/local_excel.rs');
 const localProjects = read('../desktop/src-tauri/src/local_projects.rs');
 const localSearch = read('../desktop/src-tauri/src/local_search.rs');
@@ -88,6 +89,7 @@ const checks = [
   ['local location counts derive from inventory snapshot', localLocations.includes("inventory_snapshot") && localLocations.includes('item_count') && localLocations.includes('inventory_counts')],
   ['local location detail includes derived item count', localLocations.includes('get_local_location') && localLocations.includes('counts.get(&id)')],
   ['inventory item state has one local source of truth', localInventory.includes('getLocalInventorySnapshot') && localInventory.includes('saveSnapshotWithSync') && !localInventory.includes('local_inventory_items') && !localInventory.includes('upsert_local_inventory_item') && !localInventory.includes('adjust_local_inventory')],
+  ['SKU item lookup is offline-capable', itemsApi.includes('getItemBySku') && itemsApi.includes('getLocalInventorySnapshot') && itemsApi.includes("String(i.sku||'')")],
   ['local location pull preserves pending edits', localLocations.includes("entity_type='location'") && localLocations.includes('pending')],
   ['desktop pulls location records', desktopSync.includes('/sync/locations/pull') && desktopSync.includes('apply_server_location_pull')],
   ['Tauri registers location pull merge command', tauriMain.includes('local_locations::apply_server_location_pull')],
