@@ -152,6 +152,25 @@ fn nested_delete(app:AppHandle,project_id:String,key:&str,record_id:String,entit
 }
 
 #[tauri::command]
+pub fn create_local_project_task_experiment(app:AppHandle,project_id:String,task_id:String,record:Value)->Result<Value,String>{
+    let mut record=record;
+    record["task_id"]=json!(task_id);
+    nested_create(app,project_id,"task_experiments",record,"project_task_experiment")
+}
+
+#[tauri::command]
+pub fn get_local_project_task_experiments(app:AppHandle,project_id:String,task_id:String)->Result<Vec<Value>,String>{
+    let c=conn(&app)?;
+    let p=load(&c)?.into_iter().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
+    Ok(nested_get(&p,"task_experiments").into_iter().filter(|r|r.get("task_id").and_then(Value::as_str)==Some(task_id.as_str())).collect())
+}
+
+#[tauri::command]
+pub fn delete_local_project_task_experiment(app:AppHandle,project_id:String,link_id:String)->Result<(),String>{
+    nested_delete(app,project_id,"task_experiments",link_id,"project_task_experiment")
+}
+
+#[tauri::command]
 pub fn get_local_project_attachments(app:AppHandle,project_id:String,work_id:String,work_type:String)->Result<Vec<Value>,String>{
     if work_type!="task" && work_type!="experiment" { return Err("work_type must be task or experiment".into()); }
     let c=conn(&app)?;
