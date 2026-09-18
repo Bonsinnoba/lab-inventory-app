@@ -97,7 +97,7 @@ export async function uploadFile(file: File, parent: { item_id?: string; project
   if (metadata?.category) formData.append('category', metadata.category); if (metadata?.description) formData.append('description', metadata.description); if (metadata?.tags) formData.append('tags', JSON.stringify(metadata.tags));
   return new Promise((resolve, reject) => { const xhr = new XMLHttpRequest(); xhr.timeout = 120000; xhr.upload.addEventListener('progress', e => { if (e.lengthComputable && onProgress) onProgress((e.loaded / e.total) * 100); }); xhr.addEventListener('load', () => { if (xhr.status === 201) resolve(JSON.parse(xhr.responseText)); else reject(new Error('Failed to upload file')); }); xhr.addEventListener('error', () => reject(new Error('Upload failed — could not reach the server. Is the backend running?'))); xhr.addEventListener('timeout', () => reject(new Error('Upload timed out after 2 minutes — check the backend server console for an error.'))); xhr.addEventListener('abort', () => reject(new Error('Upload was cancelled'))); xhr.open('POST', `${API_BASE}/resources`); const token = getToken(); if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`); xhr.send(formData); });
 }
-export async function createFolder(name: string, parent: { item_id?: string; project_id?: string; note_id?: string }): Promise<Resource> {
+export async function createFolder(name: string, parent: { item_id?: string; project_id?: string; note_id?: string; parent_resource_id?: string }): Promise<Resource> {
   if (isTauriRuntime()) {
     return localInvoke<Resource>('create_local_resource_folder', { name, ...parent });
   }
