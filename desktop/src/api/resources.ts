@@ -18,6 +18,7 @@ export interface ResourceManifest { folder: string; files: Array<{ id: string; r
 
 const localMediaResourceIds = new Set<string>();
 function isTauriRuntime() { return typeof window !== 'undefined' && Boolean((window as any).__TAURI_IPC__); }
+export function isLocalResourceRuntime() { return isTauriRuntime(); }
 async function localInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauriRuntime()) throw new Error('Local LabOS runtime is unavailable');
   return invoke<T>(command, args);
