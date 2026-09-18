@@ -56,7 +56,7 @@ const checks = [
   ['local conflict resolutions are transactional', localDb.includes('let tx=conn.transaction()') && localDb.includes('UPDATE sync_conflicts SET resolved_at') && localDb.includes('tx.commit()')],
   ['accept-server resets pull cursor', localDb.includes("DELETE FROM sync_state WHERE key='inventory_sync_cursor'")],
   ['server pull merge is transactional', localDb.includes('apply_server_inventory_pull') && localDb.includes('let tx=conn.transaction()')],
-  ['pending local items are protected during pull', localDb.includes("WHERE synced_at IS NULL AND entity_type='item'") && /if\\s+pending\\.contains\\(&item_id\\)\\s*\\{\\s*continue;\\s*\\}/.test(localDb)],
+  ['pending local items are protected during pull', localDb.includes("WHERE synced_at IS NULL AND entity_type='item'") && /if\s+pending\.contains\(&item_id\)\s*\{\s*continue;\s*\}/.test(localDb)],
   ['local project pull merge exists', localProjects.includes('apply_server_project_pull') && localProjects.includes('pending_key')],
   ['Tauri registers project pull merge command', tauriMain.includes('local_projects::apply_server_project_pull')],
   ['item updates include base timestamp', localInventory.includes('base_updated_at:baseUpdatedAt')],
