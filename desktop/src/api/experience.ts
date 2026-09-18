@@ -79,10 +79,11 @@ async function getLocalExperienceDashboard(): Promise<ExperienceDashboard> {
   recent.sort((a,b)=>String(b.created_at).localeCompare(String(a.created_at)));
 
   const lowStock=items.filter(item => {
-    const quantity=Number(item.current_quantity ?? item.quantity ?? 0);
-    const minimum=Number(item.reorder_level ?? item.minimum_quantity ?? 0);
+    const itemData=item as Item & { quantity?:number; reorder_level?:number; minimum_quantity?:number };
+    const quantity=Number(itemData.current_quantity ?? itemData.quantity ?? 0);
+    const minimum=Number(itemData.reorder_level ?? itemData.minimum_quantity ?? 0);
     return item.status==='low_stock' || quantity<=minimum;
-  }).sort((a,b)=>Number(a.current_quantity ?? a.quantity ?? 0)-Number(b.current_quantity ?? b.quantity ?? 0));
+  }).sort((a,b)=>Number((a as Item & {quantity?:number}).current_quantity ?? (a as Item & {quantity?:number}).quantity ?? 0)-Number((b as Item & {quantity?:number}).current_quantity ?? (b as Item & {quantity?:number}).quantity ?? 0));
 
   return {
     metrics:{
