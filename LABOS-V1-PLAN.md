@@ -860,7 +860,7 @@ The following items are known and should not be forgotten:
 - Local project workspace currently returns simplified/empty data for some central-only fields.
 - Local resource upload/file storage is not yet equivalent to central resource storage; central file/media handling remains distinct.
 - Resource sync mappings are now implemented for offline link/folder creation, metadata updates, deletion, server pull, tombstones, and pending-local protection; actual file upload/media acquisition remains central.
-- Desktop global search now has a local-first path for inventory, projects, tasks, experiments, notes, and resources; central search remains the hybrid source for users, transactions, and canvas blocks.
+- Desktop global search now has a local-first path for inventory, projects, tasks, experiments, notes, and resources; central search remains the hybrid source for users and other explicitly central information.
 - Local authentication/bootstrap is not yet complete.
 - Location `item_count` needs reconciliation with local inventory.
 - Some desktop APIs still call the central API directly and need classification/migration.
@@ -932,3 +932,8 @@ Only after that boundary is complete, the remaining local-first domains and cent
 ### Financials — implementation progress
 
 Local-first finance runtime is now implemented on main for transactions, budget periods, and funding sources. Desktop finance CRUD prefers local SQLite-backed state and queues mutations to the sync outbox. Central synchronization now accepts and pulls these records, including tombstone propagation. Finance summaries and Excel operations remain central-derived services until their local equivalents are explicitly implemented and verified.
+
+
+### Project Canvas — implementation progress
+
+Project canvas metadata is now local-first on main. Desktop canvas reads and block/connector mutations use the local SQLite project runtime when running under Tauri and queue explicit project_block/project_connector outbox changes. Central sync accepts these entities, enforces project edit access, pulls current canvas state with project workspace data, and propagates canvas tombstones back to workstations. Canvas media/file storage remains subject to the existing central resource/media boundary.
