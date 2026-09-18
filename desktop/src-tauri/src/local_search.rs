@@ -20,7 +20,14 @@ fn decorate(kind: &str, value: &Value) -> Value {
         "items" => json!({"id":value.get("id"),"type":"item","title":value.get("name").cloned().unwrap_or(json!("Item")),"subtitle":format!("{} - {}",value.get("type").and_then(Value::as_str).unwrap_or("Item"),value.get("status").and_then(Value::as_str).unwrap_or("unknown")),"rank":1.0,"data":value}),
         "projects" => json!({"id":value.get("id"),"type":"project","title":value.get("name").cloned().unwrap_or(json!("Project")),"subtitle":value.get("status").cloned().unwrap_or(json!("No status")),"rank":1.0,"data":value}),
         "notes" => json!({"id":value.get("id"),"type":"note","title":value.get("title").cloned().unwrap_or(json!("Note")),"subtitle":value.get("tags").and_then(Value::as_array).map(|a|a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")).unwrap_or_else(||"No tags".into()),"rank":1.0,"data":value}),
-        "resources" => json!({"id":value.get("id"),"type":"resource","title":value.get("name").cloned().unwrap_or(json!("Resource")),"subtitle":[value.get("category").and_then(Value::as_str),value.get("kind").and_then(Value::as_str),value.get("file_type").and_then(Value::as_str)].into_iter().flatten().collect::<Vec<_>>().join(" - "),"rank":1.0,"data":value}),
+        "resources" => {
+            let subtitle = [value.get("category").and_then(Value::as_str), value.get("kind").and_then(Value::as_str), value.get("file_type").and_then(Value::as_str)]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" - ");
+            json!({"id":value.get("id"),"type":"resource","title":value.get("name").cloned().unwrap_or(json!("Resource")),"subtitle":subtitle,"rank":1.0,"data":value})
+        },
         "tasks" => json!({"id":value.get("id"),"type":"task","title":value.get("title").cloned().unwrap_or(json!("Task")),"subtitle":format!("{} · {}",value.get("project_name").and_then(Value::as_str).unwrap_or("Project"),value.get("status").and_then(Value::as_str).unwrap_or("todo")),"rank":1.0,"data":value}),
         "experiments" => json!({"id":value.get("id"),"type":"experiment","title":value.get("title").cloned().unwrap_or(json!("Experiment")),"subtitle":format!("{} · {}",value.get("project_name").and_then(Value::as_str).unwrap_or("Project"),value.get("status").and_then(Value::as_str).unwrap_or("planned")),"rank":1.0,"data":value}),
         "findings" => json!({"id":value.get("id"),"type":"finding","title":value.get("title").cloned().unwrap_or(json!("Finding")),"subtitle":value.get("status").cloned().unwrap_or(json!("draft")),"rank":1.0,"data":value}),
