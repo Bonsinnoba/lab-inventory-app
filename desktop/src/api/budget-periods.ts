@@ -1,4 +1,6 @@
 import { apiFetch } from './http';
+import { invoke } from '@tauri-apps/api/tauri';
+const isTauri=()=>typeof window!=='undefined'&&Boolean((window as any).__TAURI_IPC__);
 
 export interface BudgetPeriod {
   id: string;
@@ -10,11 +12,7 @@ export interface BudgetPeriod {
   created_at: string;
 }
 
-export async function getBudgetPeriods(): Promise<BudgetPeriod[]> {
-  const response = await apiFetch(`/budget-periods`);
-  if (!response.ok) throw new Error('Failed to fetch budget periods');
-  return response.json();
-}
+export async function getBudgetPeriods(): Promise<BudgetPeriod[]> { if(isTauri())try{return await invoke<BudgetPeriod[]>('get_local_budget_periods')}catch{} const response=await apiFetch('/budget-periods');if(!response.ok)throw new Error('Failed to fetch');return response.json(); }
 
 export async function getCurrentBudgetPeriod(): Promise<BudgetPeriod | null> {
   const response = await apiFetch(`/budget-periods/current`);
@@ -22,29 +20,8 @@ export async function getCurrentBudgetPeriod(): Promise<BudgetPeriod | null> {
   return response.json();
 }
 
-export async function createBudgetPeriod(period: Omit<BudgetPeriod, 'id' | 'created_at'>): Promise<BudgetPeriod> {
-  const response = await apiFetch(`/budget-periods`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(period),
-  });
-  if (!response.ok) throw new Error('Failed to create budget period');
-  return response.json();
-}
+export async function createBudgetPeriod(value:any):Promise<BudgetPeriod>{if(isTauri())try{return await invoke<BudgetPeriod>('create_local_budget_period',{period:value})}catch{} const response=await apiFetch('/budget-periods',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});if(!response.ok)throw new Error('Failed to create');return response.json();}
 
-export async function updateBudgetPeriod(id: string, period: Partial<BudgetPeriod>): Promise<BudgetPeriod> {
-  const response = await apiFetch(`/budget-periods/${id}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(period),
-  });
-  if (!response.ok) throw new Error('Failed to update budget period');
-  return response.json();
-}
+export async function updateBudgetPeriod(id:string,value:any):Promise<BudgetPeriod>{if(isTauri())try{return await invoke<BudgetPeriod>('update_local_budget_period',{id,period:value})}catch{} const response=await apiFetch(`/budget-periods/${id}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});if(!response.ok)throw new Error('Failed to update');return response.json();}
 
-export async function deleteBudgetPeriod(id: string): Promise<void> {
-  const response = await apiFetch(`/budget-periods/${id}`, {
-    method: 'DELETE',
-  });
-  if (!response.ok) throw new Error('Failed to delete budget period');
-}
+export async function deleteBudgetPeriod(id:string):Promise<void>{if(isTauri())try{await invoke('delete_local_budget_period',{id});return}catch{} const response=await apiFetch(`/budget-periods/${id}`,{method:'DELETE'});if(!response.ok)throw new Error('Failed to delete');}
