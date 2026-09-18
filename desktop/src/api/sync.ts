@@ -179,7 +179,7 @@ async function pullServerNotes():Promise<boolean>{
     const response=await apiFetch('/sync/notes/pull',{method:'GET',cache:'no-store'});
     if(!response.ok){publish({status:'error',lastError:await getApiErrorMessage(response,'Unable to download note changes')});return false;}
     const body=await response.json() as NotesPullResponse;
-    await invoke('apply_server_notes_pull',{notes:Array.isArray(body.notes)?body.notes:[],deleted_note_ids:Array.isArray(body.deleted_note_ids)?body.deleted_note_ids:[]});
+    await invoke('apply_server_notes_pull',{notes:Array.isArray(body.notes)?body.notes:[],deletedNoteIds:Array.isArray(body.deleted_note_ids)?body.deleted_note_ids:[]});
     return true;
   }catch(error){publish({status:'error',lastError:error instanceof Error?error.message:String(error)});return false;}
 }
