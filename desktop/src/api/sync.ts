@@ -7,6 +7,7 @@ type LocationPullResponse = { locations?:unknown[]; deleted_location_ids?:string
 type EngineeringPullResponse = { calculations?:unknown[]; tests?:unknown[]; deleted_calculation_ids?:string[]; deleted_test_ids?:string[] };
 type PullResponse = { items?:unknown[]; deleted_item_ids?:string[]; next_cursor?:string|null; has_more?:boolean };
 type KnowledgePullResponse = { findings?:unknown[]; results?:unknown[]; relationships?:unknown[]; deleted?:{finding?:string[];knowledge_result?:string[];knowledge_relationship?:string[]} };
+type NotesPullResponse = { notes?:unknown[]; deleted_note_ids?:string[] };
 export type SyncRuntimeState = { status:'offline'|'syncing'|'idle'|'error'; lastSuccessAt:string|null; lastError:string|null };
 
 const STATUS_KEY='labos.sync.status.v1';
@@ -81,7 +82,8 @@ async function runSync():Promise<number>{
   const locationPullSucceeded=await pullServerLocations();
   const engineeringPullSucceeded=await pullServerEngineering();
   const knowledgePullSucceeded=await pullServerKnowledge();
-  const pullSucceeded=inventoryPullSucceeded&&projectPullSucceeded&&resourcePullSucceeded&&financePullSucceeded&&locationPullSucceeded&&engineeringPullSucceeded&&knowledgePullSucceeded;
+  const notesPullSucceeded=await pullServerNotes();
+  const pullSucceeded=inventoryPullSucceeded&&projectPullSucceeded&&resourcePullSucceeded&&financePullSucceeded&&locationPullSucceeded&&engineeringPullSucceeded&&knowledgePullSucceeded&&notesPullSucceeded;
   if(!pullSucceeded){syncSucceeded=false;publish({status:'error',lastError:runtimeState.lastError||'Unable to download the latest server changes'});scheduleRetry();}
   if(syncSucceeded&&pullSucceeded){clearRetryState();publish({status:'idle',lastSuccessAt:new Date().toISOString(),lastError:null});}
   else if(runtimeState.status!=='error')publish({status:'error',lastError:runtimeState.lastError||'Some changes could not be synchronized'});
@@ -167,6 +169,17 @@ async function pullServerKnowledge():Promise<boolean>{
       deletedResultIds:Array.isArray(deleted.knowledge_result)?deleted.knowledge_result:[],
       deletedRelationshipIds:Array.isArray(deleted.knowledge_relationship)?deleted.knowledge_relationship:[]
     });
+    return true;
+  }catch(error){publish({status:'error',lastError:error instanceof Error?error.message:String(error)});return false;}
+}
+
+async function pullServerNotes():Promise<boolean>{
+  if(typeof navigator!=='undefined'&&!navigator.onLine)return false;
+  try{
+    const response=await apiFetch('/sync/notes/pull',{method:'GET',cache:'no-store'});
+    if(!response.ok){publish({status:'error',lastError:await getApiErrorMessage(response,'Unable to download note changes')});return false;}
+    const body=await response.json() as NotesPullResponse;
+    await invoke('apply_server_notes_pull',{notes:Array.isArray(body.notes)?body.notes:[],deleted_note_ids:Array.isArray(body.deleted_note_ids)?body.deleted_note_ids:[]});
     return true;
   }catch(error){publish({status:'error',lastError:error instanceof Error?error.message:String(error)});return false;}
 }
