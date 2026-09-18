@@ -1,4 +1,8 @@
 import { API_BASE } from '../lib/config';
+import { invoke } from '@tauri-apps/api/tauri';
+
+function isTauriRuntime(): boolean { return typeof window !== 'undefined' && !!(window as any).__TAURI_IPC__; }
+async function localInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T | null> { if (!isTauriRuntime()) return null; return invoke<T>(command, args); }
 
 export type User = {
   id: string;
@@ -16,6 +20,8 @@ export type AuthResponse = {
 };
 
 export async function login(username: string, password: string): Promise<AuthResponse> {
+  const local = await localInvoke<AuthResponse>('local_login', { username, password });
+  if (local !== null) return local;
   const response = await fetch(`${API_BASE}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -29,6 +35,8 @@ export async function login(username: string, password: string): Promise<AuthRes
 }
 
 export async function register(username: string, password: string, role?: 'admin' | 'member'): Promise<AuthResponse> {
+  const local = await localInvoke<AuthResponse>('bootstrap_local_admin', { username, password });
+  if (local !== null) return local;
   const response = await fetch(`${API_BASE}/auth/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -42,6 +50,8 @@ export async function register(username: string, password: string, role?: 'admin
 }
 
 export async function getCurrentUser(token: string): Promise<{ user: User }> {
+  const local = await localInvoke<User | null>('local_current_user');
+  if (local !== null) return { user: local };
   const response = await fetch(`${API_BASE}/auth/me`, {
     headers: { Authorization: `Bearer ${token}` },
   });
@@ -52,6 +62,8 @@ export async function getCurrentUser(token: string): Promise<{ user: User }> {
 }
 
 export async function changePassword(current_password: string, new_password: string): Promise<void> {
+  const local = await localInvoke<void>('local_change_password', { currentPassword: current_password, newPassword: new_password });
+  if (local !== null) return;
   const response = await fetch(`${API_BASE}/auth/me/password`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken() || ''}` },
@@ -65,6 +77,8 @@ export async function changePassword(current_password: string, new_password: str
 }
 
 export async function updateProfile(display_name: string, email: string): Promise<User> {
+  const local = await localInvoke<User>('local_update_profile', { displayName: display_name, email });
+  if (local !== null) return local;
   const response = await fetch(`${API_BASE}/auth/me/profile`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken() || ''}` },
