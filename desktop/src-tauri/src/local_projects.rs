@@ -205,19 +205,29 @@ pub fn apply_server_project_pull(app: AppHandle, projects_json: String, deleted_
     let mut c = conn(&app)?;
     let mut projects = load(&c)?;
     let pending: std::collections::HashSet<String> = {
-        let mut stmt = c.prepare("SELECT DISTINCT entity_id FROM sync_outbox WHERE synced_at IS NULL AND entity_type IN ('project','project_task','project_experiment','project_bom') AND entity_id IS NOT NULL").map_err(|e| format!("Unable to inspect pending project changes: {e}"))?;
+        let mut stmt = c.prepare("SELECT DISTINCT entity_type || ':' || entity_id FROM sync_outbox WHERE synced_at IS NULL AND entity_id IS NOT NULL AND entity_type IN ('project','project_task','project_experiment','project_bom')").map_err(|e| format!("Unable to inspect pending project changes: {e}"))?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| format!("Unable to inspect pending project changes: {e}"))?;
         rows.filter_map(|r| r.ok()).collect()
     };
     projects.retain(|p| {
         let id = p.get("id").and_then(Value::as_str).unwrap_or_default();
-        !deleted.contains(id) || pending.contains(id)
+        !deleted.contains(id) || pending.contains(&format!("project:{id}"))
     });
-    for project in incoming {
+    for mut project in incoming {
         let Some(project_id) = project.get("id").and_then(Value::as_str).map(ToOwned::to_owned) else { continue; };
-        if pending.contains(&project_id) { continue; }
-        if let Some(existing) = projects.iter_mut().find(|p| p.get("id").and_then(Value::as_str) == Some(project_id.as_str())) {
-            *existing = project;
+        if pending.contains(&format!("project:{project_id}")) { continue; }
+        if let Some(existing) = projects.iter().find(|p| p.get("id").and_then(Value::as_str) == Some(project_id.as_str())).cloned() {
+            for key in ["tasks","experiments","bom"] {
+                let pending_key = match key { "tasks"=>"project_task", "experiments"=>"project_experiment", "bom"=>"project_bom", _=>"" };
+                let mut merged = project.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
+                for old in existing.get(key).and_then(Value::as_array).cloned().unwrap_or_default() {
+                    if let Some(id) = old.get("id").and_then(Value::as_str) {
+                        if pending.contains(&format!("{pending_key}:{id}")) && !merged.iter().any(|v| v.get("id").and_then(Value::as_str) == Some(id)) { merged.push(old); }
+                    }
+                }
+                project[key] = Value::Array(merged);
+            }
+            if let Some(pos)=projects.iter().position(|p| p.get("id").and_then(Value::as_str)==Some(project_id.as_str())) { projects[pos]=project; }
         } else {
             projects.push(project);
         }
