@@ -63,6 +63,7 @@ export default function NotebookPage() {
     onSuccess: (updated) => {
       queryClient.invalidateQueries({ queryKey: ['notes'] });
       queryClient.invalidateQueries({ queryKey: ['tags'] });
+      queryClient.invalidateQueries({ queryKey: ['experience', 'dashboard'] });
       setDraft({ id: updated.id, title: updated.title, body: updated.body, tags: updated.tags, project_id: updated.project_id || null });
       showToast('Note saved');
     },
