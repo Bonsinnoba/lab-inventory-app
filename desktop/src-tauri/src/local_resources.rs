@@ -182,8 +182,9 @@ pub fn create_local_resource_folder(app: AppHandle, name: String, item_id: Optio
 pub fn update_local_resource_metadata(app: AppHandle, id: String, category: Option<String>, description: Option<String>, tags: Option<Vec<String>>) -> Result<LocalResource, String> {
     let conn=open_local_connection(&app)?; ensure_schema(&conn)?; let mut resources=read_resources(&conn)?;
     let (category,description,tags)=metadata(category,description,tags);
+    let timestamp=now(&conn)?;
     let resource=resources.iter_mut().find(|r|r.id==id).ok_or_else(||"Resource not found".to_string())?;
-    resource.category=Some(category); resource.description=Some(description); resource.tags=tags; resource.updated_at=now(&conn)?;
+    resource.category=Some(category); resource.description=Some(description); resource.tags=tags; resource.updated_at=timestamp;
     let result=resource.clone(); write_resources(&conn,&resources)?; Ok(result)
 }
 
