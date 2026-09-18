@@ -46,7 +46,10 @@ async function enrichWithDownloadedMedia(resources: Resource[]): Promise<Resourc
 
 export async function getResource(id: string): Promise<Resource> {
   if (isTauriRuntime()) {
-    try { return await localInvoke<Resource>('get_local_resource', { id }); } catch {}
+    try {
+      const local = await localInvoke<Resource>('get_local_resource', { id });
+      return (await enrichWithDownloadedMedia([local]))[0];
+    } catch {}
   }
   const response = await apiFetch(`/resources/${id}`);
   if (!response.ok) throw new Error('Failed to fetch resource');
