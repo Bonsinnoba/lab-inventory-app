@@ -1,5 +1,6 @@
 import { apiFetch, getApiErrorMessage } from './http';
 import { localBackend } from './local-backend';
+import { getProjectRequirements, createProjectRequirement, updateProjectRequirement, deleteProjectRequirement } from './projects';
 
 export interface OperationsOverview {
   summary: { total_items:number; equipment:number; tools:number; components:number; materials:number; low_stock:number; stock_value:number };
@@ -24,7 +25,7 @@ export const getSuppliers=()=>json<Supplier[]>('/operations/suppliers');
 export const createSupplier=(body:Partial<Supplier>)=>json<Supplier>('/operations/suppliers',{method:'POST',body:JSON.stringify(body)});
 export const updateSupplier=(id:string,body:Partial<Supplier>)=>json<Supplier>(`/operations/suppliers/${id}`,{method:'PATCH',body:JSON.stringify(body)});
 export const deleteSupplier=(id:string)=>json<void>(`/operations/suppliers/${id}`,{method:'DELETE'});
-export const getRequirements=(projectId?:string)=>json<ResourceRequirement[]>(`/operations/requirements${projectId?`?project_id=${encodeURIComponent(projectId)}`:''}`);
-export const createRequirement=(body:Partial<ResourceRequirement>)=>json<ResourceRequirement>('/operations/requirements',{method:'POST',body:JSON.stringify(body)});
-export const updateRequirement=(id:string,body:Partial<ResourceRequirement>)=>json<ResourceRequirement>(`/operations/requirements/${id}`,{method:'PATCH',body:JSON.stringify(body)});
-export const deleteRequirement=(id:string)=>json<void>(`/operations/requirements/${id}`,{method:'DELETE'});
+export const getRequirements=(projectId?:string)=>localBackend.isAvailable()?getProjectRequirements(projectId):json<ResourceRequirement[]>(`/operations/requirements${projectId?`?project_id=${encodeURIComponent(projectId)}`:''}`);
+export const createRequirement=(body:Partial<ResourceRequirement>)=>body.project_id?createProjectRequirement(body.project_id,body):json<ResourceRequirement>('/operations/requirements',{method:'POST',body:JSON.stringify(body)});
+export const updateRequirement=(id:string,body:Partial<ResourceRequirement>)=>body.project_id?updateProjectRequirement(body.project_id,id,body):json<ResourceRequirement>(`/operations/requirements/${id}`,{method:'PATCH',body:JSON.stringify(body)});
+export const deleteRequirement=(id:string,body?:{project_id?:string})=>body?.project_id?deleteProjectRequirement(body.project_id,id):json<void>(`/operations/requirements/${id}`,{method:'DELETE'});
