@@ -198,7 +198,7 @@ pub fn delete_local_project_attachment(app:AppHandle,project_id:String,attachmen
 #[tauri::command]
 pub fn list_local_project_workspace(app:AppHandle,project_id:String)->Result<Value,String>{
     let c=conn(&app)?;let p=load(&c)?.into_iter().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
-    Ok(json!({"members":[],"tasks":nested_get(&p,"tasks"),"experiments":nested_get(&p,"experiments"),"items":nested_get(&p,"items"),"notes":[],"resources":[],"activity":[],"blocks":nested_get(&p,"blocks"),"connectors":nested_get(&p,"connectors"),"task_experiments":nested_get(&p,"task_experiments"),"attachments":nested_get(&p,"attachments"),"permissions":{"access":"admin","member_role":"lead","can_edit":true}}))
+    Ok(json!({"members":[],"tasks":nested_get(&p,"tasks"),"experiments":nested_get(&p,"experiments"),"items":nested_get(&p,"items"),"notes":[],"resources":[],"activity":[],"blocks":nested_get(&p,"blocks"),"connectors":nested_get(&p,"connectors"),"task_experiments":nested_get(&p,"task_experiments"),"attachments":nested_get(&p,"attachments"),"requirements":nested_get(&p,"requirements"),"permissions":{"access":"admin","member_role":"lead","can_edit":true}}))
 }
 
 #[tauri::command]
