@@ -53,10 +53,9 @@ fn id() -> String {
     format!("{:032x}", n)
 }
 
-fn now() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-    format!("{}", secs)
+fn now(conn: &Connection) -> Result<String, String> {
+    conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')", [], |r| r.get(0))
+        .map_err(|e| format!("Unable to create timestamp: {e}"))
 }
 
 #[tauri::command]
@@ -72,7 +71,7 @@ pub fn get_local_project(app: AppHandle, project_id: String) -> Result<Option<Va
 #[tauri::command]
 pub fn create_local_project(app: AppHandle, mut project: Value) -> Result<Value, String> {
     let mut c = conn(&app)?; let mut projects = load(&c)?;
-    let project_id = id(); let timestamp = now();
+    let project_id = id(); let timestamp = now(&c)?;
     if project.get("name").and_then(Value::as_str).map(|s| s.trim().is_empty()).unwrap_or(true) {
         return Err("name is required".into());
     }
@@ -101,7 +100,7 @@ pub fn update_local_project(app: AppHandle, project_id: String, patch: Value) ->
         for (k,v) in obj { if !matches!(k.as_str(), "id"|"created_at"|"tasks"|"experiments"|"items"|"bom") { p[k] = v.clone(); } }
     }
     if p.get("name").and_then(Value::as_str).map(|s| s.trim().is_empty()).unwrap_or(true) { return Err("name cannot be empty".into()); }
-    p["updated_at"] = json!(now());
+    p["updated_at"] = json!(now(&c)?);
     let updated = p.clone();
     save(&mut c, &projects, vec![(id(), "project".into(), project_id.clone(), "update".into(), json!({"id":project_id,"before":old,"project":updated}))])?;
     Ok(updated)
@@ -122,7 +121,7 @@ fn nested_get(project: &Value, key: &str) -> Vec<Value> {
 fn nested_create(app: AppHandle, project_id: String, key: &str, mut record: Value, entity_type: &str) -> Result<Value, String> {
     let mut c=conn(&app)?; let mut projects=load(&c)?;
     let p=projects.iter_mut().find(|p| p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
-    let record_id=id(); let timestamp=now();
+    let record_id=id(); let timestamp=now(&c)?;
     record["id"]=json!(&record_id); record["project_id"]=json!(&project_id);
     record["created_at"]=json!(&timestamp); record["updated_at"]=json!(&timestamp);
     let mut list=nested_get(p,key); list.push(record.clone()); p[key]=Value::Array(list); p["updated_at"]=json!(&timestamp);
@@ -136,7 +135,7 @@ fn nested_update(app: AppHandle, project_id:String, key:&str, record_id:String, 
     let mut list=nested_get(p,key);
     let r=list.iter_mut().find(|r|r.get("id").and_then(Value::as_str)==Some(record_id.as_str())).ok_or("Record not found")?;
     if let Some(obj)=patch.as_object(){for(k,v)in obj{if k!="id"&&k!="project_id"&&k!="created_at"{r[k]=v.clone();}}}
-    r["updated_at"]=json!(now()); let updated=r.clone(); p[key]=Value::Array(list); p["updated_at"]=json!(now());
+    r["updated_at"]=json!(now(&c)?); let updated=r.clone(); p[key]=Value::Array(list); p["updated_at"]=json!(now(&c)?);
     save(&mut c,&projects,vec![(id(),entity_type.into(),record_id,"update".into(),updated.clone())])?;Ok(updated)
 }
 
@@ -144,7 +143,7 @@ fn nested_delete(app:AppHandle,project_id:String,key:&str,record_id:String,entit
     let mut c=conn(&app)?;let mut projects=load(&c)?;
     let p=projects.iter_mut().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
     let mut list=nested_get(p,key);let before=list.iter().find(|r|r.get("id").and_then(Value::as_str)==Some(record_id.as_str())).cloned().ok_or("Record not found")?;
-    list.retain(|r|r.get("id").and_then(Value::as_str)!=Some(record_id.as_str()));p[key]=Value::Array(list);p["updated_at"]=json!(now());
+    list.retain(|r|r.get("id").and_then(Value::as_str)!=Some(record_id.as_str()));p[key]=Value::Array(list);p["updated_at"]=json!(now(&c)?);
     save(&mut c,&projects,vec![(id(),entity_type.into(),record_id,"delete".into(),json!({"record":before}))])
 }
 
@@ -187,7 +186,7 @@ pub fn link_local_project_item(app:AppHandle,project_id:String,item_id:String,al
     let mut c=conn(&app)?;let mut projects=load(&c)?;let p=projects.iter_mut().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
     let mut items=nested_get(p,"items");let existing=items.iter_mut().find(|x|x.get("item_id").and_then(Value::as_str)==Some(item_id.as_str()));
     let record=json!({"project_id":project_id,"item_id":item_id,"allocated_quantity":allocated_quantity,"notes":notes});
-    if let Some(e)=existing{*e=record.clone();}else{items.push(record.clone());}p["items"]=Value::Array(items);p["updated_at"]=json!(now());
+    if let Some(e)=existing{*e=record.clone();}else{items.push(record.clone());}p["items"]=Value::Array(items);p["updated_at"]=json!(now(&c)?);
     save(&mut c,&projects,vec![(id(),"project_item".into(),item_id,"upsert".into(),record.clone())])?;Ok(record)
 }
 
