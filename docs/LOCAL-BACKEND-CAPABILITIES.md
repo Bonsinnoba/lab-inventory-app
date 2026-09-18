@@ -45,6 +45,7 @@ These domains are expected to remain usable without the central server and persi
 - finance transactions;
 - budget periods;
 - funding sources;
+- engineering calculations and tests;
 - local/global search over locally owned data.
 
 A local-first operation must not silently fall through to PostgreSQL merely because connectivity exists.
@@ -98,7 +99,7 @@ The implementation may use Rust/Tauri IPC during the migration, but the desktop 
 
 Existing `local_*.rs` modules are the first implementation of the Local LabOS Backend. They are not separate product domains.
 
-Remaining central routes must be audited against this matrix before they are considered complete. In particular, Engineering and Operations requirements currently require deliberate local persistence/sync work before they can be classified as fully local-first.
+Remaining central routes must be audited against this matrix before they are considered complete. Operations requirements currently require deliberate local persistence/sync work before they can be classified as fully local-first. Engineering calculations, tests, formula definitions and formula execution now have a local runtime; calculation/test records synchronize through the central backend.
 
 ## Non-negotiable boundary
 
