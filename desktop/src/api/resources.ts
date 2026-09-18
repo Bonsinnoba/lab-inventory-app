@@ -58,7 +58,7 @@ export async function getAllResources(): Promise<Resource[]> {
   if (isTauriRuntime()) {
     try {
       const local = await localInvoke<Resource[]>('list_local_resources');
-      if (local.length) return enrichWithDownloadedMedia(local);
+      return enrichWithDownloadedMedia(local);
     } catch {}
   }
   const response = await apiFetch('/resources');
@@ -71,7 +71,7 @@ export async function getResources(filters: { item_id?: string; project_id?: str
   if (isTauriRuntime()) {
     try {
       const local = await localInvoke<Resource[]>('list_local_resources', filters);
-      if (local.length || Object.values(filters).some(Boolean)) return enrichWithDownloadedMedia(local);
+      return enrichWithDownloadedMedia(local);
     } catch {}
   }
   const params = new URLSearchParams(); if (filters.item_id) params.append('item_id', filters.item_id); if (filters.project_id) params.append('project_id', filters.project_id); if (filters.note_id) params.append('note_id', filters.note_id); if (filters.parent_resource_id) params.append('parent_resource_id', filters.parent_resource_id);
@@ -89,6 +89,7 @@ export async function createPdfEditCopy(id: string): Promise<Resource> { const r
 export async function replaceResourceFile(id: string, file: File): Promise<Resource> { const formData = new FormData(); formData.append('file', file); const response = await apiFetch(`/resource-editor/${id}/file`, { method: 'PUT', body: formData }); if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to replace resource file')); return response.json(); }
 
 export async function uploadFile(file: File, parent: { item_id?: string; project_id?: string; note_id?: string }, name?: string, onProgress?: (progress: number) => void, metadata?: { category?: string; description?: string; tags?: string[] }): Promise<Resource> {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) throw new Error('File uploads require a connection to the central LabOS backend. Add a link instead, or reconnect and try again.');
   const formData = new FormData(); formData.append('file', file); if (name) formData.append('name', name); if (parent.item_id) formData.append('item_id', parent.item_id); if (parent.project_id) formData.append('project_id', parent.project_id); if (parent.note_id) formData.append('note_id', parent.note_id);
   if (metadata?.category) formData.append('category', metadata.category); if (metadata?.description) formData.append('description', metadata.description); if (metadata?.tags) formData.append('tags', JSON.stringify(metadata.tags));
   return new Promise((resolve, reject) => { const xhr = new XMLHttpRequest(); xhr.timeout = 120000; xhr.upload.addEventListener('progress', e => { if (e.lengthComputable && onProgress) onProgress((e.loaded / e.total) * 100); }); xhr.addEventListener('load', () => { if (xhr.status === 201) resolve(JSON.parse(xhr.responseText)); else reject(new Error('Failed to upload file')); }); xhr.addEventListener('error', () => reject(new Error('Upload failed — could not reach the server. Is the backend running?'))); xhr.addEventListener('timeout', () => reject(new Error('Upload timed out after 2 minutes — check the backend server console for an error.'))); xhr.addEventListener('abort', () => reject(new Error('Upload was cancelled'))); xhr.open('POST', `${API_BASE}/resources`); const token = getToken(); if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`); xhr.send(formData); });
