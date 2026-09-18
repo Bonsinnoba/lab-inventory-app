@@ -90,6 +90,7 @@ pub fn create_local_project(app: AppHandle, mut project: Value) -> Result<Value,
     project["connectors"] = json!([]);
     project["task_experiments"] = json!([]);
     project["attachments"] = json!([]);
+    project["requirements"] = json!([]);
     projects.push(project.clone());
     save(&mut c, &projects, vec![(id(), "project".into(), project_id, "create".into(), project.clone())])?;
     Ok(project)
@@ -271,6 +272,37 @@ pub fn get_local_project_tasks(app:AppHandle,project_id:String)->Result<Vec<Valu
 #[tauri::command]
 pub fn get_local_project_experiments(app:AppHandle,project_id:String)->Result<Vec<Value>,String>{let c=conn(&app)?;let p=load(&c)?.into_iter().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;Ok(nested_get(&p,"experiments"))}
 #[tauri::command]
+pub fn get_local_resource_requirements(app: AppHandle, project_id: Option<String>) -> Result<Vec<Value>, String> {
+    let c=conn(&app)?; let projects=load(&c)?; let mut rows=Vec::new();
+    for p in projects {
+        if let Some(ref pid)=project_id { if p.get("id").and_then(Value::as_str)!=Some(pid.as_str()) { continue; } }
+        for mut row in nested_get(&p,"requirements") {
+            row["project_name"]=p.get("name").cloned().unwrap_or(Value::Null); rows.push(row);
+        }
+    }
+    Ok(rows)
+}
+#[tauri::command]
+pub fn create_local_resource_requirement(app: AppHandle, project_id: String, mut record: Value) -> Result<Value, String> {
+    let name=record.get("name").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    if name.is_empty(){return Err("name is required".into());}
+    if record.get("quantity").and_then(Value::as_f64).unwrap_or(0.0)<=0.0{return Err("quantity must be greater than zero".into());}
+    record["name"]=json!(name); record["status"]=record.get("status").cloned().unwrap_or(json!("required"));
+    record["requirement_type"]=record.get("requirement_type").cloned().unwrap_or(json!("component"));
+    nested_create(app,project_id,"requirements",record,"project_resource_requirement")
+}
+#[tauri::command]
+pub fn update_local_resource_requirement(app: AppHandle, project_id: String, record_id: String, patch: Value) -> Result<Value, String> {
+    if let Some(q)=patch.get("quantity").and_then(Value::as_f64) { if q<=0.0{return Err("quantity must be greater than zero".into());} }
+    if let Some(n)=patch.get("name").and_then(Value::as_str) { if n.trim().is_empty(){return Err("name cannot be empty".into());} }
+    nested_update(app,project_id,"requirements",record_id,patch,"project_resource_requirement")
+}
+#[tauri::command]
+pub fn delete_local_resource_requirement(app: AppHandle, project_id: String, record_id: String) -> Result<(), String> {
+    nested_delete(app,project_id,"requirements",record_id,"project_resource_requirement")
+}
+
+#[tauri::command]
 pub fn get_local_project_bom(app:AppHandle,project_id:String)->Result<Vec<Value>,String>{let c=conn(&app)?;let p=load(&c)?.into_iter().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;Ok(nested_get(&p,"bom"))}
 
 #[tauri::command]
@@ -291,13 +323,13 @@ pub fn unlink_local_project_item(app:AppHandle,project_id:String,item_id:String)
 
 
 #[tauri::command]
-pub fn apply_server_project_pull(app: AppHandle, projects_json: String, deleted_project_ids: Vec<String>, deleted_project_task_ids: Vec<String>, deleted_project_experiment_ids: Vec<String>, deleted_project_bom_ids: Vec<String>, deleted_project_block_ids: Vec<String>, deleted_project_connector_ids: Vec<String>, deleted_project_measurement_ids: Vec<String>, deleted_project_observation_ids: Vec<String>, deleted_project_attachment_ids: Vec<String>, deleted_project_task_experiment_ids: Vec<String>) -> Result<(), String> {
+pub fn apply_server_project_pull(app: AppHandle, projects_json: String, deleted_project_ids: Vec<String>, deleted_project_task_ids: Vec<String>, deleted_project_experiment_ids: Vec<String>, deleted_project_bom_ids: Vec<String>, deleted_project_block_ids: Vec<String>, deleted_project_connector_ids: Vec<String>, deleted_project_measurement_ids: Vec<String>, deleted_project_observation_ids: Vec<String>, deleted_project_attachment_ids: Vec<String>, deleted_project_task_experiment_ids: Vec<String>, deleted_project_requirement_ids: Vec<String>) -> Result<(), String> {
     let incoming: Vec<Value> = serde_json::from_str(&projects_json).map_err(|e| format!("Invalid server project payload: {e}"))?;
     let deleted: std::collections::HashSet<String> = deleted_project_ids.into_iter().collect();
     let mut c = conn(&app)?;
     let mut projects = load(&c)?;
     let pending: std::collections::HashSet<String> = {
-        let mut stmt = c.prepare("SELECT DISTINCT entity_type || ':' || entity_id FROM sync_outbox WHERE synced_at IS NULL AND entity_id IS NOT NULL AND entity_type IN ('project','project_task','project_experiment','project_bom','project_block','project_connector','project_work_attachment','project_task_experiment')").map_err(|e| format!("Unable to inspect pending project changes: {e}"))?;
+        let mut stmt = c.prepare("SELECT DISTINCT entity_type || ':' || entity_id FROM sync_outbox WHERE synced_at IS NULL AND entity_id IS NOT NULL AND entity_type IN ('project','project_task','project_experiment','project_bom','project_block','project_connector','project_work_attachment','project_task_experiment','project_resource_requirement')").map_err(|e| format!("Unable to inspect pending project changes: {e}"))?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| format!("Unable to inspect pending project changes: {e}"))?;
         rows.filter_map(|r| r.ok()).collect()
     };
@@ -314,9 +346,9 @@ pub fn apply_server_project_pull(app: AppHandle, projects_json: String, deleted_
             task_experiments.retain(|v|{let rid=v.get("id").and_then(Value::as_str).unwrap_or_default();!deleted_project_task_experiment_ids.iter().any(|x|x==rid)||pending.contains(&format!("project_task_experiment:{rid}"))});
             for oldrow in old_task_experiments{if let Some(rid)=oldrow.get("id").and_then(Value::as_str){if pending.contains(&format!("project_task_experiment:{rid}"))&&!task_experiments.iter().any(|v|v.get("id").and_then(Value::as_str)==Some(rid)){task_experiments.push(oldrow);}}}
             project["task_experiments"]=Value::Array(task_experiments);
-            for key in ["tasks","experiments","bom","blocks","connectors"] {
+            for key in ["tasks","experiments","bom","blocks","connectors","requirements"] {
                 let pending_key = match key { "tasks"=>"project_task", "experiments"=>"project_experiment", "bom"=>"project_bom", "blocks"=>"project_block", "connectors"=>"project_connector", _=>"" };
-                let deleted_ids: std::collections::HashSet<String> = match key { "tasks"=>deleted_project_task_ids.iter().cloned().collect(), "experiments"=>deleted_project_experiment_ids.iter().cloned().collect(), "bom"=>deleted_project_bom_ids.iter().cloned().collect(), "blocks"=>deleted_project_block_ids.iter().cloned().collect(), "connectors"=>deleted_project_connector_ids.iter().cloned().collect(), _=>std::collections::HashSet::new() };
+                let deleted_ids: std::collections::HashSet<String> = match key { "tasks"=>deleted_project_task_ids.iter().cloned().collect(), "experiments"=>deleted_project_experiment_ids.iter().cloned().collect(), "bom"=>deleted_project_bom_ids.iter().cloned().collect(), "blocks"=>deleted_project_block_ids.iter().cloned().collect(), "connectors"=>deleted_project_connector_ids.iter().cloned().collect(), "requirements"=>deleted_project_requirement_ids.iter().cloned().collect(), _=>std::collections::HashSet::new() };
                 let mut merged = project.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
                 if key=="tasks" || key=="experiments" {
                     for work in &mut merged {
