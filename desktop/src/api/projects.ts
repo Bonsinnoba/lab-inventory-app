@@ -28,7 +28,28 @@ export interface UserCandidate { id:string; username:string; role:string; }
 export interface ProjectBomItem { id:string; project_id:string; name:string; part_number?:string|null; required_quantity:number|string; unit?:string|null; preferred_item_id?:string|null; alternative_item_id?:string|null; notes:string; preferred_item_name?:string|null; preferred_item_quantity?:number|string|null; alternative_item_name?:string|null; alternative_item_quantity?:number|string|null; }
 
 export async function getProjects(): Promise<Project[]> { const local=await localInvoke<Project[]>('list_local_projects'); if(local!==null)return local; const r=await apiFetch('/projects'); if(!r.ok)throw await apiError(r,'Failed to fetch projects'); return r.json(); }
-export async function getProjectFinancialSummary():Promise<ProjectFinancialSummary[]> { const local=await localInvoke<Project[]>('list_local_projects'); if(local!==null)return local.map(p=>({project_id:p.id,name:p.name,budget:p.budget??null,actual_expense:0,project_income:0,net_spend:0,allocated_inventory_value:0,budget_remaining:p.budget==null?null:Number(p.budget),budget_used_percent:0})); const r=await apiFetch('/projects/financial-summary'); if(!r.ok)throw await apiError(r,'Failed to fetch project financial summary'); return r.json(); }
+export async function getProjectFinancialSummary():Promise<ProjectFinancialSummary[]> {
+  const local=await localInvoke<Project[]>('list_local_projects');
+  if(local!==null){
+    const { getTransactions } = await import('./transactions');
+    const transactions = await getTransactions();
+    return Promise.all(local.map(async (p) => {
+      const projectTransactions = transactions.filter((t:any) => t.project_id === p.id);
+      const actual_expense = projectTransactions.filter((t:any) => t.direction === 'expense').reduce((sum:number,t:any)=>sum+Number(t.amount||0),0);
+      const project_income = projectTransactions.filter((t:any) => t.direction === 'income').reduce((sum:number,t:any)=>sum+Number(t.amount||0),0);
+      const workspace = await getProjectWorkspace(p.id).catch(() => ({items:[]} as any));
+      const allocated_inventory_value = (workspace.items||[]).reduce((sum:number,item:any)=>sum + Number(item.allocated_quantity||0) * Number(item.unit_cost||0), 0);
+      const budget = p.budget==null ? null : Number(p.budget);
+      const net_spend = actual_expense - project_income;
+      return {
+        project_id:p.id, name:p.name, budget:p.budget??null, actual_expense, project_income, net_spend,
+        allocated_inventory_value, budget_remaining:budget==null?null:budget-net_spend,
+        budget_used_percent:budget&&budget>0?(net_spend/budget)*100:0
+      };
+    }));
+  }
+  const r=await apiFetch('/projects/financial-summary'); if(!r.ok)throw await apiError(r,'Failed to fetch project financial summary'); return r.json();
+}
 export async function getProject(id:string):Promise<Project>{const local=await localInvoke<Project|null>('get_local_project',{projectId:id});if(local!==null){if(!local)throw new Error('Project not found');return local;}const r=await apiFetch(`/projects/${id}`);if(!r.ok)throw await apiError(r,'Failed to fetch project');return r.json();}
 export async function createProject(project:Partial<Project>):Promise<Project>{const local=await localInvoke<Project>('create_local_project',{project});if(local!==null)return local;const r=await apiFetch('/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(project)});if(!r.ok)throw await apiError(r,'Failed to create project');return r.json();}
 async function apiError(r: Response, fallback: string): Promise<Error> { const p=await r.json().catch(()=>null) as any; const m=typeof p?.error==='string'?p.error:typeof p?.message==='string'?p.message:typeof p?.error?.message==='string'?p.error.message:fallback; return new Error(m); }
