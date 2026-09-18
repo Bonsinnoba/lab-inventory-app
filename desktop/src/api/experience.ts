@@ -83,7 +83,7 @@ async function getLocalExperienceDashboard(): Promise<ExperienceDashboard> {
     const quantity=Number(itemData.current_quantity ?? itemData.quantity ?? 0);
     const minimum=Number(itemData.reorder_level ?? itemData.minimum_quantity ?? 0);
     return item.status==='low_stock' || quantity<=minimum;
-  }).sort((a,b)=>Number((a as {current_quantity?:number; quantity?:number}).current_quantity ?? (a as {current_quantity?:number; quantity?:number}).quantity ?? 0)-Number((b as Item & {quantity?:number}).current_quantity ?? (b as Item & {quantity?:number}).quantity ?? 0));
+  }).sort((a,b)=>Number((a as {current_quantity?:number; quantity?:number}).current_quantity ?? (a as {current_quantity?:number; quantity?:number}).quantity ?? 0)-Number((b as {current_quantity?:number; quantity?:number}).current_quantity ?? (b as {current_quantity?:number; quantity?:number}).quantity ?? 0));
 
   return {
     metrics:{
