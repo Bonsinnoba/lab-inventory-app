@@ -45,7 +45,26 @@ export interface TransactionSummary {
   };
 }
 
-export async function getTransactions(filters?: any): Promise<Transaction[]> { if(isTauri()&&!filters){try{return await invoke<Transaction[]>('get_local_transactions')}catch{}} const params=new URLSearchParams(); if(filters)Object.entries(filters).forEach(([k,v])=>v&&params.append(k,String(v))); const response=await apiFetch(`/transactions?${params}`); if(!response.ok)throw new Error('Failed to fetch transactions'); return response.json(); }
+export async function getTransactions(filters?: any): Promise<Transaction[]> {
+  if (isTauri()) {
+    try {
+      const local = await invoke<Transaction[]>('get_local_transactions');
+      if (!filters || Object.values(filters).every((value) => !value)) return local;
+      return local.filter((transaction) => {
+        const date = String(transaction.date || transaction.created_at).slice(0, 10);
+        if (filters.from && date < String(filters.from).slice(0, 10)) return false;
+        if (filters.to && date > String(filters.to).slice(0, 10)) return false;
+        if (filters.budget_period_id && transaction.budget_period_id !== filters.budget_period_id) return false;
+        return true;
+      });
+    } catch {}
+  }
+  const params=new URLSearchParams();
+  if(filters)Object.entries(filters).forEach(([k,v])=>v&&params.append(k,String(v)));
+  const response=await apiFetch(`/transactions?${params}`);
+  if(!response.ok)throw new Error('Failed to fetch transactions');
+  return response.json();
+}
 
 export async function getTransactionSummary(filters?: {
   from?: string;
