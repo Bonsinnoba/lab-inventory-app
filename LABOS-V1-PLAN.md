@@ -277,7 +277,10 @@ The local SQLite layer contains:
 - `sync_outbox`;
 - `sync_conflicts`;
 - local inventory snapshot/state;
+- inventory movement cache;
 - inventory sync cursor.
+
+The inventory item snapshot in `sync_state.inventory_snapshot` is the single local source of truth for workstation inventory item state. The older duplicate `local_inventory_items`/`local_inventory_movements` tables are no longer created or used by the runtime; movement history retained locally is a separate cache in `local_inventory_movement_records`.
 
 Local changes are queued in the outbox.
 
@@ -862,7 +865,7 @@ The following items are known and should not be forgotten:
 - Local resource upload/file storage is not yet equivalent to central resource storage; central file/media handling remains distinct.
 - Resource sync mappings are now implemented for offline link/folder creation, metadata updates, deletion, server pull, tombstones, and pending-local protection; actual file upload/media acquisition remains central.
 - Desktop global search now has a local-first path for inventory, projects, tasks, experiments, notes, and resources; central search remains the hybrid source for users and other explicitly central information.
-- Local authentication/bootstrap is not yet complete.
+- Local authentication/bootstrap is implemented and requires fresh-install/offline runtime verification.
 - Location `item_count` needs reconciliation with local inventory.
 - Some desktop APIs still call the central API directly and need classification/migration.
 - The Knowledge API local-first transformation needs build/runtime verification.
