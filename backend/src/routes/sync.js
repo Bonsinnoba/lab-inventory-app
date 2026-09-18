@@ -108,7 +108,50 @@ async function applyProjectEntity(client,change,user){
 }
 
 async function applyMovement(client,change,userId){const payload=object(change.payload,'Movement payload');const itemId=id(payload.item_id||change.entity_id,'Movement item ID');const movementId=id(payload.id,'Movement ID');const type=String(payload.movement_type||'');const quantity=number(payload.quantity,'Movement quantity');if(!MOVEMENT_TYPES.has(type))fail(400,'INVALID_MOVEMENT_TYPE','Invalid movement type');if(quantity<=0)fail(400,'INVALID_QUANTITY','Quantity must be greater than zero');const existing=await client.query('SELECT * FROM item_movements WHERE id=$1',[movementId]);if(existing.rowCount)return{movement:existing.rows[0],item:(await client.query('SELECT * FROM items WHERE id=$1',[itemId])).rows[0]};const itemResult=await client.query('SELECT * FROM items WHERE id=$1 FOR UPDATE',[itemId]);if(!itemResult.rowCount)fail(409,'ITEM_NOT_FOUND',`Item ${itemId} does not exist on the server`);const item=itemResult.rows[0];let next=number(item.current_quantity,'Current quantity');if(INCOMING.has(type))next+=quantity;else if(OUTGOING.has(type))next-=quantity;else if(type==='adjust')next=quantity;if(next<0)fail(409,'INSUFFICIENT_STOCK','Movement would make stock negative');const destinationStorage=type==='transfer'?(payload.to_storage_location?String(payload.to_storage_location).trim():null):(item.storage_location??null);const destinationLocation=type==='transfer'?(payload.to_location_id||item.location_id||null):(payload.to_location_id||null);if(type==='transfer'&&!destinationStorage&&!destinationLocation)fail(400,'TRANSFER_LOCATION_REQUIRED','A destination location is required for transfers');const movement=(await client.query(`INSERT INTO item_movements (id,item_id,movement_type,quantity,quantity_before,quantity_after,from_location_id,to_location_id,from_storage_location,to_storage_location,project_id,reason,reference,performed_by,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,COALESCE($15,now())) RETURNING *`,[movementId,itemId,type,quantity,Number(item.current_quantity),next,item.location_id||null,destinationLocation,item.storage_location||null,destinationStorage,payload.project_id||null,payload.reason||null,payload.reference||null,userId,payload.created_at||null])).rows[0];const updated=(await client.query('UPDATE items SET current_quantity=$1,storage_location=$2,location_id=COALESCE($3,location_id),updated_at=now() WHERE id=$4 RETURNING *',[next,destinationStorage,destinationLocation,itemId])).rows[0];return{movement,item:updated};}
-async function applyChange(client,change,userId){if(projectEntityType(change.entity_type))return applyProjectEntity(client,change,{userId,role:change.__role});if(change.entity_type==='resource')return applyResourceEntity(client,change,{userId,role:change.__role});if(FINANCE_CONFIG[change.entity_type])return applyFinanceEntity(client,change,{userId,role:change.__role});if(change.operation==='bulk_status'){const p=object(change.payload,'Bulk status payload');const ids=Array.isArray(p.ids)?p.ids:[];if(!ids.length||typeof p.status!=='string')fail(400,'INVALID_BULK_STATUS','ids and status are required');return{updated:Number((await client.query('UPDATE items SET status=$1,updated_at=now() WHERE id=ANY($2::uuid[])',[p.status,ids])).rowCount)};}if(change.operation==='bulk_delete'){const p=object(change.payload,'Bulk delete payload');const ids=Array.isArray(p.ids)?p.ids:[];if(!ids.length)return{deleted:0};const result=await client.query('DELETE FROM items WHERE id=ANY($1::uuid[]) RETURNING id', [ids]);for(const row of result.rows)await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) VALUES('item',$1) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()",[row.id]);return{deleted:Number(result.rowCount)};}if(change.entity_type==='item')return applyItem(client,change);if(change.entity_type==='item_movement'&&change.operation==='create')return applyMovement(client,change,userId);fail(400,'UNSUPPORTED_SYNC_CHANGE',`Unsupported sync change: ${change.entity_type}/${change.operation}`);}
+const LOCATION_FIELDS=['name','parent_id','created_at'];
+async function applyLocationEntity(client,change,{userId,role}){
+ const permissions=await getUserPermissions(userId,role);
+ const needed=change.operation==='create'?'inventory.create':change.operation==='update'?'inventory.edit':'inventory.delete';
+ if(!permissions.has(needed))fail(403,'PERMISSION_DENIED',`Permission required: ${needed}`);
+ const payload=object(change.payload,'Location sync payload');
+ const record=payload.location||payload.record||payload;
+ if(change.operation==='create'){
+  if(!String(record.name||'').trim())fail(400,'INVALID_LOCATION','Location name is required');
+  const id=change.entity_id||record.id||null;
+  if(!id)fail(400,'INVALID_LOCATION','Location id is required');
+  idValue(id,'Location id');
+  const result=await client.query('INSERT INTO locations (id,name,parent_id,created_at) VALUES ($1,$2,$3,COALESCE($4,now())) ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,parent_id=EXCLUDED.parent_id RETURNING *',[id,String(record.name).trim(),record.parent_id||null,record.created_at||null]);
+  return {location:result.rows[0]};
+ }
+ if(!change.entity_id)fail(400,'INVALID_LOCATION','Location id is required');
+ idValue(change.entity_id,'Location id');
+ const existing=await client.query('SELECT * FROM locations WHERE id=$1',[change.entity_id]);
+ if(change.operation==='update'){
+  if(!existing.rowCount)fail(404,'LOCATION_NOT_FOUND','Location not found');
+  if(record.parent_id===change.entity_id)fail(400,'INVALID_LOCATION','A location cannot be its own parent');
+  const result=await client.query('UPDATE locations SET name=COALESCE($1,name),parent_id=$2 WHERE id=$3 RETURNING *',[record.name===undefined?null:String(record.name).trim()||null,record.parent_id===undefined?existing.rows[0].parent_id:record.parent_id,change.entity_id]);
+  return {location:result.rows[0]};
+ }
+ if(change.operation==='delete'){
+  if(!existing.rowCount) return {deleted:change.entity_id};
+  await client.query('DELETE FROM locations WHERE id=$1',[change.entity_id]);
+  await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) VALUES('location',$1) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()",[change.entity_id]);
+  return {deleted:change.entity_id};
+ }
+ fail(400,'UNSUPPORTED_SYNC_CHANGE',`Unsupported location operation: ${change.operation}`);
+}
+
+async function applyChange(client,change,userId){if(change.entity_type==='location')return applyLocationEntity(client,change,{userId,role:change.__role});if(projectEntityType(change.entity_type))return applyProjectEntity(client,change,{userId,role:change.__role});if(change.entity_type==='resource')return applyResourceEntity(client,change,{userId,role:change.__role});if(FINANCE_CONFIG[change.entity_type])return applyFinanceEntity(client,change,{userId,role:change.__role});if(change.operation==='bulk_status'){const p=object(change.payload,'Bulk status payload');const ids=Array.isArray(p.ids)?p.ids:[];if(!ids.length||typeof p.status!=='string')fail(400,'INVALID_BULK_STATUS','ids and status are required');return{updated:Number((await client.query('UPDATE items SET status=$1,updated_at=now() WHERE id=ANY($2::uuid[])',[p.status,ids])).rowCount)};}if(change.operation==='bulk_delete'){const p=object(change.payload,'Bulk delete payload');const ids=Array.isArray(p.ids)?p.ids:[];if(!ids.length)return{deleted:0};const result=await client.query('DELETE FROM items WHERE id=ANY($1::uuid[]) RETURNING id', [ids]);for(const row of result.rows)await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) VALUES('item',$1) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()",[row.id]);return{deleted:Number(result.rowCount)};}if(change.entity_type==='item')return applyItem(client,change);if(change.entity_type==='item_movement'&&change.operation==='create')return applyMovement(client,change,userId);fail(400,'UNSUPPORTED_SYNC_CHANGE',`Unsupported sync change: ${change.entity_type}/${change.operation}`);}
+router.get('/locations/pull',async(req,res,next)=>{
+ try{
+  const permissions=await getUserPermissions(req.user.userId,req.user.role);
+  if(!permissions.has('inventory.view'))return res.status(403).json({error:{code:'PERMISSION_DENIED',message:'Permission required: inventory.view'}});
+  const result=await pool.query('SELECT l.*,COUNT(i.id)::int AS item_count FROM locations l LEFT JOIN items i ON i.location_id=l.id GROUP BY l.id ORDER BY l.updated_at DESC NULLS LAST,l.created_at DESC,l.name ASC').catch(async()=>pool.query('SELECT l.*,COUNT(i.id)::int AS item_count FROM locations l LEFT JOIN items i ON i.location_id=l.id GROUP BY l.id ORDER BY l.created_at DESC,l.name ASC'));
+  const tomb=await pool.query("SELECT entity_id FROM sync_tombstones WHERE entity_type='location' ORDER BY deleted_at DESC LIMIT 1000");
+  res.setHeader('Cache-Control','no-store');res.json({locations:result.rows,deleted_location_ids:tomb.rows.map(r=>r.entity_id)});
+ }catch(e){next(e);}
+});
+
 router.get('/finance/pull',async(req,res,next)=>{try{const permissions=await getUserPermissions(req.user.userId,req.user.role);if(!permissions.has('finance.view'))return res.status(403).json({error:{code:'PERMISSION_DENIED',message:'Permission required: finance.view'}});const [transactions,budget_periods,funding_sources]=await Promise.all([pool.query('SELECT * FROM transactions ORDER BY updated_at DESC NULLS LAST,created_at DESC'),pool.query('SELECT * FROM budget_periods ORDER BY start_date DESC NULLS LAST,created_at DESC'),pool.query('SELECT * FROM funding_sources ORDER BY created_at DESC')]);const tomb=await pool.query("SELECT entity_type,entity_id FROM sync_tombstones WHERE entity_type IN ('transaction','budget_period','funding_source') ORDER BY deleted_at DESC LIMIT 1000");const deleted={transaction:[],budget_period:[],funding_source:[]};for(const r of tomb.rows)if(deleted[r.entity_type])deleted[r.entity_type].push(r.entity_id);res.setHeader('Cache-Control','no-store');res.json({transactions:transactions.rows,budget_periods:budget_periods.rows,funding_sources:funding_sources.rows,deleted});}catch(e){next(e);}});
 router.get('/resources/pull',async(req,res,next)=>{
   try{
