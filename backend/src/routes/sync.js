@@ -117,8 +117,7 @@ async function applyProjectEntity(client,change,user){
 
 async function applyMovement(client,change,userId){const payload=object(change.payload,'Movement payload');const itemId=id(payload.item_id||change.entity_id,'Movement item ID');const movementId=id(payload.id,'Movement ID');const type=String(payload.movement_type||'');const quantity=number(payload.quantity,'Movement quantity');if(!MOVEMENT_TYPES.has(type))fail(400,'INVALID_MOVEMENT_TYPE','Invalid movement type');if(quantity<=0)fail(400,'INVALID_QUANTITY','Quantity must be greater than zero');const existing=await client.query('SELECT * FROM item_movements WHERE id=$1',[movementId]);if(existing.rowCount)return{movement:existing.rows[0],item:(await client.query('SELECT * FROM items WHERE id=$1',[itemId])).rows[0]};const itemResult=await client.query('SELECT * FROM items WHERE id=$1 FOR UPDATE',[itemId]);if(!itemResult.rowCount)fail(409,'ITEM_NOT_FOUND',`Item ${itemId} does not exist on the server`);const item=itemResult.rows[0];let next=number(item.current_quantity,'Current quantity');if(INCOMING.has(type))next+=quantity;else if(OUTGOING.has(type))next-=quantity;else if(type==='adjust')next=quantity;if(next<0)fail(409,'INSUFFICIENT_STOCK','Movement would make stock negative');const destinationStorage=type==='transfer'?(payload.to_storage_location?String(payload.to_storage_location).trim():null):(item.storage_location??null);const destinationLocation=type==='transfer'?(payload.to_location_id||item.location_id||null):(payload.to_location_id||null);if(type==='transfer'&&!destinationStorage&&!destinationLocation)fail(400,'TRANSFER_LOCATION_REQUIRED','A destination location is required for transfers');const movement=(await client.query(`INSERT INTO item_movements (id,item_id,movement_type,quantity,quantity_before,quantity_after,from_location_id,to_location_id,from_storage_location,to_storage_location,project_id,reason,reference,performed_by,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,COALESCE($15,now())) RETURNING *`,[movementId,itemId,type,quantity,Number(item.current_quantity),next,item.location_id||null,destinationLocation,item.storage_location||null,destinationStorage,payload.project_id||null,payload.reason||null,payload.reference||null,userId,payload.created_at||null])).rows[0];const updated=(await client.query('UPDATE items SET current_quantity=$1,storage_location=$2,location_id=COALESCE($3,location_id),updated_at=now() WHERE id=$4 RETURNING *',[next,destinationStorage,destinationLocation,itemId])).rows[0];return{movement,item:updated};}
 const LOCATION_FIELDS=['name','parent_id','created_at'];
-async function applyLocationEntity(client,change,{userId,role}){
- const permissions=await getUserPermissions(userId,role);
+async function applyLocationEntity(client,change,{userId,role}){ const permissions=await getUserPermissions(userId,role);
  const needed=change.operation==='create'?'inventory.create':change.operation==='update'?'inventory.edit':'inventory.delete';
  if(!permissions.has(needed))fail(403,'PERMISSION_DENIED',`Permission required: ${needed}`);
  const payload=object(change.payload,'Location sync payload');
@@ -154,7 +153,7 @@ router.get('/locations/pull',async(req,res,next)=>{
  try{
   const permissions=await getUserPermissions(req.user.userId,req.user.role);
   if(!permissions.has('inventory.view'))return res.status(403).json({error:{code:'PERMISSION_DENIED',message:'Permission required: inventory.view'}});
-  const result=await pool.query('SELECT l.*,COUNT(i.id)::int AS item_count FROM locations l LEFT JOIN items i ON i.location_id=l.id GROUP BY l.id ORDER BY l.created_at DESC,l.name ASC;
+  const result=await pool.query('SELECT l.*,COUNT(i.id)::int AS item_count FROM locations l LEFT JOIN items i ON i.location_id=l.id GROUP BY l.id ORDER BY l.created_at DESC,l.name ASC');
   const tomb=await pool.query("SELECT entity_id FROM sync_tombstones WHERE entity_type='location' ORDER BY deleted_at DESC LIMIT 1000");
   res.setHeader('Cache-Control','no-store');res.json({locations:result.rows,deleted_location_ids:tomb.rows.map(r=>r.entity_id)});
  }catch(e){next(e);}
@@ -237,8 +236,7 @@ router.post('/push',async(req,res,next)=>{const body=object(req.body,'Sync reque
 +values.length+' RETURNING *',values);
     return result.rows[0];
   }
-  if(change.operation==='delete'){
-    const result=await client.query('DELETE FROM '+cfg.table+' WHERE id=$1 RETURNING id',[entityId]);
+  if(change.operation==='delete'){    const result=await client.query('DELETE FROM '+cfg.table+' WHERE id=$1 RETURNING id',[entityId]);
     if(result.rowCount)await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) VALUES($1,$2) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()",[entityType,entityId]);
     return {deleted:Boolean(result.rowCount),id:entityId};
   }
