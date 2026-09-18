@@ -11,6 +11,8 @@ const localDb = read('../desktop/src-tauri/src/local_db.rs');
 const localInventory = read('../desktop/src/api/local-inventory.ts');
 const localExcel = read('../desktop/src-tauri/src/local_excel.rs');
 const localProjects = read('../desktop/src-tauri/src/local_projects.rs');
+const localSearch = read('../desktop/src-tauri/src/local_search.rs');
+const searchApi = read('../desktop/src/api/search.ts');
 const tauriMain = read('../desktop/src-tauri/src/main.rs');
 const tauriConfig = read('../desktop/src-tauri/tauri.conf.json');
 const viteConfig = read('../desktop/vite.config.ts');
@@ -54,6 +56,8 @@ const checks = [
   ['local resource pull preserves pending edits', read('../desktop/src-tauri/src/local_resources.rs').includes("entity_type='resource'") && read('../desktop/src-tauri/src/local_resources.rs').includes('pending.contains(&incoming_resource.id)')],
   ['desktop pulls resource records', desktopSync.includes('/sync/resources/pull') && desktopSync.includes('apply_server_resource_pull')],
   ['Tauri registers resource pull merge command', tauriMain.includes('local_resources::apply_server_resource_pull')],
+  ['local search runtime exists', localSearch.includes('global_local_search') && localSearch.includes('inventory_snapshot') && localSearch.includes('resources_state')],
+  ['desktop search prefers local runtime', searchApi.includes('global_local_search') && searchApi.includes('LOCAL_SEARCH_TYPES')],
   ['Tauri dev URL matches Vite dev server', tauriConfig.includes('"devPath": "http://localhost:1420"') && viteConfig.includes('port: 1420')],
 ];
 
