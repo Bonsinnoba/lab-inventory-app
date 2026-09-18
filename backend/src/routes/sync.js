@@ -124,10 +124,10 @@ async function applyLocationEntity(client,change,{userId,role}){ const permissio
  const record=payload.location||payload.record||payload;
  if(change.operation==='create'){
   if(!String(record.name||'').trim())fail(400,'INVALID_LOCATION','Location name is required');
-  const id=change.entity_id||record.id||null;
-  if(!id)fail(400,'INVALID_LOCATION','Location id is required');
-  id(id,'Location id');
-  const result=await client.query('INSERT INTO locations (id,name,parent_id,created_at) VALUES ($1,$2,$3,COALESCE($4,now())) ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,parent_id=EXCLUDED.parent_id RETURNING *',[id,String(record.name).trim(),record.parent_id||null,record.created_at||null]);
+  const locationId=change.entity_id||record.id||null;
+  if(!locationId)fail(400,'INVALID_LOCATION','Location id is required');
+  id(locationId,'Location id');
+  const result=await client.query('INSERT INTO locations (id,name,parent_id,created_at) VALUES ($1,$2,$3,COALESCE($4,now())) ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,parent_id=EXCLUDED.parent_id RETURNING *',[locationId,String(record.name).trim(),record.parent_id||null,record.created_at||null]);
   return {location:result.rows[0]};
  }
  if(!change.entity_id)fail(400,'INVALID_LOCATION','Location id is required');
@@ -181,8 +181,8 @@ router.get('/projects/pull',async(req,res,next)=>{
     const visibility=req.user.role==='admin'?'':'WHERE (p.owner_id=$1 OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id=p.id AND pm.user_id=$1))';
     const projects=await pool.query(`SELECT p.* FROM projects p ${visibility} ORDER BY p.updated_at DESC`,values);
     const ids=projects.rows.map(p=>p.id);
-    const deletedRows=await pool.query("SELECT entity_type,entity_id FROM sync_tombstones WHERE entity_type IN ('project','project_task','project_experiment','project_bom','project_block','project_connector','project_experiment_measurement','project_experiment_observation','project_work_attachment') ORDER BY deleted_at DESC LIMIT 2500"); const deletedByType={project:[],project_task:[],project_experiment:[],project_bom:[],project_block:[],project_connector:[],project_experiment_measurement:[],project_experiment_observation:[]}; for(const row of deletedRows.rows)if(deletedByType[row.entity_type])deletedByType[row.entity_type].push(row.entity_id); if(!ids.length)return res.json({projects:[],deleted_project_ids:deletedByType.project,deleted_project_entities:deletedByType});
-    const [tasks,experiments,bom,items,blocks,connectors,measurements,observations,attachments,taskExperiments]=await Promise.all([
+    const deletedRows=await pool.query("SELECT entity_type,entity_id FROM sync_tombstones WHERE entity_type IN ('project','project_task','project_experiment','project_bom','project_block','project_connector','project_experiment_measurement','project_experiment_observation','project_work_attachment') ORDER BY deleted_at DESC LIMIT 2500"); const deletedByType={project:[],project_task:[],project_experiment:[],project_bom:[],project_block:[],project_connector:[],project_experiment_measurement:[],project_experiment_observation:[],project_task_experiment:[],project_work_attachment:[]}; for(const row of deletedRows.rows)if(deletedByType[row.entity_type])deletedByType[row.entity_type].push(row.entity_id); if(!ids.length)return res.json({projects:[],deleted_project_ids:deletedByType.project,deleted_project_entities:deletedByType});
+    const [tasks,experiments,bom,items,blocks,connectors,measurements,observations,taskExperiments,attachments]=await Promise.all([
       pool.query('SELECT * FROM project_tasks WHERE project_id=ANY($1::uuid[]) ORDER BY created_at',[ids]),
       pool.query('SELECT * FROM project_experiments WHERE project_id=ANY($1::uuid[]) ORDER BY updated_at DESC',[ids]),
       pool.query('SELECT * FROM project_bom_items WHERE project_id=ANY($1::uuid[]) ORDER BY created_at',[ids]),
@@ -203,97 +203,16 @@ router.get('/projects/pull',async(req,res,next)=>{
   }catch(error){next(error);}
 });
 router.get('/pull',async(req,res,next)=>{try{const raw=typeof req.query.since==='string'?req.query.since.trim():'';let cursor=null;if(raw){cursor=decodePullCursor(raw);if(!cursor){const legacy=new Date(raw);if(Number.isNaN(legacy.getTime()))return res.status(400).json({error:{code:'INVALID_SYNC_CURSOR',message:'since must be a valid inventory sync cursor'}});cursor={at:legacy.toISOString(),type:'',id:''};}}const limit=Math.min(500,Math.max(1,Number(req.query.limit||500)));const values=cursor?[cursor.at,cursor.type,cursor.id,limit+1]:[limit+1];const where=cursor?`WHERE event_at > $1 OR (event_at = $1 AND (event_type > $2 OR (event_type = $2 AND event_id > $3)))`:'';const result=await pool.query(`SELECT event_type,event_id,event_at,item,deleted FROM (SELECT 'item'::text AS event_type,id::text AS event_id,updated_at AS event_at,to_jsonb(items) AS item,false AS deleted FROM items UNION ALL SELECT 'delete'::text AS event_type,entity_id::text AS event_id,deleted_at AS event_at,NULL::jsonb AS item,true AS deleted FROM sync_tombstones WHERE entity_type='item') events ${where} ORDER BY event_at ASC,event_type ASC,event_id ASC LIMIT $${values.length}`,values);const rows=result.rows;const hasMore=rows.length>limit;const page=hasMore?rows.slice(0,limit):rows;const last=page[page.length-1];const nextCursor=last?encodePullCursor(last.event_at,last.event_type,last.event_id):(cursor?raw:null);res.setHeader('Cache-Control','no-store');res.json({items:page.filter(row=>!row.deleted).map(row=>row.item),deleted_item_ids:page.filter(row=>row.deleted).map(row=>row.event_id),next_cursor:nextCursor,has_more:hasMore});}catch(error){next(error);}});
-router.post('/push',async(req,res,next)=>{const body=object(req.body,'Sync request');const deviceId=typeof body.device_id==='string'&&body.device_id.trim()?body.device_id.trim():null;const changes=Array.isArray(body.changes)?body.changes:null;if(!deviceId)return res.status(400).json({error:{code:'DEVICE_ID_REQUIRED',message:'device_id is required'}});if(!changes)return res.status(400).json({error:{code:'CHANGES_REQUIRED',message:'changes must be an array'}});if(changes.length>100)return res.status(413).json({error:{code:'SYNC_BATCH_TOO_LARGE',message:'A maximum of 100 changes can be synchronized per request'}});try{const permissions=await getUserPermissions(req.user.userId,req.user.role);const results=[];for(const raw of changes){const change=object(raw,'Sync change');if(typeof change.change_id!=='string'||!change.change_id.trim()){results.push({change_id:null,status:'rejected',error:{code:'CHANGE_ID_REQUIRED',message:'change_id is required'}});continue;}const entityType=String(change.entity_type||''),operation=String(change.operation||'');change.__role=req.user.role;const required=entityType==='project'?(operation==='create'?'projects.create':operation==='delete'?'projects.delete':'projects.edit'):projectEntityType(entityType)?'projects.edit':entityType==='resource'?(operation==='create'?'resources.create':operation==='delete'?'resources.delete':'resources.edit'):entityType==='item_movement'?'inventory.adjust_stock':operation==='create'?'inventory.create':operation==='delete'||operation==='bulk_delete'?'inventory.delete':operation==='bulk_status'?'inventory.edit':'inventory.edit';if(!permissions.has(required)){results.push({change_id:change.change_id,status:'rejected',error:{code:'PERMISSION_DENIED',message:`Permission required: ${required}`}});continue;}const client=await pool.connect();try{await client.query('BEGIN');const prior=await client.query('SELECT payload_json,response_json FROM sync_idempotency WHERE change_id=$1 FOR UPDATE',[change.change_id]);if(prior.rowCount){const same=(await client.query('SELECT $1::jsonb = $2::jsonb AS same',[prior.rows[0].payload_json,change.payload])).rows[0].same;if(!same){await client.query('ROLLBACK');results.push({change_id:change.change_id,status:'rejected',error:{code:'IDEMPOTENCY_PAYLOAD_MISMATCH',message:'change_id was already used with a different payload'}});continue;}await client.query('COMMIT');results.push({change_id:change.change_id,status:'synced',result:prior.rows[0].response_json});continue;}const result=await applyChange(client,change,req.user.userId);await client.query('INSERT INTO sync_idempotency(change_id,device_id,user_id,entity_type,entity_id,operation,payload_json,response_json,response_status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,200)',[change.change_id,deviceId,req.user.userId,entityType,change.entity_id||null,operation,change.payload,result]);await client.query('COMMIT');results.push({change_id:change.change_id,status:'synced',result});}catch(error){await client.query('ROLLBACK').catch(()=>{});if(error?.code==='23505'){const prior=await pool.query('SELECT payload_json,response_json FROM sync_idempotency WHERE change_id=$1',[change.change_id]);if(prior.rowCount){const same=(await pool.query('SELECT $1::jsonb = $2::jsonb AS same',[prior.rows[0].payload_json,change.payload])).rows[0].same;if(same){results.push({change_id:change.change_id,status:'synced',result:prior.rows[0].response_json});continue;}}}results.push({change_id:change.change_id,status:'failed',error:{code:error?.code||'SYNC_APPLY_FAILED',message:error?.message||'Unable to apply sync change'}});}finally{client.release();}}res.json({device_id:deviceId,accepted:results.filter(r=>r.status==='synced').length,results});}catch(error){next(error);}});
-
-const RESOURCE_FIELDS=['name','kind','file_type','original_filename','mime_type','size_bytes','parent_resource_id','relative_path','url','thumbnail_url','item_id','project_id','note_id','category','description','tags'];
-
-async function canEditResource(client,resourceId,user){
-  const result=await client.query('SELECT id,item_id,project_id,note_id,kind FROM resources WHERE id=$1',[resourceId]);
-  if(!result.rowCount)return false;
-  const access=await getResourceAccess(resourceId,{userId:user?.userId,role:user?.role});
-  return access.access==='edit';
-}
-
-async function applyResourceEntity(client,change,user){
-  const payload=object(change.payload,'Resource sync payload');
-  const record=payload.resource||payload.record||payload;
-  const entityId=id(record.id||payload.id||change.entity_id,'Resource ID');
-  if(change.operation==='create'){
-    if(!['link','folder'].includes(String(record.kind||'')))fail(400,'UNSUPPORTED_RESOURCE_CREATE','Only link and folder resources can be created through offline sync');
-    if(!String(record.name||'').trim())fail(400,'INVALID_RESOURCE','Resource name is required');
-    const parents=[record.item_id,record.project_id,record.note_id].filter(Boolean);
-    if(parents.length>1)fail(400,'INVALID_RESOURCE_PARENT','A resource can be attached to at most one parent context');
-    if(record.project_id){
-      const access=await client.query('SELECT 1 FROM projects p WHERE p.id=$1 AND (p.owner_id=$2 OR $3=\'admin\' OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id=p.id AND pm.user_id=$2))',[record.project_id,user.userId,user.role]);
-      if(!access.rowCount)fail(403,'PROJECT_ACCESS_DENIED','You do not have access to this project');
-    }
-    const existing=await client.query('SELECT * FROM resources WHERE id=$1',[entityId]);
-    if(existing.rowCount)return existing.rows[0];
-    const values=[entityId],columns=['id'];
-    for(const field of RESOURCE_FIELDS){
-      if(field==='file_type'&&record.kind==='folder'&&!record.file_type){columns.push(field);values.push('schematic_folder');continue;}
-      if(Object.prototype.hasOwnProperty.call(record,field)){columns.push(field);values.push(record[field]??null);}
-    }
-    columns.push('uploaded_by');values.push(user.userId);
-    const placeholders=values.map((_,i)=>'$'+(i+1)).join(',');
-    return (await client.query(\`INSERT INTO resources (\${columns.join(',')}) VALUES (\${placeholders}) RETURNING *\`,values)).rows[0];
+router.post('/push',async(req,res,next)=>{const body=object(req.body,'Sync request');const deviceId=typeof body.device_id==='string'&&body.device_id.trim()?body.device_id.trim():null;const changes=Array.isArray(body.changes)?body.changes:null;if(!deviceId)return res.status(400).json({error:{code:'DEVICE_ID_REQUIRED',message:'device_id is required'}});if(!changes)return res.status(400).json({error:{code:'CHANGES_REQUIRED',message:'changes must be an array'}});if(changes.length>100)return res.status(413).json({error:{code:'SYNC_BATCH_TOO_LARGE',message:'A maximum of 100 changes can be synchronized per request'}});try{const permissions=await getUserPermissions(req.user.userId,req.user.role);const results=[];for(const raw of changes){const change=object(raw,'Sync change');if(typeof change.change_id!=='string'||!change.change_id.trim()){results.push({change_id:null,status:'rejected',error:{code:'CHANGE_ID_REQUIRED',message:'change_id is required'}});continue;}const entityType=String(change.entity_type||''),operation=String(change.operation||'');change.__role=req.user.role;const required=entityType==='project'?(operation==='create'?'projects.create':operation==='delete'?'projects.delete':'projects.edit'):projectEntityType(entityType)?'projects.edit':entityType==='resource'?(operation==='create'?'resources.create':operation==='delete'?'resources.delete':'resources.edit'):entityType==='item_movement'?'inventory.adjust_stock':operation==='create'?'inventory.create':operation==='delete'||operation==='bulk_delete'?'inventory.delete':operation==='bulk_status'?'inventory.edit':'inventory.edit';if(!permissions.has(required)){results.push({change_id:change.change_id,status:'rejected',error:{code:'PERMISSION_DENIED',message:`Permission required: ${required}`}});continue;}const client=await pool.connect();try{await client.query('BEGIN');const prior=await client.query('SELECT payload_json,response_json FROM sync_idempotency WHERE change_id=$1 FOR UPDATE',[change.change_id]);if(prior.rowCount){const same=(await client.query('SELECT $1::jsonb = $2::jsonb AS same',[prior.rows[0].payload_json,change.payload])).rows[0].same;if(!same){await client.query('ROLLBACK');results.push({change_id:change.change_id,status:'rejected',error:{code:'IDEMPOTENCY_PAYLOAD_MISMATCH',message:'change_id was already used with a different payload'}});continue;}await client.query('COMMIT');results.push({change_id:change.change_id,status:'synced',result:prior.rows[0].response_json});continue;}const result=await applyChange(client,change,req.user.userId);await client.query('INSERT INTO sync_idempotency(change_id,device_id,user_id,entity_type,entity_id,operation,payload_json,response_json,response_status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,200)',[change.change_id,deviceId,req.user.userId,entityType,change.entity_id||null,operation,change.payload,result]);await client.query('COMMIT');results.push({change_id:change.change_id,status:'synced',result});}catch(error){await client.query('ROLLBACK').catch(()=>{});if(error?.code==='23505'){const prior=await pool.query('SELECT payload_json,response_json FROM sync_idempotency WHERE change_id=$1',[change.change_id]);if(prior.rowCount){const same=(await pool.query('SELECT $1::jsonb = $2::jsonb AS same',[prior.rows[0].payload_json,change.payload])).rows[0].same;if(same){results.push({change_id:change.change_id,status:'synced',result:prior.rows[0].response_json});continue;}}}results.push({change_id:change.change_id,status:'failed',error:{code:error?.code||'SYNC_APPLY_FAILED',message:error?.message||'Unable to apply sync change'}});}finally{client.release();}}res.json({device_id:deviceId,accepted:results.filter(r=>r.status==='synced').length,results});}catch(error){next(error);}}); export default router;
++(i+1)).join(',')+') RETURNING *',values);
+    return result.rows[0];
   }
-  const existing=await client.query('SELECT * FROM resources WHERE id=$1 FOR UPDATE',[entityId]);
-  if(!existing.rowCount)fail(409,'RESOURCE_NOT_FOUND',\`Resource \${entityId} does not exist on the server\`);
-  const resourceRow=existing.rows[0];
-  const access=await getResourceAccess(entityId,{userId:user.userId,role:user.role});
-  if(access.access!=='edit')fail(403,'RESOURCE_ACCESS_DENIED','You do not have edit access to this resource');
   if(change.operation==='update'){
+    const existing=await client.query('SELECT * FROM '+cfg.table+' WHERE id=$1 FOR UPDATE',[entityId]);
+    if(!existing.rowCount)fail(409,'PROJECT_ENTITY_NOT_FOUND',entityType+' '+entityId+' does not exist on the server');
     const updates=[],values=[];
-    for(const field of ['category','description','tags']){
-      if(Object.prototype.hasOwnProperty.call(record,field)){values.push(record[field]??null);updates.push(field+'=$'+values.length);}
-    }
-    if(!updates.length)return resourceRow;
-    values.push(entityId);
-    return (await client.query('UPDATE resources SET '+updates.join(',')+' WHERE id=$'+values.length+' RETURNING *',values)).rows[0];
-  }
-  if(change.operation==='delete'){
-    const deleted=(await client.query('DELETE FROM resources WHERE id=$1 RETURNING id',[entityId])).rows[0];
-    if(deleted)await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) VALUES('resource',$1) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()",[entityId]);
-    return {deleted:Boolean(deleted),id:entityId};
-  }
-  fail(400,'UNSUPPORTED_RESOURCE_OPERATION','Unsupported resource operation: '+change.operation);
-}
-
-
-const FINANCE_CONFIG={
- transaction:{table:'transactions',permission:{create:'finance.create_expense',update:'finance.edit',delete:'finance.delete'}},
- budget_period:{table:'budget_periods',permission:{create:'finance.edit',update:'finance.edit',delete:'finance.delete'}},
- funding_source:{table:'funding_sources',permission:{create:'finance.edit',update:'finance.edit',delete:'finance.delete'}}
-};
-async function applyFinanceEntity(client,change,user){
- const cfg=FINANCE_CONFIG[change.entity_type];if(!cfg)fail(400,'UNSUPPORTED_FINANCE_ENTITY','Unsupported finance entity');
- const payload=object(change.payload,'Finance sync payload');
- const record=payload.transaction||payload.budget_period||payload.funding_source||payload.record||payload;
- const entityId=id(record.id||payload.id||change.entity_id,'Finance ID');
- const existing=await client.query(\`SELECT * FROM \${cfg.table} WHERE id=$1\`,[entityId]);
- const permissions=await getUserPermissions(user.userId,user.role);
- const needed=cfg.permission[change.operation];
- if(needed&&!permissions.has(needed))fail(403,'PERMISSION_DENIED',\`Permission required: \${needed}\`);
- if(change.operation==='create'){if(existing.rowCount)return existing.rows[0];}
- else if(!existing.rowCount)fail(409,'FINANCE_NOT_FOUND',\`Finance record \${entityId} does not exist\`);
- const allowed=cfg.table==='transactions'?['type','direction','amount','date','vendor','notes','item_id','project_id','funding_source_id','budget_period_id']:cfg.table==='budget_periods'?['label','total_budget','start_date','end_date','notes']:['name','source_type','contact_info','notes'];
- if(change.operation==='delete'){
-   await client.query(\`DELETE FROM \${cfg.table} WHERE id=$1\`,[entityId]);
-   await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) VALUES($1,$2) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()",[change.entity_type,entityId]);
-   return {id:entityId,deleted:true};
- }
- const fields=allowed.filter(k=>Object.prototype.hasOwnProperty.call(record,k));
- if(change.operation==='create'&&cfg.table==='transactions'&&!fields.includes('direction'))fail(400,'INVALID_TRANSACTION','direction is required');
- if(change.operation==='create'){
-   const cols=['id',...fields],vals=[entityId,...fields.map(k=>record[k]??null)];
-   const placeholders=vals.map((_,i)=>'$'+(i+1)).join(',');
-   return (await client.query(\`INSERT INTO \${cfg.table} (\${cols.join(',')}) VALUES (\${placeholders}) RETURNING *\`,vals)).rows[0];
- }
- if(!fields.length)return existing.rows[0];
- const vals=fields.map(k=>record[k]??null);vals.push(entityId);
- return (await client.query(\`UPDATE \${cfg.table} SET \${fields.map((k,i)=>k+'=$'+(i+1)).join(',')},updated_at=now() WHERE id=$\${vals.length} RETURNING *\`,vals)).rows[0];
-}
-
+    for(const field of cfg.fields){
+      if(field==='project_id'||field==='created_by'||field==='owner_id')continue;
+      if(Object.prototype.hasOwnProperty.call(record,field)){values.push(record[field]??null);updates.push(field+'=const payload=object(change.payload,'Item payload');const itemId=id(payload.id||change.entity_id,'Item ID');if(change.operation==='create'){const values=[itemId],columns=['id'];for(const field of ITEM_FIELDS)if(Object.prototype.hasOwnProperty.call(payload,field)){columns.push(field);values.push(payload[field]??null);}if((await client.query('SELECT id FROM items WHERE id=$1',[itemId])).rowCount)fail(409,'ITEM_ALREADY_EXISTS',`Item ${itemId} already exists`);return(await client.query(`INSERT INTO items (${columns.join(',')}) VALUES (${values.map((_,i)=>`$${i+1}`).join(',')}) RETURNING *`,values)).rows[0];}if(change.operation==='update'){const patch=object(payload.patch||payload.item||payload,'Item update');const updates=[],values=[];const before=(await client.query('SELECT * FROM items WHERE id=$1 FOR UPDATE',[itemId]));if(!before.rowCount)fail(409,'ITEM_NOT_FOUND',`Item ${itemId} does not exist on the server`);const base=payload.base_updated_at;if(base&&!payload.conflict_resolution){const serverAt=new Date(before.rows[0].updated_at);const baseAt=new Date(base);if(Number.isNaN(baseAt.getTime())||Number.isNaN(serverAt.getTime())||serverAt.getTime()!==baseAt.getTime())fail(409,'SYNC_CONFLICT',`Item ${itemId} changed on the server after this offline edit`);}for(const field of ITEM_FIELDS)if(field!=='id'&&field!=='created_at'&&field!=='updated_at'&&Object.prototype.hasOwnProperty.call(patch,field)){values.push(patch[field]??null);updates.push(`${field}=$${values.length}`);}updates.push('updated_at=now()');values.push(itemId);return(await client.query(`UPDATE items SET ${updates.join(',')} WHERE id=$${values.length} RETURNING *`,values)).rows[0];}if(change.operation==='delete'){const result=await client.query('DELETE FROM items WHERE id=$1 RETURNING id',[itemId]);if(result.rowCount)await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) VALUES('item',$1) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()",[itemId]);return{deleted:Boolean(result.rowCount),id:itemId};}fail(400,'UNSUPPORTED_ITEM_OPERATION',`Unsupported item operation: ${change.operation}`);}
 async function applyItem(client,change){const payload=object(change.payload,'Item payload');const itemId=id(payload.id||change.entity_id,'Item ID');if(change.operation==='create'){const values=[itemId],columns=['id'];for(const field of ITEM_FIELDS)if(Object.prototype.hasOwnProperty.call(payload,field)){columns.push(field);values.push(payload[field]??null);}if((await client.query('SELECT id FROM items WHERE id=$1',[itemId])).rowCount)fail(409,'ITEM_ALREADY_EXISTS',`Item ${itemId} already exists`);return(await client.query(`INSERT INTO items (${columns.join(',')}) VALUES (${values.map((_,i)=>`$${i+1}`).join(',')}) RETURNING *`,values)).rows[0];}if(change.operation==='update'){const patch=object(payload.patch||payload.item||payload,'Item update');const updates=[],values=[];const before=(await client.query('SELECT * FROM items WHERE id=$1 FOR UPDATE',[itemId]));if(!before.rowCount)fail(409,'ITEM_NOT_FOUND',`Item ${itemId} does not exist on the server`);const base=payload.base_updated_at;if(base&&!payload.conflict_resolution){const serverAt=new Date(before.rows[0].updated_at);const baseAt=new Date(base);if(Number.isNaN(baseAt.getTime())||Number.isNaN(serverAt.getTime())||serverAt.getTime()!==baseAt.getTime())fail(409,'SYNC_CONFLICT',`Item ${itemId} changed on the server after this offline edit`);}for(const field of ITEM_FIELDS)if(field!=='id'&&field!=='created_at'&&field!=='updated_at'&&Object.prototype.hasOwnProperty.call(patch,field)){values.push(patch[field]??null);updates.push(`${field}=$${values.length}`);}updates.push('updated_at=now()');values.push(itemId);return(await client.query(`UPDATE items SET ${updates.join(',')} WHERE id=$${values.length} RETURNING *`,values)).rows[0];}if(change.operation==='delete'){const result=await client.query('DELETE FROM items WHERE id=$1 RETURNING id',[itemId]);if(result.rowCount)await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) VALUES('item',$1) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()",[itemId]);return{deleted:Boolean(result.rowCount),id:itemId};}fail(400,'UNSUPPORTED_ITEM_OPERATION',`Unsupported item operation: ${change.operation}`);}
 export default router;
