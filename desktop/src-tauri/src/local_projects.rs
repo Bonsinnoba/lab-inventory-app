@@ -266,6 +266,7 @@ pub fn create_local_project_connector(app:AppHandle,project_id:String,record:Val
 #[tauri::command]
 pub fn delete_local_project_connector(app:AppHandle,project_id:String,record_id:String)->Result<(),String>{nested_delete(app,project_id,"connectors",record_id,"project_connector")}
 
+#[tauri::command]
 pub fn get_local_project_tasks(app:AppHandle,project_id:String)->Result<Vec<Value>,String>{let c=conn(&app)?;let p=load(&c)?.into_iter().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;Ok(nested_get(&p,"tasks"))}
 #[tauri::command]
 pub fn get_local_project_experiments(app:AppHandle,project_id:String)->Result<Vec<Value>,String>{let c=conn(&app)?;let p=load(&c)?.into_iter().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;Ok(nested_get(&p,"experiments"))}
