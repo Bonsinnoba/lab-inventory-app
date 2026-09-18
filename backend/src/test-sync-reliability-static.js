@@ -116,3 +116,8 @@ assert(sync.includes('project_task_experiment'), 'task/experiment sync config is
 assert(sync.includes('project_task_experiments'), 'task/experiment pull is missing');
 assert(localProjects.includes('create_local_project_task_experiment'), 'local task/experiment command is missing');
 assert(projectsApi.includes('create_local_project_task_experiment'), 'desktop task/experiment API is not local-first');
+
+assert(localAuth.includes('bootstrap_local_admin'), 'local admin bootstrap command is missing');
+assert(localAuth.includes('local_login'), 'local login command is missing');
+assert(authApi.includes('bootstrap_local_admin'), 'desktop registration is not local-first');
+assert(authApi.includes('local_login'), 'desktop login is not local-first');
