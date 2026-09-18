@@ -15,6 +15,20 @@ export interface BudgetPeriod {
 export async function getBudgetPeriods(): Promise<BudgetPeriod[]> { if(isTauri())try{return await invoke<BudgetPeriod[]>('get_local_budget_periods')}catch{} const response=await apiFetch('/budget-periods');if(!response.ok)throw new Error('Failed to fetch');return response.json(); }
 
 export async function getCurrentBudgetPeriod(): Promise<BudgetPeriod | null> {
+  if (isTauri()) {
+    try {
+      const periods = await invoke<BudgetPeriod[]>('get_local_budget_periods');
+      const today = new Date().toISOString().slice(0, 10);
+      const current = periods
+        .filter((period) => {
+          const start = period.start_date ? String(period.start_date).slice(0, 10) : '';
+          const end = period.end_date ? String(period.end_date).slice(0, 10) : '';
+          return (!start || start <= today) && (!end || end >= today);
+        })
+        .sort((a, b) => String(b.start_date || '').localeCompare(String(a.start_date || '')))[0];
+      return current || null;
+    } catch {}
+  }
   const response = await apiFetch(`/budget-periods/current`);
   if (!response.ok) throw new Error('Failed to fetch current budget period');
   return response.json();
