@@ -119,12 +119,12 @@ async function applyLocationEntity(client,change,{userId,role}){
   if(!String(record.name||'').trim())fail(400,'INVALID_LOCATION','Location name is required');
   const id=change.entity_id||record.id||null;
   if(!id)fail(400,'INVALID_LOCATION','Location id is required');
-  idValue(id,'Location id');
+  id(id,'Location id');
   const result=await client.query('INSERT INTO locations (id,name,parent_id,created_at) VALUES ($1,$2,$3,COALESCE($4,now())) ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,parent_id=EXCLUDED.parent_id RETURNING *',[id,String(record.name).trim(),record.parent_id||null,record.created_at||null]);
   return {location:result.rows[0]};
  }
  if(!change.entity_id)fail(400,'INVALID_LOCATION','Location id is required');
- idValue(change.entity_id,'Location id');
+ id(change.entity_id,'Location id');
  const existing=await client.query('SELECT * FROM locations WHERE id=$1',[change.entity_id]);
  if(change.operation==='update'){
   if(!existing.rowCount)fail(404,'LOCATION_NOT_FOUND','Location not found');
@@ -146,7 +146,7 @@ router.get('/locations/pull',async(req,res,next)=>{
  try{
   const permissions=await getUserPermissions(req.user.userId,req.user.role);
   if(!permissions.has('inventory.view'))return res.status(403).json({error:{code:'PERMISSION_DENIED',message:'Permission required: inventory.view'}});
-  const result=await pool.query('SELECT l.*,COUNT(i.id)::int AS item_count FROM locations l LEFT JOIN items i ON i.location_id=l.id GROUP BY l.id ORDER BY l.updated_at DESC NULLS LAST,l.created_at DESC,l.name ASC').catch(async()=>pool.query('SELECT l.*,COUNT(i.id)::int AS item_count FROM locations l LEFT JOIN items i ON i.location_id=l.id GROUP BY l.id ORDER BY l.created_at DESC,l.name ASC'));
+  const result=await pool.query('SELECT l.*,COUNT(i.id)::int AS item_count FROM locations l LEFT JOIN items i ON i.location_id=l.id GROUP BY l.id ORDER BY l.created_at DESC,l.name ASC;
   const tomb=await pool.query("SELECT entity_id FROM sync_tombstones WHERE entity_type='location' ORDER BY deleted_at DESC LIMIT 1000");
   res.setHeader('Cache-Control','no-store');res.json({locations:result.rows,deleted_location_ids:tomb.rows.map(r=>r.entity_id)});
  }catch(e){next(e);}
