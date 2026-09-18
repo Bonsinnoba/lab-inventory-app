@@ -13,6 +13,8 @@ const localExcel = read('../desktop/src-tauri/src/local_excel.rs');
 const localProjects = read('../desktop/src-tauri/src/local_projects.rs');
 const localSearch = read('../desktop/src-tauri/src/local_search.rs');
 const localFinance = read('../desktop/src-tauri/src/local_finance.rs');
+const locationsApi = read('../desktop/src/api/locations.ts');
+const localLocations = read('../desktop/src-tauri/src/local_locations.rs');
 const financeApi = read('../desktop/src/api/transactions.ts') + read('../desktop/src/api/budget-periods.ts') + read('../desktop/src/api/funding-sources.ts');
 const searchApi = read('../desktop/src/api/search.ts');
 const tauriMain = read('../desktop/src-tauri/src/main.rs');
@@ -72,6 +74,13 @@ const checks = [
   ['local finance runtime exists', localFinance.includes('create_local_transaction') && localFinance.includes('create_local_budget_period') && localFinance.includes('create_local_funding_source')],
   ['finance mutations queue sync changes', localFinance.includes('sync_outbox') && localFinance.includes('entity_type,entity_id,operation,payload_json')],
   ['desktop finance APIs prefer local runtime', financeApi.includes('invoke') && financeApi.includes('create_local_transaction') && financeApi.includes('create_local_budget_period') && financeApi.includes('create_local_funding_source')],
+  ['server accepts offline location records', sync.includes("change.entity_type==='location'") && sync.includes('applyLocationEntity')],
+  ['server exposes location pull', sync.includes("router.get('/locations/pull'") && sync.includes('deleted_location_ids')],
+  ['local location mutations queue sync changes', localLocations.includes("'location'") && localLocations.includes('sync_outbox')],
+  ['local location counts derive from inventory snapshot', localLocations.includes("inventory_snapshot") && localLocations.includes('item_count')],
+  ['local location pull preserves pending edits', localLocations.includes("entity_type='location'") && localLocations.includes('pending')],
+  ['desktop pulls location records', desktopSync.includes('/sync/locations/pull') && desktopSync.includes('apply_server_location_pull')],
+  ['Tauri registers location pull merge command', tauriMain.includes('local_locations::apply_server_location_pull')],
   ['server exposes finance pull', sync.includes("router.get('/finance/pull'") && sync.includes('deleted_budget_period')],
   ['server accepts offline finance records', sync.includes('applyFinanceEntity') && sync.includes('FINANCE_CONFIG')],
   ['desktop pulls finance records', desktopSync.includes('/sync/finance/pull') && desktopSync.includes('apply_server_finance_pull')],
