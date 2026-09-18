@@ -74,7 +74,8 @@ async function runSync():Promise<number>{
   const inventoryPullSucceeded=await pullServerInventory();
   const projectPullSucceeded=await pullServerProjects();
   const resourcePullSucceeded=await pullServerResources();
-  const pullSucceeded=inventoryPullSucceeded&&projectPullSucceeded&&resourcePullSucceeded;
+  const financePullSucceeded=await pullServerFinance();
+  const pullSucceeded=inventoryPullSucceeded&&projectPullSucceeded&&resourcePullSucceeded&&financePullSucceeded;
   if(!pullSucceeded){syncSucceeded=false;publish({status:'error',lastError:runtimeState.lastError||'Unable to download the latest server changes'});scheduleRetry();}
   if(syncSucceeded&&pullSucceeded){clearRetryState();publish({status:'idle',lastSuccessAt:new Date().toISOString(),lastError:null});}
   else if(runtimeState.status!=='error')publish({status:'error',lastError:runtimeState.lastError||'Some changes could not be synchronized'});
@@ -128,3 +129,6 @@ async function pullServerResources():Promise<boolean>{
     return true;
   }catch(error){publish({status:'error',lastError:error instanceof Error?error.message:String(error)});return false;}
 }
+
+
+async function pullServerFinance():Promise<boolean>{if(typeof navigator!=='undefined'&&!navigator.onLine)return false;try{const response=await apiFetch('/sync/finance/pull',{method:'GET',cache:'no-store'});if(!response.ok)return false;const body=await response.json() as any;const d=body.deleted||{};await invoke('apply_server_finance_pull',{transactions:Array.isArray(body.transactions)?body.transactions:[],budgetPeriods:Array.isArray(body.budget_periods)?body.budget_periods:[],fundingSources:Array.isArray(body.funding_sources)?body.funding_sources:[],deletedTransactions:Array.isArray(d.transaction)?d.transaction:[],deletedBudgetPeriods:Array.isArray(d.budget_period)?d.budget_period:[],deletedFundingSources:Array.isArray(d.funding_source)?d.funding_source:[]});return true}catch{return false;}}
