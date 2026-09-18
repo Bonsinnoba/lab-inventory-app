@@ -27,6 +27,7 @@ const allowedOrigins = [
   'http://localhost:5173',
   'http://localhost:1420',
   'http://tauri.localhost',
+  'tauri://localhost',
   ...configuredOrigins,
 ].filter((origin, index, origins) => origins.indexOf(origin) === index);
 
