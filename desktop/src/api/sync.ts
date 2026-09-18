@@ -73,7 +73,8 @@ async function runSync():Promise<number>{
   }
   const inventoryPullSucceeded=await pullServerInventory();
   const projectPullSucceeded=await pullServerProjects();
-  const pullSucceeded=inventoryPullSucceeded&&projectPullSucceeded;
+  const resourcePullSucceeded=await pullServerResources();
+  const pullSucceeded=inventoryPullSucceeded&&projectPullSucceeded&&resourcePullSucceeded;
   if(!pullSucceeded){syncSucceeded=false;publish({status:'error',lastError:runtimeState.lastError||'Unable to download the latest server changes'});scheduleRetry();}
   if(syncSucceeded&&pullSucceeded){clearRetryState();publish({status:'idle',lastSuccessAt:new Date().toISOString(),lastError:null});}
   else if(runtimeState.status!=='error')publish({status:'error',lastError:runtimeState.lastError||'Some changes could not be synchronized'});
@@ -112,6 +113,18 @@ async function pullServerProjects():Promise<boolean>{
     if(!response.ok){publish({status:'error',lastError:await getApiErrorMessage(response,'Unable to download project changes')});return false;}
     const body=await response.json() as {projects?:unknown[];deleted_project_ids?:string[]};
     await invoke('apply_server_project_pull',{projectsJson:JSON.stringify(Array.isArray(body.projects)?body.projects:[]),deletedProjectIds:Array.isArray(body.deleted_project_ids)?body.deleted_project_ids:[]});
+    return true;
+  }catch(error){publish({status:'error',lastError:error instanceof Error?error.message:String(error)});return false;}
+}
+
+
+async function pullServerResources():Promise<boolean>{
+  if(typeof navigator!=='undefined'&&!navigator.onLine){publish({status:'offline'});return false;}
+  try{
+    const response=await apiFetch('/sync/resources/pull',{method:'GET',cache:'no-store'});
+    if(!response.ok){publish({status:'error',lastError:await getApiErrorMessage(response,'Unable to download resource changes')});return false;}
+    const body=await response.json() as {resources?:unknown[];deleted_resource_ids?:string[]};
+    await invoke('apply_server_resource_pull',{resourcesJson:JSON.stringify(Array.isArray(body.resources)?body.resources:[]),deletedResourceIds:Array.isArray(body.deleted_resource_ids)?body.deleted_resource_ids:[]});
     return true;
   }catch(error){publish({status:'error',lastError:error instanceof Error?error.message:String(error)});return false;}
 }
