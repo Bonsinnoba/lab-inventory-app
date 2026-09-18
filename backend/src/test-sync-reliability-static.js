@@ -25,6 +25,8 @@ const tauriMain = read('../desktop/src-tauri/src/main.rs');
 const localAuth = read('../desktop/src-tauri/src/local_auth.rs');
 const authApi = read('../desktop/src/api/auth.ts');
 const localSystem = read('../desktop/src-tauri/src/local_system.rs');
+const localEngineering = read('../desktop/src-tauri/src/local_engineering.rs');
+const engineeringApi = read('../desktop/src/api/engineering.ts');
 const systemApi = read('../desktop/src/api/system.ts');
 const tauriConfig = read('../desktop/src-tauri/tauri.conf.json');
 const viteConfig = read('../desktop/vite.config.ts');
@@ -104,6 +106,14 @@ const checks = [
   ['server accepts offline finance records', sync.includes('applyFinanceEntity') && sync.includes('FINANCE_CONFIG')],
   ['desktop pulls finance records', desktopSync.includes('/sync/finance/pull') && desktopSync.includes('apply_server_finance_pull')],
   ['Tauri dev URL matches Vite dev server', tauriConfig.includes('"devPath": "http://localhost:1420"') && viteConfig.includes('port: 1420')],
+  ['server syncs engineering entities', sync.includes('ENGINEERING_CONFIG') && sync.includes('engineering_calculation') && sync.includes('engineering_test') && sync.includes('applyEngineeringEntity')],
+  ['server exposes engineering pull', sync.includes("router.get('/engineering/pull'") && sync.includes('deleted_calculation_ids') && sync.includes('deleted_test_ids')],
+  ['local engineering runtime exists', localEngineering.includes('get_local_engineering_calculations') && localEngineering.includes('create_local_engineering_calculation') && localEngineering.includes('get_local_engineering_tests') && localEngineering.includes('create_local_engineering_test')],
+  ['local engineering mutations queue sync', localEngineering.includes('engineering_calculation') && localEngineering.includes('engineering_test') && localEngineering.includes('sync_outbox')],
+  ['local engineering pull preserves pending edits', localEngineering.includes("entity_type IN ('engineering_calculation','engineering_test')") && localEngineering.includes('pending.contains')],
+  ['desktop engineering APIs prefer local runtime', engineeringApi.includes('get_local_engineering_calculations') && engineeringApi.includes('create_local_engineering_calculation') && engineeringApi.includes('calculate_local_engineering')],
+  ['desktop pulls engineering records', desktopSync.includes('/sync/engineering/pull') && desktopSync.includes('apply_server_engineering_pull')],
+  ['Tauri registers local engineering commands', tauriMain.includes('local_engineering::get_local_engineering_calculations') && tauriMain.includes('local_engineering::apply_server_engineering_pull')],
 ];
 
 let failed = 0;
