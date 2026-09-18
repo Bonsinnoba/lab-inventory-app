@@ -51,6 +51,7 @@ export default function NotebookPage() {
     onSuccess: (created) => {
       queryClient.invalidateQueries({ queryKey: ['notes'] });
       queryClient.invalidateQueries({ queryKey: ['tags'] });
+      queryClient.invalidateQueries({ queryKey: ['experience', 'dashboard'] });
       setDraft({ id: created.id, title: created.title, body: created.body, tags: created.tags, project_id: created.project_id || null });
       showToast('Note created');
     },
@@ -73,6 +74,7 @@ export default function NotebookPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['notes'] });
       queryClient.invalidateQueries({ queryKey: ['tags'] });
+      queryClient.invalidateQueries({ queryKey: ['experience', 'dashboard'] });
       setDraft(EMPTY_DRAFT);
       showToast('Note deleted');
     },
