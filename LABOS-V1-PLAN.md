@@ -927,3 +927,8 @@ and:
 with synchronization and centralized media services between/around those layers as appropriate.
 
 Only after that boundary is complete, the remaining local-first domains and central-only services are classified, and the complete system is verified offline/online should the project proceed to the fresh V1 bootstrap and final release.
+
+
+### Financials — implementation progress
+
+Local-first finance runtime is now implemented on main for transactions, budget periods, and funding sources. Desktop finance CRUD prefers local SQLite-backed state and queues mutations to the sync outbox. Central synchronization now accepts and pulls these records, including tombstone propagation. Finance summaries and Excel operations remain central-derived services until their local equivalents are explicitly implemented and verified.
