@@ -88,6 +88,8 @@ pub fn create_local_project(app: AppHandle, mut project: Value) -> Result<Value,
     project["bom"] = json!([]);
     project["blocks"] = json!([]);
     project["connectors"] = json!([]);
+    project["task_experiments"] = json!([]);
+    project["attachments"] = json!([]);
     projects.push(project.clone());
     save(&mut c, &projects, vec![(id(), "project".into(), project_id, "create".into(), project.clone())])?;
     Ok(project)
@@ -152,7 +154,7 @@ fn nested_delete(app:AppHandle,project_id:String,key:&str,record_id:String,entit
 #[tauri::command]
 pub fn list_local_project_workspace(app:AppHandle,project_id:String)->Result<Value,String>{
     let c=conn(&app)?;let p=load(&c)?.into_iter().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
-    Ok(json!({"members":[],"tasks":nested_get(&p,"tasks"),"experiments":nested_get(&p,"experiments"),"items":nested_get(&p,"items"),"notes":[],"resources":[],"activity":[],"blocks":nested_get(&p,"blocks"),"connectors":nested_get(&p,"connectors"),"permissions":{"access":"admin","member_role":"lead","can_edit":true}}))
+    Ok(json!({"members":[],"tasks":nested_get(&p,"tasks"),"experiments":nested_get(&p,"experiments"),"items":nested_get(&p,"items"),"notes":[],"resources":[],"activity":[],"blocks":nested_get(&p,"blocks"),"connectors":nested_get(&p,"connectors"),"task_experiments":nested_get(&p,"task_experiments"),"attachments":nested_get(&p,"attachments"),"permissions":{"access":"admin","member_role":"lead","can_edit":true}}))
 }
 
 #[tauri::command]
