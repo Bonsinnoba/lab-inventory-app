@@ -47,6 +47,13 @@ const checks = [
   ['Excel import is transactional', localExcel.includes('let tx = conn.transaction()') && localExcel.includes('tx.commit()')],
   ['desktop pull pages until complete', desktopSync.includes('for(let page=0;page<100;page++)') && desktopSync.includes('body.has_more')],
   ['desktop pulls project workspace state', desktopSync.includes("/sync/projects/pull") && desktopSync.includes('apply_server_project_pull')],
+  ['server accepts offline resource records', sync.includes('applyResourceEntity') && sync.includes("change.entity_type==='resource'")],
+  ['server exposes resource pull', sync.includes("router.get('/resources/pull'") && sync.includes('deleted_resource_ids')],
+  ['resource sync enforces resource permissions', sync.includes('resources.create') && sync.includes('resources.edit') && sync.includes('resources.delete')],
+  ['local resource mutations queue sync changes', read('../desktop/src-tauri/src/local_resources.rs').includes("entity_type,entity_id,operation,payload_json) VALUES(?1,?2,'resource'")],
+  ['local resource pull preserves pending edits', read('../desktop/src-tauri/src/local_resources.rs').includes("entity_type='resource'") && read('../desktop/src-tauri/src/local_resources.rs').includes('pending.contains(&incoming_resource.id)')],
+  ['desktop pulls resource records', desktopSync.includes('/sync/resources/pull') && desktopSync.includes('apply_server_resource_pull')],
+  ['Tauri registers resource pull merge command', tauriMain.includes('local_resources::apply_server_resource_pull')],
   ['Tauri dev URL matches Vite dev server', tauriConfig.includes('"devPath": "http://localhost:1420"') && viteConfig.includes('port: 1420')],
 ];
 
