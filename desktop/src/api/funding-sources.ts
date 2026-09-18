@@ -1,4 +1,6 @@
 import { apiFetch } from './http';
+import { invoke } from '@tauri-apps/api/tauri';
+const isTauri=()=>typeof window!=='undefined'&&Boolean((window as any).__TAURI_IPC__);
 
 export interface FundingSource {
   id: string;
@@ -10,35 +12,10 @@ export interface FundingSource {
   total_contributed?: number;
 }
 
-export async function getFundingSources(): Promise<FundingSource[]> {
-  const response = await apiFetch(`/funding-sources`);
-  if (!response.ok) throw new Error('Failed to fetch funding sources');
-  return response.json();
-}
+export async function getFundingSources(): Promise<FundingSource[]> { if(isTauri())try{return await invoke<FundingSource[]>('get_local_funding_sources')}catch{} const response=await apiFetch('/funding-sources');if(!response.ok)throw new Error('Failed to fetch');return response.json(); }
 
-export async function createFundingSource(source: Omit<FundingSource, 'id' | 'created_at' | 'total_contributed'>): Promise<FundingSource> {
-  const response = await apiFetch(`/funding-sources`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(source),
-  });
-  if (!response.ok) throw new Error('Failed to create funding source');
-  return response.json();
-}
+export async function createFundingSource(value:any):Promise<FundingSource>{if(isTauri())try{return await invoke<FundingSource>('create_local_funding_source',{source:value})}catch{} const response=await apiFetch('/funding-sources',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});if(!response.ok)throw new Error('Failed to create');return response.json();}
 
-export async function updateFundingSource(id: string, source: Partial<FundingSource>): Promise<FundingSource> {
-  const response = await apiFetch(`/funding-sources/${id}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(source),
-  });
-  if (!response.ok) throw new Error('Failed to update funding source');
-  return response.json();
-}
+export async function updateFundingSource(id:string,value:any):Promise<FundingSource>{if(isTauri())try{return await invoke<FundingSource>('update_local_funding_source',{id,source:value})}catch{} const response=await apiFetch(`/funding-sources/${id}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});if(!response.ok)throw new Error('Failed to update');return response.json();}
 
-export async function deleteFundingSource(id: string): Promise<void> {
-  const response = await apiFetch(`/funding-sources/${id}`, {
-    method: 'DELETE',
-  });
-  if (!response.ok) throw new Error('Failed to delete funding source');
-}
+export async function deleteFundingSource(id:string):Promise<void>{if(isTauri())try{await invoke('delete_local_funding_source',{id});return}catch{} const response=await apiFetch(`/funding-sources/${id}`,{method:'DELETE'});if(!response.ok)throw new Error('Failed to delete');}
