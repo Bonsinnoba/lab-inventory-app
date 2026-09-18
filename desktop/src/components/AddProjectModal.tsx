@@ -24,6 +24,7 @@ export default function AddProjectModal({ onClose }: AddProjectModalProps) {
     mutationFn: createProject,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
+      queryClient.invalidateQueries({ queryKey: ['experience', 'dashboard'] });
       showToast('Project created');
       onClose();
     },
