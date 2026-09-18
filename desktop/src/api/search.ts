@@ -1,14 +1,14 @@
 import { apiFetch } from './http';
 import { invoke } from '@tauri-apps/api/tauri';
 
-const LOCAL_SEARCH_TYPES: SearchType[] = ['items','projects','notes','resources','tasks','experiments','transactions'];
+const LOCAL_SEARCH_TYPES: SearchType[] = ['items','projects','notes','resources','tasks','experiments','findings','transactions'];
 function isTauriRuntime() { return typeof window !== 'undefined' && Boolean((window as any).__TAURI_IPC__); }
 
-export type SearchType = 'items' | 'notes' | 'transactions' | 'resources' | 'projects' | 'users' | 'tasks' | 'experiments' | 'blocks';
+export type SearchType = 'items' | 'notes' | 'transactions' | 'resources' | 'projects' | 'users' | 'tasks' | 'experiments' | 'findings' | 'blocks';
 
 export interface SearchResult {
   id: string;
-  type: 'item' | 'note' | 'transaction' | 'resource' | 'project' | 'user' | 'task' | 'experiment' | 'block';
+  type: 'item' | 'note' | 'transaction' | 'resource' | 'project' | 'user' | 'task' | 'experiment' | 'finding' | 'block';
   title: string;
   subtitle: string;
   rank?: number;
@@ -28,11 +28,12 @@ export interface SearchResults {
   users?: SearchResult[];
   tasks?: SearchResult[];
   experiments?: SearchResult[];
+  findings?: SearchResult[];
   blocks?: SearchResult[];
 }
 
 export async function globalSearch(query: string, types?: SearchType[]): Promise<SearchResults> {
-  const requested = types && types.length > 0 ? types : (['items','notes','transactions','resources','projects','users','tasks','experiments','blocks'] as SearchType[]);
+  const requested = types && types.length > 0 ? types : (['items','notes','transactions','resources','projects','users','tasks','experiments','findings','blocks'] as SearchType[]);
   let local: SearchResults | null = null;
   if (isTauriRuntime()) {
     try { local = await invoke<SearchResults>('global_local_search', { query: query.trim(), types: requested.filter(type => LOCAL_SEARCH_TYPES.includes(type)) }); } catch {}
