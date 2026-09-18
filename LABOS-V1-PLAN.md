@@ -756,7 +756,38 @@ No feature should be considered complete merely because its source files were wr
 
 ---
 
-## 15. Recommended implementation order from here
+## 15. Revised completion strategy
+
+The remaining V1 work is grouped into three broad passes, followed by a surgical refinement pass. The project should no longer optimize around throwaway testing builds.
+
+### Phase 1 — Heavy Build: Core Product Completion
+
+Finish the substantial engineering work required for a complete LabOS workstation product: local-first workstation-owned domains; explicit local runtime boundary; SQLite persistence and bootstrap/auth/session; inventory, projects, notes, knowledge, locations, resources and finance local behavior; local search; sync outbox, push/pull, retries, conflicts, tombstones and recovery; central media acquisition/processing and other central-only services; central/local/hybrid route classification and boundary cleanup; and production configuration/data isolation.
+
+Small visual issues found during this pass are recorded rather than allowed to derail the heavy implementation.
+
+### Phase 2 — Heavy Build: Integration & Product Completion
+
+Make the completed domains operate as one coherent system: cross-domain workflows; dashboard/activity consistency; project ↔ inventory ↔ resources ↔ notes ↔ knowledge relationships; offline accumulation and reconnect synchronization; central-to-workstation and workstation-to-central reconciliation; clear central-only service behavior when disconnected; pagination/loading/empty/error-state consistency; permissions and authorization boundaries; restart/recovery behavior; Preview/Production isolation; and release/build readiness.
+
+### Phase 3 — Full-System Audit & Verification
+
+Stop adding broad functionality and inspect the entire product systematically: every major page/workflow, offline operation, online/reconnect behavior, cross-workstation synchronization, fresh-install/bootstrap, data integrity, central-service dependencies, TypeScript/Vite/Rust/backend/static tests/builds, and UI/UX consistency. Defects that block correctness are fixed immediately; smaller findings are captured for Phase 4.
+
+### Phase 4 — Surgical Fixes & Refinement
+
+Address the accumulated minor and edge-case findings carefully: UX polish, confusing/redundant navigation, pagination and interaction defects, validation/error messages, visual consistency, accessibility, synchronization edge cases, performance/cleanup, and final regression verification. Only after this pass is V1 release packaging final.
+
+### Working model
+
+The central server is not a special testing dependency. It is a service that can be started periodically for synchronization and central-only functionality. A workstation must remain useful without it for operations classified as local-first.
+
+Work is performed directly on `main` unless explicitly changed by the user. Browser verification is used for fast iteration; the installed Tauri application receives targeted verification after the broad implementation is stable.
+
+---
+
+## 16. Detailed implementation checklist (legacy sequence retained for traceability)
+
 
 ### Phase A — Finish the local runtime boundary
 
@@ -853,7 +884,7 @@ Only after all previous phases pass:
 
 ---
 
-## 16. Known caveats to resolve
+## 17. Known caveats to resolve
 
 The following items are known and should not be forgotten:
 
@@ -874,7 +905,7 @@ The following items are known and should not be forgotten:
 
 ---
 
-## 17. Working rules for future implementation
+## 18. Working rules for future implementation
 
 1. Work directly on `main` when implementing requested changes.
 2. Do not create a new branch unless explicitly requested.
@@ -894,7 +925,7 @@ The following items are known and should not be forgotten:
 
 ---
 
-## 18. Current status snapshot
+## 19. Current status snapshot
 
 The project has already established substantial foundations for:
 
