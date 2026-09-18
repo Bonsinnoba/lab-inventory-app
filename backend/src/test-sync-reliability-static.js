@@ -12,6 +12,8 @@ const localInventory = read('../desktop/src/api/local-inventory.ts');
 const localExcel = read('../desktop/src-tauri/src/local_excel.rs');
 const localProjects = read('../desktop/src-tauri/src/local_projects.rs');
 const localSearch = read('../desktop/src-tauri/src/local_search.rs');
+const localFinance = read('../desktop/src-tauri/src/local_finance.rs');
+const financeApi = read('../desktop/src/api/transactions.ts') + read('../desktop/src/api/budget-periods.ts') + read('../desktop/src/api/funding-sources.ts');
 const searchApi = read('../desktop/src/api/search.ts');
 const tauriMain = read('../desktop/src-tauri/src/main.rs');
 const tauriConfig = read('../desktop/src-tauri/tauri.conf.json');
@@ -58,6 +60,12 @@ const checks = [
   ['Tauri registers resource pull merge command', tauriMain.includes('local_resources::apply_server_resource_pull')],
   ['local search runtime exists', localSearch.includes('global_local_search') && localSearch.includes('inventory_snapshot') && localSearch.includes('resources_state')],
   ['desktop search prefers local runtime', searchApi.includes('global_local_search') && searchApi.includes('LOCAL_SEARCH_TYPES')],
+  ['local finance runtime exists', localFinance.includes('create_local_transaction') && localFinance.includes('create_local_budget_period') && localFinance.includes('create_local_funding_source')],
+  ['finance mutations queue sync changes', localFinance.includes('sync_outbox') && localFinance.includes('entity_type,entity_id,operation,payload_json')],
+  ['desktop finance APIs prefer local runtime', financeApi.includes('invoke') && financeApi.includes('create_local_transaction') && financeApi.includes('create_local_budget_period') && financeApi.includes('create_local_funding_source')],
+  ['server exposes finance pull', sync.includes("router.get('/finance/pull'") && sync.includes('deleted_budget_period')],
+  ['server accepts offline finance records', sync.includes('applyFinanceEntity') && sync.includes('FINANCE_CONFIG')],
+  ['desktop pulls finance records', desktopSync.includes('/sync/finance/pull') && desktopSync.includes('apply_server_finance_pull')],
   ['Tauri dev URL matches Vite dev server', tauriConfig.includes('"devPath": "http://localhost:1420"') && viteConfig.includes('port: 1420')],
 ];
 
