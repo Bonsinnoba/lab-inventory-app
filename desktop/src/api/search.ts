@@ -1,4 +1,8 @@
 import { apiFetch } from './http';
+import { invoke } from '@tauri-apps/api/tauri';
+
+const LOCAL_SEARCH_TYPES: SearchType[] = ['items','projects','notes','resources','tasks','experiments'];
+function isTauriRuntime() { return typeof window !== 'undefined' && Boolean((window as any).__TAURI_IPC__); }
 
 export type SearchType = 'items' | 'notes' | 'transactions' | 'resources' | 'projects' | 'users' | 'tasks' | 'experiments' | 'blocks';
 
@@ -28,14 +32,33 @@ export interface SearchResults {
 }
 
 export async function globalSearch(query: string, types?: SearchType[]): Promise<SearchResults> {
+  const requested = types && types.length > 0 ? types : (['items','notes','transactions','resources','projects','users','tasks','experiments','blocks'] as SearchType[]);
+  let local: SearchResults | null = null;
+  if (isTauriRuntime()) {
+    try { local = await invoke<SearchResults>('global_local_search', { query: query.trim(), types: requested.filter(type => LOCAL_SEARCH_TYPES.includes(type)) }); } catch {}
+    const needsCentral = requested.some(type => !LOCAL_SEARCH_TYPES.includes(type));
+    if (!needsCentral && local) return local;
+  }
   const params = new URLSearchParams();
   params.append('q', query.trim());
   if (types && types.length > 0) params.append('type', types.join(','));
-  const response = await apiFetch(`/search?${params}`);
-  if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    const message = typeof body?.error === 'string' ? body.error : body?.error?.message;
-    throw new Error(message || 'Search failed');
+  try {
+    const response = await apiFetch(`/search?${params}`);
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      const message = typeof body?.error === 'string' ? body.error : body?.error?.message;
+      if (local) return local;
+      throw new Error(message || 'Search failed');
+    }
+    const central = await response.json() as SearchResults;
+    if (!local) return central;
+    const localAll = Array.isArray(local.all) ? local.all : [];
+    const centralAll = Array.isArray(central.all) ? central.all : [];
+    const seen = new Set(centralAll.map(result => `${result.type}:${result.id}`));
+    const merged = [...centralAll, ...localAll.filter(result => !seen.has(`${result.type}:${result.id}`))];
+    return { ...central, all: merged, total: merged.length };
+  } catch (error) {
+    if (local) return local;
+    throw error;
   }
-  return response.json();
 }
