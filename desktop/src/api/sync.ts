@@ -71,7 +71,9 @@ async function runSync():Promise<number>{
       scheduleRetry();
     }
   }
-  const pullSucceeded=await pullServerInventory();
+  const inventoryPullSucceeded=await pullServerInventory();
+  const projectPullSucceeded=await pullServerProjects();
+  const pullSucceeded=inventoryPullSucceeded&&projectPullSucceeded;
   if(!pullSucceeded){syncSucceeded=false;publish({status:'error',lastError:runtimeState.lastError||'Unable to download the latest server changes'});scheduleRetry();}
   if(syncSucceeded&&pullSucceeded){clearRetryState();publish({status:'idle',lastSuccessAt:new Date().toISOString(),lastError:null});}
   else if(runtimeState.status!=='error')publish({status:'error',lastError:runtimeState.lastError||'Some changes could not be synchronized'});
@@ -99,5 +101,17 @@ async function pullServerInventory():Promise<boolean>{
       if(!body.has_more)return true;
     }
     return false;
+  }catch(error){publish({status:'error',lastError:error instanceof Error?error.message:String(error)});return false;}
+}
+
+
+async function pullServerProjects():Promise<boolean>{
+  if(typeof navigator!=='undefined'&&!navigator.onLine){publish({status:'offline'});return false;}
+  try{
+    const response=await apiFetch('/sync/projects/pull',{method:'GET',cache:'no-store'});
+    if(!response.ok){publish({status:'error',lastError:await getApiErrorMessage(response,'Unable to download project changes')});return false;}
+    const body=await response.json() as {projects?:unknown[];deleted_project_ids?:string[]};
+    await invoke('apply_server_project_pull',{projectsJson:JSON.stringify(Array.isArray(body.projects)?body.projects:[]),deletedProjectIds:Array.isArray(body.deleted_project_ids)?body.deleted_project_ids:[]});
+    return true;
   }catch(error){publish({status:'error',lastError:error instanceof Error?error.message:String(error)});return false;}
 }
