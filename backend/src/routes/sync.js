@@ -16,7 +16,9 @@ const PROJECT_ENTITY_CONFIG = {
   project_experiment: { table: 'project_experiments', fields: ['project_id','title','status','hypothesis','procedure','observations','result','conclusion','performed_by'] },
   project_bom: { table: 'project_bom_items', fields: ['project_id','name','part_number','required_quantity','unit','preferred_item_id','alternative_item_id','notes','created_by'] },
   project_block: { table: 'project_blocks', fields: ['project_id','block_type','text_content','resource_id','title','x','y','width','height'] },
-  project_connector: { table: 'project_connectors', fields: ['project_id','source_block_id','target_block_id','label'] }
+  project_connector: { table: 'project_connectors', fields: ['project_id','source_block_id','target_block_id','label'] },
+  project_experiment_measurement: { table: 'project_experiment_measurements', fields: ['experiment_id','name','value_numeric','value_text','unit','uncertainty','observed_at','recorded_by','notes'] },
+  project_experiment_observation: { table: 'project_experiment_observations', fields: ['experiment_id','kind','content','observed_at','recorded_by'] }
 };
 function projectEntityType(value){return Object.prototype.hasOwnProperty.call(PROJECT_ENTITY_CONFIG,value);}
 async function canEditProject(client,projectId,user){
@@ -50,6 +52,8 @@ function validateProjectRecord(entityType,record){
     if(record.block_type!=='text'&&!record.resource_id)fail(400,'INVALID_PROJECT_BLOCK','resource_id is required for media blocks');
     if(Number(record.width)<120||Number(record.height)<80)fail(400,'INVALID_PROJECT_BLOCK','Canvas block is below the minimum size');
   }
+  if(entityType==='project_experiment_measurement'){if(!record.experiment_id||(!record.name)||(record.value_numeric==null&&record.value_text==null))fail(400,'INVALID_MEASUREMENT','Measurement requires experiment_id, name and a numeric or text value');}
+  if(entityType==='project_experiment_observation'){if(!record.experiment_id||!String(record.content||'').trim())fail(400,'INVALID_OBSERVATION','Observation requires experiment_id and content');}
   if(entityType==='project_connector'){
     if(!record.source_block_id||!record.target_block_id||record.source_block_id===record.target_block_id)fail(400,'INVALID_PROJECT_CONNECTOR','Invalid connector endpoints');
   }
@@ -174,17 +178,20 @@ router.get('/projects/pull',async(req,res,next)=>{
     const visibility=req.user.role==='admin'?'':'WHERE (p.owner_id=$1 OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id=p.id AND pm.user_id=$1))';
     const projects=await pool.query(`SELECT p.* FROM projects p ${visibility} ORDER BY p.updated_at DESC`,values);
     const ids=projects.rows.map(p=>p.id);
-    const deletedRows=await pool.query("SELECT entity_type,entity_id FROM sync_tombstones WHERE entity_type IN ('project','project_task','project_experiment','project_bom','project_block','project_connector') ORDER BY deleted_at DESC LIMIT 2500"); const deletedByType={project:[],project_task:[],project_experiment:[],project_bom:[],project_block:[],project_connector:[]}; for(const row of deletedRows.rows)if(deletedByType[row.entity_type])deletedByType[row.entity_type].push(row.entity_id); if(!ids.length)return res.json({projects:[],deleted_project_ids:deletedByType.project,deleted_project_entities:deletedByType});
-    const [tasks,experiments,bom,items,blocks,connectors]=await Promise.all([
+    const deletedRows=await pool.query("SELECT entity_type,entity_id FROM sync_tombstones WHERE entity_type IN ('project','project_task','project_experiment','project_bom','project_block','project_connector','project_experiment_measurement','project_experiment_observation') ORDER BY deleted_at DESC LIMIT 2500"); const deletedByType={project:[],project_task:[],project_experiment:[],project_bom:[],project_block:[],project_connector:[],project_experiment_measurement:[],project_experiment_observation:[]}; for(const row of deletedRows.rows)if(deletedByType[row.entity_type])deletedByType[row.entity_type].push(row.entity_id); if(!ids.length)return res.json({projects:[],deleted_project_ids:deletedByType.project,deleted_project_entities:deletedByType});
+    const [tasks,experiments,bom,items,blocks,connectors,measurements,observations]=await Promise.all([
       pool.query('SELECT * FROM project_tasks WHERE project_id=ANY($1::uuid[]) ORDER BY created_at',[ids]),
       pool.query('SELECT * FROM project_experiments WHERE project_id=ANY($1::uuid[]) ORDER BY updated_at DESC',[ids]),
       pool.query('SELECT * FROM project_bom_items WHERE project_id=ANY($1::uuid[]) ORDER BY created_at',[ids]),
       pool.query('SELECT pi.project_id,pi.item_id,pi.allocated_quantity,pi.notes,i.name,i.type,i.status AS item_status,i.current_quantity,i.unit,i.sku FROM project_items pi JOIN items i ON i.id=pi.item_id WHERE pi.project_id=ANY($1::uuid[]) ORDER BY i.name',[ids]),
       pool.query('SELECT * FROM project_blocks WHERE project_id=ANY($1::uuid[]) ORDER BY created_at',[ids]),
-      pool.query('SELECT * FROM project_connectors WHERE project_id=ANY($1::uuid[]) ORDER BY created_at',[ids])
+      pool.query('SELECT * FROM project_connectors WHERE project_id=ANY($1::uuid[]) ORDER BY created_at',[ids]),
+      pool.query('SELECT m.* FROM project_experiment_measurements m JOIN project_experiments e ON e.id=m.experiment_id WHERE e.project_id=ANY($1::uuid[]) ORDER BY m.created_at',[ids]),
+      pool.query('SELECT o.* FROM project_experiment_observations o JOIN project_experiments e ON e.id=o.experiment_id WHERE e.project_id=ANY($1::uuid[]) ORDER BY o.created_at',[ids])
     ]);
     const by=(rows,key)=>{const m=new Map();for(const row of rows){const id=row[key];if(!m.has(id))m.set(id,[]);m.get(id).push(row);}return m;};
-    const taskMap=by(tasks.rows,'project_id'),experimentMap=by(experiments.rows,'project_id'),bomMap=by(bom.rows,'project_id'),itemMap=by(items.rows,'project_id'),blockMap=by(blocks.rows,'project_id'),connectorMap=by(connectors.rows,'project_id');
+    const taskMap=by(tasks.rows,'project_id'),experimentMap=by(experiments.rows,'project_id'),bomMap=by(bom.rows,'project_id'),itemMap=by(items.rows,'project_id'),blockMap=by(blocks.rows,'project_id'),connectorMap=by(connectors.rows,'project_id'),measurementMap=by(measurements.rows,'experiment_id'),observationMap=by(observations.rows,'experiment_id');
+    for(const e of experiments.rows){e.measurements=measurementMap.get(e.id)||[];e.observations=observationMap.get(e.id)||[];}
     res.setHeader('Cache-Control','no-store');
     res.json({projects:projects.rows.map(p=>({...p,tasks:taskMap.get(p.id)||[],experiments:experimentMap.get(p.id)||[],bom:bomMap.get(p.id)||[],items:itemMap.get(p.id)||[],blocks:blockMap.get(p.id)||[],connectors:connectorMap.get(p.id)||[]})),deleted_project_ids:deletedByType.project,deleted_project_entities:deletedByType});
   }catch(error){next(error);}
