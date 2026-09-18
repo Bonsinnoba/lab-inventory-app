@@ -68,6 +68,12 @@ async function getLocalExperienceDashboard(): Promise<ExperienceDashboard> {
       if(experiment.created_at) recent.push({...experiment,project_id:project.id,project_name:project.name,type:'experiment'});
     }
   }
+  for(const note of notes) {
+    if(note.created_at || note.updated_at) recent.push({...note,type:'note',title:note.title,created_at:note.updated_at||note.created_at});
+  }
+  for(const resource of resources) {
+    if(resource.created_at || resource.updated_at) recent.push({...resource,type:'resource',title:resource.name,created_at:resource.updated_at||resource.created_at});
+  }
   overdue.sort((a,b)=>String(a.due_date).localeCompare(String(b.due_date)));
   due.sort((a,b)=>String(a.due_date).localeCompare(String(b.due_date)));
   recent.sort((a,b)=>String(b.created_at).localeCompare(String(a.created_at)));
