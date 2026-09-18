@@ -786,6 +786,52 @@ Work is performed directly on `main` unless explicitly changed by the user. Brow
 
 ---
 
+## 15A. Local Backend Architecture Reset
+
+The workstation runtime is now treated as a **Local LabOS Backend**, not as a collection of unrelated desktop-only APIs.
+
+The target topology is:
+
+`Desktop UI → Local LabOS Backend → SQLite`
+
+and:
+
+`Local LabOS Backend ⇄ Sync Engine ⇄ Central LabOS Backend → PostgreSQL`
+
+The local backend must mirror the central backend's domain/API contracts and business rules wherever the domain is workstation-owned. Its storage implementation is SQLite; the central implementation is PostgreSQL. This is an implementation boundary, not a second product.
+
+### Local backend responsibilities
+
+- expose the workstation API to the desktop;
+- own local SQLite reads/writes and transactions;
+- enforce the same domain validation/business invariants as the central backend where applicable;
+- maintain the local session/authentication boundary;
+- maintain the sync outbox, cursor, retry, conflict and tombstone state;
+- remain usable when the central server is unavailable;
+- queue mutations rather than silently sending workstation-owned writes to PostgreSQL.
+
+### Central-only responsibilities
+
+The local backend must not implement central infrastructure that has no offline purpose, including media acquisition and processing (yt-dlp/FFmpeg), central file/media storage, cross-workstation aggregation, central jobs, and other explicitly central services.
+
+### Migration rule
+
+Existing `local_*` Rust modules are retained as implementation assets during migration. New work must not create another isolated per-page local API. Instead, local functionality is consolidated behind the Local LabOS Backend boundary and progressively aligned with the central route/domain contracts.
+
+### Required parity audit
+
+Before declaring the architecture complete, every central route is classified as **local-first**, **central-only**, or **hybrid/sync-mediated**. Every local-first route must have a deliberate SQLite implementation and sync representation. A central fallback is not considered an offline implementation.
+
+### Immediate implementation sequence
+
+1. define the shared route/domain contract and capability classification;
+2. make the existing Rust SQLite runtime the explicit Local LabOS Backend boundary;
+3. align local operations with central domain contracts instead of page-specific command shapes;
+4. migrate remaining workstation-owned central routes into the local backend;
+5. connect the common sync engine to the complete local route set;
+6. retain central-only services behind an explicit central capability boundary;
+7. verify the complete application offline and online before V1.
+
 ## 16. Detailed implementation checklist (legacy sequence retained for traceability)
 
 
