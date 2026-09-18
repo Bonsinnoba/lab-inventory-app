@@ -18,6 +18,8 @@ const localLocations = read('../desktop/src-tauri/src/local_locations.rs');
 const financeApi = read('../desktop/src/api/transactions.ts') + read('../desktop/src/api/budget-periods.ts') + read('../desktop/src/api/funding-sources.ts');
 const searchApi = read('../desktop/src/api/search.ts');
 const tauriMain = read('../desktop/src-tauri/src/main.rs');
+const localAuth = read('../desktop/src-tauri/src/local_auth.rs');
+const authApi = read('../desktop/src/api/auth.ts');
 const tauriConfig = read('../desktop/src-tauri/tauri.conf.json');
 const viteConfig = read('../desktop/vite.config.ts');
 
