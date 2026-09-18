@@ -24,4 +24,19 @@ router.post('/relationships',hasPermission('projects.edit'),async(req,res)=>{con
 router.delete('/relationships/:id',hasPermission('projects.edit'),async(req,res)=>{try{const b=await pool.query('SELECT * FROM knowledge_relationships WHERE id=$1',[req.params.id]);if(!b.rowCount)return res.status(404).json({error:'Relationship not found'});if(!(await ensureProject(b.rows[0].project_id,req.user.userId,req.user.role)))return res.status(403).json({error:'Project access denied'});await pool.query('DELETE FROM knowledge_relationships WHERE id=$1',[req.params.id]);res.status(204).send();}catch(e){res.status(500).json({error:'Failed to delete relationship'});}});
 router.get('/search',hasPermission('projects.view'),async(req,res)=>{try{const q=String(req.query.q||'').trim();if(!q)return res.json([]);const params=[req.user.role,req.user.userId,q];const [f,r,c]=await Promise.all([pool.query(`SELECT id,'finding' AS type,title,body AS text,project_id FROM lab_findings WHERE ${projectFilter('f')} AND (title ILIKE '%'||$3||'%' OR body ILIKE '%'||$3||'%') LIMIT 50`,params),pool.query(`SELECT id,'result' AS type,title,summary AS text,project_id FROM lab_results WHERE ${projectFilter('r')} AND (title ILIKE '%'||$3||'%' OR summary ILIKE '%'||$3||'%') LIMIT 50`,params),pool.query(`SELECT id,'calculation' AS type,title,formula AS text,project_id FROM engineering_calculations WHERE ${projectFilter('c')} AND (title ILIKE '%'||$3||'%' OR formula ILIKE '%'||$3||'%') LIMIT 50`,params)]);res.json([...f.rows,...r.rows,...c.rows]);}catch(e){console.error(e);res.status(500).json({error:'Knowledge search failed'});}});
 
+router.get('/sync/pull',hasPermission('projects.view'),async(req,res)=>{
+  try{
+    const [findings,results,relationships,tombstones]=await Promise.all([
+      pool.query(\`SELECT f.* FROM lab_findings f WHERE \${projectFilter('f')} ORDER BY f.updated_at ASC\`,[req.user.role,req.user.userId]),
+      pool.query(\`SELECT r.* FROM lab_results r WHERE \${projectFilter('r')} ORDER BY r.updated_at ASC\`,[req.user.role,req.user.userId]),
+      pool.query(\`SELECT r.* FROM knowledge_relationships r WHERE ($1='admin' OR r.project_id IS NULL OR r.project_id IN (SELECT p.id FROM projects p LEFT JOIN project_members pm ON pm.project_id=p.id WHERE p.owner_id=$2 OR pm.user_id=$2)) ORDER BY r.created_at ASC\`,[req.user.role,req.user.userId]),
+      pool.query(\`SELECT entity_type,entity_id FROM sync_tombstones WHERE entity_type IN ('finding','knowledge_result','knowledge_relationship')\`)
+    ]);
+    const deleted={finding:[],knowledge_result:[],knowledge_relationship:[]};
+    for(const row of tombstones.rows){if(deleted[row.entity_type])deleted[row.entity_type].push(row.entity_id);}
+    res.setHeader('Cache-Control','no-store');
+    res.json({findings:findings.rows,results:results.rows,relationships:relationships.rows,deleted});
+  }catch(e){console.error(e);res.status(500).json({error:'Failed to pull knowledge changes'});}
+});
+
 export default router;
