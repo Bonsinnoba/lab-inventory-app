@@ -87,6 +87,24 @@ fn new_id(conn: &rusqlite::Connection) -> Result<String, String> {
         .map_err(|e| format!("Unable to create local resource id: {e}"))
 }
 
+fn youtube_id(url: &str) -> Option<String> {
+    let clean = url.trim();
+    if let Some(rest) = clean.strip_prefix("https://youtu.be/").or_else(|| clean.strip_prefix("http://youtu.be/")) {
+        return Some(rest.split(['?','/']).next().unwrap_or("").to_string()).filter(|v| !v.is_empty());
+    }
+    if let Some(pos) = clean.find("v=") {
+        let rest = &clean[pos + 2..];
+        return Some(rest.split(['&','/']).next().unwrap_or("").to_string()).filter(|v| !v.is_empty());
+    }
+    for marker in ["/shorts/","/embed/","/live/"] {
+        if let Some(pos) = clean.find(marker) {
+            let rest=&clean[pos+marker.len()..];
+            return Some(rest.split(['?','/']).next().unwrap_or("").to_string()).filter(|v| !v.is_empty());
+        }
+    }
+    None
+}
+
 fn normalize_tags(tags: Option<Vec<String>>) -> Vec<String> {
     tags.unwrap_or_default().into_iter()
         .map(|t| t.trim().to_string())
@@ -164,7 +182,10 @@ pub fn create_local_resource_link(app: AppHandle, url: String, name: Option<Stri
     validate_parent(&resources,&item_id,&project_id,&note_id,&None)?;
     let (category,description,tags)=metadata(category,description,tags);
     let id=new_id(&conn)?; let timestamp=now(&conn)?;
-    let resource=LocalResource{id:id.clone(),name:name.filter(|n|!n.trim().is_empty()).unwrap_or_else(||url.clone()),kind:"link".into(),file_type:"other".into(),original_filename:None,mime_type:None,size_bytes:None,url:Some(url),thumbnail_url:None,local_media_path:None,local_media_filename:None,local_media_mime_type:None,local_media_size_bytes:None,local_media_downloaded_at:None,parent_resource_id:None,relative_path:None,item_id,project_id,note_id,item_name:None,project_name:None,note_title:None,category:Some(category),description:Some(description),tags,updated_at:timestamp.clone(),created_at:timestamp,derived_from_resource_id:None};
+    let youtube=if url.contains("youtube.com")||url.contains("youtu.be"){youtube_id(&url)}else{None};
+    let file_type=if youtube.is_some(){"youtube"}else{"other"};
+    let thumbnail_url=youtube.as_ref().map(|id|format!("https://img.youtube.com/vi/{id}/hqdefault.jpg"));
+    let resource=LocalResource{id:id.clone(),name:name.filter(|n|!n.trim().is_empty()).unwrap_or_else(||url.clone()),kind:"link".into(),file_type:file_type.into(),original_filename:None,mime_type:None,size_bytes:None,url:Some(url),thumbnail_url,local_media_path:None,local_media_filename:None,local_media_mime_type:None,local_media_size_bytes:None,local_media_downloaded_at:None,parent_resource_id:None,relative_path:None,item_id,project_id,note_id,item_name:None,project_name:None,note_title:None,category:Some(category),description:Some(description),tags,updated_at:timestamp.clone(),created_at:timestamp,derived_from_resource_id:None};
     resources.push(resource.clone()); write_resources(&conn,&resources)?; Ok(resource)
 }
 
