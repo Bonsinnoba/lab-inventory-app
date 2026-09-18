@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { login, register } from '../api/auth';
+import { useEffect, useState } from 'react';
+import { getLocalAuthStatus, login, register } from '../api/auth';
 import { LogIn, UserPlus, Eye, EyeOff } from 'lucide-react';
 
 interface LoginPageProps {
@@ -8,11 +8,28 @@ interface LoginPageProps {
 
 export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
   const [isLogin, setIsLogin] = useState(true);
+  const [authStatusReady, setAuthStatusReady] = useState(false);
+  const [isTauriLocal, setIsTauriLocal] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    getLocalAuthStatus().then((status) => {
+      if (!active) return;
+      if (status) {
+        setIsTauriLocal(true);
+        setIsLogin(status.bootstrapped);
+      }
+      setAuthStatusReady(true);
+    }).catch(() => {
+      if (active) setAuthStatusReady(true);
+    });
+    return () => { active = false; };
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -34,6 +51,8 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
     }
   };
 
+  if (!authStatusReady) return <div className="min-h-screen flex items-center justify-center text-text-secondary text-sm">Preparing local sign-in…</div>;
+
   return (
     <div className="min-h-screen flex items-center justify-center">
       <div className="w-full max-w-md p-8">
@@ -43,7 +62,7 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
               {isLogin ? 'Welcome Back' : 'Create Account'}
             </h1>
             <p className="text-text-secondary text-sm">
-              {isLogin ? 'Sign in to access your lab inventory' : 'Join to manage your lab inventory'}
+              {isLogin ? 'Sign in to access your lab inventory' : isTauriLocal ? 'Set up the administrator for this desktop' : 'Join to manage your lab inventory'}
             </p>
           </div>
 
@@ -108,7 +127,7 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
             </button>
           </form>
 
-          <div className="mt-6 text-center">
+          {!isTauriLocal && <div className="mt-6 text-center">
             <button
               type="button"
               onClick={() => {
@@ -119,7 +138,8 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
             >
               {isLogin ? "Don't have an account? Sign up" : 'Already have an account? Sign in'}
             </button>
-          </div>
+          </div>}
+          {isTauriLocal && !isLogin && <p className="mt-6 text-center text-text-secondary text-xs">This creates the administrator for this desktop's local database. Additional accounts can be managed centrally.</p>}
         </div>
 
         <div className="mt-4 text-center text-text-secondary text-xs">
