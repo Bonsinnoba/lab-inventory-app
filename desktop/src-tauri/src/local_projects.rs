@@ -48,10 +48,16 @@ fn save(conn: &mut Connection, projects: &[Value], changes: Vec<(String, String,
 }
 
 fn id() -> String {
-    uuid::Uuid::new_v4().simple().to_string()
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    format!("{:032x}", n)
 }
 
-fn now() -> String { chrono::Utc::now().to_rfc3339() }
+fn now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    format!("{}", secs)
+}
 
 #[tauri::command]
 pub fn list_local_projects(app: AppHandle) -> Result<Vec<Value>, String> {
