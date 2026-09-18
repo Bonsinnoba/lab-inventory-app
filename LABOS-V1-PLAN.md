@@ -832,6 +832,9 @@ Before declaring the architecture complete, every central route is classified as
 6. retain central-only services behind an explicit central capability boundary;
 7. verify the complete application offline and online before V1.
 
+### Engineering local-first implementation status
+Engineering is split by responsibility: formula definitions and the four built-in formula calculations execute locally; engineering calculation records and engineering test records persist in the workstation SQLite runtime and queue sync changes; the central backend provides cross-workstation reconciliation and pull/tombstone propagation. Desktop Engineering APIs use the Local LabOS Backend boundary in the Tauri runtime.
+
 ## 16. Detailed implementation checklist (legacy sequence retained for traceability)
 
 
