@@ -248,13 +248,13 @@ pub fn unlink_local_project_item(app:AppHandle,project_id:String,item_id:String)
 
 
 #[tauri::command]
-pub fn apply_server_project_pull(app: AppHandle, projects_json: String, deleted_project_ids: Vec<String>, deleted_project_task_ids: Vec<String>, deleted_project_experiment_ids: Vec<String>, deleted_project_bom_ids: Vec<String>, deleted_project_block_ids: Vec<String>, deleted_project_connector_ids: Vec<String>, deleted_project_measurement_ids: Vec<String>, deleted_project_observation_ids: Vec<String>) -> Result<(), String> {
+pub fn apply_server_project_pull(app: AppHandle, projects_json: String, deleted_project_ids: Vec<String>, deleted_project_task_ids: Vec<String>, deleted_project_experiment_ids: Vec<String>, deleted_project_bom_ids: Vec<String>, deleted_project_block_ids: Vec<String>, deleted_project_connector_ids: Vec<String>, deleted_project_measurement_ids: Vec<String>, deleted_project_observation_ids: Vec<String>, deleted_project_attachment_ids: Vec<String>) -> Result<(), String> {
     let incoming: Vec<Value> = serde_json::from_str(&projects_json).map_err(|e| format!("Invalid server project payload: {e}"))?;
     let deleted: std::collections::HashSet<String> = deleted_project_ids.into_iter().collect();
     let mut c = conn(&app)?;
     let mut projects = load(&c)?;
     let pending: std::collections::HashSet<String> = {
-        let mut stmt = c.prepare("SELECT DISTINCT entity_type || ':' || entity_id FROM sync_outbox WHERE synced_at IS NULL AND entity_id IS NOT NULL AND entity_type IN ('project','project_task','project_experiment','project_bom','project_block','project_connector')").map_err(|e| format!("Unable to inspect pending project changes: {e}"))?;
+        let mut stmt = c.prepare("SELECT DISTINCT entity_type || ':' || entity_id FROM sync_outbox WHERE synced_at IS NULL AND entity_id IS NOT NULL AND entity_type IN ('project','project_task','project_experiment','project_bom','project_block','project_connector','project_work_attachment')").map_err(|e| format!("Unable to inspect pending project changes: {e}"))?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| format!("Unable to inspect pending project changes: {e}"))?;
         rows.filter_map(|r| r.ok()).collect()
     };
@@ -270,6 +270,17 @@ pub fn apply_server_project_pull(app: AppHandle, projects_json: String, deleted_
                 let pending_key = match key { "tasks"=>"project_task", "experiments"=>"project_experiment", "bom"=>"project_bom", "blocks"=>"project_block", "connectors"=>"project_connector", _=>"" };
                 let deleted_ids: std::collections::HashSet<String> = match key { "tasks"=>deleted_project_task_ids.iter().cloned().collect(), "experiments"=>deleted_project_experiment_ids.iter().cloned().collect(), "bom"=>deleted_project_bom_ids.iter().cloned().collect(), "blocks"=>deleted_project_block_ids.iter().cloned().collect(), "connectors"=>deleted_project_connector_ids.iter().cloned().collect(), _=>std::collections::HashSet::new() };
                 let mut merged = project.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
+                if key=="tasks" || key=="experiments" {
+                    for work in &mut merged {
+                        let work_id=work.get("id").and_then(Value::as_str).unwrap_or_default();
+                        let oldwork=existing.get(key).and_then(Value::as_array).and_then(|a|a.iter().find(|v|v.get("id").and_then(Value::as_str)==Some(work_id))).cloned().unwrap_or_else(||json!({}));
+                        let mut attachments=work.get("attachments").and_then(Value::as_array).cloned().unwrap_or_default();
+                        let oldattachments=oldwork.get("attachments").and_then(Value::as_array).cloned().unwrap_or_default();
+                        attachments.retain(|v|{let rid=v.get("id").and_then(Value::as_str).unwrap_or_default();!deleted_project_attachment_ids.iter().any(|x|x==rid)||pending.contains(&format!("project_work_attachment:{rid}"))});
+                        for oldrow in oldattachments{if let Some(rid)=oldrow.get("id").and_then(Value::as_str){if pending.contains(&format!("project_work_attachment:{rid}"))&&!attachments.iter().any(|v|v.get("id").and_then(Value::as_str)==Some(rid)){attachments.push(oldrow);}}}
+                        work["attachments"]=Value::Array(attachments);
+                    }
+                }
                 if key=="experiments" {
                     for exp in &mut merged {
                         let eid=exp.get("id").and_then(Value::as_str).unwrap_or_default();
