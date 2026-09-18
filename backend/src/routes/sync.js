@@ -106,20 +106,52 @@ async function applyLocationEntity(client,change,{userId,role}){ const permissio
 }
 
 async function applyEngineeringEntity(client,change,user){
- const cfg=ENGINEERING_CONFIG[change.entity_type]; const required=cfg?.permission?.[change.operation];
- if(required){const permissions=await getUserPermissions(user.userId,user.role);if(!permissions.has(required))fail(403,'PERMISSION_DENIED',`Permission required: ${required}`);}
+ const cfg=ENGINEERING_CONFIG[change.entity_type];
+ if(!cfg)fail(400,'UNSUPPORTED_ENGINEERING_ENTITY','Unsupported engineering entity');
+ const required=cfg.permission?.[change.operation];
+ if(required){
+  const permissions=await getUserPermissions(user.userId,user.role);
+  if(!permissions.has(required))fail(403,'PERMISSION_DENIED',`Permission required: ${required}`);
+ }
  const payload=object(change.payload,'Engineering sync payload');
- const record=payload.record||payload.calculation||payload.test||payload;
+ const record=object(payload.record||payload.calculation||payload.test||payload,'Engineering record');
  const entityId=id(record.id||payload.id||change.entity_id,'Engineering entity ID');
  const projectId=record.project_id||null;
- if(projectId){const access=await client.query("SELECT 1 FROM projects p WHERE p.id=$1 AND (p.owner_id=$2 OR $3='admin' OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id=p.id AND pm.user_id=$2 AND pm.member_role IN ('lead','member')))",[projectId,user.userId,user.role]);if(!access.rowCount)fail(403,'PROJECT_ACCESS_DENIED','You do not have access to this project');}
+ if(projectId){
+  const access=await client.query("SELECT 1 FROM projects p WHERE p.id=$1 AND (p.owner_id=$2 OR $3='admin' OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id=p.id AND pm.user_id=$2 AND pm.member_role IN ('lead','member')))",[projectId,user.userId,user.role]);
+  if(!access.rowCount)fail(403,'PROJECT_ACCESS_DENIED','You do not have access to this project');
+ }
+ const table=cfg.table;
  if(change.operation==='create'){
-   if(!String(record.title||'').trim())fail(400,'INVALID_ENGINEERING_RECORD','title is required');
-   const existing=await client.query('SELECT * FROM '+cfg.table+' WHERE id=$1',[entityId]);if(existing.rowCount)return existing.rows[0];
-   const fields=cfg.fields.filter(f=>Object.prototype.hasOwnProperty.call(record,f));const cols=['id',...fields],vals=[entityId,...fields.map(f=>record[f]??null)];
-   if(!fields.includes('created_by')&&cfg.table==='engineering_calculations'){cols.push('created_by');vals.push(user.userId);}
-   if(!fields.includes('performed_by')&&cfg.table==='engineering_tests'){cols.push('performed_by');vals.push(user.userId);}
-   return (await client.query('INSERT INTO '+cfg.table+' ('+cols.join(',')+') VALUES ('+vals.map((_,i)=>'if(change.entity_type==='location')return applyLocationEntity(client,change,{userId,role:change.__role});if(engineeringEntityType(change.entity_type))return applyEngineeringEntity(client,change,{userId,role:change.__role});if(projectEntityType(change.entity_type))return applyProjectEntity(client,change,{userId,role:change.__role});if(change.entity_type==='resource')return applyResourceEntity(client,change,{userId,role:change.__role});if(FINANCE_CONFIG[change.entity_type])return applyFinanceEntity(client,change,{userId,role:change.__role});if(change.operation==='bulk_status'){const p=object(change.payload,'Bulk status payload');const ids=Array.isArray(p.ids)?p.ids:[];if(!ids.length||typeof p.status!=='string')fail(400,'INVALID_BULK_STATUS','ids and status are required');return{updated:Number((await client.query('UPDATE items SET status=$1,updated_at=now() WHERE id=ANY($2::uuid[])',[p.status,ids])).rowCount)};}if(change.operation==='bulk_delete'){const p=object(change.payload,'Bulk delete payload');const ids=Array.isArray(p.ids)?p.ids:[];if(!ids.length)return{deleted:0};const result=await client.query('DELETE FROM items WHERE id=ANY($1::uuid[]) RETURNING id', [ids]);for(const row of result.rows)await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) VALUES('item',$1) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()",[row.id]);return{deleted:Number(result.rowCount)};}if(change.entity_type==='item')return applyItem(client,change);if(change.entity_type==='item_movement'&&change.operation==='create')return applyMovement(client,change,userId);fail(400,'UNSUPPORTED_SYNC_CHANGE',`Unsupported sync change: ${change.entity_type}/${change.operation}`);}
+  if(!String(record.title||'').trim())fail(400,'INVALID_ENGINEERING_RECORD','title is required');
+  const existing=await client.query('SELECT * FROM '+table+' WHERE id=$1',[entityId]);
+  if(existing.rowCount)return existing.rows[0];
+  const fields=cfg.fields.filter(f=>Object.prototype.hasOwnProperty.call(record,f));
+  const cols=['id',...fields],vals=[entityId,...fields.map(f=>record[f]??null)];
+  if(!fields.includes('created_by')&&table==='engineering_calculations'){cols.push('created_by');vals.push(user.userId);}
+  if(!fields.includes('performed_by')&&table==='engineering_tests'){cols.push('performed_by');vals.push(user.userId);}
+  const result=await client.query('INSERT INTO '+table+' ('+cols.join(',')+') VALUES ('+vals.map((_,i)=>'$'+(i+1)).join(',')+') RETURNING *',vals);
+  return result.rows[0];
+ }
+ const existing=await client.query('SELECT * FROM '+table+' WHERE id=$1',[entityId]);
+ if(change.operation==='update'){
+  if(!existing.rowCount)fail(404,'ENGINEERING_NOT_FOUND','Engineering record not found');
+  const fields=cfg.fields.filter(f=>Object.prototype.hasOwnProperty.call(record,f));
+  if(!fields.length)return existing.rows[0];
+  const vals=fields.map(f=>record[f]??null);
+  vals.push(entityId);
+  const result=await client.query('UPDATE '+table+' SET '+fields.map((f,i)=>f+'=$'+(i+1)).join(',')+' WHERE id=$'+(fields.length+1)+' RETURNING *',vals);
+  return result.rows[0];
+ }
+ if(change.operation==='delete'){
+  if(!existing.rowCount)return {deleted:entityId};
+  await client.query('DELETE FROM '+table+' WHERE id=$1',[entityId]);
+  await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) VALUES($1,$2) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()",[change.entity_type,entityId]);
+  return {deleted:entityId};
+ }
+ fail(400,'UNSUPPORTED_ENGINEERING_OPERATION','Unsupported engineering operation: '+change.operation);
+}
+
 router.get('/locations/pull',async(req,res,next)=>{
  try{
   const permissions=await getUserPermissions(req.user.userId,req.user.role);
