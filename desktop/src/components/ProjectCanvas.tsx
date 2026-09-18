@@ -81,9 +81,9 @@ export default function ProjectCanvas({ projectId }: ProjectCanvasProps) {
   // F2.2 DELETE HARDENING: optimistic cache removal + rollback on API failure.
   const deleteBlockMutation = useMutation({
     mutationFn: async (blockId: string) => {
-      // Keep the delete contract deliberately self-contained: only the block id
-      // is passed to the API. No render-time block object is required.
-      await deleteBlock(blockId);
+      // Pass the owning project so the local-first API can route the delete
+      // through the workstation SQLite runtime and queue its sync outbox entry.
+      await deleteBlock(blockId, projectId);
       return blockId;
     },
     onMutate: async (id) => {
@@ -113,7 +113,7 @@ export default function ProjectCanvas({ projectId }: ProjectCanvasProps) {
     onSettled: () => invalidate(),
   });
   const createConnectorMutation = useMutation({ mutationFn: (payload: { source_block_id: string; target_block_id: string }) => createConnector(projectId, payload), onSuccess: invalidate, onError: (err: any) => mutationError(err, 'Failed to create connector') });
-  const deleteConnectorMutation = useMutation({ mutationFn: deleteConnector, onSuccess: invalidate, onError: (err: any) => mutationError(err, 'Failed to remove connector') });
+  const deleteConnectorMutation = useMutation({ mutationFn: (connectorId: string) => deleteConnector(connectorId, projectId), onSuccess: invalidate, onError: (err: any) => mutationError(err, 'Failed to remove connector') });
 
   useEffect(() => { if (!viewingResourceId) { setViewingResource(null); return; } getResource(viewingResourceId).then(setViewingResource).catch(() => setViewingResource(null)); }, [viewingResourceId]);
 
