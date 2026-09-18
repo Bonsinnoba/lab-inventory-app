@@ -57,6 +57,45 @@ export async function getTransactionSummary(filters?: {
   if (filters?.to) params.append('to', filters.to);
   if (filters?.budget_period_id) params.append('budget_period_id', filters.budget_period_id);
   
+  if (isTauri()) {
+    try {
+      const transactions = await getTransactions(filters);
+      const income = transactions.filter((t) => t.direction === 'income');
+      const expense = transactions.filter((t) => t.direction === 'expense');
+      const group = (rows: Transaction[]) => {
+        const totals = new Map<string, number>();
+        for (const row of rows) totals.set(row.type, (totals.get(row.type) || 0) + Number(row.amount || 0));
+        return Array.from(totals, ([type, total]) => ({ type, total }));
+      };
+      const monthly = new Map<string, { month: string; direction: string; type: string; total: number }>();
+      for (const row of transactions) {
+        const month = String(row.date || row.created_at).slice(0, 7);
+        const key = `${month}|${row.direction}|${row.type}`;
+        const current = monthly.get(key);
+        if (current) current.total += Number(row.amount || 0);
+        else monthly.set(key, { month, direction: row.direction, type: row.type, total: Number(row.amount || 0) });
+      }
+      const summary: TransactionSummary = {
+        totals: {
+          income: income.reduce((sum, row) => sum + Number(row.amount || 0), 0),
+          expense: expense.reduce((sum, row) => sum + Number(row.amount || 0), 0),
+          net: income.reduce((sum, row) => sum + Number(row.amount || 0), 0) - expense.reduce((sum, row) => sum + Number(row.amount || 0), 0),
+        },
+        by_category: { expense: group(expense), income: group(income) },
+        by_month: Array.from(monthly.values()).sort((a, b) => a.month.localeCompare(b.month) || a.direction.localeCompare(b.direction) || a.type.localeCompare(b.type)),
+      };
+      if (filters?.budget_period_id) {
+        const periods = await invoke<any[]>('get_local_budget_periods');
+        const period = periods.find((item) => item.id === filters.budget_period_id);
+        if (period) {
+          const spent = expense.filter((row) => row.budget_period_id === period.id).reduce((sum, row) => sum + Number(row.amount || 0), 0);
+          const total_budget = Number(period.total_budget || 0);
+          summary.budget = { period_id: period.id, label: period.label, total_budget, spent, remaining: total_budget - spent };
+        }
+      }
+      return summary;
+    } catch {}
+  }
   const response = await apiFetch(`/transactions/summary?${params}`);
   if (!response.ok) throw new Error('Failed to fetch transaction summary');
   return response.json();
