@@ -6,7 +6,7 @@ const KEY:&str="locations_state"; const VERSION:&str="007_local_locations";
 fn open(a:&AppHandle)->Result<Connection,String>{local_db::open_local_connection(a)}
 fn ensure(c:&Connection)->Result<(),String>{c.execute("INSERT OR IGNORE INTO local_schema_migrations(version) VALUES(?1)",[VERSION]).map_err(|e|e.to_string())?;c.execute("INSERT OR IGNORE INTO sync_state(key,value) VALUES(?1,?2)",params![KEY,"[]"]).map_err(|e|e.to_string())?;Ok(())}
 fn inventory_counts(c:&Connection)->Result<std::collections::HashMap<String,i64>,String>{
- let counts=inventory_counts(&c)?; Ok(counts)
+ let raw:Option<String>=c.query_row("SELECT value FROM sync_state WHERE key='inventory_snapshot'",[],|r|r.get(0)).optional().map_err(|e|e.to_string())?;let mut counts=std::collections::HashMap::new();if let Some(raw)=raw{if let Ok(items)=serde_json::from_str::<Vec<Value>>(&raw){for item in items{if let Some(id)=item.get("location_id").and_then(Value::as_str){*counts.entry(id.to_string()).or_insert(0)+=1;}}}}Ok(counts)
 }
 fn load(c:&Connection)->Result<Vec<Value>,String>{ensure(c)?;let x:Option<String>=c.query_row("SELECT value FROM sync_state WHERE key=?1",[KEY],|r|r.get(0)).optional().map_err(|e|e.to_string())?;Ok(x.map(|s|serde_json::from_str(&s).unwrap_or_default()).unwrap_or_default())}
 fn id()->String{use std::time::{SystemTime,UNIX_EPOCH};format!("{:032x}",SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos())}
@@ -38,7 +38,7 @@ pub fn apply_server_location_pull(app:AppHandle,locations_json:String,deleted_lo
  let mut pending=std::collections::HashSet::new();
  let mut stmt=conn.prepare("SELECT entity_id FROM sync_outbox WHERE synced_at IS NULL AND entity_type='location' AND entity_id IS NOT NULL").map_err(|e|e.to_string())?;
  let rows=stmt.query_map([],|r|r.get::<_,String>(0)).map_err(|e|e.to_string())?;
- for row in rows{pending.insert(row.map_err(|e|e.to_string())?);}
+ for row in rows{pending.insert(row.map_err(|e|e.to_string())?);} drop(rows); drop(stmt);
  let deleted:std::collections::HashSet<String>=deleted_location_ids.into_iter().collect();
  v.retain(|x|x.get("id").and_then(Value::as_str).map(|id|!deleted.contains(id)||pending.contains(id)).unwrap_or(true));
  for item in incoming{let Some(id)=item.get("id").and_then(Value::as_str) else{continue};if pending.contains(id){continue;}if let Some(existing)=v.iter_mut().find(|x|x.get("id").and_then(Value::as_str)==Some(id)){*existing=item;}else{v.push(item);}}
