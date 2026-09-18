@@ -13,13 +13,13 @@ export interface KnowledgeOverview {
 
 export interface KnowledgeTag { tag: string; note_count: number; resource_count: number }
 
-export async function async function getKnowledgeOverview(): Promise<KnowledgeOverview> { const x=await local<KnowledgeOverview>('get_local_knowledge_overview'); if(x!==null)return x;(): Promise<KnowledgeOverview> {
+export async function getKnowledgeOverview(): Promise<KnowledgeOverview> { const x=await local<KnowledgeOverview>('get_local_knowledge_overview'); if(x!==null)return x;
   const response = await apiFetch('/knowledge/overview');
   if (!response.ok) throw new Error('Failed to load knowledge overview');
   return response.json();
 }
 
-export async function async function getKnowledgeTags(): Promise<KnowledgeTag[]> { const x=await local<KnowledgeTag[]>('get_local_knowledge_tags'); if(x!==null)return x;(): Promise<KnowledgeTag[]> {
+export async function getKnowledgeTags(): Promise<KnowledgeTag[]> { const x=await local<KnowledgeTag[]>('get_local_knowledge_tags'); if(x!==null)return x;
   const response = await apiFetch('/knowledge/tags');
   if (!response.ok) throw new Error('Failed to load knowledge tags');
   return response.json();
