@@ -113,10 +113,10 @@ pub fn restore_local_note_revision(app:AppHandle,note_id:String,revision_id:Stri
 
 
 #[tauri::command]
-pub fn apply_server_notes_pull(app:AppHandle,notes:Vec<Value>,deleted_note_ids:Vec<String>)->Result<(),String>{
+pub fn apply_server_notes_pull(app:AppHandle,notes:Vec<Value>,deletedNoteIds:Vec<String>)->Result<(),String>{
  let mut c=conn(&app)?;let mut current=load(&c)?;
  fn pending(c:&Connection,id:&str)->Result<bool,String>{Ok(c.query_row("SELECT 1 FROM sync_outbox WHERE entity_type='note' AND entity_id=?1 LIMIT 1",[id],|r|r.get::<_,i64>(0)).optional().map_err(|e|format!("Unable to inspect pending note change: {e}"))?.is_some())}
  for note in notes{if let Some(id)=note.get("id").and_then(Value::as_str){if pending(&c,id)?{continue;}if let Some(existing)=current.iter_mut().find(|n|n.get("id").and_then(Value::as_str)==Some(id)){*existing=note;}else{current.push(note);}}}
- current.retain(|n|{let id=n.get("id").and_then(Value::as_str).unwrap_or("");!deleted_note_ids.iter().any(|x|x==id)&&!pending(&c,id).unwrap_or(false)});
+ current.retain(|n|{let id=n.get("id").and_then(Value::as_str).unwrap_or("");!deletedNoteIds.iter().any(|x|x==id)&&!pending(&c,id).unwrap_or(false)});
  save(&mut c,&current,Vec::new())
 }
