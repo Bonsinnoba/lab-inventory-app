@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -5,6 +6,8 @@ const root = path.resolve(process.cwd());
 const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
 const sync = read('src/routes/sync.js');
 const desktopSync = read('../desktop/src/api/sync.ts');
+const syncApi = desktopSync;
+const projectsApi = read('../desktop/src/api/projects.ts');
 const app = read('../desktop/src/App.tsx');
 const syncStatus = read('../desktop/src/components/SyncStatus.tsx');
 const localDb = read('../desktop/src-tauri/src/local_db.rs');
