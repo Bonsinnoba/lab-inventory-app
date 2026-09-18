@@ -38,7 +38,7 @@ pub fn apply_server_location_pull(app:AppHandle,locations_json:String,deleted_lo
  let mut pending=std::collections::HashSet::new();
  let mut stmt=conn.prepare("SELECT entity_id FROM sync_outbox WHERE synced_at IS NULL AND entity_type='location' AND entity_id IS NOT NULL").map_err(|e|e.to_string())?;
  let rows=stmt.query_map([],|r|r.get::<_,String>(0)).map_err(|e|e.to_string())?;
- for row in rows{pending.insert(row.map_err(|e|e.to_string())?);} drop(rows); drop(stmt);
+ for row in rows{pending.insert(row.map_err(|e|e.to_string())?);} drop(stmt);
  let deleted:std::collections::HashSet<String>=deleted_location_ids.into_iter().collect();
  v.retain(|x|x.get("id").and_then(Value::as_str).map(|id|!deleted.contains(id)||pending.contains(id)).unwrap_or(true));
  for item in incoming{let Some(id)=item.get("id").and_then(Value::as_str) else{continue};if pending.contains(id){continue;}if let Some(existing)=v.iter_mut().find(|x|x.get("id").and_then(Value::as_str)==Some(id)){*existing=item;}else{v.push(item);}}
