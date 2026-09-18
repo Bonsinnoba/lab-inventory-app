@@ -246,7 +246,7 @@ pub fn unlink_local_project_item(app:AppHandle,project_id:String,item_id:String)
 
 
 #[tauri::command]
-pub fn apply_server_project_pull(app: AppHandle, projects_json: String, deleted_project_ids: Vec<String>) -> Result<(), String> {
+pub fn apply_server_project_pull(app: AppHandle, projects_json: String, deleted_project_ids: Vec<String>, deleted_project_task_ids: Vec<String>, deleted_project_experiment_ids: Vec<String>, deleted_project_bom_ids: Vec<String>, deleted_project_block_ids: Vec<String>, deleted_project_connector_ids: Vec<String>) -> Result<(), String> {
     let incoming: Vec<Value> = serde_json::from_str(&projects_json).map_err(|e| format!("Invalid server project payload: {e}"))?;
     let deleted: std::collections::HashSet<String> = deleted_project_ids.into_iter().collect();
     let mut c = conn(&app)?;
@@ -266,7 +266,9 @@ pub fn apply_server_project_pull(app: AppHandle, projects_json: String, deleted_
         if let Some(existing) = projects.iter().find(|p| p.get("id").and_then(Value::as_str) == Some(project_id.as_str())).cloned() {
             for key in ["tasks","experiments","bom","blocks","connectors"] {
                 let pending_key = match key { "tasks"=>"project_task", "experiments"=>"project_experiment", "bom"=>"project_bom", "blocks"=>"project_block", "connectors"=>"project_connector", _=>"" };
+                let deleted_ids: std::collections::HashSet<String> = match key { "tasks"=>deleted_project_task_ids.iter().cloned().collect(), "experiments"=>deleted_project_experiment_ids.iter().cloned().collect(), "bom"=>deleted_project_bom_ids.iter().cloned().collect(), "blocks"=>deleted_project_block_ids.iter().cloned().collect(), "connectors"=>deleted_project_connector_ids.iter().cloned().collect(), _=>std::collections::HashSet::new() };
                 let mut merged = project.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
+                merged.retain(|v| { let rid=v.get("id").and_then(Value::as_str).unwrap_or_default(); !deleted_ids.contains(rid) || pending.contains(&format!("{pending_key}:{rid}")) });
                 for old in existing.get(key).and_then(Value::as_array).cloned().unwrap_or_default() {
                     if let Some(id) = old.get("id").and_then(Value::as_str) {
                         if pending.contains(&format!("{pending_key}:{id}")) && !merged.iter().any(|v| v.get("id").and_then(Value::as_str) == Some(id)) { merged.push(old); }
