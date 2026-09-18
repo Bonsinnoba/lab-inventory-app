@@ -196,3 +196,31 @@ pub fn unlink_local_project_item(app:AppHandle,project_id:String,item_id:String)
     let mut items=nested_get(p,"items");items.retain(|x|x.get("item_id").and_then(Value::as_str)!=Some(item_id.as_str()));p["items"]=Value::Array(items);p["updated_at"]=json!(now(&c)?);
     save(&mut c,&projects,vec![(id(),"project_item".into(),item_id,"delete".into(),json!({"project_id":project_id}))])
 }
+
+
+#[tauri::command]
+pub fn apply_server_project_pull(app: AppHandle, projects_json: String, deleted_project_ids: Vec<String>) -> Result<(), String> {
+    let incoming: Vec<Value> = serde_json::from_str(&projects_json).map_err(|e| format!("Invalid server project payload: {e}"))?;
+    let deleted: std::collections::HashSet<String> = deleted_project_ids.into_iter().collect();
+    let mut c = conn(&app)?;
+    let mut projects = load(&c)?;
+    let pending: std::collections::HashSet<String> = {
+        let mut stmt = c.prepare("SELECT DISTINCT entity_id FROM sync_outbox WHERE synced_at IS NULL AND entity_type IN ('project','project_task','project_experiment','project_bom') AND entity_id IS NOT NULL").map_err(|e| format!("Unable to inspect pending project changes: {e}"))?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| format!("Unable to inspect pending project changes: {e}"))?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+    projects.retain(|p| {
+        let id = p.get("id").and_then(Value::as_str).unwrap_or_default();
+        !deleted.contains(id) || pending.contains(id)
+    });
+    for project in incoming {
+        let Some(project_id) = project.get("id").and_then(Value::as_str).map(ToOwned::to_owned) else { continue; };
+        if pending.contains(&project_id) { continue; }
+        if let Some(existing) = projects.iter_mut().find(|p| p.get("id").and_then(Value::as_str) == Some(project_id.as_str())) {
+            *existing = project;
+        } else {
+            projects.push(project);
+        }
+    }
+    save(&mut c, &projects, Vec::new())
+}
