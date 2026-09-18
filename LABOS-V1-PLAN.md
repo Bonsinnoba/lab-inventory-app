@@ -860,7 +860,7 @@ The following items are known and should not be forgotten:
 - Local project workspace currently returns simplified/empty data for some central-only fields.
 - Local resource upload/file storage is not yet equivalent to central resource storage; central file/media handling remains distinct.
 - Resource sync mappings are now implemented for offline link/folder creation, metadata updates, deletion, server pull, tombstones, and pending-local protection; actual file upload/media acquisition remains central.
-- Search still needs explicit local-first implementation.
+- Desktop global search now has a local-first path for inventory, projects, tasks, experiments, notes, and resources; central search remains the hybrid source for users, transactions, and canvas blocks.
 - Local authentication/bootstrap is not yet complete.
 - Location `item_count` needs reconciliation with local inventory.
 - Some desktop APIs still call the central API directly and need classification/migration.
