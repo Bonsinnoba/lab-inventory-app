@@ -87,6 +87,7 @@ const checks = [
   ['local location mutations queue sync changes', localLocations.includes("'location'") && localLocations.includes('sync_outbox')],
   ['local location counts derive from inventory snapshot', localLocations.includes("inventory_snapshot") && localLocations.includes('item_count') && localLocations.includes('inventory_counts')],
   ['local location detail includes derived item count', localLocations.includes('get_local_location') && localLocations.includes('counts.get(&id)')],
+  ['inventory item state has one local source of truth', localInventory.includes('getLocalInventorySnapshot') && !localInventory.includes('local_inventory_items') && !localInventory.includes('upsert_local_inventory_item') && !localInventory.includes('adjust_local_inventory')],
   ['local location pull preserves pending edits', localLocations.includes("entity_type='location'") && localLocations.includes('pending')],
   ['desktop pulls location records', desktopSync.includes('/sync/locations/pull') && desktopSync.includes('apply_server_location_pull')],
   ['Tauri registers location pull merge command', tauriMain.includes('local_locations::apply_server_location_pull')],
