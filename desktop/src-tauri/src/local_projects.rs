@@ -222,7 +222,6 @@ pub fn update_local_project_bom(app:AppHandle,project_id:String,record_id:String
 pub fn delete_local_project_bom(app:AppHandle,project_id:String,record_id:String)->Result<(),String>{nested_delete(app,project_id,"bom",record_id,"project_bom")}
 
 #[tauri::command]
-#[tauri::command]
 pub fn get_local_project_canvas(app:AppHandle,project_id:String)->Result<Value,String>{
     let c=conn(&app)?;let p=load(&c)?.into_iter().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
     Ok(json!({"blocks":nested_get(&p,"blocks"),"connectors":nested_get(&p,"connectors"),"permissions":{"access":"admin","member_role":"lead","can_edit":true}}))
