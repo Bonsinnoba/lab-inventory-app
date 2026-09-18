@@ -86,6 +86,8 @@ pub fn create_local_project(app: AppHandle, mut project: Value) -> Result<Value,
     project["experiments"] = json!([]);
     project["items"] = json!([]);
     project["bom"] = json!([]);
+    project["blocks"] = json!([]);
+    project["connectors"] = json!([]);
     projects.push(project.clone());
     save(&mut c, &projects, vec![(id(), "project".into(), project_id, "create".into(), project.clone())])?;
     Ok(project)
@@ -150,7 +152,7 @@ fn nested_delete(app:AppHandle,project_id:String,key:&str,record_id:String,entit
 #[tauri::command]
 pub fn list_local_project_workspace(app:AppHandle,project_id:String)->Result<Value,String>{
     let c=conn(&app)?;let p=load(&c)?.into_iter().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
-    Ok(json!({"members":[],"tasks":nested_get(&p,"tasks"),"experiments":nested_get(&p,"experiments"),"items":nested_get(&p,"items"),"notes":[],"resources":[],"activity":[],"permissions":{"access":"admin","member_role":"lead","can_edit":true}}))
+    Ok(json!({"members":[],"tasks":nested_get(&p,"tasks"),"experiments":nested_get(&p,"experiments"),"items":nested_get(&p,"items"),"notes":[],"resources":[],"activity":[],"blocks":nested_get(&p,"blocks"),"connectors":nested_get(&p,"connectors"),"permissions":{"access":"admin","member_role":"lead","can_edit":true}}))
 }
 
 #[tauri::command]
@@ -175,6 +177,51 @@ pub fn update_local_project_bom(app:AppHandle,project_id:String,record_id:String
 pub fn delete_local_project_bom(app:AppHandle,project_id:String,record_id:String)->Result<(),String>{nested_delete(app,project_id,"bom",record_id,"project_bom")}
 
 #[tauri::command]
+#[tauri::command]
+pub fn get_local_project_canvas(app:AppHandle,project_id:String)->Result<Value,String>{
+    let c=conn(&app)?;let p=load(&c)?.into_iter().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
+    Ok(json!({"blocks":nested_get(&p,"blocks"),"connectors":nested_get(&p,"connectors"),"permissions":{"access":"admin","member_role":"lead","can_edit":true}}))
+}
+#[tauri::command]
+pub fn create_local_project_block(app:AppHandle,project_id:String,mut record:Value)->Result<Value,String>{
+    let block_type=record.get("block_type").and_then(Value::as_str).unwrap_or("");
+    if block_type.is_empty(){return Err("block_type is required".into());}
+    if block_type=="text" && record.get("text_content").and_then(Value::as_str).unwrap_or("").is_empty(){return Err("text_content is required for text blocks".into());}
+    if block_type!="text" && record.get("resource_id").and_then(Value::as_str).unwrap_or("").is_empty(){return Err("resource_id is required for media blocks".into());}
+    let width=record.get("width").and_then(Value::as_f64).unwrap_or(320.0).round();
+    let height=record.get("height").and_then(Value::as_f64).unwrap_or(200.0).round();
+    if width<120.0 || height<80.0{return Err("Canvas block is below the minimum size".into());}
+    record["x"]=json!(record.get("x").and_then(Value::as_f64).unwrap_or(0.0).round());record["y"]=json!(record.get("y").and_then(Value::as_f64).unwrap_or(0.0).round());record["width"]=json!(width);record["height"]=json!(height);
+    nested_create(app,project_id,"blocks",record,"project_block")
+}
+#[tauri::command]
+pub fn update_local_project_block(app:AppHandle,project_id:String,record_id:String,patch:Value)->Result<Value,String>{
+    if let Some(obj)=patch.as_object(){if let Some(w)=obj.get("width").and_then(Value::as_f64){if w<120.0{return Err("Canvas block width must be at least 120".into());}}if let Some(h)=obj.get("height").and_then(Value::as_f64){if h<80.0{return Err("Canvas block height must be at least 80".into());}}}
+    nested_update(app,project_id,"blocks",record_id,patch,"project_block")
+}
+#[tauri::command]
+pub fn delete_local_project_block(app:AppHandle,project_id:String,record_id:String)->Result<(),String>{
+    let mut c=conn(&app)?;let mut projects=load(&c)?;let p=projects.iter_mut().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
+    let mut blocks=nested_get(p,"blocks");if !blocks.iter().any(|b|b.get("id").and_then(Value::as_str)==Some(record_id.as_str())){return Err("Block not found".into());}
+    blocks.retain(|b|b.get("id").and_then(Value::as_str)!=Some(record_id.as_str()));p["blocks"]=Value::Array(blocks);
+    let mut connectors=nested_get(p,"connectors");let removed:Vec<Value>=connectors.iter().filter(|v|v.get("source_block_id").and_then(Value::as_str)==Some(record_id.as_str())||v.get("target_block_id").and_then(Value::as_str)==Some(record_id.as_str())).cloned().collect();
+    connectors.retain(|v|v.get("source_block_id").and_then(Value::as_str)!=Some(record_id.as_str())&&v.get("target_block_id").and_then(Value::as_str)!=Some(record_id.as_str()));p["connectors"]=Value::Array(connectors);p["updated_at"]=json!(now(&c)?);
+    let mut changes=vec![(id(),"project_block".into(),record_id,"delete".into(),json!({"project_id":project_id}))];
+    for connector in removed{if let Some(cid)=connector.get("id").and_then(Value::as_str){changes.push((id(),"project_connector".into(),cid.to_string(),"delete".into(),json!({"project_id":project_id})));}}
+    save(&mut c,&projects,changes)
+}
+#[tauri::command]
+pub fn create_local_project_connector(app:AppHandle,project_id:String,record:Value)->Result<Value,String>{
+    let source=record.get("source_block_id").and_then(Value::as_str).ok_or("source_block_id is required")?.to_string();
+    let target=record.get("target_block_id").and_then(Value::as_str).ok_or("target_block_id is required")?.to_string();
+    if source==target{return Err("source_block_id and target_block_id cannot be the same".into());}
+    let c=conn(&app)?;let p=load(&c)?.into_iter().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;let blocks=nested_get(&p,"blocks");
+    if !blocks.iter().any(|b|b.get("id").and_then(Value::as_str)==Some(source.as_str()))||!blocks.iter().any(|b|b.get("id").and_then(Value::as_str)==Some(target.as_str())){return Err("Connector blocks must belong to this project".into());}
+    drop(c);let mut value=record;value["project_id"]=json!(project_id.clone());nested_create(app,project_id,"connectors",value,"project_connector")
+}
+#[tauri::command]
+pub fn delete_local_project_connector(app:AppHandle,project_id:String,record_id:String)->Result<(),String>{nested_delete(app,project_id,"connectors",record_id,"project_connector")}
+
 pub fn get_local_project_tasks(app:AppHandle,project_id:String)->Result<Vec<Value>,String>{let c=conn(&app)?;let p=load(&c)?.into_iter().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;Ok(nested_get(&p,"tasks"))}
 #[tauri::command]
 pub fn get_local_project_experiments(app:AppHandle,project_id:String)->Result<Vec<Value>,String>{let c=conn(&app)?;let p=load(&c)?.into_iter().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;Ok(nested_get(&p,"experiments"))}
@@ -205,7 +252,7 @@ pub fn apply_server_project_pull(app: AppHandle, projects_json: String, deleted_
     let mut c = conn(&app)?;
     let mut projects = load(&c)?;
     let pending: std::collections::HashSet<String> = {
-        let mut stmt = c.prepare("SELECT DISTINCT entity_type || ':' || entity_id FROM sync_outbox WHERE synced_at IS NULL AND entity_id IS NOT NULL AND entity_type IN ('project','project_task','project_experiment','project_bom')").map_err(|e| format!("Unable to inspect pending project changes: {e}"))?;
+        let mut stmt = c.prepare("SELECT DISTINCT entity_type || ':' || entity_id FROM sync_outbox WHERE synced_at IS NULL AND entity_id IS NOT NULL AND entity_type IN ('project','project_task','project_experiment','project_bom','project_block','project_connector')").map_err(|e| format!("Unable to inspect pending project changes: {e}"))?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| format!("Unable to inspect pending project changes: {e}"))?;
         rows.filter_map(|r| r.ok()).collect()
     };
@@ -217,8 +264,8 @@ pub fn apply_server_project_pull(app: AppHandle, projects_json: String, deleted_
         let Some(project_id) = project.get("id").and_then(Value::as_str).map(ToOwned::to_owned) else { continue; };
         if pending.contains(&format!("project:{project_id}")) { continue; }
         if let Some(existing) = projects.iter().find(|p| p.get("id").and_then(Value::as_str) == Some(project_id.as_str())).cloned() {
-            for key in ["tasks","experiments","bom"] {
-                let pending_key = match key { "tasks"=>"project_task", "experiments"=>"project_experiment", "bom"=>"project_bom", _=>"" };
+            for key in ["tasks","experiments","bom","blocks","connectors"] {
+                let pending_key = match key { "tasks"=>"project_task", "experiments"=>"project_experiment", "bom"=>"project_bom", "blocks"=>"project_block", "connectors"=>"project_connector", _=>"" };
                 let mut merged = project.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
                 for old in existing.get(key).and_then(Value::as_array).cloned().unwrap_or_default() {
                     if let Some(id) = old.get("id").and_then(Value::as_str) {
