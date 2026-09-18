@@ -106,3 +106,8 @@ assert(sync.includes("project_work_attachment"), 'project attachment sync config
 assert(sync.includes("project_work_attachments"), 'project attachment pull is missing');
 assert(localProjects.includes('create_local_project_attachment'), 'local project attachment command is missing');
 assert(projectsApi.includes("create_local_project_attachment"), 'desktop project attachment API is not local-first');
+
+assert(sync.includes("project_work_attachment"), 'project attachment tombstones are missing');
+assert(sync.includes("attachments"), 'project attachment pull mapping is missing');
+assert(localProjects.includes('deleted_project_attachment_ids'), 'local attachment tombstone merge is missing');
+assert(syncApi.includes('deletedProjectAttachmentIds'), 'desktop attachment tombstones are not passed to local pull');
