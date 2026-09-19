@@ -21,13 +21,35 @@ fn idgen()->String{use std::time::{SystemTime,UNIX_EPOCH};format!("{:032x}",Syst
 fn now(c:&Connection)->Result<String,String>{c.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')",[],|r|r.get(0)).map_err(|e|e.to_string())}
 fn arr(state:&Value,key:&str)->Vec<Value>{state.get(key).and_then(Value::as_array).cloned().unwrap_or_default()}
 fn query(list:Vec<Value>,q:&str)->Vec<Value>{let q=q.to_lowercase();if q.is_empty(){return list}list.into_iter().filter(|v|serde_json::to_string(v).unwrap_or_default().to_lowercase().contains(&q)).collect()}
+fn validate_finding(data:&Value)->Result<(),String>{
+ let status=data.get("status").and_then(Value::as_str).unwrap_or("open");
+ if !["open","confirmed","rejected","superseded"].contains(&status){return Err("Invalid finding status".into())}
+ if let Some(c)=data.get("confidence").and_then(Value::as_f64){if !(0.0..=100.0).contains(&c){return Err("confidence must be between 0 and 100".into())}}
+ Ok(())
+}
+fn validate_result(data:&Value)->Result<(),String>{
+ let summary=data.get("summary").and_then(Value::as_str).unwrap_or("");
+ if data.get("value_numeric").is_none()&&data.get("value_text").is_none()&&summary.is_empty(){return Err("A result requires a numeric value, text value, or summary".into())}
+ Ok(())
+}
+fn validate_relationship(data:&Value)->Result<(),String>{
+ let source_type=data.get("source_type").and_then(Value::as_str).ok_or("source_type is required")?;
+ let target_type=data.get("target_type").and_then(Value::as_str).ok_or("target_type is required")?;
+ let source_id=data.get("source_id").and_then(Value::as_str).ok_or("source_id is required")?;
+ let target_id=data.get("target_id").and_then(Value::as_str).ok_or("target_id is required")?;
+ let allowed=["finding","result","experiment","task","note","resource","calculation"];
+ if !allowed.contains(&source_type)||!allowed.contains(&target_type){return Err("Invalid relationship endpoint type".into())}
+ if source_type==target_type&&source_id==target_id{return Err("A knowledge relationship cannot target itself".into())}
+ if data.get("relationship").and_then(Value::as_str).unwrap_or("").trim().is_empty(){return Err("relationship is required".into())}
+ Ok(())
+}
 
 #[tauri::command]
 pub fn get_local_knowledge_findings(app:AppHandle,q:Option<String>)->Result<Vec<Value>,String>{let c=conn(&app)?;let s=load(&c)?;Ok(query(arr(&s,"findings"),&q.unwrap_or_default()))}
 #[tauri::command]
-pub fn create_local_knowledge_finding(app:AppHandle,mut data:Value)->Result<Value,String>{let mut c=conn(&app)?;let mut s=load(&c)?;let id=idgen();let ts=now(&c)?;data["id"]=json!(&id);data["title"]=json!(data.get("title").and_then(Value::as_str).unwrap_or("").trim());if data["title"].as_str().unwrap_or("").is_empty(){return Err("title is required".into())}data["body"]=data.get("body").cloned().unwrap_or(json!(""));data["status"]=data.get("status").cloned().unwrap_or(json!("draft"));data["tags"]=data.get("tags").cloned().unwrap_or(json!([]));data["created_at"]=json!(&ts);data["updated_at"]=json!(&ts);let mut a=arr(&s,"findings");a.push(data.clone());s["findings"]=Value::Array(a);save(&mut c,&s,Some(("finding".into(),id,"create".into(),data.clone())))?;Ok(data)}
+pub fn create_local_knowledge_finding(app:AppHandle,mut data:Value)->Result<Value,String>{let mut c=conn(&app)?;let mut s=load(&c)?;let id=idgen();let ts=now(&c)?;data["id"]=json!(&id);data["title"]=json!(data.get("title").and_then(Value::as_str).unwrap_or("").trim());if data["title"].as_str().unwrap_or("").is_empty(){return Err("title is required".into())}data["body"]=data.get("body").cloned().unwrap_or(json!(""));data["status"]=data.get("status").cloned().unwrap_or(json!("open"));data["tags"]=data.get("tags").cloned().unwrap_or(json!([]));validate_finding(&data)?;data["created_at"]=json!(&ts);data["updated_at"]=json!(&ts);let mut a=arr(&s,"findings");a.push(data.clone());s["findings"]=Value::Array(a);save(&mut c,&s,Some(("finding".into(),id,"create".into(),data.clone())))?;Ok(data)}
 #[tauri::command]
-pub fn update_local_knowledge_finding(app:AppHandle,id:String,patch:Value)->Result<Value,String>{update_entity(app,"findings","finding".to_string(),id,patch)}
+pub fn update_local_knowledge_finding(app:AppHandle,id:String,mut patch:Value)->Result<Value,String>{if patch.get("status").is_some()||patch.get("confidence").is_some(){validate_finding(&patch)?}update_entity(app,"findings","finding".to_string(),id,patch)}
 #[tauri::command]
 pub fn delete_local_knowledge_finding(app:AppHandle,id:String)->Result<(),String>{delete_entity(app,"findings","finding".to_string(),id)}
 #[tauri::command]
@@ -35,7 +57,7 @@ pub fn get_local_knowledge_results(app:AppHandle,q:Option<String>)->Result<Vec<V
 #[tauri::command]
 pub fn create_local_knowledge_result(app:AppHandle,mut data:Value)->Result<Value,String>{let mut c=conn(&app)?;let mut s=load(&c)?;let id=idgen();let ts=now(&c)?;data["id"]=json!(&id);data["title"]=json!(data.get("title").and_then(Value::as_str).unwrap_or("").trim());if data["title"].as_str().unwrap_or("").is_empty(){return Err("title is required".into())}data["summary"]=data.get("summary").cloned().unwrap_or(json!(""));data["unit"]=data.get("unit").cloned().unwrap_or(json!(""));data["created_at"]=json!(&ts);data["updated_at"]=json!(&ts);let mut a=arr(&s,"results");a.push(data.clone());s["results"]=Value::Array(a);save(&mut c,&s,Some(("knowledge_result".into(),id,"create".into(),data.clone())))?;Ok(data)}
 #[tauri::command]
-pub fn update_local_knowledge_result(app:AppHandle,id:String,patch:Value)->Result<Value,String>{update_entity(app,"results","knowledge_result".to_string(),id,patch)}
+pub fn update_local_knowledge_result(app:AppHandle,id:String,patch:Value)->Result<Value,String>{if patch.get("summary").is_some()||patch.get("value_numeric").is_some()||patch.get("value_text").is_some(){validate_result(&patch)?}update_entity(app,"results","knowledge_result".to_string(),id,patch)}
 #[tauri::command]
 pub fn delete_local_knowledge_result(app:AppHandle,id:String)->Result<(),String>{delete_entity(app,"results","knowledge_result".to_string(),id)}
 fn update_entity(app:AppHandle,key:&str,typ:String,id:String,patch:Value)->Result<Value,String>{let mut c=conn(&app)?;let mut s=load(&c)?;let mut a=arr(&s,key);let v=a.iter_mut().find(|x|x.get("id").and_then(Value::as_str)==Some(id.as_str())).ok_or("Record not found")?;if let Some(o)=patch.as_object(){for(k,val)in o{if k!="id"&&k!="created_at"{v[k]=val.clone();}}}v["updated_at"]=json!(now(&c)?);let out=v.clone();s[key]=Value::Array(a);save(&mut c,&s,Some((typ,id,"update".into(),out.clone())))?;Ok(out)}
@@ -43,7 +65,7 @@ fn delete_entity(app:AppHandle,key:&str,typ:String,id:String)->Result<(),String>
 #[tauri::command]
 pub fn get_local_knowledge_relationships(app:AppHandle)->Result<Vec<Value>,String>{let c=conn(&app)?;Ok(arr(&load(&c)?,"relationships"))}
 #[tauri::command]
-pub fn create_local_knowledge_relationship(app:AppHandle,mut data:Value)->Result<Value,String>{let mut c=conn(&app)?;let mut s=load(&c)?;let id=idgen();data["id"]=json!(&id);data["created_at"]=json!(now(&c)?);let mut a=arr(&s,"relationships");a.push(data.clone());s["relationships"]=Value::Array(a);save(&mut c,&s,Some(("knowledge_relationship".into(),id,"create".into(),data.clone())))?;Ok(data)}
+pub fn create_local_knowledge_relationship(app:AppHandle,mut data:Value)->Result<Value,String>{validate_relationship(&data)?;let mut c=conn(&app)?;let mut s=load(&c)?;let id=idgen();data["id"]=json!(&id);data["created_at"]=json!(now(&c)?);let mut a=arr(&s,"relationships");a.push(data.clone());s["relationships"]=Value::Array(a);save(&mut c,&s,Some(("knowledge_relationship".into(),id,"create".into(),data.clone())))?;Ok(data)}
 #[tauri::command]
 pub fn delete_local_knowledge_relationship(app:AppHandle,id:String)->Result<(),String>{delete_entity(app,"relationships","knowledge_relationship".to_string(),id)}
 #[tauri::command]
