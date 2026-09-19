@@ -53,7 +53,8 @@ async function runSync():Promise<number>{
         const results=Array.isArray(body.results)?body.results:[];
         const synced=results.filter(r=>r.status==='synced').map(r=>r.change_id).filter(Boolean);
         if(synced.length){await invoke('mark_sync_changes_synced',{changeIds:synced});syncedCount=synced.length;}
-        for(const result of results.filter(r=>r.status!=='synced')){
+        const rejectedOrFailed=results.filter(r=>r.status!=='synced');if(rejectedOrFailed.length)scheduleRetry();
+        for(const result of rejectedOrFailed){
           syncSucceeded=false;
           if(result.error?.code==='SYNC_CONFLICT'){
             const change=changes.find(c=>c.change_id===result.change_id);
