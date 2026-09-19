@@ -16,6 +16,19 @@ async function ensureMigrationTable() {
   `);
 }
 
+// These migrations predate migration tracking. They may already exist on an
+// installation whose database was initialized from schema.sql and upgraded
+// manually. We only allow duplicate-object adoption during that one-time legacy
+// transition; once tracking contains any row, every migration is strict.
+const LEGACY_MIGRATION_PATTERNS = [
+  /^0(0[3-9]|[12][0-9]|3[0-9]|40|41)_/, 
+  /^20260914_/
+];
+
+function isLegacyMigration(file) {
+  return LEGACY_MIGRATION_PATTERNS.some((pattern) => pattern.test(file));
+}
+
 async function runMigration(file) {
   const version = file.replace(/\.sql$/, '');
   const already = await pool.query('SELECT 1 FROM schema_migrations WHERE version = $1', [version]);
@@ -35,14 +48,14 @@ async function runMigration(file) {
     console.log(`Applied migration: ${file}`);
   } catch (err) {
     await client.query('ROLLBACK');
-    // Existing installations created before migration tracking was introduced
-    // may already contain an older migration's objects. Preserve compatibility
-    // for those known legacy migrations; all newly-created migrations should be
-    // strictly tracked and transactional.
-    if (['42P07', '42710', '42701'].includes(err.code)) {
-      console.warn(`Legacy migration appears already applied: ${file}`);
-      await pool.query('INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING', [version]);
-      return;
+    if (err.code === '42P07' || err.code === '42710' || err.code === '42701') {
+      const state = await pool.query('SELECT COUNT(*)::int AS count FROM schema_migrations');
+      const legacyAdoption = state.rows[0].count === 0 && isLegacyMigration(file);
+      if (legacyAdoption) {
+        console.warn(`Adopting pre-existing legacy migration: ${file}`);
+        await pool.query('INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING', [version]);
+        return;
+      }
     }
     console.error(`Migration failed: ${file}: ${err.message}`);
     throw err;
