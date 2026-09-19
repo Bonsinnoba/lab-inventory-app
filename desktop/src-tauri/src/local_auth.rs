@@ -235,7 +235,7 @@ pub fn cache_server_permissions(app:AppHandle,central_user_id:String,role:String
 pub fn local_current_permissions(app:AppHandle)->Result<Vec<String>,String>{
     let c=open_local_connection(&app)?;ensure_auth_schema(&c)?;
     let permissions:String=c.query_row(
-        "SELECT u.permissions_json FROM local_users u JOIN local_session s ON s.user_id=u.id WHERE s.id=1",
+        "SELECT u.permissions_json FROM local_users u JOIN local_session s ON s.user_id=u.id WHERE s.id=1 AND u.central_user_id IS NOT NULL AND u.is_active=1",
         [],|r|r.get(0)
     ).optional().map_err(|e|format!("Unable to read local permissions: {e}"))?
      .ok_or("Not authenticated")?;
