@@ -45,3 +45,24 @@ Use `scripts/restore-postgres.sh <dump-file>` after stopping writes. Restore the
 - [ ] Health monitoring configured
 - [ ] Logs retained and rotated
 - [ ] AI key stored only as a server secret
+
+
+## Server role
+
+The production backend runs on a **dedicated server machine**, separate from every LabOS desktop. Desktop installers contain the Tauri client and local SQLite runtime only; they do not contain the Node/Express backend or PostgreSQL.
+
+Production topology:
+
+```text
+LabOS Desktop A ─┐
+LabOS Desktop B ─┼── HTTPS / LAN / VPN ──> LabOS Server
+LabOS Desktop C ─┘                         ├─ Node/Express API
+                                           ├─ PostgreSQL
+                                           └─ persistent storage
+```
+
+The repository remains the development source of truth. Developers can continue running `backend/npm run dev` locally while production uses the Dockerized backend on the server machine.
+
+### Desktop release endpoint
+
+Release builds receive their central API endpoint from the GitHub repository variable `LABOS_API_BASE_URL`. Set it to the server URL including `/api`, for example `https://labos.example.com/api` or a private LAN endpoint when appropriate.
