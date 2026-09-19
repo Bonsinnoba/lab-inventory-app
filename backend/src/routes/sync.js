@@ -112,7 +112,7 @@ async function applyProjectTaskExperimentEntity(client,change,user){
     const linkId=record.id||change.entity_id;
     if(linkId&&/^[0-9a-f-]{32,36}$/i.test(String(linkId))){
       await client.query('DELETE FROM project_task_experiments WHERE id=$1',[linkId]);
-      await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) VALUES('project_task_experiment',$1) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()",[linkId]);
+      await client.query("INSERT INTO sync_tombstones(entity_type,entity_id,project_id) VALUES('project_task_experiment',$1,$2) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now(),project_id=EXCLUDED.project_id",[linkId,projectId]);
     }else{
       await client.query('DELETE FROM project_task_experiments WHERE project_id=$1 AND task_id=$2 AND experiment_id=$3',[projectId,taskId,experimentId]);
     }
@@ -181,7 +181,7 @@ async function applyProjectEntity(client,change,user){
   }
   if(change.operation==='delete'){
     const result=await client.query('DELETE FROM '+cfg.table+' WHERE id=$1 RETURNING id',[entityId]);
-    if(result.rowCount)await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) VALUES($1,$2) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()",[entityType,entityId]);
+    if(result.rowCount)await client.query("INSERT INTO sync_tombstones(entity_type,entity_id,project_id) VALUES($1,$2,$3) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now(),project_id=EXCLUDED.project_id",[entityType,entityId,projectId]);
     return{deleted:Boolean(result.rowCount),id:entityId};
   }
   fail(400,'UNSUPPORTED_PROJECT_OPERATION','Unsupported project operation: '+change.operation);
@@ -277,7 +277,7 @@ router.get('/notes/pull',async(req,res,next)=>{
     const values=req.user.role==='admin'?[]:[req.user.userId];
     const visibility=req.user.role==='admin'?'':'WHERE (n.project_id IS NULL OR n.project_id IN (SELECT p.id FROM projects p LEFT JOIN project_members pm ON pm.project_id=p.id WHERE p.owner_id=$1 OR pm.user_id=$1))';
     const notes=await pool.query(\`SELECT n.* FROM notes n \${visibility} ORDER BY n.updated_at DESC\`,values);
-    const tomb=await pool.query("SELECT entity_id FROM sync_tombstones WHERE entity_type='note' ORDER BY deleted_at DESC LIMIT 1000");
+    const tomb=await pool.query("SELECT entity_id FROM sync_tombstones WHERE entity_type='note' AND (project_id IS NULL OR project_id IN (SELECT p.id FROM projects p LEFT JOIN project_members pm ON pm.project_id=p.id WHERE p.owner_id=$1 OR pm.user_id=$1)) ORDER BY deleted_at DESC LIMIT 1000");
     res.setHeader('Cache-Control','no-store');res.json({notes:notes.rows,deleted_note_ids:tomb.rows.map(r=>r.entity_id)});
   }catch(e){next(e);}
 });
@@ -331,7 +331,7 @@ router.get('/projects/pull',async(req,res,next)=>{
     const visibility=req.user.role==='admin'?'':'WHERE (p.owner_id=$1 OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id=p.id AND pm.user_id=$1))';
     const projects=await pool.query(`SELECT p.* FROM projects p ${visibility} ORDER BY p.updated_at DESC`,values);
     const ids=projects.rows.map(p=>p.id);
-    const deletedRows=await pool.query("SELECT entity_type,entity_id FROM sync_tombstones WHERE entity_type IN ('project','project_task','project_experiment','project_bom','project_block','project_connector','project_experiment_measurement','project_experiment_observation','project_task_experiment','project_work_attachment','project_resource_requirement') ORDER BY deleted_at DESC LIMIT 2500"); const deletedByType={project:[],project_task:[],project_experiment:[],project_bom:[],project_block:[],project_connector:[],project_experiment_measurement:[],project_experiment_observation:[],project_task_experiment:[],project_work_attachment:[],project_resource_requirement:[]}; for(const row of deletedRows.rows)if(deletedByType[row.entity_type])deletedByType[row.entity_type].push(row.entity_id); if(!ids.length)return res.json({projects:[],deleted_project_ids:deletedByType.project,deleted_project_entities:deletedByType});
+    const deletedRows=await pool.query("SELECT entity_type,entity_id FROM sync_tombstones WHERE entity_type IN ('project','project_task','project_experiment','project_bom','project_block','project_connector','project_experiment_measurement','project_experiment_observation','project_task_experiment','project_work_attachment','project_resource_requirement') AND (project_id=ANY($1::uuid[]) OR (project_id IS NULL AND entity_type='project')) ORDER BY deleted_at DESC LIMIT 2500",[ids]); const deletedByType={project:[],project_task:[],project_experiment:[],project_bom:[],project_block:[],project_connector:[],project_experiment_measurement:[],project_experiment_observation:[],project_task_experiment:[],project_work_attachment:[],project_resource_requirement:[]}; for(const row of deletedRows.rows)if(deletedByType[row.entity_type])deletedByType[row.entity_type].push(row.entity_id); if(!ids.length)return res.json({projects:[],deleted_project_ids:deletedByType.project,deleted_project_entities:deletedByType});
     const [tasks,experiments,bom,items,blocks,connectors,measurements,observations,taskExperiments,attachments,requirements]=await Promise.all([
       pool.query('SELECT * FROM project_tasks WHERE project_id=ANY($1::uuid[]) ORDER BY created_at',[ids]),
       pool.query('SELECT * FROM project_experiments WHERE project_id=ANY($1::uuid[]) ORDER BY updated_at DESC',[ids]),
