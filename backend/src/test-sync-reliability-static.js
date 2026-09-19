@@ -130,6 +130,15 @@ const checks = [
   ['server accepts offline finance records', sync.includes('applyFinanceEntity') && sync.includes('FINANCE_CONFIG')],
   ['desktop pulls finance records', desktopSync.includes('/sync/finance/pull') && desktopSync.includes('apply_server_finance_pull')],
   ['Tauri dev URL matches Vite dev server', tauriConfig.includes('"devPath": "http://localhost:1420"') && viteConfig.includes('port: 1420')],
+  ['local auth has no installation administrator', localAuth.includes('central_user_id') && !localAuth.includes('bootstrap_local_admin')],
+  ['local auth caches central permissions', localAuth.includes('permissions_json') && localAuth.includes('cache_server_user') && localAuth.includes('local_current_permissions')],
+  ['local accounts require a central identity', localAuth.includes('central_user_id IS NOT NULL') && localAuth.includes('This account is not available on this installation')],
+  ['offline local access has an expiry', localAuth.includes('offline_expires_at') && localAuth.includes("datetime('now') < datetime(?1)")],
+  ['desktop login authenticates centrally first', authApi.includes('/auth/login') && authApi.includes('cache_server_user') && authApi.includes('navigator.onLine')],
+  ['desktop registration is not used for local account creation', !authApi.includes('bootstrap_local_admin') && !read('../desktop/src/pages/LoginPage.tsx').includes('Create Account')],
+  ['offline local sessions do not become server bearer tokens', authApi.includes('local:${token}') && app.includes("t.startsWith('local:')") && desktopSync.includes("token.startsWith('local:')")],
+  ['offline permission reads use cached permissions', read('../desktop/src/api/permissions.ts').includes('local_current_permissions') && read('../desktop/src/api/permissions.ts').includes('offlineLocalSession')],
+  ['central server remains authoritative for sync authorization', sync.includes('getUserPermissions(req.user.userId,req.user.role)') && sync.includes('PERMISSION_DENIED')],
   ['server syncs engineering entities', sync.includes('ENGINEERING_CONFIG') && sync.includes('engineering_calculation') && sync.includes('engineering_test') && sync.includes('applyEngineeringEntity')],
   ['server exposes engineering pull', sync.includes("router.get('/engineering/pull'") && sync.includes('deleted_calculation_ids') && sync.includes('deleted_test_ids')],
   ['local engineering runtime exists', localEngineering.includes('get_local_engineering_calculations') && localEngineering.includes('create_local_engineering_calculation') && localEngineering.includes('get_local_engineering_tests') && localEngineering.includes('create_local_engineering_test')],
@@ -166,7 +175,7 @@ assert(sync.includes('project_task_experiments'), 'task/experiment pull is missi
 assert(localProjects.includes('create_local_project_task_experiment'), 'local task/experiment command is missing');
 assert(projectsApi.includes('create_local_project_task_experiment'), 'desktop task/experiment API is not local-first');
 
-assert(localAuth.includes('bootstrap_local_admin'), 'local admin bootstrap command is missing');
+assert(!localAuth.includes('bootstrap_local_admin'), 'local admin bootstrap command must not exist');
 assert(localAuth.includes('local_login'), 'local login command is missing');
-assert(authApi.includes('bootstrap_local_admin'), 'desktop registration is not local-first');
-assert(authApi.includes('local_login'), 'desktop login is not local-first');
+assert(!authApi.includes('bootstrap_local_admin'), 'desktop registration must not create local accounts');
+assert(authApi.includes('local_login'), 'offline local login fallback is missing');
