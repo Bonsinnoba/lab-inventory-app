@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { getLocalAuthStatus, login, register } from '../api/auth';
+import { getLocalAuthStatus, login } from '../api/auth';
 import { LogIn, UserPlus, Eye, EyeOff } from 'lucide-react';
 
 interface LoginPageProps {
@@ -7,7 +7,7 @@ interface LoginPageProps {
 }
 
 export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
-  const [isLogin, setIsLogin] = useState(true);
+  const [isLogin] = useState(true);
   const [authStatusReady, setAuthStatusReady] = useState(false);
   const [isTauriLocal, setIsTauriLocal] = useState(false);
   const [username, setUsername] = useState('');
@@ -22,7 +22,7 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
       if (!active) return;
       if (status) {
         setIsTauriLocal(true);
-        setIsLogin(status.bootstrapped);
+        setIsLogin(true);
       }
       setAuthStatusReady(true);
     }).catch(() => {
@@ -41,8 +41,7 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
         const response = await login(username, password);
         onLoginSuccess(response.user, response.token);
       } else {
-        const response = await register(username, password, 'member');
-        onLoginSuccess(response.user, response.token);
+        throw new Error('Account creation is managed by LabOS administrators.');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Authentication failed');
@@ -59,10 +58,10 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
         <div className="bg-surface border border-border rounded-md p-8">
           <div className="text-center mb-8">
             <h1 className="text-3xl font-ui font-semibold text-text-primary mb-2">
-              {isLogin ? 'Welcome Back' : 'Create Account'}
+              Welcome Back
             </h1>
             <p className="text-text-secondary text-sm">
-              {isLogin ? 'Sign in to access your lab inventory' : isTauriLocal ? 'Set up the administrator for this desktop' : 'Join to manage your lab inventory'}
+              {isTauriLocal ? 'Sign in with your central LabOS account' : 'Sign in to access your lab inventory'}
             </p>
           </div>
 
@@ -118,28 +117,13 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
                   <LogIn size={18} />
                   Sign In
                 </>
-              ) : (
-                <>
-                  <UserPlus size={18} />
-                  Create Account
-                </>
               )}
             </button>
           </form>
 
-          {!isTauriLocal && <div className="mt-6 text-center">
-            <button
-              type="button"
-              onClick={() => {
-                setIsLogin(!isLogin);
-                setError('');
-              }}
-              className="text-accent hover:text-accent-dim text-sm transition-colors"
-            >
-              {isLogin ? "Don't have an account? Sign up" : 'Already have an account? Sign in'}
-            </button>
-          </div>}
+        </div>}
           {isTauriLocal && !isLogin && <p className="mt-6 text-center text-text-secondary text-xs">This creates the administrator for this desktop's local database. Additional accounts can be managed centrally.</p>}
+          {isTauriLocal && <p className="mt-6 text-center text-text-secondary text-xs">Accounts are created and managed centrally. This installation does not have a local administrator.</p>}
         </div>
 
         <div className="mt-4 text-center text-text-secondary text-xs">
