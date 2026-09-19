@@ -25,28 +25,66 @@ export type LocalAuthStatus = {
   user: User | null;
 };
 
+async function fetchServerPermissions(): Promise<string[]> {
+  const response = await fetch(`${API_BASE}/auth/me/permissions`, { headers: { Authorization: `Bearer ${getToken() || ''}` } });
+  if (!response.ok) throw new Error('Unable to load your LabOS permissions');
+  const body = await response.json();
+  return Array.isArray(body?.permissions) ? body.permissions.filter((p: any) => p?.effective).map((p: any) => String(p.permission)) : [];
+}
+
 export async function getLocalAuthStatus(): Promise<LocalAuthStatus | null> {
   return localInvoke<LocalAuthStatus>('local_auth_status');
 }
 
 export async function login(username: string, password: string): Promise<AuthResponse> {
+  const inTauri = isTauriRuntime();
+  if (!inTauri || typeof navigator === 'undefined' || navigator.onLine) {
+    try {
+      const response = await fetch(`${API_BASE}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      if (response.ok) {
+        const result = await response.json() as AuthResponse;
+        if (inTauri) {
+          setToken(result.token);
+          const permissions = await fetchServerPermissions();
+          await localInvoke('cache_server_user', {
+            centralUserId: result.user.id,
+            username: result.user.username,
+            password,
+            role: result.user.role,
+            displayName: result.user.display_name ?? null,
+            email: result.user.email ?? null,
+            permissions,
+          });
+        }
+        return result;
+      }
+      const error = await response.json().catch(() => null);
+      if (response.status >= 500 && inTauri) {
+        removeToken();
+        const local = await localInvoke<AuthResponse>('local_login', { username, password });
+        if (local !== null) return local;
+      }
+      throw new Error(error?.error?.message || error?.error || 'Login failed');
+    } catch (error) {
+      if (inTauri && (error instanceof TypeError || (error instanceof DOMException && error.name === 'AbortError'))) {
+        removeToken();
+        const local = await localInvoke<AuthResponse>('local_login', { username, password });
+        if (local !== null) return local;
+      }
+      throw error;
+    }
+  }
+  removeToken();
   const local = await localInvoke<AuthResponse>('local_login', { username, password });
   if (local !== null) return local;
-  const response = await fetch(`${API_BASE}/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
-  });
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.error || 'Login failed');
-  }
-  return response.json();
+  throw new Error('Connect to LabOS to sign in on this installation.');
 }
 
 export async function register(username: string, password: string, role?: 'admin' | 'member'): Promise<AuthResponse> {
-  const local = await localInvoke<AuthResponse>('bootstrap_local_admin', { username, password });
-  if (local !== null) return local;
   const response = await fetch(`${API_BASE}/auth/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -60,23 +98,24 @@ export async function register(username: string, password: string, role?: 'admin
 }
 
 export async function getCurrentUser(token: string): Promise<{ user: User }> {
-  const local = await localInvoke<User | null>('local_current_user');
-  if (local !== null) return { user: local };
-  const response = await fetch(`${API_BASE}/auth/me`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!response.ok) {
-    throw new Error('Failed to get current user');
+  if (!token.startsWith('local:')) {
+    const response = await fetch(`${API_BASE}/auth/me`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) throw new Error('Failed to get current user');
+    return response.json();
   }
-  return response.json();
+  const local = await localInvoke<User | null>('local_current_user');
+  if (local !== null) return { user: local as User };
+  throw new Error('Local session is unavailable');
 }
 
 export async function changePassword(current_password: string, new_password: string): Promise<void> {
-  const local = await localInvoke<void>('local_change_password', { currentPassword: current_password, newPassword: new_password });
-  if (local !== null) return;
+  const token = getToken();
+  if (!token || token.startsWith('local:')) throw new Error('Reconnect to LabOS before changing your password.');
   const response = await fetch(`${API_BASE}/auth/me/password`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken() || ''}` },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({ current_password, new_password }),
   });
   if (!response.ok) {
@@ -87,11 +126,11 @@ export async function changePassword(current_password: string, new_password: str
 }
 
 export async function updateProfile(display_name: string, email: string): Promise<User> {
-  const local = await localInvoke<User>('local_update_profile', { displayName: display_name, email });
-  if (local !== null) return local;
+  const token = getToken();
+  if (!token || token.startsWith('local:')) throw new Error('Reconnect to LabOS before updating your profile.');
   const response = await fetch(`${API_BASE}/auth/me/profile`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken() || ''}` },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({ display_name, email }),
   });
   if (!response.ok) {
