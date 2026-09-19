@@ -1,10 +1,21 @@
 import { apiFetch, getApiErrorMessage } from './http';
+import { invoke } from '@tauri-apps/api/tauri';
 
 export type PermissionEffect = 'inherited' | 'grant' | 'deny';
 export type PermissionEntry = { permission: string; baseline: boolean; effect: PermissionEffect; effective: boolean };
 export type CurrentPermissionEntry = { permission: string; effective: boolean };
 
 export async function getCurrentUserPermissions(): Promise<{ user: { id: string; username: string; role: string }; permissions: CurrentPermissionEntry[] }> {
+  const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_IPC__;
+  if (isTauri) {
+    try {
+      const permissions = await invoke<string[]>('local_current_permissions');
+      const localUser = await invoke<{ id: string; username: string; role: string }>('local_current_user');
+      return { user: localUser, permissions: permissions.map((permission) => ({ permission, effective: true })) };
+    } catch {
+      // Fall through to the central session while online.
+    }
+  }
   const response = await apiFetch('/auth/me/permissions');
   if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to load current permissions'));
   return response.json();
