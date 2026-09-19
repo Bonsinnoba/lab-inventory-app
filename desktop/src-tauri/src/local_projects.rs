@@ -316,14 +316,14 @@ pub fn link_local_project_item(app:AppHandle,project_id:String,item_id:String,al
     let mut items=nested_get(p,"items");let existing=items.iter_mut().find(|x|x.get("item_id").and_then(Value::as_str)==Some(item_id.as_str()));
     let record=json!({"project_id":project_id,"item_id":item_id,"allocated_quantity":allocated_quantity,"notes":notes});
     if let Some(e)=existing{*e=record.clone();}else{items.push(record.clone());}p["items"]=Value::Array(items);p["updated_at"]=json!(now(&c)?);
-    save(&mut c,&projects,vec![(id(),"project_item".into(),item_id,"upsert".into(),record.clone())])?;Ok(record)
+    save(&mut c,&projects,vec![(id(),"project_item".into(),format!("{}:{}",project_id,item_id),"upsert".into(),record.clone())])?;Ok(record)
 }
 
 #[tauri::command]
 pub fn unlink_local_project_item(app:AppHandle,project_id:String,item_id:String)->Result<(),String>{
     let mut c=conn(&app)?;let mut projects=load(&c)?;let p=projects.iter_mut().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
     let mut items=nested_get(p,"items");items.retain(|x|x.get("item_id").and_then(Value::as_str)!=Some(item_id.as_str()));p["items"]=Value::Array(items);p["updated_at"]=json!(now(&c)?);
-    save(&mut c,&projects,vec![(id(),"project_item".into(),item_id,"delete".into(),json!({"project_id":project_id}))])
+    save(&mut c,&projects,vec![(id(),"project_item".into(),format!("{}:{}",project_id,item_id),"delete".into(),json!({"project_id":project_id,"item_id":item_id}))])
 }
 
 
@@ -394,10 +394,15 @@ pub fn apply_server_project_pull(app: AppHandle, projects_json: String, deleted_
                         }
                     }
                 }
-                merged.retain(|v| { let rid=v.get("id").and_then(Value::as_str).or_else(|| if key=="items" { v.get("item_id").and_then(Value::as_str) } else { None }).unwrap_or_default(); !deleted_ids.contains(rid) || pending.contains(&format!("{pending_key}:{rid}")) });
+                merged.retain(|v| {
+                    let rid=v.get("id").and_then(Value::as_str).or_else(|| if key=="items" { v.get("item_id").and_then(Value::as_str) } else { None }).unwrap_or_default();
+                    let pending_id=if key=="items"{format!("{}:{}",project_id,rid)}else{rid.to_string()};
+                    !deleted_ids.contains(rid) || pending.contains(&format!("{pending_key}:{pending_id}"))
+                });
                 for old in existing.get(key).and_then(Value::as_array).cloned().unwrap_or_default() {
                     if let Some(id) = old.get("id").and_then(Value::as_str).or_else(|| if key=="items" { old.get("item_id").and_then(Value::as_str) } else { None }) {
-                        if pending.contains(&format!("{pending_key}:{id}")) {
+                        let pending_id=if key=="items"{format!("{}:{}",project_id,id)}else{id.to_string()};
+                        if pending.contains(&format!("{pending_key}:{pending_id}")) {
                             if let Some(pos)=merged.iter().position(|v| v.get("id").and_then(Value::as_str).or_else(|| if key=="items" { v.get("item_id").and_then(Value::as_str) } else { None })==Some(id)) { merged[pos]=old; } else { merged.push(old); }
                         }
                     }
