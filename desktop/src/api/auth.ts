@@ -103,6 +103,11 @@ export async function updateProfile(display_name: string, email: string): Promis
   return result.user;
 }
 
+export async function logout(): Promise<void> {
+  const local = await localInvoke<void>('local_logout');
+  if (local !== null) return;
+}
+
 export function setToken(token: string): void {
   localStorage.setItem('auth_token', token);
 }
