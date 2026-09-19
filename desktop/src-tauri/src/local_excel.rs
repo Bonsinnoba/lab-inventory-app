@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use tauri::AppHandle;
 
 use crate::local_db;
+use crate::local_auth;
 
 fn connection(app: &AppHandle) -> Result<Connection, String> {
     local_db::open_local_connection(app)
@@ -21,6 +22,12 @@ pub fn import_local_inventory_rows(app: AppHandle, rows_json: String) -> Result<
     }
 
     let mut conn = connection(&app)?;
+    if rows.iter().any(|row| row.get("id").and_then(Value::as_str).is_none()) {
+        local_auth::require_local_permission(&conn,"inventory.create")?;
+    }
+    if rows.iter().any(|row| row.get("id").and_then(Value::as_str).is_some()) {
+        local_auth::require_local_permission(&conn,"inventory.edit")?;
+    }
     let tx = conn.transaction().map_err(|e| format!("Unable to begin inventory import transaction: {e}"))?;
     let snapshot_text: String = tx
         .query_row("SELECT value FROM sync_state WHERE key='inventory_snapshot'", [], |r| r.get(0))
