@@ -1,5 +1,6 @@
 import { apiFetch, getApiErrorMessage } from './http';
 import { invoke } from '@tauri-apps/api/tauri';
+import { getToken } from './auth';
 
 export type PermissionEffect = 'inherited' | 'grant' | 'deny';
 export type PermissionEntry = { permission: string; baseline: boolean; effect: PermissionEffect; effective: boolean };
@@ -7,7 +8,9 @@ export type CurrentPermissionEntry = { permission: string; effective: boolean };
 
 export async function getCurrentUserPermissions(): Promise<{ user: { id: string; username: string; role: string }; permissions: CurrentPermissionEntry[] }> {
   const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_IPC__;
-  if (isTauri) {
+  const token = getToken();
+  const offlineLocalSession = isTauri && (!token || token.startsWith('local:') || (typeof navigator !== 'undefined' && !navigator.onLine));
+  if (offlineLocalSession) {
     try {
       const permissions = await invoke<string[]>('local_current_permissions');
       const localUser = await invoke<{ id: string; username: string; role: string }>('local_current_user');
