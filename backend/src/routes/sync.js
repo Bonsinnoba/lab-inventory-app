@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { pool } from '../db.js';
 import { getUserPermissions } from '../middleware/permissions.js';
 import { writeAuditLog } from '../middleware/audit.js';
-import { getResourceAccess, requireResourceEditor } from '../middleware/resource-access.js';
+import { getResourceAccess, requireResourceEditor, validateResourceParent } from '../middleware/resource-access.js';
 import { getProjectAccess } from '../middleware/project-access.js';
 const router=Router();
 const ITEM_FIELDS=['name','type','category','sku','initial_quantity','current_quantity','unit','dimensions','status','condition_notes','unit_cost','replacement_cost','location_id','storage_location','photo_url','supplier','supplier_id','part_number','next_maintenance_date','maintenance_interval_days','manufacturer','model_number','serial_number','asset_tag','calibration_interval_days','next_calibration_date','assigned_to','image_resource_id','created_at','updated_at'];
@@ -301,9 +301,17 @@ router.get('/resources/pull',async(req,res,next)=>{
     const result=await pool.query('SELECT r.id,r.name,r.kind,r.file_type,r.original_filename,r.mime_type,r.size_bytes,r.parent_resource_id,r.relative_path,r.url,r.thumbnail_url,r.category,r.description,r.tags,r.updated_at,r.created_at,r.item_id,r.project_id,r.note_id FROM resources r ORDER BY r.updated_at DESC');
     const visible=[];
     for(const row of result.rows){const access=await getResourceAccess(row.id,req.user);if(access.access!=='none'&&!access.context?.invalid)visible.push(row);}
-    const deleted=await pool.query("SELECT entity_id FROM sync_tombstones WHERE entity_type='resource' AND ($1='admin' OR project_id IS NOT NULL OR (project_id IS NULL AND item_id IS NULL AND note_id IS NULL)) ORDER BY deleted_at DESC LIMIT 500",[req.user.role]);
+    const deletedRows=await pool.query("SELECT entity_id,project_id,item_id,note_id FROM sync_tombstones WHERE entity_type='resource' ORDER BY deleted_at DESC LIMIT 500");
+    const deleted=[];
+    for(const row of deletedRows.rows){
+      if(req.user.role==='admin'){deleted.push(row.entity_id);continue;}
+      if(row.project_id){const access=await getProjectAccess(row.project_id,req.user);if(access.access!=='none')deleted.push(row.entity_id);continue;}
+      if(row.note_id){const access=await validateResourceParent({noteId:row.note_id,user:req.user,requireEdit:false});if(access.ok)deleted.push(row.entity_id);continue;}
+      if(row.item_id){const access=await validateResourceParent({itemId:row.item_id,user:req.user,requireEdit:false});if(access.ok)deleted.push(row.entity_id);continue;}
+      deleted.push(row.entity_id);
+    }
     res.setHeader('Cache-Control','no-store');
-    res.json({resources:visible,deleted_resource_ids:deleted.rows.map(r=>r.entity_id)});
+    res.json({resources:visible,deleted_resource_ids:deleted});
   }catch(error){next(error);}
 });
 
