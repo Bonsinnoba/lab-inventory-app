@@ -32,8 +32,16 @@ const engineeringApi = read('../desktop/src/api/engineering.ts');
 const systemApi = read('../desktop/src/api/system.ts');
 const tauriConfig = read('../desktop/src-tauri/tauri.conf.json');
 const viteConfig = read('../desktop/vite.config.ts');
+const migration038 = read('src/migrations/038_project_task_experiment_sync.sql');
+const migration039 = read('src/migrations/039_sync_tombstone_scope.sql');
+const migrationRunner = read('src/run-migration.js');
 
 const checks = [
+  ['task/experiment sync migration exists', migration038.includes('ADD COLUMN IF NOT EXISTS id UUID') && migration038.includes('ADD COLUMN IF NOT EXISTS project_id UUID')],
+  ['task/experiment sync migration backfills and validates project scope', migration038.includes('SET project_id = p.project_id') && migration038.includes('project ownership is inconsistent')],
+  ['task/experiment sync migration establishes UUID primary key', migration038.includes('DROP CONSTRAINT IF EXISTS project_task_experiments_pkey') && migration038.includes('PRIMARY KEY (id)')],
+  ['tombstone scope migration exists', migration039.includes('ADD COLUMN IF NOT EXISTS project_id UUID') && migration039.includes('idx_sync_tombstones_project')],
+  ['migration runner tracks and orders migrations', migrationRunner.includes('schema_migrations') && migrationRunner.includes('fs.readdirSync(MIGRATIONS_DIR)') && migrationRunner.includes('.sort()')],
   ['server sync push endpoint exists', sync.includes("router.post('/push'")],
   ['server sync pull endpoint exists', sync.includes("router.get('/pull'")],
   ['server idempotency is checked before apply', sync.includes('SELECT payload_json,response_json FROM sync_idempotency') && sync.includes('change_id=$1 FOR UPDATE')],
