@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/tauri';
 import { apiFetch, getApiErrorMessage } from './http';
+import { getToken } from './auth';
 
 type PendingChange = { change_id:string; device_id:string; entity_type:string; entity_id?:string|null; operation:string; payload:unknown; created_at:string; attempt_count:number; last_error?:string|null };
 type SyncResult = { change_id:string; status:'synced'|'failed'|'rejected'; result?:unknown; error?:{code?:string;message?:string} };
@@ -38,6 +39,8 @@ export async function syncPendingChanges(force=false):Promise<number>{if(activeS
 
 async function runSync():Promise<number>{
   if(typeof navigator!=='undefined'&&!navigator.onLine){publish({status:'offline'});return 0;}
+  const token=getToken();
+  if(!token||token.startsWith('local:')){publish({status:'offline',lastError:'Reconnect to LabOS to synchronize this installation'});return 0;}
   publish({status:'syncing',lastError:null});
   let changes:PendingChange[]=[];
   try{changes=await invoke<PendingChange[]>('list_pending_sync_changes',{limit:100});}
