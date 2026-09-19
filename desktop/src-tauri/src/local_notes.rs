@@ -25,6 +25,10 @@ fn load(conn: &Connection) -> Result<Vec<Value>, String> {
 }
 
 fn save(conn: &mut Connection, notes: &[Value], changes: Vec<(String,String,String,String,Value)>) -> Result<(),String> {
+    for (_,_,_,operation,_) in &changes {
+        let permission=match operation.as_str(){"create"=>"notes.create","delete"=>"notes.delete",_=>"notes.edit"};
+        local_auth::require_local_permission(conn,permission)?;
+    }
     let tx=conn.transaction().map_err(|e|format!("Unable to begin local note transaction: {e}"))?;
     let raw=serde_json::to_string(notes).map_err(|e|format!("Unable to encode local notes: {e}"))?;
     tx.execute("INSERT INTO sync_state(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![STATE_KEY,raw])
