@@ -39,7 +39,7 @@ import LoginPage from "./pages/LoginPage";
 import CommandPalette from "./components/CommandPalette";
 import LabIntelligencePage from "./pages/LabIntelligencePage";
 import DownloadsPage from "./pages/DownloadsPage";
-import { getToken, setToken, removeToken, getStoredUser, setStoredUser, removeStoredUser, getCurrentUser } from "./api/auth";
+import { getToken, setToken, removeToken, getStoredUser, setStoredUser, removeStoredUser, getCurrentUser, logout } from "./api/auth";
 import type { User } from "./api/auth";
 import { getDailyUsePreferences } from './api/system';
 import { syncPendingChanges } from './api/sync';
@@ -147,6 +147,7 @@ function AppContent() {
   };
 
   const handleLogout = () => {
+    void logout().catch(() => undefined);
     setUser(null);
     setIsAuthenticated(false);
     removeToken();
