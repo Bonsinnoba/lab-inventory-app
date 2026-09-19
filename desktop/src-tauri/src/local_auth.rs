@@ -249,11 +249,14 @@ pub fn cache_server_permissions(app:AppHandle,central_user_id:String,role:String
 #[tauri::command]
 pub fn local_current_permissions(app:AppHandle)->Result<Vec<String>,String>{
     let c=open_local_connection(&app)?;ensure_auth_schema(&c)?;
-    let permissions:String=c.query_row(
-        "SELECT u.permissions_json FROM local_users u JOIN local_session s ON s.user_id=u.id WHERE s.id=1 AND u.central_user_id IS NOT NULL AND u.is_active=1",
-        [],|r|r.get(0)
+    let (permissions,expires):(String,Option<String>)=c.query_row(
+        "SELECT u.permissions_json,u.offline_expires_at FROM local_users u JOIN local_session s ON s.user_id=u.id WHERE s.id=1 AND u.central_user_id IS NOT NULL AND u.is_active=1",
+        [],|r|Ok((r.get(0)?,r.get(1)?))
     ).optional().map_err(|e|format!("Unable to read local permissions: {e}"))?
      .ok_or("Not authenticated")?;
+    let expires=expires.ok_or("Offline authorization has expired")?;
+    let valid:i64=c.query_row("SELECT CASE WHEN datetime('now') < datetime(?1) THEN 1 ELSE 0 END",params![expires],|r|r.get(0)).unwrap_or(0);
+    if valid==0{return Err("Offline authorization has expired. Connect to LabOS to refresh access.".into())}
     serde_json::from_str(&permissions).map_err(|e|format!("Unable to decode local permissions: {e}"))
 }
 
