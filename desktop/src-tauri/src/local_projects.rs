@@ -329,7 +329,7 @@ pub fn apply_server_project_pull(app: AppHandle, projects_json: String, deleted_
     let mut c = conn(&app)?;
     let mut projects = load(&c)?;
     let pending: std::collections::HashSet<String> = {
-        let mut stmt = c.prepare("SELECT DISTINCT entity_type || ':' || entity_id FROM sync_outbox WHERE synced_at IS NULL AND entity_id IS NOT NULL AND entity_type IN ('project','project_task','project_experiment','project_bom','project_block','project_connector','project_work_attachment','project_task_experiment','project_resource_requirement')").map_err(|e| format!("Unable to inspect pending project changes: {e}"))?;
+        let mut stmt = c.prepare("SELECT DISTINCT entity_type || ':' || entity_id FROM sync_outbox WHERE synced_at IS NULL AND entity_id IS NOT NULL AND entity_type IN ('project','project_task','project_experiment','project_bom','project_block','project_connector','project_work_attachment','project_task_experiment','project_resource_requirement','project_item')").map_err(|e| format!("Unable to inspect pending project changes: {e}"))?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| format!("Unable to inspect pending project changes: {e}"))?;
         rows.filter_map(|r| r.ok()).collect()
     };
@@ -346,9 +346,9 @@ pub fn apply_server_project_pull(app: AppHandle, projects_json: String, deleted_
             task_experiments.retain(|v|{let rid=v.get("id").and_then(Value::as_str).unwrap_or_default();!deleted_project_task_experiment_ids.iter().any(|x|x==rid)||pending.contains(&format!("project_task_experiment:{rid}"))});
             for oldrow in old_task_experiments{if let Some(rid)=oldrow.get("id").and_then(Value::as_str){if pending.contains(&format!("project_task_experiment:{rid}"))&&!task_experiments.iter().any(|v|v.get("id").and_then(Value::as_str)==Some(rid)){task_experiments.push(oldrow);}}}
             project["task_experiments"]=Value::Array(task_experiments);
-            for key in ["tasks","experiments","bom","blocks","connectors","requirements"] {
-                let pending_key = match key { "tasks"=>"project_task", "experiments"=>"project_experiment", "bom"=>"project_bom", "blocks"=>"project_block", "connectors"=>"project_connector", "requirements"=>"project_resource_requirement", _=>"" };
-                let deleted_ids: std::collections::HashSet<String> = match key { "tasks"=>deleted_project_task_ids.iter().cloned().collect(), "experiments"=>deleted_project_experiment_ids.iter().cloned().collect(), "bom"=>deleted_project_bom_ids.iter().cloned().collect(), "blocks"=>deleted_project_block_ids.iter().cloned().collect(), "connectors"=>deleted_project_connector_ids.iter().cloned().collect(), "requirements"=>deleted_project_requirement_ids.iter().cloned().collect(), _=>std::collections::HashSet::new() };
+            for key in ["tasks","experiments","bom","blocks","connectors","requirements","items"] {
+                let pending_key = match key { "tasks"=>"project_task", "experiments"=>"project_experiment", "bom"=>"project_bom", "blocks"=>"project_block", "connectors"=>"project_connector", "requirements"=>"project_resource_requirement", "items"=>"project_item", _=>"" };
+                let deleted_ids: std::collections::HashSet<String> = match key { "items"=>std::collections::HashSet::new(), "tasks"=>deleted_project_task_ids.iter().cloned().collect(), "experiments"=>deleted_project_experiment_ids.iter().cloned().collect(), "bom"=>deleted_project_bom_ids.iter().cloned().collect(), "blocks"=>deleted_project_block_ids.iter().cloned().collect(), "connectors"=>deleted_project_connector_ids.iter().cloned().collect(), "requirements"=>deleted_project_requirement_ids.iter().cloned().collect(), _=>std::collections::HashSet::new() };
                 let mut merged = project.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
                 if key=="tasks" || key=="experiments" {
                     for work in &mut merged {
