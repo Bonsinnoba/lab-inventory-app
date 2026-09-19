@@ -29,7 +29,7 @@ function isLegacyMigration(file) {
   return LEGACY_MIGRATION_PATTERNS.some((pattern) => pattern.test(file));
 }
 
-async function runMigration(file) {
+async function runMigration(file, legacyAdoption) {
   const version = file.replace(/\.sql$/, '');
   const already = await pool.query('SELECT 1 FROM schema_migrations WHERE version = $1', [version]);
   if (already.rowCount) {
@@ -49,9 +49,7 @@ async function runMigration(file) {
   } catch (err) {
     await client.query('ROLLBACK');
     if (err.code === '42P07' || err.code === '42710' || err.code === '42701') {
-      const state = await pool.query('SELECT COUNT(*)::int AS count FROM schema_migrations');
-      const legacyAdoption = state.rows[0].count === 0 && isLegacyMigration(file);
-      if (legacyAdoption) {
+      if (legacyAdoption && isLegacyMigration(file)) {
         console.warn(`Adopting pre-existing legacy migration: ${file}`);
         await pool.query('INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING', [version]);
         return;
@@ -66,8 +64,10 @@ async function runMigration(file) {
 
 async function runAllMigrations() {
   await ensureMigrationTable();
+  const state = await pool.query('SELECT COUNT(*)::int AS count FROM schema_migrations');
+  const legacyAdoption = state.rows[0].count === 0;
   const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
-  for (const file of files) await runMigration(file);
+  for (const file of files) await runMigration(file, legacyAdoption);
 }
 
 runAllMigrations()
