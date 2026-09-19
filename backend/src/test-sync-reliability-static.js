@@ -34,6 +34,8 @@ const tauriConfig = read('../desktop/src-tauri/tauri.conf.json');
 const viteConfig = read('../desktop/vite.config.ts');
 const migration038 = read('src/migrations/038_project_task_experiment_sync.sql');
 const migration039 = read('src/migrations/039_sync_tombstone_scope.sql');
+const migration040 = read('src/migrations/040_device_audit_identity.sql');
+const migration041 = read('src/migrations/041_resource_tombstone_scope.sql');
 const migrationRunner = read('src/run-migration.js');
 
 const checks = [
@@ -41,7 +43,10 @@ const checks = [
   ['task/experiment sync migration backfills and validates project scope', migration038.includes('SET project_id = p.project_id') && migration038.includes('project ownership is inconsistent')],
   ['task/experiment sync migration establishes UUID primary key', migration038.includes('DROP CONSTRAINT IF EXISTS project_task_experiments_pkey') && migration038.includes('PRIMARY KEY (id)')],
   ['tombstone scope migration exists', migration039.includes('ADD COLUMN IF NOT EXISTS project_id UUID') && migration039.includes('idx_sync_tombstones_project')],
+  ['resource tombstone scope migration exists', migration041.includes('ADD COLUMN IF NOT EXISTS item_id UUID') && migration041.includes('ADD COLUMN IF NOT EXISTS note_id UUID') && migration041.includes('idx_sync_tombstones_resource_scope')],
+  ['device audit migration exists', migration040.includes('ADD COLUMN IF NOT EXISTS device_id TEXT') && migration040.includes('idx_audit_log_device_created')],
   ['migration runner tracks and orders migrations', migrationRunner.includes('schema_migrations') && migrationRunner.includes('fs.readdirSync(MIGRATIONS_DIR)') && migrationRunner.includes('.sort()')],
+  ['migration runner limits duplicate adoption to legacy bootstrap', migrationRunner.includes('LEGACY_MIGRATION_PATTERNS') && migrationRunner.includes('legacyAdoption') && migrationRunner.includes("err.code === '42P07'")],
   ['server sync push endpoint exists', sync.includes("router.post('/push'")],
   ['server sync pull endpoint exists', sync.includes("router.get('/pull'")],
   ['server idempotency is checked before apply', sync.includes('SELECT payload_json,response_json FROM sync_idempotency') && sync.includes('change_id=$1 FOR UPDATE')],
@@ -82,6 +87,8 @@ const checks = [
   ['unresolved sync conflicts are held out of retry queue', localDb.includes('LEFT JOIN sync_conflicts c ON c.change_id=o.change_id AND c.resolved_at IS NULL') && localDb.includes('c.change_id IS NULL')],
   ['partial sync push failures schedule retry', desktopSync.includes("const rejectedOrFailed=results.filter(r=>r.status!=='synced');if(rejectedOrFailed.length)scheduleRetry()")],
   ['direct resource deletes create sync tombstones', read('src/routes/resources.js').includes("INSERT INTO sync_tombstones(entity_type,entity_id,project_id)")],
+  ['direct project deletes create project and nested tombstones', read('src/routes/projects.js').includes("INSERT INTO sync_tombstones(entity_type,entity_id,project_id)") && read('src/routes/projects.js').includes('project_task_experiments') && read('src/routes/projects.js').includes("VALUES('project',$1,$1)")],
+  ['direct engineering deletes create tombstones', read('src/routes/engineering.js').includes("VALUES('engineering_calculation',$1,$2)") && read('src/routes/engineering.js').includes("VALUES('engineering_test',$1,$2)")],
   ['offline resource project parents require edit access', sync.includes("!['edit','admin'].includes(access.access)")],
   ['offline resource note parents are access checked', sync.includes("SELECT id,project_id FROM notes WHERE id=$1") && sync.includes('edit access to this note project')],
   ['offline resource folder parents require resource edit access', sync.includes('requireResourceEditor(record.parent_resource_id')],
