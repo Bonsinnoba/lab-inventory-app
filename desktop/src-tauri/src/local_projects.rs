@@ -379,7 +379,9 @@ pub fn apply_server_project_pull(app: AppHandle, projects_json: String, deleted_
                 merged.retain(|v| { let rid=v.get("id").and_then(Value::as_str).or_else(|| if key=="items" { v.get("item_id").and_then(Value::as_str) } else { None }).unwrap_or_default(); !deleted_ids.contains(rid) || pending.contains(&format!("{pending_key}:{rid}")) });
                 for old in existing.get(key).and_then(Value::as_array).cloned().unwrap_or_default() {
                     if let Some(id) = old.get("id").and_then(Value::as_str).or_else(|| if key=="items" { old.get("item_id").and_then(Value::as_str) } else { None }) {
-                        if pending.contains(&format!("{pending_key}:{id}")) && !merged.iter().any(|v| v.get("id").and_then(Value::as_str) == Some(id)) { merged.push(old); }
+                        if pending.contains(&format!("{pending_key}:{id}")) {
+                            if let Some(pos)=merged.iter().position(|v| v.get("id").and_then(Value::as_str).or_else(|| if key=="items" { v.get("item_id").and_then(Value::as_str) } else { None })==Some(id)) { merged[pos]=old; } else { merged.push(old); }
+                        }
                     }
                 }
                 project[key] = Value::Array(merged);
