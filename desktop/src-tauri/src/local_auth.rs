@@ -127,15 +127,40 @@ pub fn cache_server_user(
         "SELECT id FROM local_users WHERE central_user_id=?1",
         params![central_user_id.trim()],|r|r.get(0)
     ).optional().map_err(|e|format!("Unable to inspect cached account: {e}"))?;
-    let local_id=local_id.unwrap_or_else(||uuid::Uuid::new_v4().to_string());
+    let local_id=match local_id {
+        Some(id)=>id,
+        None=>{
+            let legacy:Option<(String,Option<String>)>=c.query_row(
+                "SELECT id,central_user_id FROM local_users WHERE username=?1",
+                params![username.trim()],|r|Ok((r.get(0)?,r.get(1)?))
+            ).optional().map_err(|e|format!("Unable to inspect local username: {e}"))?;
+            if let Some((id,Some(existing_central)))=legacy {
+                if existing_central != central_user_id.trim(){return Err("That username is already cached for another LabOS account.".into())}
+                id
+            } else if let Some((id,None))=legacy {
+                id
+            } else {
+                uuid::Uuid::new_v4().to_string()
+            }
+        }
+    };
     let token=session_token();
 
-    c.execute(
-        "INSERT INTO local_users(id,central_user_id,username,password_hash,role,display_name,email,is_active,permissions_json,last_server_auth_at,offline_expires_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,1,?8,CURRENT_TIMESTAMP,datetime('now','+7 days'))
-         ON CONFLICT(central_user_id) DO UPDATE SET username=excluded.username,password_hash=excluded.password_hash,role=excluded.role,display_name=excluded.display_name,email=excluded.email,is_active=1,permissions_json=excluded.permissions_json,last_server_auth_at=excluded.last_server_auth_at,offline_expires_at=excluded.offline_expires_at",
-        params![local_id,central_user_id.trim(),username.trim(),hash,role,display_name,email,permissions_json]
-    ).map_err(|e|format!("Unable to cache server account: {e}"))?;
+    let exists:bool=c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM local_users WHERE id=?1)",
+        params![local_id],|r|r.get(0)
+    ).map_err(|e|format!("Unable to inspect cached account row: {e}"))?;
+    if exists {
+        c.execute(
+            "UPDATE local_users SET central_user_id=?1,username=?2,password_hash=?3,role=?4,display_name=?5,email=?6,is_active=1,permissions_json=?7,last_server_auth_at=CURRENT_TIMESTAMP,offline_expires_at=datetime('now','+7 days') WHERE id=?8",
+            params![central_user_id.trim(),username.trim(),hash,role,display_name,email,permissions_json,local_id]
+        ).map_err(|e|format!("Unable to update cached server account: {e}"))?;
+    } else {
+        c.execute(
+            "INSERT INTO local_users(id,central_user_id,username,password_hash,role,display_name,email,is_active,permissions_json,last_server_auth_at,offline_expires_at) VALUES(?1,?2,?3,?4,?5,?6,?7,1,?8,CURRENT_TIMESTAMP,datetime('now','+7 days'))",
+            params![local_id,central_user_id.trim(),username.trim(),hash,role,display_name,email,permissions_json]
+        ).map_err(|e|format!("Unable to cache server account: {e}"))?;
+    }
     c.execute(
         "INSERT INTO local_session(id,user_id,session_token) VALUES(1,?1,?2)
          ON CONFLICT(id) DO UPDATE SET user_id=excluded.user_id,session_token=excluded.session_token",
