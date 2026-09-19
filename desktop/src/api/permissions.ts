@@ -21,7 +21,20 @@ export async function getCurrentUserPermissions(): Promise<{ user: { id: string;
   }
   const response = await apiFetch('/auth/me/permissions');
   if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to load current permissions'));
-  return response.json();
+  const body = await response.json();
+  if (isTauri) {
+    const token = getToken();
+    if (token && !token.startsWith('local:')) {
+      try {
+        await invoke('cache_server_permissions', {
+          centralUserId: body?.user?.id,
+          role: body?.user?.role,
+          permissions: Array.isArray(body?.permissions) ? body.permissions.filter((p: any) => p?.effective).map((p: any) => String(p.permission)) : [],
+        });
+      } catch { /* cached account may not exist yet */ }
+    }
+  }
+  return body;
 }
 
 export async function getUserPermissions(userId: string): Promise<{ user: { id: string; username: string; role: string }; permissions: PermissionEntry[] }> {
