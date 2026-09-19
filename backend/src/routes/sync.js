@@ -95,15 +95,22 @@ async function applyProjectTaskExperimentEntity(client,change,user){
  if(change.operation==='create'||change.operation==='upsert'){
    const relationship=record.relationship||'related';
    if(!['related','drives','validates','blocked_by'].includes(relationship))fail(400,'INVALID_TASK_EXPERIMENT','Invalid task/experiment relationship');
+   const linkId=id(record.id||change.entity_id,'Task/experiment link ID');
    const result=await client.query(
-     'INSERT INTO project_task_experiments(task_id,experiment_id,relationship,created_by) VALUES($1,$2,$3,$4) ON CONFLICT(task_id,experiment_id) DO UPDATE SET relationship=EXCLUDED.relationship RETURNING task_id,experiment_id,relationship,created_by,created_at',
-     [taskId,experimentId,relationship,record.created_by||user.userId]
+     'INSERT INTO project_task_experiments(id,project_id,task_id,experiment_id,relationship,created_by) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(task_id,experiment_id) DO UPDATE SET project_id=EXCLUDED.project_id,relationship=EXCLUDED.relationship RETURNING id,project_id,task_id,experiment_id,relationship,created_by,created_at',
+     [linkId,projectId,taskId,experimentId,relationship,record.created_by||user.userId]
    );
    return result.rows[0];
  }
  if(change.operation==='delete'){
-   await client.query('DELETE FROM project_task_experiments WHERE task_id=$1 AND experiment_id=$2',[taskId,experimentId]);
-   return {project_id:projectId,task_id:taskId,experiment_id:experimentId,deleted:true};
+   const linkId=record.id||change.entity_id;
+   if(linkId&&/^[0-9a-f-]{32,36}$/i.test(String(linkId))){
+     await client.query('DELETE FROM project_task_experiments WHERE id=$1',[linkId]);
+     await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) VALUES('project_task_experiment',$1) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()",[linkId]);
+   }else{
+     await client.query('DELETE FROM project_task_experiments WHERE project_id=$1 AND task_id=$2 AND experiment_id=$3',[projectId,taskId,experimentId]);
+   }
+   return {project_id:projectId,task_id:taskId,experiment_id:experimentId,id:linkId||null,deleted:true};
  }
  fail(400,'UNSUPPORTED_TASK_EXPERIMENT_OPERATION','Unsupported task/experiment link operation: '+change.operation);
 }
