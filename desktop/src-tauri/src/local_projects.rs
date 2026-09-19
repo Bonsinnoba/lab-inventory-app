@@ -155,7 +155,11 @@ fn nested_delete(app:AppHandle,project_id:String,key:&str,record_id:String,entit
 #[tauri::command]
 pub fn create_local_project_task_experiment(app:AppHandle,project_id:String,task_id:String,record:Value)->Result<Value,String>{
     let mut record=record;
+    let experiment_id=record.get("experiment_id").and_then(Value::as_str).ok_or("experiment_id is required")?.to_string();
     record["task_id"]=json!(task_id);
+    // project_task_experiments has a composite primary key on (task_id, experiment_id),
+    // so keep a deterministic local identity instead of inventing a server-side UUID.
+    record["id"]=json!(format!("{}:{}",task_id,experiment_id));
     nested_create(app,project_id,"task_experiments",record,"project_task_experiment")
 }
 
@@ -341,10 +345,28 @@ pub fn apply_server_project_pull(app: AppHandle, projects_json: String, deleted_
         let Some(project_id) = project.get("id").and_then(Value::as_str).map(ToOwned::to_owned) else { continue; };
         if pending.contains(&format!("project:{project_id}")) { continue; }
         if let Some(existing) = projects.iter().find(|p| p.get("id").and_then(Value::as_str) == Some(project_id.as_str())).cloned() {
-            let mut task_experiments=project.get("task_experiments").and_then(Value::as_array).cloned().unwrap_or_default();
+            let server_task_experiments=project.get("task_experiments").and_then(Value::as_array).cloned().unwrap_or_default();
             let old_task_experiments=existing.get("task_experiments").and_then(Value::as_array).cloned().unwrap_or_default();
-            task_experiments.retain(|v|{let rid=v.get("id").and_then(Value::as_str).unwrap_or_default();!deleted_project_task_experiment_ids.iter().any(|x|x==rid)||pending.contains(&format!("project_task_experiment:{rid}"))});
-            for oldrow in old_task_experiments{if let Some(rid)=oldrow.get("id").and_then(Value::as_str){if pending.contains(&format!("project_task_experiment:{rid}"))&&!task_experiments.iter().any(|v|v.get("id").and_then(Value::as_str)==Some(rid)){task_experiments.push(oldrow);}}}
+            let mut task_experiments=Vec::new();
+            let mut server_keys=std::collections::HashSet::new();
+            for mut row in server_task_experiments {
+                let task_id=row.get("task_id").and_then(Value::as_str).unwrap_or_default();
+                let experiment_id=row.get("experiment_id").and_then(Value::as_str).unwrap_or_default();
+                if task_id.is_empty()||experiment_id.is_empty(){continue;}
+                let rid=format!("{}:{}",task_id,experiment_id);
+                row["id"]=json!(&rid);
+                server_keys.insert(rid.clone());
+                if !pending.contains(&format!("project_task_experiment:{}",rid)){task_experiments.push(row);}
+            }
+            // This table has no server-side id or tombstone-safe identity. The project pull is
+            // authoritative for it; only pending local creates/deletes survive the merge.
+            for oldrow in old_task_experiments {
+                let task_id=oldrow.get("task_id").and_then(Value::as_str).unwrap_or_default();
+                let experiment_id=oldrow.get("experiment_id").and_then(Value::as_str).unwrap_or_default();
+                if task_id.is_empty()||experiment_id.is_empty(){continue;}
+                let rid=oldrow.get("id").and_then(Value::as_str).map(str::to_owned).unwrap_or_else(||format!("{}:{}",task_id,experiment_id));
+                if pending.contains(&format!("project_task_experiment:{}",rid))&&!server_keys.contains(&rid){task_experiments.push(oldrow);}
+            }
             project["task_experiments"]=Value::Array(task_experiments);
             for key in ["tasks","experiments","bom","blocks","connectors","requirements","items"] {
                 let pending_key = match key { "tasks"=>"project_task", "experiments"=>"project_experiment", "bom"=>"project_bom", "blocks"=>"project_block", "connectors"=>"project_connector", "requirements"=>"project_resource_requirement", "items"=>"project_item", _=>"" };
