@@ -81,11 +81,14 @@ fn map_user(r:&rusqlite::Row)->rusqlite::Result<LocalUser>{
 }
 
 pub fn require_local_permission(c:&rusqlite::Connection,permission:&str)->Result<(),String>{
-    let permissions:String=c.query_row(
-        "SELECT u.permissions_json FROM local_users u JOIN local_session s ON s.user_id=u.id WHERE s.id=1 AND u.central_user_id IS NOT NULL AND u.is_active=1",
-        [],|r|r.get(0)
+    let (permissions,expires): (String,Option<String>)=c.query_row(
+        "SELECT u.permissions_json,u.offline_expires_at FROM local_users u JOIN local_session s ON s.user_id=u.id WHERE s.id=1 AND u.central_user_id IS NOT NULL AND u.is_active=1",
+        [],|r|Ok((r.get(0)?,r.get(1)?))
     ).optional().map_err(|e|format!("Unable to read local authorization: {e}"))?
      .ok_or("Not authenticated")?;
+    let expires=expires.ok_or("Offline authorization has expired")?;
+    let valid:i64=c.query_row("SELECT CASE WHEN datetime('now') < datetime(?1) THEN 1 ELSE 0 END",params![expires],|r|r.get(0)).unwrap_or(0);
+    if valid==0{return Err("Offline authorization has expired. Connect to LabOS to refresh access.".into())}
     let permissions:Vec<String>=serde_json::from_str(&permissions).map_err(|e|format!("Unable to decode local authorization: {e}"))?;
     if permissions.iter().any(|p|p==permission){Ok(())}else{Err(format!("Permission required: {permission}"))}
 }
