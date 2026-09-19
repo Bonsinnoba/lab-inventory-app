@@ -277,7 +277,7 @@ router.get('/notes/pull',async(req,res,next)=>{
     const permissions=await getUserPermissions(req.user.userId,req.user.role);if(!permissions.has('notes.view'))return res.status(403).json({error:{code:'PERMISSION_DENIED',message:'Permission required: notes.view'}});
     const values=req.user.role==='admin'?[]:[req.user.userId];
     const visibility=req.user.role==='admin'?'':'WHERE (n.project_id IS NULL OR n.project_id IN (SELECT p.id FROM projects p LEFT JOIN project_members pm ON pm.project_id=p.id WHERE p.owner_id=$1 OR pm.user_id=$1))';
-    const notes=await pool.query(\`SELECT n.* FROM notes n \${visibility} ORDER BY n.updated_at DESC\`,values);
+    const notes=await pool.query(`SELECT n.* FROM notes n ${visibility} ORDER BY n.updated_at DESC`,values);
     const tomb=await pool.query("SELECT entity_id FROM sync_tombstones WHERE entity_type='note' AND ($1='admin' OR project_id IS NULL OR project_id IN (SELECT p.id FROM projects p LEFT JOIN project_members pm ON pm.project_id=p.id WHERE p.owner_id=$2 OR pm.user_id=$2)) ORDER BY deleted_at DESC LIMIT 1000",[req.user.role,req.user.userId]);
     res.setHeader('Cache-Control','no-store');res.json({notes:notes.rows,deleted_note_ids:tomb.rows.map(r=>r.entity_id)});
   }catch(e){next(e);}
