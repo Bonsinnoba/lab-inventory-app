@@ -195,6 +195,17 @@ pub fn local_current_user(app:AppHandle)->Result<Option<LocalUser>,String>{
 }
 
 #[tauri::command]
+pub fn local_current_permissions(app:AppHandle)->Result<Vec<String>,String>{
+    let c=open_local_connection(&app)?;ensure_auth_schema(&c)?;
+    let permissions:String=c.query_row(
+        "SELECT u.permissions_json FROM local_users u JOIN local_session s ON s.user_id=u.id WHERE s.id=1",
+        [],|r|r.get(0)
+    ).optional().map_err(|e|format!("Unable to read local permissions: {e}"))?
+     .ok_or("Not authenticated")?;
+    serde_json::from_str(&permissions).map_err(|e|format!("Unable to decode local permissions: {e}"))
+}
+
+#[tauri::command]
 pub fn local_logout(app:AppHandle)->Result<(),String>{
     let c=open_local_connection(&app)?;ensure_auth_schema(&c)?;
     c.execute("DELETE FROM local_session WHERE id=1",[])
