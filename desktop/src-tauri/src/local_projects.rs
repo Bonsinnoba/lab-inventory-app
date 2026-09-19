@@ -2,6 +2,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use tauri::AppHandle;
 use crate::local_db;
+use crate::local_auth;
 
 const STATE_KEY: &str = "projects_state";
 const SCHEMA_VERSION: &str = "004_local_projects";
@@ -30,6 +31,18 @@ fn load(conn: &Connection) -> Result<Vec<Value>, String> {
 }
 
 fn save(conn: &mut Connection, projects: &[Value], changes: Vec<(String, String, String, String, Value)>) -> Result<(), String> {
+    for (_, entity_type, _, operation, _) in &changes {
+        let permission = if entity_type == "project" {
+            match operation.as_str() {
+                "create" => "projects.create",
+                "delete" => "projects.delete",
+                _ => "projects.edit",
+            }
+        } else {
+            "projects.edit"
+        };
+        local_auth::require_local_permission(conn, permission)?;
+    }
     let tx = conn.transaction().map_err(|e| format!("Unable to begin local project transaction: {e}"))?;
     let raw = serde_json::to_string(projects).map_err(|e| format!("Unable to encode local projects: {e}"))?;
     tx.execute(
