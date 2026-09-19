@@ -136,13 +136,22 @@ function AppContent() {
           removeToken();
           removeStoredUser();
         });
+      return;
     }
+    getCurrentUser('local:')
+      .then(({ user: cu }) => {
+        setUser(cu);
+        setStoredUser(cu);
+        setIsAuthenticated(true);
+      })
+      .catch(() => undefined);
   }, []);
 
   const handleLoginSuccess = (u: User, t: string) => {
     setUser(u);
     setIsAuthenticated(true);
-    setToken(t);
+    if (t.startsWith('local:')) removeToken();
+    else setToken(t);
     setStoredUser(u);
   };
 
