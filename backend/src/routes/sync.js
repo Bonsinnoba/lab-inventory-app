@@ -22,8 +22,7 @@ const PROJECT_ENTITY_CONFIG = {
   project_experiment_observation: { table: 'project_experiment_observations', fields: ['experiment_id','kind','content','observed_at','recorded_by'] },
   project_task_experiment: { table: 'project_task_experiments', fields: ['project_id','task_id','experiment_id','relationship','created_by'] },
   project_work_attachment: { table: 'project_work_attachments', fields: ['task_id','experiment_id','resource_id','added_by'] },
-  project_resource_requirement: { table: 'project_resource_requirements', fields: ['project_id','name','requirement_type','quantity','unit','required_by','preferred_item_id','notes','status','created_by'] },
-  project_item: { table: 'project_items', fields: ['project_id','item_id','allocated_quantity','notes'] }
+  project_resource_requirement: { table: 'project_resource_requirements', fields: ['project_id','name','requirement_type','quantity','unit','required_by','preferred_item_id','notes','status','created_by'] }
 };
 const ENGINEERING_CONFIG={
   engineering_calculation:{table:'engineering_calculations',fields:['project_id','experiment_id','title','category','formula','inputs','result_numeric','result_text','result_unit','created_by'],permission:{create:'engineering.create',update:'engineering.edit',delete:'engineering.delete'}},
@@ -80,7 +79,7 @@ async function applyProjectItemEntity(client,change,user){
  }
  if(change.operation==='delete'){
    const result=await client.query('DELETE FROM project_items WHERE project_id=$1 AND item_id=$2',[projectId,itemId]);
-   await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) VALUES('project_item',$1) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()",[itemId]);
+   
    return {project_id:projectId,item_id:itemId,deleted:true};
  }
  fail(400,'UNSUPPORTED_PROJECT_ITEM_OPERATION','Unsupported project item operation: '+change.operation);
