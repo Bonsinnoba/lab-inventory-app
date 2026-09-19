@@ -30,7 +30,7 @@ router.get('/sync/pull',hasPermission('projects.view'),async(req,res)=>{
       pool.query(\`SELECT f.* FROM lab_findings f WHERE \${projectFilter('f')} ORDER BY f.updated_at ASC\`,[req.user.role,req.user.userId]),
       pool.query(\`SELECT r.* FROM lab_results r WHERE \${projectFilter('r')} ORDER BY r.updated_at ASC\`,[req.user.role,req.user.userId]),
       pool.query(\`SELECT r.* FROM knowledge_relationships r WHERE ($1='admin' OR r.project_id IS NULL OR r.project_id IN (SELECT p.id FROM projects p LEFT JOIN project_members pm ON pm.project_id=p.id WHERE p.owner_id=$2 OR pm.user_id=$2)) ORDER BY r.created_at ASC\`,[req.user.role,req.user.userId]),
-      pool.query(\`SELECT entity_type,entity_id FROM sync_tombstones WHERE entity_type IN ('finding','knowledge_result','knowledge_relationship')\`)
+      pool.query(\`SELECT entity_type,entity_id FROM sync_tombstones WHERE entity_type IN ('finding','knowledge_result','knowledge_relationship') AND ($1='admin' OR project_id IS NULL OR project_id IN (SELECT p.id FROM projects p LEFT JOIN project_members pm ON pm.project_id=p.id WHERE p.owner_id=$2 OR pm.user_id=$2))\`,[req.user.role,req.user.userId])
     ]);
     const deleted={finding:[],knowledge_result:[],knowledge_relationship:[]};
     for(const row of tombstones.rows){if(deleted[row.entity_type])deleted[row.entity_type].push(row.entity_id);}
