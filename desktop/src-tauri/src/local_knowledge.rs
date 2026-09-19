@@ -2,6 +2,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use tauri::AppHandle;
 use crate::local_db;
+use crate::local_auth;
 
 const STATE_KEY: &str = "knowledge_state";
 const SCHEMA_VERSION: &str = "006_local_knowledge";
@@ -13,6 +14,10 @@ fn ensure(c:&Connection)->Result<(),String>{
 }
 fn load(c:&Connection)->Result<Value,String>{ensure(c)?;let raw:Option<String>=c.query_row("SELECT value FROM sync_state WHERE key=?1",[STATE_KEY],|r|r.get(0)).optional().map_err(|e|format!("Unable to read local knowledge: {e}"))?;match raw{Some(v)=>serde_json::from_str(&v).map_err(|e|format!("Invalid local knowledge state: {e}")),None=>Ok(json!({"findings":[],"results":[],"relationships":[]}))}}
 fn save(c:&mut Connection,state:&Value,change:Option<(String,String,String,Value)>)->Result<(),String>{
+    if let Some((ref entity_type,_,ref operation,_))=change{
+        let _=entity_type;
+        local_auth::require_local_permission(c,"projects.edit").map_err(|e|e)?;
+    }
  let tx=c.transaction().map_err(|e|format!("Unable to begin knowledge transaction: {e}"))?;tx.execute("INSERT INTO sync_state(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![STATE_KEY,state.to_string()]).map_err(|e|format!("Unable to save local knowledge: {e}"))?;
  if let Some((typ,id,op,payload))=change{let device:String=tx.query_row("SELECT device_id FROM device_identity WHERE id=1",[],|r|r.get(0)).map_err(|e|format!("Unable to read device identity: {e}"))?;tx.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES (?1,?2,?3,?4,?5,?6)",params![idgen(),device,typ,id,op,payload.to_string()]).map_err(|e|format!("Unable to queue knowledge change: {e}"))?;}
  tx.commit().map_err(|e|format!("Unable to commit knowledge change: {e}"))
