@@ -79,6 +79,8 @@ fn write_resources(conn: &rusqlite::Connection, resources: &[LocalResource]) -> 
 }
 
 fn save_with_change(conn: &mut rusqlite::Connection, resources: &[LocalResource], entity_id: &str, operation: &str, payload: &Value) -> Result<(), String> {
+    let permission=match operation{"create"=>"resources.create","delete"=>"resources.delete",_=>"resources.edit"};
+    local_auth::require_local_permission(conn,permission)?;
     let tx = conn.transaction().map_err(|e| format!("Unable to begin local resource transaction: {e}"))?;
     write_resources(&tx, resources)?;
     let device_id: String = tx.query_row("SELECT device_id FROM device_identity WHERE id=1", [], |r| r.get(0))
