@@ -9,7 +9,7 @@ WORKDIR /app
 # Keep the exact runtime versions in the production image so every LabOS desktop
 # can use the same server-side media toolchain.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg \
+    && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg python3 \
     && curl -fsSL -o /usr/local/bin/yt-dlp "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp" \
     && echo "${YTDLP_SHA256}  /usr/local/bin/yt-dlp" | sha256sum -c - \
     && chmod 0755 /usr/local/bin/yt-dlp \
