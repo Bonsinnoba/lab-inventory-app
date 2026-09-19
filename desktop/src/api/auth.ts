@@ -99,11 +99,22 @@ export async function register(username: string, password: string, role?: 'admin
 
 export async function getCurrentUser(token: string): Promise<{ user: User }> {
   if (!token.startsWith('local:')) {
-    const response = await fetch(`${API_BASE}/auth/me`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!response.ok) throw new Error('Failed to get current user');
-    return response.json();
+    try {
+      const response = await fetch(`${API_BASE}/auth/me`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) throw new Error('Failed to get current user');
+      return response.json();
+    } catch (error) {
+      // A central network outage must not discard a valid cached desktop
+      // session. HTTP authentication failures remain authoritative and do
+      // not fall back to the local cache.
+      if (isTauriRuntime() && (error instanceof TypeError || (error instanceof DOMException && error.name === 'AbortError'))) {
+        const local = await localInvoke<User | null>('local_current_user');
+        if (local !== null) return { user: local as User };
+      }
+      throw error;
+    }
   }
   const local = await localInvoke<User | null>('local_current_user');
   if (local !== null) return { user: local as User };
