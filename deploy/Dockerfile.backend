@@ -20,7 +20,7 @@ RUN apt-get update \
 COPY backend/package*.json ./
 RUN npm ci --omit=dev
 COPY backend/ ./
-RUN mkdir -p storage
+RUN mkdir -p storage && chown -R node:node /app
 
 ENV NODE_ENV=production
 ENV YTDLP_PATH=/usr/local/bin/yt-dlp
