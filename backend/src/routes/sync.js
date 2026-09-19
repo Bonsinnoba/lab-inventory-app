@@ -263,8 +263,9 @@ async function applyEngineeringEntity(client,change,user){
  }
  if(change.operation==='delete'){
   if(!existing.rowCount)return {deleted:entityId};
+  const projectId=existing.rows[0]?.project_id||null;
   await client.query('DELETE FROM '+table+' WHERE id=$1',[entityId]);
-  await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) VALUES($1,$2) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()",[change.entity_type,entityId]);
+  await client.query("INSERT INTO sync_tombstones(entity_type,entity_id,project_id) VALUES($1,$2,$3) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now(),project_id=EXCLUDED.project_id",[change.entity_type,entityId,projectId]);
   return {deleted:entityId};
  }
  fail(400,'UNSUPPORTED_ENGINEERING_OPERATION','Unsupported engineering operation: '+change.operation);
@@ -388,7 +389,7 @@ async function applyNoteEntity(client,change,user){
   if(!existing.rowCount)fail(409,'NOTE_NOT_FOUND',`Note ${entityId} does not exist on the server`);
   if(change.operation==='delete'){
     await client.query('DELETE FROM notes WHERE id=$1',[entityId]);
-    await client.query("INSERT INTO sync_tombstones(entity_type,entity_id,project_id) VALUES('note',$1,$2) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now(),project_id=EXCLUDED.project_id",[entityId,current.project_id]);
+    await client.query("INSERT INTO sync_tombstones(entity_type,entity_id,project_id) VALUES('note',$1,$2) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now(),project_id=EXCLUDED.project_id",[entityId,existing.rows[0].project_id||null]);
     return{deleted:true,id:entityId};
   }
 
@@ -452,7 +453,7 @@ async function applyKnowledgeEntity(client,change,user){
 
   if(change.operation==='delete'){
     await client.query('DELETE FROM '+cfg.table+' WHERE id=$1',[entityId]);
-    await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) VALUES($1,$2) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()",[change.entity_type,entityId]);
+    await client.query("INSERT INTO sync_tombstones(entity_type,entity_id,project_id) VALUES($1,$2,$3) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now(),project_id=EXCLUDED.project_id",[change.entity_type,entityId,existing.rows[0]?.project_id||null]);
     return{deleted:true,id:entityId};
   }
 
