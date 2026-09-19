@@ -28,4 +28,4 @@ ENV FFMPEG_PATH=/usr/bin/ffmpeg
 
 EXPOSE 4000
 USER node
-CMD ["node", "src/index.js"]
+CMD ["sh", "-c", "node src/run-migration.js && exec node src/index.js"]
