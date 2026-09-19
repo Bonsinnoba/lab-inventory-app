@@ -14,9 +14,9 @@ For a LAN-only lab, keep the server private and bind the reverse proxy/API to th
 1. Copy `.env.production.example` to `.env.production`.
 2. Replace every placeholder secret.
 3. Set `ALLOWED_ORIGINS` to the exact origin(s) used by the web client.
-4. Run `docker compose --env-file .env.production up -d --build`.
-5. Run `docker compose --env-file .env.production exec labos-api npm run migrate`.
-6. Check `/api/health` from the server/reverse proxy.
+4. Run `docker compose --env-file .env.production up -d --build`. The API container runs the migration runner automatically before starting the API.
+5. Check `/api/health` from the server/reverse proxy.
+6. If you need to rerun migrations manually, use `docker compose --env-file .env.production exec labos-api npm run migrate`.
 
 The compose file persists PostgreSQL and LabOS storage in named volumes.
 
