@@ -80,6 +80,16 @@ fn map_user(r:&rusqlite::Row)->rusqlite::Result<LocalUser>{
     })
 }
 
+pub fn require_local_permission(c:&rusqlite::Connection,permission:&str)->Result<(),String>{
+    let permissions:String=c.query_row(
+        "SELECT u.permissions_json FROM local_users u JOIN local_session s ON s.user_id=u.id WHERE s.id=1 AND u.central_user_id IS NOT NULL AND u.is_active=1",
+        [],|r|r.get(0)
+    ).optional().map_err(|e|format!("Unable to read local authorization: {e}"))?
+     .ok_or("Not authenticated")?;
+    let permissions:Vec<String>=serde_json::from_str(&permissions).map_err(|e|format!("Unable to decode local authorization: {e}"))?;
+    if permissions.iter().any(|p|p==permission){Ok(())}else{Err(format!("Permission required: {permission}"))}
+}
+
 fn hash_password(password:&str)->Result<String,String>{
     let salt=SaltString::generate(&mut OsRng);
     Argon2::default().hash_password(password.as_bytes(),&salt)
