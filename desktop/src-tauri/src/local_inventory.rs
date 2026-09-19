@@ -3,6 +3,7 @@ use serde::Deserialize;
 use tauri::AppHandle;
 
 use crate::local_db;
+use crate::local_auth;
 
 const MOVEMENT_SCHEMA_VERSION: &str = "004_local_inventory_movement_cache";
 
@@ -90,6 +91,7 @@ pub fn cache_local_inventory_movements(
 
     let mut conn = connection(&app)?;
     ensure_movement_schema(&conn)?;
+    local_auth::require_local_permission(&conn,"inventory.adjust_stock")?;
 
     let tx = conn
         .transaction()
