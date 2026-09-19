@@ -159,6 +159,7 @@ pub fn save_local_inventory_movement(
 
     let mut conn = connection(&app)?;
     ensure_movement_schema(&conn)?;
+    local_auth::require_local_permission(&conn, "inventory.adjust_stock")?;
 
     let tx = conn
         .transaction()
