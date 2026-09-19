@@ -16,6 +16,22 @@ async function ensureMigrationTable() {
   `);
 }
 
+async function ensureBaseSchema() {
+  const baseSchema = await pool.query(`
+    SELECT 1
+    FROM information_schema.tables
+    WHERE table_schema = 'public' AND table_name = 'projects'
+    LIMIT 1
+  `);
+
+  if (baseSchema.rowCount) return;
+
+  console.log('Base schema not found; initializing backend/src/schema.sql');
+  const sql = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
+  await pool.query(sql);
+  console.log('Base schema initialized');
+}
+
 // These migrations predate migration tracking. They may already exist on an
 // installation whose database was initialized from schema.sql and upgraded
 // manually. We only allow duplicate-object adoption during that one-time legacy
@@ -64,6 +80,7 @@ async function runMigration(file, legacyAdoption) {
 
 async function runAllMigrations() {
   await ensureMigrationTable();
+  await ensureBaseSchema();
   const state = await pool.query('SELECT COUNT(*)::int AS count FROM schema_migrations');
   const legacyAdoption = state.rows[0].count === 0;
   const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
