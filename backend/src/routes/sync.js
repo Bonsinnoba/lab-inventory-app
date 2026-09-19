@@ -86,33 +86,39 @@ async function applyProjectItemEntity(client,change,user){
 }
 
 async function applyProjectTaskExperimentEntity(client,change,user){
- const payload=object(change.payload,'Task/experiment link sync payload');
- const record=payload.record||payload.item||payload;
- const projectId=id(record.project_id,'Project ID');
- const taskId=id(record.task_id,'Task ID');
- const experimentId=id(record.experiment_id,'Experiment ID');
- if(!(await canEditProject(client,projectId,user)))fail(403,'PROJECT_ACCESS_DENIED','You do not have edit access to this project');
- if(change.operation==='create'||change.operation==='upsert'){
-   const relationship=record.relationship||'related';
-   if(!['related','drives','validates','blocked_by'].includes(relationship))fail(400,'INVALID_TASK_EXPERIMENT','Invalid task/experiment relationship');
-   const linkId=id(record.id||change.entity_id,'Task/experiment link ID');
-   const result=await client.query(
-     'INSERT INTO project_task_experiments(id,project_id,task_id,experiment_id,relationship,created_by) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(task_id,experiment_id) DO UPDATE SET project_id=EXCLUDED.project_id,relationship=EXCLUDED.relationship RETURNING id,project_id,task_id,experiment_id,relationship,created_by,created_at',
-     [linkId,projectId,taskId,experimentId,relationship,record.created_by||user.userId]
-   );
-   return result.rows[0];
- }
- if(change.operation==='delete'){
-   const linkId=record.id||change.entity_id;
-   if(linkId&&/^[0-9a-f-]{32,36}$/i.test(String(linkId))){
-     await client.query('DELETE FROM project_task_experiments WHERE id=$1',[linkId]);
-     await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) VALUES('project_task_experiment',$1) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()",[linkId]);
-   }else{
-     await client.query('DELETE FROM project_task_experiments WHERE project_id=$1 AND task_id=$2 AND experiment_id=$3',[projectId,taskId,experimentId]);
-   }
-   return {project_id:projectId,task_id:taskId,experiment_id:experimentId,id:linkId||null,deleted:true};
- }
- fail(400,'UNSUPPORTED_TASK_EXPERIMENT_OPERATION','Unsupported task/experiment link operation: '+change.operation);
+  const payload=object(change.payload,'Task/experiment link sync payload');
+  const record=payload.record||payload.item||payload;
+  const projectId=id(record.project_id,'Project ID');
+  const taskId=id(record.task_id,'Task ID');
+  const experimentId=id(record.experiment_id,'Experiment ID');
+  if(!(await canEditProject(client,projectId,user)))fail(403,'PROJECT_ACCESS_DENIED','You do not have edit access to this project');
+  const parents=await client.query(
+    'SELECT (SELECT project_id FROM project_tasks WHERE id=$1) AS task_project_id,(SELECT project_id FROM project_experiments WHERE id=$2) AS experiment_project_id',
+    [taskId,experimentId]
+  );
+  const parent=parents.rows[0]||{};
+  if(parent.task_project_id!==projectId||parent.experiment_project_id!==projectId)fail(400,'INVALID_TASK_EXPERIMENT','Task and experiment must belong to the specified project');
+  if(change.operation==='create'||change.operation==='upsert'){
+    const relationship=record.relationship||'related';
+    if(!['related','drives','validates','blocked_by'].includes(relationship))fail(400,'INVALID_TASK_EXPERIMENT','Invalid task/experiment relationship');
+    const linkId=id(record.id||change.entity_id,'Task/experiment link ID');
+    const result=await client.query(
+      'INSERT INTO project_task_experiments(id,project_id,task_id,experiment_id,relationship,created_by) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(task_id,experiment_id) DO UPDATE SET project_id=EXCLUDED.project_id,relationship=EXCLUDED.relationship RETURNING id,project_id,task_id,experiment_id,relationship,created_by,created_at',
+      [linkId,projectId,taskId,experimentId,relationship,record.created_by||user.userId]
+    );
+    return result.rows[0];
+  }
+  if(change.operation==='delete'){
+    const linkId=record.id||change.entity_id;
+    if(linkId&&/^[0-9a-f-]{32,36}$/i.test(String(linkId))){
+      await client.query('DELETE FROM project_task_experiments WHERE id=$1',[linkId]);
+      await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) VALUES('project_task_experiment',$1) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()",[linkId]);
+    }else{
+      await client.query('DELETE FROM project_task_experiments WHERE project_id=$1 AND task_id=$2 AND experiment_id=$3',[projectId,taskId,experimentId]);
+    }
+    return {project_id:projectId,task_id:taskId,experiment_id:experimentId,id:linkId||null,deleted:true};
+  }
+  fail(400,'UNSUPPORTED_TASK_EXPERIMENT_OPERATION','Unsupported task/experiment link operation: '+change.operation);
 }
 
 async function applyProjectEntity(client,change,user){
