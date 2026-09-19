@@ -229,7 +229,7 @@ pub fn local_current_user(app:AppHandle)->Result<Option<LocalUser>,String>{
     let c=open_local_connection(&app)?;ensure_auth_schema(&c)?;
     c.query_row(
         "SELECT u.id,u.central_user_id,u.username,u.role,u.display_name,u.email,u.is_active,u.offline_expires_at
-         FROM local_users u JOIN local_session s ON s.user_id=u.id WHERE s.id=1 AND u.central_user_id IS NOT NULL AND u.is_active=1",
+         FROM local_users u JOIN local_session s ON s.user_id=u.id WHERE s.id=1 AND u.central_user_id IS NOT NULL AND u.is_active=1 AND u.offline_expires_at IS NOT NULL AND datetime('now') < datetime(u.offline_expires_at)",
         [],map_user
     ).optional().map_err(|e|format!("Unable to read local session: {e}"))
 }
