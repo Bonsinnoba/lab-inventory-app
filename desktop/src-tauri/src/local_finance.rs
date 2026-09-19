@@ -2,6 +2,7 @@ use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 use tauri::AppHandle;
 use crate::local_db::open_local_connection;
+use crate::local_auth;
 
 const KEY_TX:&str="finance_transactions_state";
 const KEY_BP:&str="finance_budget_periods_state";
