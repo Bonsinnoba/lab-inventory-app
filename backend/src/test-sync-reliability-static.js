@@ -26,6 +26,8 @@ const localAuth = read('../desktop/src-tauri/src/local_auth.rs');
 const authApi = read('../desktop/src/api/auth.ts');
 const localSystem = read('../desktop/src-tauri/src/local_system.rs');
 const localEngineering = read('../desktop/src-tauri/src/local_engineering.rs');
+const localNotes = read('../desktop/src-tauri/src/local_notes.rs');
+const localKnowledge = read('../desktop/src-tauri/src/local_knowledge.rs');
 const engineeringApi = read('../desktop/src/api/engineering.ts');
 const systemApi = read('../desktop/src/api/system.ts');
 const tauriConfig = read('../desktop/src-tauri/tauri.conf.json');
@@ -67,6 +69,11 @@ const checks = [
   ['server pull merge is transactional', localDb.includes('apply_server_inventory_pull') && localDb.includes('let tx=conn.transaction()')],
   ['pending local items are protected during pull', localDb.includes("WHERE synced_at IS NULL AND entity_type='item'") && /if\s+pending\.contains\(&item_id\)\s*\{\s*continue;\s*\}/.test(localDb)],
   ['local project pull merge exists', localProjects.includes('apply_server_project_pull') && localProjects.includes('pending_key')],
+  ['completed note outbox entries do not block pulls', localNotes.includes("synced_at IS NULL AND entity_type='note'")],
+  ['completed knowledge outbox entries do not block pulls', localKnowledge.includes('synced_at IS NULL AND entity_type=?1 AND entity_id=?2')],
+  ['resource deletion tombstones retain project scope', sync.includes("entity_type,entity_id,project_id) VALUES('resource',$1,$2)")],
+  ['engineering deletion tombstones are visibility scoped', sync.includes("entity_type IN ('engineering_calculation','engineering_test') AND (project_id IS NULL OR $1='admin'")],
+  ['finance deletion scope is resolved before tombstone write', sync.includes("const projectId=record.project_id||existing.rows[0]?.project_id||null")],
   ['Tauri registers project pull merge command', tauriMain.includes('local_projects::apply_server_project_pull')],
   ['item updates include base timestamp', localInventory.includes('base_updated_at:baseUpdatedAt')],
   ['Excel updates include base timestamp', localExcel.includes('base_updated_at') && localExcel.includes('"base_updated_at": base_updated_at')],
