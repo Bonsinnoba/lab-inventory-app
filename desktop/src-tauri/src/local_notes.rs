@@ -2,6 +2,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use tauri::AppHandle;
 use crate::local_db;
+use crate::local_auth;
 
 const STATE_KEY: &str = "notes_state";
 const SCHEMA_VERSION: &str = "005_local_notes";
