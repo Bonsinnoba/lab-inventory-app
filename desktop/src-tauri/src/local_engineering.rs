@@ -2,6 +2,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use tauri::AppHandle;
 use crate::local_db;
+use crate::local_auth;
 
 const CALC_KEY: &str = "engineering_calculations_state";
 const TEST_KEY: &str = "engineering_tests_state";
@@ -17,6 +18,10 @@ fn load(c:&Connection,key:&str)->Result<Vec<Value>,String>{ensure(c)?;let raw:Op
 fn now(c:&Connection)->Result<String,String>{c.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')",[],|r|r.get(0)).map_err(|e|format!("Unable to create timestamp: {e}"))}
 fn id()->String{uuid::Uuid::new_v4().to_string()}
 fn save(c:&mut Connection,key:&str,rows:&[Value],change:Option<(&str,&str,&str,&Value)>)->Result<(),String>{
+    if let Some((entity_type,_,operation,_))=change{
+        let permission=match (entity_type,operation){"engineering_calculation","create"|"engineering_test","create"=> "engineering.create",("engineering_calculation","delete")|("engineering_test","delete")=>"engineering.delete",_=>"engineering.edit"};
+        local_auth::require_local_permission(c,permission)?;
+    }
  let tx=c.transaction().map_err(|e|format!("Unable to begin engineering transaction: {e}"))?;
  tx.execute("INSERT INTO sync_state(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,serde_json::to_string(rows).map_err(|e|e.to_string())?]).map_err(|e|format!("Unable to save engineering state: {e}"))?;
  if let Some((entity_type,entity_id,operation,payload))=change {let device:String=tx.query_row("SELECT device_id FROM device_identity WHERE id=1",[],|r|r.get(0)).map_err(|e|e.to_string())?;tx.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES (?1,?2,?3,?4,?5,?6)",params![id(),device,entity_type,entity_id,operation,payload.to_string()]).map_err(|e|format!("Unable to queue engineering change: {e}"))?;}
