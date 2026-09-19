@@ -19,9 +19,7 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
     let active = true;
     getLocalAuthStatus().then((status) => {
       if (!active) return;
-      if (status) {
-        setIsTauriLocal(true);
-      }
+      if (status) setIsTauriLocal(true);
       setAuthStatusReady(true);
     }).catch(() => {
       if (active) setAuthStatusReady(true);
@@ -33,7 +31,6 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
     e.preventDefault();
     setError('');
     setIsLoading(true);
-
     try {
       const response = await login(username, password);
       onLoginSuccess(response.user, response.token);
@@ -44,16 +41,16 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
     }
   };
 
-  if (!authStatusReady) return <div className="min-h-screen flex items-center justify-center text-text-secondary text-sm">Preparing local sign-in…</div>;
+  if (!authStatusReady) {
+    return <div className="min-h-screen flex items-center justify-center text-text-secondary text-sm">Preparing sign-in…</div>;
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center">
       <div className="w-full max-w-md p-8">
         <div className="bg-surface border border-border rounded-md p-8">
           <div className="text-center mb-8">
-            <h1 className="text-3xl font-ui font-semibold text-text-primary mb-2">
-              Welcome Back
-            </h1>
+            <h1 className="text-3xl font-ui font-semibold text-text-primary mb-2">Welcome Back</h1>
             <p className="text-text-secondary text-sm">
               {isTauriLocal ? 'Sign in with your central LabOS account' : 'Sign in to access your lab inventory'}
             </p>
@@ -75,6 +72,7 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
                 className="w-full px-4 py-3 bg-bg border border-border rounded-sm text-text-primary placeholder:text-text-secondary focus:outline-none focus:border-accent"
                 placeholder="Enter your username"
                 required
+                autoComplete="username"
               />
             </div>
 
@@ -88,11 +86,13 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
                   className="w-full px-4 py-3 bg-bg border border-border rounded-sm text-text-primary placeholder:text-text-secondary focus:outline-none focus:border-accent pr-12"
                   placeholder="Enter your password"
                   required
+                  autoComplete="current-password"
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-text-secondary hover:text-text-primary"
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
                 >
                   {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
                 </button>
@@ -104,20 +104,16 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
               disabled={isLoading}
               className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-accent text-bg rounded-sm hover:bg-accent-dim transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {isLoading ? (
-                'Processing...'
-              ) : isLogin ? (
-                <>
-                  <LogIn size={18} />
-                  Sign In
-                </>
-              )}
+              {isLoading ? 'Signing in…' : <><LogIn size={18} /> Sign In</>}
             </button>
           </form>
 
-        </div>}
-          {isTauriLocal && !isLogin && <p className="mt-6 text-center text-text-secondary text-xs">This creates the administrator for this desktop's local database. Additional accounts can be managed centrally.</p>}
-          {isTauriLocal && <p className="mt-6 text-center text-text-secondary text-xs">Accounts are created and managed centrally. This installation does not have a local administrator.</p>}
+          {isTauriLocal && (
+            <p className="mt-6 text-center text-text-secondary text-xs">
+              Accounts are created and managed centrally. This installation has no local administrator.
+              If you are offline, you can sign in only if this account has previously been authorized on this installation.
+            </p>
+          )}
         </div>
 
         <div className="mt-4 text-center text-text-secondary text-xs">
