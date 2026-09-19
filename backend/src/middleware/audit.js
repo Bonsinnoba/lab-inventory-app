@@ -1,11 +1,12 @@
 import { pool } from '../db.js';
 
-export async function writeAuditLog({ req, actorUserId = null, action, entityType, entityId = null, oldValue = null, newValue = null, metadata = null }) {
+export async function writeAuditLog({ req, actorUserId = null, action, entityType, entityId = null, oldValue = null, newValue = null, metadata = null, deviceId = null }) {
   try {
     const auditMetadata = {
       ...(metadata && typeof metadata === 'object' ? metadata : {}),
       ...(req?.requestId ? { request_id: req.requestId } : {}),
       ...(req?.method && req?.originalUrl ? { endpoint: `${req.method} ${req.originalUrl}` } : {}),
+      ...(deviceId ? { device_id: deviceId } : {}),
     };
 
     await pool.query(
