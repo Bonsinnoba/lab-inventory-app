@@ -8,6 +8,10 @@ if [[ ! -f "$DUMP" ]]; then
 fi
 
 cd "$(dirname "$0")/.."
+[[ -f .env.production ]] || { echo "Missing deploy/.env.production"; exit 1; }
+set -a
+source .env.production
+set +a
 
 echo "WARNING: this replaces data in the target database."
 echo "Stop LabOS writes before continuing."
