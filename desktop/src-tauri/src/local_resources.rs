@@ -4,6 +4,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 use tauri::AppHandle;
 use crate::local_db::open_local_connection;
+use crate::local_auth;
 
 const STATE_KEY: &str = "resources_state";
 const SCHEMA_VERSION: &str = "008_local_resources";
