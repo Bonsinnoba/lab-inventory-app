@@ -59,7 +59,7 @@ jobs:
             }
           }
 
-          if ($cargo -notmatch "(?m)^version\s*=\s*\"$([regex]::Escape($tagVersion))\"\s*$") {
+          if ($cargo -notmatch "(?m)^version\s*=\s*"$([regex]::Escape($tagVersion))"\s*$") {
             throw "desktop/src-tauri/Cargo.toml does not match release version $tagVersion."
           }
 
@@ -71,47 +71,11 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:VITE_API_BASE_URL)) {
             throw "Repository variable LABOS_API_BASE_URL is required for release builds. Set it to the LabOS server API base URL, including /api."
           }
-          if ($env:VITE_API_BASE_URL -notmatch '/api
-        working-directory: desktop
-        run: npm ci
 
-      - name: Build LabOS desktop
-        working-directory: desktop
-        run: npm run tauri:build
-
-      - name: Generate checksums
-        shell: pwsh
-        run: |
-          $bundle = Join-Path $PWD 'desktop/src-tauri/target/release/bundle'
-          $files = Get-ChildItem $bundle -Recurse -File | Where-Object {
-            $_.Extension -in '.msi', '.exe' -and $_.FullName -notlike '*-debug-*'
-          }
-
-          if (-not $files) {
-            throw "No Windows release installers were produced under $bundle."
-          }
-
-          $checksumPath = Join-Path $PWD 'LabOS-SHA256SUMS.txt'
-          $lines = foreach ($file in $files) {
-            $hash = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-            "$hash  $($file.Name)"
-          }
-          $lines | Sort-Object | Set-Content -Path $checksumPath -Encoding utf8
-          Get-Content $checksumPath
-
-      - name: Create or update GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          name: LabOS ${{ env.RELEASE_TAG }}
-          generate_release_notes: true
-          files: |
-            desktop/src-tauri/target/release/bundle/**/*.msi
-            desktop/src-tauri/target/release/bundle/**/*.exe
-            LabOS-SHA256SUMS.txt
-) {
+          if ($env:VITE_API_BASE_URL -notmatch '/api$') {
             throw "LABOS_API_BASE_URL must end with /api."
           }
+
           Write-Host "Release API endpoint: $env:VITE_API_BASE_URL"
 
       - name: Install desktop dependencies
