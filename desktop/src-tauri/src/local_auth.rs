@@ -62,6 +62,8 @@ fn ensure_auth_schema(c: &rusqlite::Connection) -> Result<(), String> {
                 .map_err(|e| format!("Unable to migrate local auth schema: {e}"))?;
         }
     }
+    c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_local_users_central_user_id ON local_users(central_user_id) WHERE central_user_id IS NOT NULL", [])
+        .map_err(|e| format!("Unable to enforce central account uniqueness: {e}"))?;
     Ok(())
 }
 
