@@ -220,6 +220,18 @@ pub fn local_current_user(app:AppHandle)->Result<Option<LocalUser>,String>{
 }
 
 #[tauri::command]
+pub fn cache_server_permissions(app:AppHandle,central_user_id:String,role:String,permissions:Vec<String>)->Result<(),String>{
+    let c=open_local_connection(&app)?;ensure_auth_schema(&c)?;
+    let permissions_json=serde_json::to_string(&permissions).map_err(|e|format!("Unable to encode permissions: {e}"))?;
+    let updated=c.execute(
+        "UPDATE local_users SET role=?1,permissions_json=?2,last_server_auth_at=CURRENT_TIMESTAMP,offline_expires_at=datetime('now','+7 days'),is_active=1 WHERE central_user_id=?3",
+        params![role,permissions_json,central_user_id.trim()]
+    ).map_err(|e|format!("Unable to refresh cached permissions: {e}"))?;
+    if updated==0{return Err("Central account is not cached on this installation".into())}
+    Ok(())
+}
+
+#[tauri::command]
 pub fn local_current_permissions(app:AppHandle)->Result<Vec<String>,String>{
     let c=open_local_connection(&app)?;ensure_auth_schema(&c)?;
     let permissions:String=c.query_row(
