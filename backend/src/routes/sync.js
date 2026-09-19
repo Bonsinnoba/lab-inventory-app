@@ -294,12 +294,12 @@ async function applyNoteEntity(client,change,user){
   const required=change.operation==='create'?'notes.create':change.operation==='delete'?'notes.delete':'notes.edit';
   const permissions=await getUserPermissions(user.userId,user.role);
   if(!permissions.has(required))fail(403,'PERMISSION_DENIED',`Permission required: ${required}`);
+  const access=await getProjectAccess(record.project_id||null,user);
+  if(access.access==='none'||access.access==='view'&&record.project_id)fail(403,'PROJECT_ACCESS_DENIED','You do not have edit access to this project');
   const existing=await client.query('SELECT * FROM notes WHERE id=$1 FOR UPDATE',[entityId]);
 
   if(change.operation==='create'){
     if(existing.rowCount)return existing.rows[0];
-    const access=await getProjectAccess(record.project_id||null,user);
-    if(access.access==='none'||access.access==='view'&&record.project_id)fail(403,'PROJECT_ACCESS_DENIED','You do not have edit access to this project');
     if(!String(record.title||'').trim())fail(400,'INVALID_NOTE','Note title is required');
     const values=[entityId],columns=['id'];
     for(const field of NOTE_FIELDS){
