@@ -19,7 +19,24 @@ export async function getCurrentUserPermissions(): Promise<{ user: { id: string;
       // Fall through to the central session while online.
     }
   }
-  const response = await apiFetch('/auth/me/permissions');
+  let response: Response;
+  try {
+    response = await apiFetch('/auth/me/permissions');
+  } catch (error) {
+    // A central network failure is the one case where a previously authorized
+    // Tauri installation may continue offline. Do not use this fallback for
+    // HTTP 401/403 responses; those are authoritative server decisions.
+    if (isTauri && token && !token.startsWith('local:')) {
+      try {
+        const permissions = await invoke<string[]>('local_current_permissions');
+        const localUser = await invoke<{ id: string; username: string; role: string }>('local_current_user');
+        return { user: localUser, permissions: permissions.map((permission) => ({ permission, effective: true })) };
+      } catch {
+        // Preserve the original central-network error below.
+      }
+    }
+    throw error;
+  }
   if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to load current permissions'));
   const body = await response.json();
   if (isTauri) {
