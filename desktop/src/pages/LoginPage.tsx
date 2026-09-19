@@ -1,13 +1,12 @@
 import { useEffect, useState } from 'react';
 import { getLocalAuthStatus, login } from '../api/auth';
-import { LogIn, UserPlus, Eye, EyeOff } from 'lucide-react';
+import { LogIn, Eye, EyeOff } from 'lucide-react';
 
 interface LoginPageProps {
   onLoginSuccess: (user: any, token: string) => void;
 }
 
 export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
-  const [isLogin] = useState(true);
   const [authStatusReady, setAuthStatusReady] = useState(false);
   const [isTauriLocal, setIsTauriLocal] = useState(false);
   const [username, setUsername] = useState('');
@@ -22,7 +21,6 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
       if (!active) return;
       if (status) {
         setIsTauriLocal(true);
-        setIsLogin(true);
       }
       setAuthStatusReady(true);
     }).catch(() => {
@@ -37,12 +35,8 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
     setIsLoading(true);
 
     try {
-      if (isLogin) {
-        const response = await login(username, password);
-        onLoginSuccess(response.user, response.token);
-      } else {
-        throw new Error('Account creation is managed by LabOS administrators.');
-      }
+      const response = await login(username, password);
+      onLoginSuccess(response.user, response.token);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Authentication failed');
     } finally {
