@@ -19,7 +19,7 @@ fn now(c:&Connection)->Result<String,String>{c.query_row("SELECT strftime('%Y-%m
 fn id()->String{uuid::Uuid::new_v4().to_string()}
 fn save(c:&mut Connection,key:&str,rows:&[Value],change:Option<(&str,&str,&str,&Value)>)->Result<(),String>{
     if let Some((entity_type,_,operation,_))=change{
-        let permission=match (entity_type,operation){"engineering_calculation","create"|"engineering_test","create"=> "engineering.create",("engineering_calculation","delete")|("engineering_test","delete")=>"engineering.delete",_=>"engineering.edit"};
+        let permission=match (entity_type,operation){("engineering_calculation","create")|("engineering_test","create")=>"engineering.create",("engineering_calculation","delete")|("engineering_test","delete")=>"engineering.delete",_=>"engineering.edit"};
         local_auth::require_local_permission(c,permission)?;
     }
  let tx=c.transaction().map_err(|e|format!("Unable to begin engineering transaction: {e}"))?;
