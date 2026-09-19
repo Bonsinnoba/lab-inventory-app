@@ -79,7 +79,7 @@ pub fn get_local_knowledge_tags(app:AppHandle)->Result<Vec<Value>,String>{let c=
 #[tauri::command]
 pub fn apply_server_knowledge_pull(app:AppHandle,findings:Vec<Value>,results:Vec<Value>,relationships:Vec<Value>,deletedFindingIds:Vec<String>,deletedResultIds:Vec<String>,deletedRelationshipIds:Vec<String>)->Result<(),String>{
  let mut c=conn(&app)?;let mut s=load(&c)?;
- fn pending(c:&Connection,typ:&str,id:&str)->Result<bool,String>{Ok(c.query_row("SELECT 1 FROM sync_outbox WHERE entity_type=?1 AND entity_id=?2 LIMIT 1",params![typ,id],|r|r.get::<_,i64>(0)).optional().map_err(|e|format!("Unable to inspect pending knowledge change: {e}"))?.is_some())}
+ fn pending(c:&Connection,typ:&str,id:&str)->Result<bool,String>{Ok(c.query_row("SELECT 1 FROM sync_outbox WHERE synced_at IS NULL AND entity_type=?1 AND entity_id=?2 LIMIT 1",params![typ,id],|r|r.get::<_,i64>(0)).optional().map_err(|e|format!("Unable to inspect pending knowledge change: {e}"))?.is_some())}
  fn merge(c:&Connection,s:&mut Value,key:&str,typ:&str,incoming:Vec<Value>)->Result<(),String>{
    let mut current=arr(s,key);
    for value in incoming{
