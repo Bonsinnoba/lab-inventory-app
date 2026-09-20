@@ -211,3 +211,25 @@ The workstation verification after commit `52c0d04` exposed one additional confi
 - No synchronization behavior or deduplication policy was changed; the fix restores valid JavaScript and consistent trailing-slash normalization.
 - The user's current run provides strong evidence that the static suites and Rust unit tests pass, but `npm run check` remains a required gate after this correction.
 - `npm run test:resource-dedup-disposable` remains **NOT RUN**, because `DATABASE_URL` was not configured. This is still a runtime evidence gap and must not be treated as PASS.
+
+## Evidence update — 2026-09-20 (post-55168abb verification)
+
+The project workstation reran the full required verification set after pulling main at commit `abb6fe895050431270a3af88685c3d671530419b`.
+
+### Results
+
+- `npm run check`: **PASS** — all backend JavaScript files passed Node syntax checking.
+- `npm run test:resource-dedup-static`: **PASS 9/9**.
+- `npm run test:resource-sync-static`: **PASS 11/11**.
+- `npm run test:resource-dedup-disposable`: **NOT RUN** — `DATABASE_URL` is not configured. This remains the principal runtime database evidence gap and is not a PASS.
+- `npm run test:sync-reliability-static`: **PASS 125/125**.
+- `npm run test:core-static`: **PASS** — all core Phase 1 assertions passed.
+- `cargo test`: **PASS 5/5** Rust unit tests. Cargo emitted 13 non-fatal compiler warnings; none caused a test failure.
+
+### Evidence classification
+
+This run establishes workstation execution evidence for JavaScript syntax, all current static regression suites, and the deterministic Rust unit tests. It does **not** establish PostgreSQL runtime/concurrency/constraint evidence because the disposable database test was skipped due to missing `DATABASE_URL`.
+
+Migration 043 remains deferred until the disposable PostgreSQL test passes and the production PostgreSQL major version is confirmed to support PostgreSQL 15+ `NULLS NOT DISTINCT`.
+
+No additional production code changes were required from this verification run.
