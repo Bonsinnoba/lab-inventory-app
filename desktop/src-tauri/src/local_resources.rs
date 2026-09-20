@@ -28,12 +28,14 @@ pub struct LocalResource {
     pub file_type: String,
     pub original_filename: Option<String>,
     pub mime_type: Option<String>,
+    #[serde(deserialize_with = "deserialize_optional_i64")]
     pub size_bytes: Option<i64>,
     pub url: Option<String>,
     pub thumbnail_url: Option<String>,
     pub local_media_path: Option<String>,
     pub local_media_filename: Option<String>,
     pub local_media_mime_type: Option<String>,
+    #[serde(deserialize_with = "deserialize_optional_i64")]
     pub local_media_size_bytes: Option<i64>,
     pub local_media_downloaded_at: Option<String>,
     pub parent_resource_id: Option<String>,
