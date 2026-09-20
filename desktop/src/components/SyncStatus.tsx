@@ -23,7 +23,7 @@ export default function SyncStatus(){
   const [runtime,setRuntime]=useState<SyncRuntimeState>(getSyncRuntimeState());
   const refresh=async()=>{setPending(await getPendingSyncCount());setConflicts((await listSyncConflicts()) as Conflict[]);};
   useEffect(()=>{void refresh();const unsubscribe=subscribeSyncStatus(setRuntime);const timer=window.setInterval(()=>void refresh(),5000);const online=()=>void refresh();const offline=()=>setRuntime(getSyncRuntimeState());window.addEventListener('online',online);window.addEventListener('offline',offline);return()=>{unsubscribe();window.clearInterval(timer);window.removeEventListener('online',online);window.removeEventListener('offline',offline);};},[]);
-  const sync=async()=>{setBusy(true);try{await syncPendingChanges(true);}finally{setBusy(false);await refresh();}};
+  const sync=async()=>{setBusy(true);try{await syncPendingChanges(true);window.dispatchEvent(new Event('labos:manual-sync-complete'));}finally{setBusy(false);await refresh();}};
   const resolve=async(id:string,resolution:'keep_local'|'accept_server'|'dismiss')=>{setBusy(true);try{await resolveSyncConflict(id,resolution);if(resolution!=='dismiss')await syncPendingChanges(true);}finally{setBusy(false);await refresh();}};
   const count=conflicts.length;
   const offline=typeof navigator!=='undefined'&&!navigator.onLine;
