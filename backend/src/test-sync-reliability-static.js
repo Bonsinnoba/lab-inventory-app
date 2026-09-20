@@ -143,7 +143,7 @@ const checks = [
   ['offline local access has an expiry', localAuth.includes('offline_expires_at') && localAuth.includes("datetime('now') < datetime(?1)")],
   ['desktop login authenticates centrally first', authApi.includes('/auth/login') && authApi.includes('cache_server_user') && authApi.includes('navigator.onLine')],
   ['desktop registration is not used for local account creation', !authApi.includes('bootstrap_local_admin') && !read('../desktop/src/pages/LoginPage.tsx').includes('Create Account')],
-  ['offline local sessions do not become server bearer tokens', authApi.includes('local:${token}') && app.includes("t.startsWith('local:')") && desktopSync.includes("token.startsWith('local:')")],
+  ['offline local sessions do not become server bearer tokens', read('../desktop/src-tauri/src/local_auth.rs').includes('format!("local:{token}")') && authApi.includes("token.startsWith('local:')") && app.includes("t.startsWith('local:')") && desktopSync.includes("token.startsWith('local:')")],
   ['offline permission reads use cached permissions', read('../desktop/src/api/permissions.ts').includes('local_current_permissions') && read('../desktop/src/api/permissions.ts').includes('offlineLocalSession')],
   ['central server remains authoritative for sync authorization', sync.includes('getUserPermissions(req.user.userId,req.user.role)') && sync.includes('PERMISSION_DENIED')],
   ['local project mutations enforce cached permissions', localProjects.includes('require_local_permission') && localProjects.includes('projects.create') && localProjects.includes('projects.edit') && localProjects.includes('projects.delete')],
