@@ -169,3 +169,13 @@ The actual output must be recorded before marking these tests PASS.
 - Production migration `043_resource_link_duplicate_constraint.sql` remains deferred until disposable PostgreSQL evidence passes and production PostgreSQL major-version compatibility is confirmed.
 
 - Follow-up verification on 2026-09-20 found three additional static-test defects: the disposable dedup test still contained an over-escaped regex, the core project-update assertion omitted the literal PostgreSQL parameter marker emitted by the template, and the offline-session assertion searched the wrong source for the `local:` token prefix. These were corrected without changing application behavior.
+
+
+## Evidence update — 2026-09-20 (post-7fa092b syntax audit)
+
+The workstation run at commit `7fa092b` exposed one real source syntax defect in `backend/src/routes/resources.js`, plus one stale core static assertion that was still not corrected by the prior remediation commit.
+
+- `resources.js`: the direct `POST /link` route contained over-escaped quote characters inside the SQL string (`kind=\\'link\\'` in source), which made Node report `SyntaxError: missing ) after argument list`. The YouTube host regex was also normalized to the intended JavaScript regex literal.
+- `test-core-phase1-static.js`: the project-update assertion still searched for `id=${values.length}` instead of the actual template source `id=$${values.length}`. This is a test defect, not a production route defect.
+- No production behavior is being changed to make the core assertion pass; the assertion is being aligned to the actual parameterized SQL contract.
+- The disposable resource dedup test did not run because `DATABASE_URL` was not configured. This remains an evidence gap, not a PASS.
