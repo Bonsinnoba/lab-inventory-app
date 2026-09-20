@@ -45,26 +45,18 @@ async function main() {
     const deletable = resources.filter((resource) => !protectedIds.has(resource.id));
 
     for (const resource of deletable) {
-      if (resource.storage_path) storagePaths.add(resource.storage_path);
-      storagePaths.add(resource.id);
-    }
-
-    for (const resource of deletable) {
       await client.query('DELETE FROM resources WHERE id = $1', [resource.id]);
-      await client.query(
-        `INSERT INTO sync_tombstones(entity_type, entity_id, project_id, item_id, note_id)
-         VALUES ('resource', $1, $2, $3, $4)
-         ON CONFLICT(entity_type, entity_id)
-         DO UPDATE SET deleted_at = now(),
-                       project_id = EXCLUDED.project_id,
-                       item_id = EXCLUDED.item_id,
-                       note_id = EXCLUDED.note_id`,
-        [resource.id, resource.project_id || null, resource.item_id || null, resource.note_id || null]
-      );
     }
 
-    // Remove old resource tombstones for rows that were not part of this reset.
-    // The deletions above have just created the fresh tombstones we want.
+    // This is a clean test reset, so remove stale resource tombstones for
+    // the resources we actually reset. Canvas-linked resources are skipped.
+    await client.query(
+      `DELETE FROM sync_tombstones
+        WHERE entity_type = 'resource'
+          AND entity_id = ANY($1::uuid[])`,
+      [deletable.map((resource) => resource.id)]
+    );
+
     await client.query(
       `DELETE FROM sync_tombstones t
         WHERE t.entity_type = 'resource'
