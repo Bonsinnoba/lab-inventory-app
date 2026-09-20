@@ -7,6 +7,7 @@ const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
 const resources = read('src/routes/resources.js');
 const sync = read('src/routes/sync.js');
 const localResources = read('../desktop/src-tauri/src/local_resources.rs');
+const migration = read('src/migrations/043_resource_link_duplicate_constraint.sql');
 
 const checks = [
   ['server direct link creation normalizes trailing slashes', resources.includes("const normalizedUrl=String(url).trim().replace(/\\/+$/,'')")],
