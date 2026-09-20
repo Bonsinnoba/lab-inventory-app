@@ -239,6 +239,32 @@ pub fn create_local_resource_link(app: AppHandle, url: String, name: Option<Stri
     Ok(resource)
 }
 
+
+#[tauri::command]
+pub fn queue_local_resource_download(app: AppHandle, resource_id: String, quality: Option<String>) -> Result<serde_json::Value, String> {
+    let mut conn = open_local_connection(&app)?;
+    ensure_schema(&conn)?;
+    let (permissions, expires): (String, Option<String>) = conn.query_row(
+        "SELECT u.permissions_json,u.offline_expires_at FROM local_users u JOIN local_session s ON s.user_id=u.id WHERE s.id=1 AND u.central_user_id IS NOT NULL AND u.is_active=1",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?))
+    ).map_err(|e| format!("Unable to read local authorization: {e}"))?;
+    let expires = expires.ok_or_else(|| "Offline authorization has expired. Connect to LabOS to refresh access.".to_string())?;
+    let valid: i64 = conn.query_row("SELECT CASE WHEN datetime('now') < datetime(?1) THEN 1 ELSE 0 END", [&expires], |r| r.get(0)).unwrap_or(0);
+    if valid == 0 { return Err("Offline authorization has expired. Connect to LabOS to refresh access.".into()); }
+    let permissions: Vec<String> = serde_json::from_str(&permissions).map_err(|e| format!("Unable to decode local authorization: {e}"))?;
+    if !permissions.iter().any(|p| p == "resources.edit") { return Err("Permission required: resources.edit".into()); }
+    let exists: Option<String> = conn.query_row("SELECT id FROM local_resources WHERE id=?1 AND kind='link' AND url IS NOT NULL", [&resource_id], |r| r.get(0)).optional().map_err(|e| format!("Unable to inspect local resource: {e}"))?;
+    if exists.is_none() { return Err("Resource not found".into()); }
+    let change_id = uuid::Uuid::new_v4().to_string();
+    let job_id = uuid::Uuid::new_v4().to_string();
+    let device_id: String = conn.query_row("SELECT device_id FROM device_identity WHERE id=1", [], |r| r.get(0)).map_err(|e| format!("Unable to read device identity: {e}"))?;
+    let selected_quality = match quality.as_deref() { Some("best") => "best", Some("1080p") => "1080p", Some("480p") => "480p", _ => "720p" };
+    let payload = serde_json::json!({"resource_id": resource_id, "quality": selected_quality});
+    conn.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES(?1,?2,'resource_download_job',?3,'create',?4)", rusqlite::params![change_id, device_id, job_id, payload.to_string()]).map_err(|e| format!("Unable to queue local download request: {e}"))?;
+    Ok(serde_json::json!({"id": job_id, "resource_id": resource_id, "status": "queued", "quality": selected_quality}))
+}
+
 #[tauri::command]
 pub fn create_local_resource_folder(app: AppHandle, name: String, item_id: Option<String>, project_id: Option<String>, note_id: Option<String>, parent_resource_id: Option<String>, category: Option<String>, description: Option<String>, tags: Option<Vec<String>>) -> Result<LocalResource, String> {
     if name.trim().is_empty() { return Err("name is required".into()); }
