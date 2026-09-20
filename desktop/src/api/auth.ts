@@ -2,7 +2,7 @@ import { API_BASE } from '../lib/config';
 import { invoke } from '@tauri-apps/api/tauri';
 
 function isTauriRuntime(): boolean { return typeof window !== 'undefined' && !!(window as any).__TAURI_IPC__; }
-async function localInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T | null> { if (!isTauriRuntime()) return null; return invoke<T>(command, args); }
+async function localInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<NonNullable<T> | null> { if (!isTauriRuntime()) return null; return invoke<T>(command, args) as Promise<NonNullable<T>>; }
 
 export type User = {
   id: string;
