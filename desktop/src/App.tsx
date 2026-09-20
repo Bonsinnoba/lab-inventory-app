@@ -39,7 +39,7 @@ import LoginPage from "./pages/LoginPage";
 import CommandPalette from "./components/CommandPalette";
 import LabIntelligencePage from "./pages/LabIntelligencePage";
 import DownloadsPage from "./pages/DownloadsPage";
-import { getToken, setToken, removeToken, getStoredUser, setStoredUser, removeStoredUser, getCurrentUser, logout } from "./api/auth";
+import { getToken, setToken, removeToken, getStoredUser, setStoredUser, removeStoredUser, getCurrentUser, getCurrentPermissions, logout } from "./api/auth";
 import type { User } from "./api/auth";
 import { getDailyUsePreferences } from './api/system';
 import { syncPendingChanges } from './api/sync';
@@ -55,6 +55,7 @@ function AppContent() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [user, setUser] = useState<User | null>(null);
+  const [permissions, setPermissions] = useState<string[]>([]);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [rightPanelContent, setRightPanelContent] = useState<DockableContent>('assistant');
   const [musicDockOpen, setMusicDockOpen] = useState(false);
@@ -147,6 +148,7 @@ function AppContent() {
         .then(({ user: cu }) => {
           setUser(cu);
           setStoredUser(cu);
+          void getCurrentPermissions().then(setPermissions).catch(() => setPermissions([]));
           setIsAuthenticated(true);
         })
         .catch(() => {
@@ -159,6 +161,7 @@ function AppContent() {
       .then(({ user: cu }) => {
         setUser(cu);
         setStoredUser(cu);
+        void getCurrentPermissions().then(setPermissions).catch(() => setPermissions([]));
         setIsAuthenticated(true);
       })
       .catch(() => undefined);
@@ -166,6 +169,7 @@ function AppContent() {
 
   const handleLoginSuccess = (u: User, t: string) => {
     setUser(u);
+    void getCurrentPermissions().then(setPermissions).catch(() => setPermissions([]));
     setIsAuthenticated(true);
     if (t.startsWith('local:')) removeToken();
     else setToken(t);
@@ -175,6 +179,7 @@ function AppContent() {
   const handleLogout = () => {
     void logout().catch(() => undefined);
     setUser(null);
+    setPermissions([]);
     setIsAuthenticated(false);
     removeToken();
     removeStoredUser();
@@ -255,7 +260,7 @@ function AppContent() {
   return (
     <>
       <div className="app-shell flex h-screen text-text-primary">
-        <Sidebar user={user} onLogout={handleLogout} />
+        <Sidebar user={user} permissions={permissions} onLogout={handleLogout} />
         <MobileDrawer open={mobileMenuOpen} onClose={() => setMobileMenuOpen(false)} user={user} onLogout={handleLogout} />
         <div className="flex-1 flex flex-col min-w-0 min-h-0">
           <TopBar title={getPageTitle()} onOpenCommandPalette={() => setCommandPaletteOpen(true)} onScan={() => setDesktopScanOpen(true)} />
@@ -288,7 +293,7 @@ function AppContent() {
                 <Route path="/projects/:projectId/activity" element={<ProjectDetailPage />} />
                 <Route path="/notebook" element={<NotebookPage />} />
                 <Route path="/resources" element={<ResourcesPage />} />
-                <Route path="/downloads" element={<DownloadsPage />} />
+                <Route path="/downloads" element={permissions.includes('resources.edit') ? <DownloadsPage /> : <Navigate to="/resources" replace />} />
                 <Route path="/knowledge" element={<KnowledgePage />} />
                 <Route path="/search" element={<SearchPage />} />
                 <Route path="/collaboration" element={<CollaborationPage />} />
