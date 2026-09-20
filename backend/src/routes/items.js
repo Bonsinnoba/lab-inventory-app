@@ -1,10 +1,17 @@
 import { Router } from 'express';
+import { randomUUID } from 'crypto';
 import { pool } from '../db.js';
 import { writeAuditLog } from '../middleware/audit.js';
 import { getUserPermissions } from '../middleware/permissions.js';
 import { hasPermission } from '../middleware/permissions.js';
 
 const router = Router();
+function generateItemSku(name, type) {
+  const namePart = String(name || 'item').toUpperCase().replace(/[^A-Z0-9]+/g, '').slice(0, 8) || 'ITEM';
+  const typePart = String(type || 'item').toUpperCase().replace(/[^A-Z0-9]+/g, '').slice(0, 6) || 'ITEM';
+  return `LAB-${namePart}-${typePart}-${randomUUID().replace(/-/g, '').slice(0, 6).toUpperCase()}`;
+}
+
 
 router.get('/', async (req, res) => {
   const { type, status, location, location_id, low_stock } = req.query;
@@ -34,7 +41,7 @@ router.post('/', hasPermission('inventory.create'), async (req, res) => {
   const { name, type, category, sku, initial_quantity, current_quantity, unit, dimensions, status, condition_notes, unit_cost, replacement_cost, location_id, storage_location, photo_url, supplier, supplier_id = null, part_number } = req.body;
   if (!name || !type) return res.status(400).json({ error: 'name and type are required' });
   try {
-    const result = await pool.query(`INSERT INTO items (name,type,category,sku,initial_quantity,current_quantity,unit,dimensions,status,condition_notes,unit_cost,replacement_cost,location_id,storage_location,photo_url,supplier,supplier_id,part_number) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *`, [name,type,category ?? null,(typeof sku==='string'&&!sku.trim())?null:(sku ?? null),initial_quantity ?? 0,current_quantity ?? initial_quantity ?? 0,unit ?? null,dimensions ?? null,status ?? 'available',condition_notes ?? null,unit_cost ?? null,replacement_cost ?? null,location_id ?? null,storage_location ? String(storage_location).trim() || null : null,photo_url ?? null,supplier ?? null,supplier_id,part_number ?? null]);
+    const result = await pool.query(`INSERT INTO items (name,type,category,sku,initial_quantity,current_quantity,unit,dimensions,status,condition_notes,unit_cost,replacement_cost,location_id,storage_location,photo_url,supplier,supplier_id,part_number) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *`, [name,type,category ?? null,(typeof sku==='string'&&!sku.trim())?generateItemSku(name,type):(sku ?? generateItemSku(name,type)),initial_quantity ?? 0,current_quantity ?? initial_quantity ?? 0,unit ?? null,dimensions ?? null,status ?? 'available',condition_notes ?? null,unit_cost ?? null,replacement_cost ?? null,location_id ?? null,storage_location ? String(storage_location).trim() || null : null,photo_url ?? null,supplier ?? null,supplier_id,part_number ?? null]);
     await writeAuditLog({ req, action: 'CREATE', entityType: 'item', entityId: result.rows[0].id, newValue: result.rows[0] }); res.status(201).json(result.rows[0]);
   } catch (err) { console.error(err); res.status(500).json({ error: err.message || 'Failed to create item' }); }
 });
