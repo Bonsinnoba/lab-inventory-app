@@ -104,7 +104,21 @@ export async function getCurrentUser(token: string): Promise<{ user: User }> {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!response.ok) throw new Error('Failed to get current user');
-      return response.json();
+      const result = await response.json() as { user: User };
+      if (isTauriRuntime()) {
+        try {
+          const permissions = await fetchServerPermissions();
+          await localInvoke('cache_server_permissions', {
+            centralUserId: result.user.id,
+            role: result.user.role,
+            permissions,
+          });
+        } catch {
+          // Keep a valid authenticated session usable during a transient
+          // permission-refresh failure; the existing local cache remains in place.
+        }
+      }
+      return result;
     } catch (error) {
       // A central network outage must not discard a valid cached desktop
       // session. HTTP authentication failures remain authoritative and do
