@@ -1,29 +1,32 @@
--- Add partial unique index to prevent duplicate link resources
--- This ensures that link resources with the same URL cannot be created
--- in the same parent context (item_id, project_id, note_id, or parent_resource_id)
--- The index is partial (WHERE kind = 'link') to only apply to link resources
--- NULL values are allowed for parent fields (unattached resources)
+-- Resource link identity is the normalized URL plus exactly one parent scope.
+-- PostgreSQL NULLs are otherwise considered distinct by UNIQUE indexes, so
+-- NULLS NOT DISTINCT is required: an item-scoped link, for example, has NULL
+-- project/note/parent_resource_id values that must still participate in the
+-- uniqueness key. PostgreSQL 15+ is required (the test environment uses 16).
 
--- First, handle any existing duplicates by keeping the most recently created one
+-- First, remove pre-existing logical duplicates while preserving the newest row.
+-- PARTITION BY treats NULLs as equal, matching the intended logical identity.
 WITH duplicates AS (
-  SELECT 
+  SELECT
     id,
     ROW_NUMBER() OVER (
-      PARTITION BY 
+      PARTITION BY
         lower(btrim(url)),
         item_id,
         project_id,
         note_id,
         parent_resource_id
       ORDER BY created_at DESC
-    ) as rn
+    ) AS rn
   FROM resources
   WHERE kind = 'link' AND url IS NOT NULL
 )
 DELETE FROM resources
 WHERE id IN (SELECT id FROM duplicates WHERE rn > 1);
 
--- Create the partial unique index
+-- Database-level guarantee for all link resources, including rows whose
+-- non-applicable parent columns are NULL.
 CREATE UNIQUE INDEX idx_resources_link_unique
 ON resources (lower(btrim(url)), item_id, project_id, note_id, parent_resource_id)
+NULLS NOT DISTINCT
 WHERE kind = 'link' AND url IS NOT NULL;
