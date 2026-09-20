@@ -84,14 +84,14 @@ async function runSync():Promise<number>{
         syncSucceeded=false;
         const message=await getApiErrorMessage(response,'Unable to synchronize local changes');
         for(const change of changes)await invoke('record_sync_failure',{changeId:change.change_id,error:message}).catch(()=>undefined);
-        publish({status:'error',lastError:message});
+        publish({status:'error',lastError:`Sync push: ${message}`});
         scheduleRetry();
       }
     }catch(error){
       syncSucceeded=false;
       const message=error instanceof Error?error.message:String(error);
       for(const change of changes)await invoke('record_sync_failure',{changeId:change.change_id,error:message}).catch(()=>undefined);
-      publish({status:'error',lastError:message});
+      publish({status:'error',lastError:`Sync push: ${message}`});
       scheduleRetry();
     }
   }
