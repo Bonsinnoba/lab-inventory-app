@@ -233,3 +233,33 @@ This run establishes workstation execution evidence for JavaScript syntax, all c
 Migration 043 remains deferred until the disposable PostgreSQL test passes and the production PostgreSQL major version is confirmed to support PostgreSQL 15+ `NULLS NOT DISTINCT`.
 
 No additional production code changes were required from this verification run.
+
+
+## Evidence update — 2026-09-20 (disposable PostgreSQL harness configuration)
+
+The rebuilt production-like API container was successfully started from the current `main` image, and PostgreSQL 16 remained healthy. The first execution of `npm run test:resource-dedup-disposable` then stopped before connecting because the test required `DATABASE_URL`, while the deployment intentionally supplies standard PostgreSQL environment variables (`PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`).
+
+This was classified as a **test harness integration gap**, not an application/database failure.
+
+### CHANGE-008 — disposable test accepts production PostgreSQL configuration
+
+- `backend/src/test-resource-dedup-disposable.js` now accepts either:
+  - `DATABASE_URL`, or
+  - the standard PostgreSQL environment variables already used by the deployment.
+- No production deployment configuration was changed.
+- No database migration or reset was added to the test.
+- The test continues to fail closed when neither configuration form is available.
+- The test still requires `idx_resources_link_unique` to already exist; it does not silently apply migration 043.
+
+Commit: `6aaa4c92cac046efa775269be89fe50d02b3e165`.
+
+### Next required runtime evidence
+
+Rebuild/restart the API from `deploy/`, confirm it becomes healthy, then execute:
+
+```powershell
+docker compose exec labos-api npm run test:resource-dedup-disposable
+```
+
+Do not classify the database evidence as PASS until the command itself reports both the NULL-safe uniqueness and concurrent deduplication PASS results.
+
