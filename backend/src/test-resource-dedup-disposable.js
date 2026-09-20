@@ -1,0 +1,50 @@
+import pg from 'pg';
+import { randomUUID } from 'node:crypto';
+
+const { Client } = pg;
+const url = process.env.DATABASE_URL;
+if (!url) {
+  console.error('DISPOSABLE RESOURCE DEDUP TEST NOT RUN: DATABASE_URL is required.');
+  process.exit(2);
+}
+
+const key = `labos-disposable-dedup-${randomUUID()}`;
+const resourceUrl = `https://example.invalid/${key}/`;
+const lockKey = ['link', resourceUrl.trim().replace(/\/+$/,'').toLowerCase(), '', '', '', ''].join('|');
+const clients = [new Client({ connectionString: url }), new Client({ connectionString: url })];
+
+async function lock(client) {
+  await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [lockKey]);
+}
+async function find(client) {
+  return client.query("SELECT id FROM resources WHERE kind='link' AND lower(btrim(url))=lower($1) AND item_id IS NOT DISTINCT FROM $2 AND project_id IS NOT DISTINCT FROM $3 AND note_id IS NOT DISTINCT FROM $4 AND parent_resource_id IS NOT DISTINCT FROM $5 LIMIT 1", [resourceUrl.trim().replace(/\/+$/,''), null, null, null, null]);
+}
+async function cleanup() {
+  const c = new Client({ connectionString: url });
+  await c.connect();
+  try { await c.query('DELETE FROM resources WHERE kind=\'link\' AND url=$1', [resourceUrl]); }
+  finally { await c.end(); }
+}
+
+try {
+  await Promise.all(clients.map(c => c.connect()));
+  await clients[0].query('BEGIN');
+  await lock(clients[0]);
+  const first = await find(clients[0]);
+  if (first.rowCount) throw new Error('Random disposable URL unexpectedly already exists');
+  await clients[0].query("INSERT INTO resources (name,kind,file_type,url) VALUES ($1,'link','other',$2)", [key, resourceUrl]);
+
+  await clients[1].query('BEGIN');
+  const secondLock = lock(clients[1]);
+  await new Promise(r => setTimeout(r, 100));
+  await clients[0].query('COMMIT');
+  await secondLock;
+  const second = await find(clients[1]);
+  if (second.rowCount !== 1) throw new Error(`Expected second transaction to observe exactly one committed logical link; found ${second.rowCount}`);
+  await clients[1].query('ROLLBACK');
+
+  console.log('PASS: disposable concurrent resource-link deduplication');
+} finally {
+  for (const c of clients) await c.end().catch(() => {});
+  await cleanup().catch(err => console.error('WARNING: disposable cleanup failed:', err.message));
+}
