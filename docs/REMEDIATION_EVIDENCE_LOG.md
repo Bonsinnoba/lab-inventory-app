@@ -361,3 +361,50 @@ No production code changes were required by this verification run.
 ### Next verification target
 
 Proceed with a disposable PostgreSQL-backed sync runtime test rather than treating the 11/11 and 125/125 static results as runtime proof. The test should exercise at minimum a resource sync push/pull lifecycle, idempotency/convergence, deletion tombstone propagation, and the relevant transaction boundaries, while leaving the disposable database safe to destroy afterward.
+
+
+## Evidence update — 2026-09-20 (disposable sync runtime harness added)
+
+A new disposable PostgreSQL-backed runtime test was added to close the remaining sync evidence gap.
+
+### CHANGE-010 — disposable sync push/pull runtime verification
+
+Added:
+- `backend/src/test-sync-runtime-disposable.js`
+- npm script: `test:sync-runtime-disposable`
+
+The test uses the deployment's existing PostgreSQL environment configuration and the running API. It selects an active disposable admin account, signs a short-lived test JWT with the existing `JWT_SECRET`, and exercises the real `/api/sync/push` and `/api/sync/resources/pull` endpoints.
+
+The runtime scenario covers:
+1. resource create through sync push;
+2. canonical URL persistence;
+3. idempotent replay using the same `change_id`;
+4. duplicate prevention after replay;
+5. rejection of a changed payload reusing the same `change_id`;
+6. resource pull visibility;
+7. rejected invalid resource mutation and rollback verification;
+8. resource deletion through sync push;
+9. PostgreSQL resource tombstone creation;
+10. resource pull of the deletion tombstone.
+
+The test generates disposable UUIDs and an `example.invalid` URL, then removes its resource, tombstone, and idempotency rows in a `finally` cleanup block.
+
+No production synchronization implementation or database schema was changed by this addition.
+
+Commits:
+- `90757fbd8aa3ac945c2cc0898aa75cd3894d2f68` — runtime test
+- `10b801e8c2a1636985e271cec3165ffaa52f8ca8` — npm script
+
+### Required workstation runtime evidence
+
+After pulling and rebuilding the API image from `main`, run:
+
+```powershell
+cd C:\Users\balik\Iven\lab-inventory-app\deploy
+git pull origin main
+docker compose build labos-api
+docker compose up -d labos-api
+docker compose exec labos-api npm run test:sync-runtime-disposable
+```
+
+This test must report all seven PASS lines before broader sync runtime evidence is classified as PASS. A failure must be diagnosed before any conclusion about the production sync implementation is made.
