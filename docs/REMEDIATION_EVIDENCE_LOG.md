@@ -71,3 +71,35 @@ A code fix is not considered runtime-verified merely because the source looks co
 - existing critical regression checks PASS;
 - no uncommitted remediation changes remain;
 - the resulting commit is identifiable from main.
+
+## Follow-up review: migration 043 corrected before production use
+
+During evidence-first review of migration 043 on 2026-09-20, a database-level uniqueness gap was found before production application:
+
+- A PostgreSQL UNIQUE index normally treats NULL values as distinct.
+- The resource schema requires exactly one parent field, so the other three parent columns are NULL for every resource.
+- Therefore the original five-column unique index would not reliably prevent duplicate links in the same parent scope, despite the application-level advisory lock doing so for API-created rows.
+
+### Decision DECISION-004 — NULL-safe database identity
+
+Use PostgreSQL 15+ NULLS NOT DISTINCT on idx_resources_link_unique. The test environment is PostgreSQL 16, and the production database must be PostgreSQL 15+ before migration 043 is applied.
+
+Reason: the database constraint must encode the same logical identity as the application: normalized URL + the one populated parent scope, with NULL in non-applicable parent columns treated as equal.
+
+### Changes CHANGE-004 / CHANGE-005
+
+- backend/src/migrations/043_resource_link_duplicate_constraint.sql
+  - Added explicit PostgreSQL 15+ requirement comment.
+  - Changed the unique index to NULLS NOT DISTINCT.
+  - Kept duplicate cleanup partitioning across the complete parent scope.
+- backend/src/test-resource-dedup-disposable.js
+  - Added a direct database-constraint test that attempts a duplicate with NULL parent columns and requires SQLSTATE 23505.
+  - Retained the concurrent advisory-lock verification.
+- backend/src/test-resource-dedup-static.js
+  - Added static assertions for the migration's NULL-safe uniqueness semantics and disposable constraint test.
+
+### Production decision
+
+Migration 043 remains deferred. Do not apply it to production until the revised migration has been executed successfully against the disposable/test PostgreSQL 16 environment and the production PostgreSQL major version is confirmed compatible.
+
+This review supersedes the earlier statement that migration 043 was already safe to apply solely on the basis of its original unique index.
