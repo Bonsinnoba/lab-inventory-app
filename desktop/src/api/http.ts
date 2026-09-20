@@ -56,7 +56,15 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
 }
 
 export function apiUrl(path: string): string {
-  return `${API_BASE}${path}`;
+  if (/^https?:\/\//i.test(path)) return path;
+  const base = API_BASE.replace(/\/$/, '');
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  // Backend responses may already contain the public /api prefix. Avoid
+  // producing URLs such as /api/api/media-downloads/....
+  if (normalizedPath === '/api' || normalizedPath.startsWith('/api/')) {
+    return base.endsWith('/api') ? `${base.slice(0, -4)}${normalizedPath}` : `${base}${normalizedPath}`;
+  }
+  return `${base}${normalizedPath}`;
 }
 
 export async function getApiErrorMessage(response: Response, fallback = 'Request failed'): Promise<string> {
