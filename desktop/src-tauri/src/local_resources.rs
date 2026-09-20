@@ -117,6 +117,11 @@ fn new_id(conn: &rusqlite::Connection) -> Result<String, String> {
         .map_err(|e| format!("Unable to create local resource id: {e}"))
 }
 
+fn normalize_resource_url(url: &str) -> String {
+    let trimmed = url.trim();
+    trimmed.trim_end_matches('/').to_string()
+}
+
 fn youtube_id(url: &str) -> Option<String> {
     let clean = url.trim();
     if let Some(rest) = clean.strip_prefix("https://youtu.be/").or_else(|| clean.strip_prefix("http://youtu.be/")) {
@@ -228,6 +233,15 @@ pub fn create_local_resource_link(app: AppHandle, url: String, name: Option<Stri
     ensure_schema(&conn)?;
     let mut resources = read_resources(&conn)?;
     validate_parent(&resources,&item_id,&project_id,&note_id,&parent_resource_id)?;
+    let normalized_url = normalize_resource_url(&url);
+    if let Some(existing) = resources.iter()
+        .filter(|r| r.kind == "link" && normalize_resource_url(r.url.as_deref().unwrap_or("")) == normalized_url)
+        .filter(|r| r.item_id == item_id && r.project_id == project_id && r.note_id == note_id && r.parent_resource_id == parent_resource_id)
+        .max_by_key(|r| if r.local_media_path.is_some() { 1 } else { 0 })
+        .cloned()
+    {
+        return Ok(existing);
+    }
     let (category,description,tags)=metadata(category,description,tags);
     let id=new_id(&conn)?; let timestamp=now(&conn)?;
     let youtube=if url.contains("youtube.com")||url.contains("youtu.be"){youtube_id(&url)}else{None};
