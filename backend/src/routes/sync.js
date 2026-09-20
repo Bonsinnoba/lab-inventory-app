@@ -221,7 +221,7 @@ async function applyResourceEntity(client,change,user){
    const access=await requireResourceEditor(record.parent_resource_id,{userId:user.userId,role:user.role});
    if(!access.ok)fail(access.status,access.error.code,access.error.message);
   }
-  if(record.kind==='link'&&record.url){ await lockResourceLink(client,record); const duplicate=await client.query("SELECT * FROM resources WHERE kind='link' AND lower(btrim(url))=lower($1) AND item_id IS NOT DISTINCT FROM $2 AND project_id IS NOT DISTINCT FROM $3 AND note_id IS NOT DISTINCT FROM $4 AND parent_resource_id IS NOT DISTINCT FROM $5 ORDER BY (local_media_path IS NOT NULL) DESC, created_at ASC LIMIT 1",[String(record.url).trim().replace(/\\/+$/,''),record.item_id||null,record.project_id||null,record.note_id||null,record.parent_resource_id||null]); if(duplicate.rowCount)return duplicate.rows[0]; }
+  if(record.kind==='link'&&record.url){ await lockResourceLink(client,record); const duplicate=await client.query("SELECT * FROM resources WHERE kind='link' AND lower(btrim(url))=lower($1) AND item_id IS NOT DISTINCT FROM $2 AND project_id IS NOT DISTINCT FROM $3 AND note_id IS NOT DISTINCT FROM $4 AND parent_resource_id IS NOT DISTINCT FROM $5 ORDER BY (local_media_path IS NOT NULL) DESC, created_at ASC LIMIT 1",[String(record.url).trim().replace(/\/+$/,''),record.item_id||null,record.project_id||null,record.note_id||null,record.parent_resource_id||null]); if(duplicate.rowCount)return duplicate.rows[0]; }
   const existing=await client.query('SELECT * FROM resources WHERE id=$1',[entityId]);
   if(existing.rowCount)return existing.rows[0];
   const values=[entityId],columns=['id'];
