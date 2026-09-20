@@ -179,3 +179,24 @@ The workstation run at commit `7fa092b` exposed one real source syntax defect in
 - `test-core-phase1-static.js`: the project-update assertion still searched for `id=${values.length}` instead of the actual template source `id=$${values.length}`. This is a test defect, not a production route defect.
 - No production behavior is being changed to make the core assertion pass; the assertion is being aligned to the actual parameterized SQL contract.
 - The disposable resource dedup test did not run because `DATABASE_URL` was not configured. This remains an evidence gap, not a PASS.
+
+
+## Evidence update — 2026-09-20 (actual remediation commits after workstation output)
+
+The workstation run at `7fa092b` exposed two issues that required direct correction:
+
+1. **Confirmed production source syntax defect — `backend/src/routes/resources.js`**
+   - The direct `POST /link` SQL query contained over-escaped single quotes around `link`, producing Node's `SyntaxError: missing ) after argument list`.
+   - Corrected in commit `16b5b2717e53b3153e56e919bc1dd05773348bb8`.
+   - The resulting source now contains the valid SQL string form `kind=\'link\'`.
+   - This is a real application-source defect, not a test-only issue.
+
+2. **Confirmed stale static-test assertion — `backend/src/test-core-phase1-static.js`**
+   - The assertion searched for `WHERE id=${values.length}`, while the actual route intentionally emits `WHERE id=$${values.length}` in its JavaScript template literal.
+   - Corrected using a function replacement so JavaScript replacement-string dollar semantics could not strip the literal PostgreSQL parameter marker.
+   - Corrected in commit `1a1203bb49fd07e4502f7c488598a3e39923bef3`.
+   - No production project-update behavior was changed.
+
+The earlier evidence entry stated these corrections had been made, but the workstation output demonstrated that the first attempted edits had not actually changed the affected file contents. This entry records the **actual effective commits** and supersedes that part of the earlier note.
+
+Current database evidence status is unchanged: `npm run test:resource-dedup-disposable` did not execute because `DATABASE_URL` was not configured. It must not be treated as PASS.
