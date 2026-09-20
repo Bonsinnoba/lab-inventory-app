@@ -56,13 +56,17 @@ async function runSync():Promise<number>{
         const results=Array.isArray(body.results)?body.results:[];
         const synced=results.filter(r=>r.status==='synced').map(r=>r.change_id).filter(Boolean);
         if(synced.length){await invoke('mark_sync_changes_synced',{changeIds:synced});syncedCount=synced.length;}
-        const rejectedOrFailed=results.filter(r=>r.status!=='synced');if(rejectedOrFailed.length)scheduleRetry();
+        const rejectedOrFailed=results.filter(r=>r.status!=='synced');
+        if(rejectedOrFailed.some(r=>r.status==='failed'))scheduleRetry();
         for(const result of rejectedOrFailed){
           syncSucceeded=false;
-          if(result.error?.code==='SYNC_CONFLICT'){
-            const change=changes.find(c=>c.change_id===result.change_id);
-            if(change)await invoke('record_sync_conflict',{changeId:change.change_id,entityType:change.entity_type,entityId:change.entity_id??null,operation:change.operation,payloadJson:JSON.stringify(change.payload),errorCode:result.error.code,errorMessage:result.error.message||'This offline change conflicts with a newer server change'}).catch(()=>undefined);
-          }else await invoke('record_sync_failure',{changeId:result.change_id,error:result.error?.message||result.error?.code||'Server rejected sync change'}).catch(()=>undefined);
+          const change=changes.find(c=>c.change_id===result.change_id);
+          if(!change)continue;
+          if(result.status==='rejected'||result.error?.code==='SYNC_CONFLICT'){
+            await invoke('record_sync_conflict',{changeId:change.change_id,entityType:change.entity_type,entityId:change.entity_id??null,operation:change.operation,payloadJson:JSON.stringify(change.payload),errorCode:result.error?.code||'SYNC_REJECTED',errorMessage:result.error?.message||'The server rejected this offline change'}).catch(()=>undefined);
+          }else{
+            await invoke('record_sync_failure',{changeId:change.change_id,error:result.error?.message||result.error?.code||'Unable to apply sync change'}).catch(()=>undefined);
+          }
         }
       }else{
         syncSucceeded=false;
