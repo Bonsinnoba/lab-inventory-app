@@ -1,0 +1,73 @@
+# LabOS remediation evidence log
+
+Date: 2026-09-20
+Repository: Bonsinnoba/lab-inventory-app
+Target branch: main
+
+## Baseline observed
+
+The repository had already accumulated several duplicate-related fixes, including duplicate resource-link prevention and local reuse of duplicate resource links. The remaining evidence gap was that the server-side logical duplicate check was a check-then-insert sequence without serialization, so two concurrent creators could still race.
+
+## Changes made in this remediation pass
+
+1. `backend/src/routes/resources.js`
+   - Added a deterministic resource-link lock key.
+   - Added PostgreSQL transaction advisory locking with `pg_advisory_xact_lock`.
+   - Moved the direct link duplicate lookup and insert into the same transaction.
+   - Included item, project, note, and folder-parent scope in duplicate identity.
+   - Normalized the stored URL by trimming whitespace and trailing slashes.
+   - Preserved the existing behavior of returning the already-existing logical link instead of creating another row.
+
+2. `backend/src/routes/sync.js`
+   - Added the same logical-link lock-key scheme to offline resource creation.
+   - Serialized sync-side duplicate detection before insert.
+   - Included the complete resource-parent scope in the duplicate identity.
+   - Reused an existing logical link when a concurrent/offline create resolves to an already-present row.
+
+3. `backend/src/test-resource-dedup-static.js`
+   - Added evidence-first static checks covering both server creation paths and the existing local-first implementation.
+
+4. `backend/src/test-resource-dedup-disposable.js`
+   - Added a disposable PostgreSQL concurrency test.
+   - Uses a random URL, commits one winner, verifies the second transaction observes that row after waiting on the same advisory lock, and removes the disposable row in cleanup.
+   - This test requires a configured `DATABASE_URL`; it is deliberately not allowed to silently pass without a database.
+
+5. `backend/package.json`
+   - Added runnable scripts for the static and disposable duplicate-resource tests.
+
+## Verification status
+
+- Repository inspection: completed through GitHub on 2026-09-20.
+- Static test execution in this assistant environment: NOT EXECUTED because the repository cannot be cloned here and no project runtime/database is available.
+- Disposable PostgreSQL test execution: NOT EXECUTED for the same reason.
+- The tests are committed so the project workstation can execute them against the actual dependency/runtime/database environment.
+- No claim of runtime PASS is made until those commands produce their own evidence.
+
+## Required execution evidence
+
+From `backend/` on the project workstation:
+
+```powershell
+npm run check
+npm run test:resource-dedup-static
+npm run test:resource-dedup-disposable
+```
+
+Then run the broader critical regression suite already defined by the repository, including:
+
+```powershell
+npm run test:sync-reliability-static
+npm run test:core-static
+```
+
+Record the exact command, timestamp, result, and any failure/remediation in this file before declaring the remediation verified.
+
+## Decision rule
+
+A code fix is not considered runtime-verified merely because the source looks correct. The evidence standard is:
+
+- static checks PASS;
+- disposable concurrency check PASS against the real PostgreSQL instance;
+- existing critical regression checks PASS;
+- no uncommitted remediation changes remain;
+- the resulting commit is identifiable from main.
