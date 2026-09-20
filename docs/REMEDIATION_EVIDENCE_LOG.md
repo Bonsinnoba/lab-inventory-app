@@ -263,3 +263,35 @@ docker compose exec labos-api npm run test:resource-dedup-disposable
 
 Do not classify the database evidence as PASS until the command itself reports both the NULL-safe uniqueness and concurrent deduplication PASS results.
 
+
+## Evidence update — 2026-09-20 (disposable test false-negative diagnosis)
+
+The live PostgreSQL inspection established:
+
+- PostgreSQL version: **16.4**.
+- `idx_resources_link_unique` exists and is defined with `lower(btrim(url)), item_id, project_id, note_id, parent_resource_id) NULLS NOT DISTINCT` and the expected `kind='link' AND url IS NOT NULL` predicate.
+
+The first disposable runtime attempt failed its NULL-safe uniqueness assertion. This was **not evidence that the database index was wrong**. The test inserted the first row using a URL with a trailing slash and attempted the duplicate using the normalized URL without that slash. The live index expression is `lower(btrim(url))`; it does not itself remove trailing slashes. The application canonicalizes trailing slashes before insertion, so the disposable test was incorrectly mixing a raw URL with the application's canonical stored URL.
+
+### CHANGE-009 — correct disposable test to use canonical stored URL
+
+- The disposable constraint test now inserts `normalizedUrl` for both duplicate attempts.
+- The concurrent advisory-lock phase also inserts the canonical `normalizedUrl`.
+- Cleanup targets the canonical URL.
+- No production database definition or application behavior was changed.
+- This correction tests the intended database contract: once the application has canonicalized the URL, PostgreSQL must treat NULL parent columns as equal and reject the logical duplicate.
+- The live database index definition was inspected before making this test correction; migration 043 was **not** manually applied or modified as part of this diagnosis.
+
+The previous runtime failure therefore remains recorded as a **test defect/false negative**, while the actual PostgreSQL constraint definition is independently confirmed to contain `NULLS NOT DISTINCT`.
+
+### Next required runtime evidence
+
+Pull/rebuild the updated main, then rerun:
+
+```powershell
+docker compose build labos-api
+docker compose up -d labos-api
+docker compose exec labos-api npm run test:resource-dedup-disposable
+```
+
+A PASS still requires both database uniqueness and concurrent advisory-lock checks to report PASS. Migration 043 remains deferred until that runtime test passes and the production PostgreSQL major version is confirmed compatible.
