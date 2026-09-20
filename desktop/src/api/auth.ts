@@ -42,7 +42,7 @@ export async function login(username: string, password: string): Promise<AuthRes
   // LabOS server. Always try the central API first so a successful online
   // login refreshes the local password and permission cache; only fall back
   // to the cached account when the central request actually fails to connect.
-  if (!inTauri || inTauri) {
+  {
     try {
       const response = await fetch(`${API_BASE}/auth/login`, {
         method: 'POST',
