@@ -24,7 +24,8 @@
     "test:sync-reliability-static": "node src/test-sync-reliability-static.js",
     "resources:clear": "node tools/clear-resources.js",
     "test:resource-dedup-static": "node src/test-resource-dedup-static.js",
-    "test:resource-dedup-disposable": "node src/test-resource-dedup-disposable.js"
+    "test:resource-dedup-disposable": "node src/test-resource-dedup-disposable.js",
+    "test:resource-sync-static": "node src/test-resource-sync-static.js"
   },
   "dependencies": {
     "@google/genai": "^2.16.0",
