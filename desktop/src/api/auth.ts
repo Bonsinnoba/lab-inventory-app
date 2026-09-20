@@ -70,21 +70,21 @@ export async function login(username: string, password: string): Promise<AuthRes
       if (response.status >= 500 && inTauri) {
         removeToken();
         const local = await localInvoke<AuthResponse>('local_login', { username, password });
-        if (local !== null) return local;
+        if (local) return local;
       }
       throw new Error(error?.error?.message || error?.error || 'Login failed');
     } catch (error) {
       if (inTauri && (error instanceof TypeError || (error instanceof DOMException && error.name === 'AbortError'))) {
         removeToken();
         const local = await localInvoke<AuthResponse>('local_login', { username, password });
-        if (local !== null) return local;
+        if (local) return local;
       }
       throw error;
     }
   }
   removeToken();
   const local = await localInvoke<AuthResponse>('local_login', { username, password });
-  if (local !== null) return local;
+  if (local) return local;
   throw new Error('Connect to LabOS to sign in on this installation.');
 }
 
