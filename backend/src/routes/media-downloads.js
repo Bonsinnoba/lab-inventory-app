@@ -4,10 +4,12 @@ import fsSync from 'node:fs';
 import path from 'node:path';
 import { pool } from '../db.js';
 import { requireResourceEditor, requireResourceRead } from '../middleware/resource-access.js';
+import { hasPermission } from '../middleware/permissions.js';
 import { stopMediaDownloadJob, ensureYouTubeThumbnail, getMediaToolStatus } from '../media-downloads.js';
 import { resolveStoragePath } from '../storage.js';
 
 const router = Router();
+router.use(hasPermission('resources.edit'));
 function settingsPayload(row) { return { enabled: row.enabled, mode: row.mode, window_start: String(row.window_start).slice(0,5), window_end: String(row.window_end).slice(0,5), concurrent_downloads: row.concurrent_downloads, default_quality: row.default_quality, max_retries: row.max_retries ?? 2 }; }
 router.get('/settings', async (_req,res)=>{ try { const r=await pool.query('SELECT * FROM media_download_settings WHERE id=1'); res.json(settingsPayload(r.rows[0])); } catch(err){res.status(500).json({error:err.message||'Failed to fetch download settings'});} });
 router.put('/settings', async(req,res)=>{ try { const mode=['manual','scheduled','always'].includes(req.body.mode)?req.body.mode:'scheduled'; const quality=['best','1080p','720p','480p'].includes(req.body.default_quality)?req.body.default_quality:'720p'; const concurrent=Math.max(1,Math.min(3,Number(req.body.concurrent_downloads)||1)); const requestedRetries=Number(req.body.max_retries); const maxRetries=Number.isFinite(requestedRetries)?Math.max(0,Math.min(4,requestedRetries)):2; const r=await pool.query(`UPDATE media_download_settings SET enabled=$1,mode=$2,window_start=$3::time,window_end=$4::time,concurrent_downloads=$5,default_quality=$6,max_retries=$7,updated_by=$8,updated_at=CURRENT_TIMESTAMP WHERE id=1 RETURNING *`,[req.body.enabled!==false,mode,req.body.window_start||'00:00',req.body.window_end||'06:00',concurrent,quality,maxRetries,req.user?.userId||null]); res.json(settingsPayload(r.rows[0])); } catch(err){res.status(400).json({error:err.message||'Failed to update download settings'});} });
