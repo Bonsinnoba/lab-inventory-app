@@ -33,7 +33,7 @@ assert(/targetCheck[\s\S]*?targetCheck\.rows\[0\]\.project_id !== req\.params\.p
 assert(/source_block_id === target_block_id/.test(connectors), 'Connector rejects self-connections');
 
 // Project updates must return the persisted row.
-assert(projects.includes('UPDATE projects SET ${updates.join(\', \')} WHERE id=${values.length} RETURNING *'), 'Project update returns the persisted project');
+assert(projects.includes('UPDATE projects SET ${updates.join(\', \')} WHERE id=$${values.length} RETURNING *'), 'Project update returns the persisted project');
 
 // Project detail must verify team persistence and refresh its workspace cache.
 assert(/getProjectWorkspace\(projectId\)/.test(detail), 'Project team mutation re-reads project workspace');
