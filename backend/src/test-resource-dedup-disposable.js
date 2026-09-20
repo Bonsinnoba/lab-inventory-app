@@ -2,9 +2,18 @@ import pg from 'pg';
 import { randomUUID } from 'node:crypto';
 
 const { Client } = pg;
-const url = process.env.DATABASE_URL;
-if (!url) {
-  console.error('DISPOSABLE RESOURCE DEDUP TEST NOT RUN: DATABASE_URL is required.');
+const connectionConfig = process.env.DATABASE_URL
+  ? { connectionString: process.env.DATABASE_URL }
+  : {
+      host: process.env.PGHOST,
+      port: process.env.PGPORT ? Number(process.env.PGPORT) : undefined,
+      database: process.env.PGDATABASE,
+      user: process.env.PGUSER,
+      password: process.env.PGPASSWORD,
+    };
+
+if (!connectionConfig.connectionString && !connectionConfig.host) {
+  console.error('DISPOSABLE RESOURCE DEDUP TEST NOT RUN: DATABASE_URL or PGHOST/PGDATABASE/PGUSER configuration is required.');
   process.exit(2);
 }
 
@@ -12,7 +21,7 @@ const key = `labos-disposable-dedup-${randomUUID()}`;
 const resourceUrl = `https://example.invalid/${key}/`;
 const normalizedUrl = resourceUrl.trim().replace(/\/+$/, '');
 const lockKey = ['link', normalizedUrl.toLowerCase(), '', '', '', ''].join('|');
-const clients = [new Client({ connectionString: url }), new Client({ connectionString: url })];
+const clients = [new Client(connectionConfig), new Client(connectionConfig)];
 
 async function lock(client) {
   await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [lockKey]);
@@ -21,7 +30,7 @@ async function find(client) {
   return client.query("SELECT id FROM resources WHERE kind='link' AND lower(btrim(url))=lower($1) AND item_id IS NOT DISTINCT FROM $2 AND project_id IS NOT DISTINCT FROM $3 AND note_id IS NOT DISTINCT FROM $4 AND parent_resource_id IS NOT DISTINCT FROM $5 LIMIT 1", [normalizedUrl, null, null, null, null]);
 }
 async function cleanup() {
-  const c = new Client({ connectionString: url });
+  const c = new Client(connectionConfig);
   await c.connect();
   try { await c.query("DELETE FROM resources WHERE kind='link' AND url=$1", [resourceUrl]); }
   finally { await c.end(); }
