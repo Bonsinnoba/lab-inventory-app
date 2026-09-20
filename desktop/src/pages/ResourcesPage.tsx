@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getAllResources, uploadFile, createLink, deleteResource, Resource, getResourceDownloadUrl, isLocalResourceRuntime } from '../api/resources'; import { getItems } from '../api/items'; import { getProjects } from '../api/projects'; import { getNotes } from '../api/notes';
+import { getAllResources, uploadFile, createLink, deleteResource, Resource, getResourceDownloadUrl } from '../api/resources'; import { getItems } from '../api/items'; import { getProjects } from '../api/projects'; import { getNotes } from '../api/notes';
 import { queueVideoDownload, downloadYouTubeThumbnail, getLocalThumbnailUrl, DownloadQuality } from '../api/mediaDownloads'; import { getCurrentPermissions } from '../api/auth'; import { useState, useRef, useEffect } from 'react';
 import { Upload, Link as LinkIcon, File, Folder, Trash2, Play, CheckCircle2, Youtube, RefreshCw } from 'lucide-react'; import ResourceViewerModalLocal from '../components/ResourceViewerModalLocal'; import ResourceEditorModal from '../components/ResourceEditorModal'; import { useToast } from '../contexts/ToastContext';
 type ParentType='none'|'item'|'project'|'note'; type VideoSource='youtube'|'facebook'|'instagram'|null;
