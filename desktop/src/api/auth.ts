@@ -193,6 +193,20 @@ export function setStoredUser(user: User): void {
   if (typeof window !== 'undefined') window.dispatchEvent(new Event('labos-user-updated'));
 }
 
+export async function getCurrentPermissions(): Promise<string[]> {
+  if (isTauriRuntime()) {
+    try {
+      const permissions = await localInvoke<string[]>('local_current_permissions');
+      if (permissions) return permissions;
+    } catch {}
+  }
+  try {
+    return await fetchServerPermissions();
+  } catch {
+    return [];
+  }
+}
+
 export function getStoredUser(): User | null {
   const userStr = localStorage.getItem('auth_user');
   return userStr ? JSON.parse(userStr) : null;
