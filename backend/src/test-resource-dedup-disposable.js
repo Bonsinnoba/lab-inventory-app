@@ -46,7 +46,7 @@ try {
   // of the logical key. This catches a plain UNIQUE index, which would allow
   // duplicate item/project/note/folder scopes because NULLs compare distinct.
   await clients[0].query('BEGIN');
-  await clients[0].query("INSERT INTO resources (name,kind,file_type,url) VALUES ($1,'link','other',$2)", [key, resourceUrl]);
+  await clients[0].query("INSERT INTO resources (name,kind,file_type,url) VALUES ($1,'link','other',$2)", [key, normalizedUrl]);
   let constraintRejected = false;
   try {
     await clients[0].query("INSERT INTO resources (name,kind,file_type,url) VALUES ($1,'link','other',$2)", [`${key}-duplicate`, normalizedUrl]);
@@ -61,7 +61,7 @@ try {
   await lock(clients[0]);
   const first = await find(clients[0]);
   if (first.rowCount) throw new Error('Random disposable URL unexpectedly already exists');
-  await clients[0].query("INSERT INTO resources (name,kind,file_type,url) VALUES ($1,'link','other',$2)", [key, resourceUrl]);
+  await clients[0].query("INSERT INTO resources (name,kind,file_type,url) VALUES ($1,'link','other',$2)", [key, normalizedUrl]);
 
   await clients[1].query('BEGIN');
   const secondLock = lock(clients[1]);
