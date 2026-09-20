@@ -1,0 +1,51 @@
+services:
+  test-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: labos_test
+      POSTGRES_USER: labos_test
+      POSTGRES_PASSWORD: labos_test_password
+    volumes:
+      - labos_test_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U labos_test -d labos_test"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "5433:5432"
+
+  test-api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: test
+      PGDATABASE: labos_test
+      PGUSER: labos_test
+      PGPASSWORD: labos_test_password
+      PGHOST: test-db
+      PGPORT: 5432
+      JWT_SECRET: test-secret-key-for-testing-only
+      STORAGE_DIR: /app/storage
+      LABOS_BIND_ADDRESS: 0.0.0.0
+      PORT: 4001
+    depends_on:
+      test-db:
+        condition: service_healthy
+    volumes:
+      - labos_test_storage:/app/storage
+    ports:
+      - "4001:4001"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4001/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  labos_test_postgres:
+  labos_test_storage:
