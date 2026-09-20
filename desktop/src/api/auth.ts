@@ -84,7 +84,7 @@ export async function login(username: string, password: string): Promise<AuthRes
   }
   removeToken();
   const local = await localInvoke<AuthResponse>('local_login', { username, password });
-  if (local) return local;
+  if (local) return local as AuthResponse;
   throw new Error('Connect to LabOS to sign in on this installation.');
 }
 
