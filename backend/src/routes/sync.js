@@ -550,23 +550,6 @@ async function applyChange(client,change,userId){if(change.entity_type==='note')
 export default router;
 +(i+1)).join(',');
   const created=(await client.query('INSERT INTO resources ('+columns.join(',')+') VALUES ('+placeholders+') RETURNING *',values)).rows[0];
-  // Offline-created supported video links must enter the central media queue once they sync.
-  if(created.kind==='link'&&created.url){
-   let supported=false;
-   try{
-    const host=new URL(created.url).hostname.toLowerCase().replace(/^www\./,'');
-    supported=host==='youtube.com'||host==='youtu.be'||host.endsWith('.youtube.com')||host==='facebook.com'||host.endsWith('.facebook.com')||host==='fb.watch'||host==='instagram.com'||host.endsWith('.instagram.com');
-   }catch{}
-   if(supported){
-    const active=await client.query("SELECT id FROM resource_download_jobs WHERE resource_id=$1 AND status IN ('queued','scheduled','downloading','paused') LIMIT 1",[created.id]);
-    if(!active.rowCount){
-     const settings=await client.query('SELECT default_quality,max_retries FROM media_download_settings WHERE id=1');
-     const quality=['best','1080p','720p','480p'].includes(settings.rows[0]?.default_quality)?settings.rows[0].default_quality:'720p';
-     const maxAttempts=1+Math.max(0,Math.min(4,Number(settings.rows[0]?.max_retries)||0));
-     await client.query("INSERT INTO resource_download_jobs(resource_id,requested_by,status,quality,priority,max_attempts) VALUES($1,$2,'queued',$3,0,$4)",[created.id,user.userId,quality,maxAttempts]);
-    }
-   }
-  }
   return created;
  }
  const existing=await client.query('SELECT * FROM resources WHERE id=$1 FOR UPDATE',[entityId]);
