@@ -53,6 +53,7 @@ const queryClient = new QueryClient({
 function AppContent() {
   const location = useLocation();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [user, setUser] = useState<User | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [rightPanelContent, setRightPanelContent] = useState<DockableContent>('assistant');
@@ -90,6 +91,12 @@ function AppContent() {
         .catch(() => undefined);
     }
   }, [isAuthenticated]);
+
+  useEffect(() => {
+    const onManualSyncComplete = () => { void queryClient.invalidateQueries(); };
+    window.addEventListener('labos:manual-sync-complete', onManualSyncComplete);
+    return () => window.removeEventListener('labos:manual-sync-complete', onManualSyncComplete);
+  }, [queryClient]);
 
   useEffect(() => {
     if (!isAuthenticated) return;
