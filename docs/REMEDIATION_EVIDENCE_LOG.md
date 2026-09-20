@@ -295,3 +295,42 @@ docker compose exec labos-api npm run test:resource-dedup-disposable
 ```
 
 A PASS still requires both database uniqueness and concurrent advisory-lock checks to report PASS. Migration 043 remains deferred until that runtime test passes and the production PostgreSQL major version is confirmed compatible.
+
+## Evidence update — 2026-09-20 (successful disposable PostgreSQL runtime verification)
+
+The corrected disposable resource-link test was executed against the live disposable PostgreSQL deployment after rebuilding the API container from `main`.
+
+### Runtime environment
+
+- PostgreSQL: **16.4**.
+- `idx_resources_link_unique` was independently inspected before the test and confirmed to use `NULLS NOT DISTINCT` across the normalized URL and complete parent scope, with the expected link/non-null URL predicate.
+- The test did not apply migration 043 or otherwise modify the database schema.
+
+### Runtime results
+
+The workstation executed:
+
+```powershell
+docker compose build labos-api
+docker compose up -d labos-api
+docker compose exec labos-api npm run test:resource-dedup-disposable
+```
+
+The disposable test reported:
+
+```text
+PASS: database NULL-safe uniqueness constraint
+PASS: disposable concurrent resource-link deduplication
+```
+
+This establishes runtime evidence that the live PostgreSQL constraint rejects a logical duplicate with NULL parent columns after application URL canonicalization, and that the transaction advisory-lock sequence prevents the tested check-then-insert race from producing a second logical link.
+
+### Evidence classification
+
+The resource-link deduplication remediation now has both static and real PostgreSQL runtime evidence. The earlier failed runtime attempt is retained as a documented test false-negative caused by the test mixing the raw trailing-slash URL with the canonical URL; it was not evidence of an incorrect database index.
+
+Migration 043 remains subject to the separate production compatibility/deployment decision. The disposable PostgreSQL 16.4 environment is compatible with the `NULLS NOT DISTINCT` feature, but this runtime test alone does not establish the production database major version.
+
+### Next verification target
+
+Proceed to the remaining resource/sync runtime evidence, beginning with the resource sync contract and then the broader sync reliability/core regression suite. Do not treat static checks as substitutes for runtime evidence where a real database-backed workflow can be exercised.
