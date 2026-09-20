@@ -200,3 +200,14 @@ The workstation run at `7fa092b` exposed two issues that required direct correct
 The earlier evidence entry stated these corrections had been made, but the workstation output demonstrated that the first attempted edits had not actually changed the affected file contents. This entry records the **actual effective commits** and supersedes that part of the earlier note.
 
 Current database evidence status is unchanged: `npm run test:resource-dedup-disposable` did not execute because `DATABASE_URL` was not configured. It must not be treated as PASS.
+
+## Evidence update — 2026-09-20 (sync.js syntax audit)
+
+The workstation verification after commit `52c0d04` exposed one additional confirmed production-source syntax defect in `backend/src/routes/sync.js`.
+
+- The sync resource-link duplicate query contained an over-escaped trailing-slash regex: `replace(/\\\\/+$/,'')` in source. Node therefore failed `npm run check` with `SyntaxError: Unexpected token ','` at the query argument list.
+- The corresponding helper `resourceLinkLockKey()` already contained the intended regex, so this was a duplicated implementation-site defect rather than a design change.
+- Corrected directly on `main` in commit `55168abbffc7a25b928d06e4550c7ffd22d3059c` to use the same intended URL normalization expression as the lock-key path.
+- No synchronization behavior or deduplication policy was changed; the fix restores valid JavaScript and consistent trailing-slash normalization.
+- The user's current run provides strong evidence that the static suites and Rust unit tests pass, but `npm run check` remains a required gate after this correction.
+- `npm run test:resource-dedup-disposable` remains **NOT RUN**, because `DATABASE_URL` was not configured. This is still a runtime evidence gap and must not be treated as PASS.
