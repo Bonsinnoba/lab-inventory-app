@@ -100,11 +100,21 @@ function AppContent() {
 
   useEffect(() => {
     if (!isAuthenticated) return;
-    const run = () => { void syncPendingChanges(); };
-    const recover = () => { void syncPendingChanges(true); };
-    run();
-    const timer = window.setInterval(run, 15000);
+
+    const syncAndRefresh = async (force = false) => {
+      try {
+        await syncPendingChanges(force);
+        window.dispatchEvent(new Event('labos:manual-sync-complete'));
+      } catch {
+        // Sync handles its own errors/status; keep the automatic loop alive.
+      }
+    };
+
+    void syncAndRefresh();
+    const timer = window.setInterval(() => { void syncAndRefresh(); }, 15000);
+    const recover = () => { void syncAndRefresh(true); };
     window.addEventListener('online', recover);
+
     return () => {
       window.clearInterval(timer);
       window.removeEventListener('online', recover);
