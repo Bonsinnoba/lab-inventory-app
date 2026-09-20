@@ -37,6 +37,18 @@ export async function listSyncConflicts():Promise<unknown[]>{try{return await in
 export async function resolveSyncConflict(changeId:string,resolution:'keep_local'|'accept_server'|'dismiss'):Promise<void>{await invoke('resolve_sync_conflict',{changeId,resolution});}
 export async function syncPendingChanges(force=false):Promise<number>{if(activeSync)return activeSync;if(!force&&nextRetryAt>Date.now()){return 0;}activeSync=runSync().finally(()=>{activeSync=null;});return activeSync;}
 
+async function runPullStep(label:string, step:()=>Promise<boolean>):Promise<boolean>{
+  try{
+    const ok=await step();
+    if(!ok) publish({status:'error',lastError:`${label}: ${runtimeState.lastError||'operation failed'}`});
+    return ok;
+  }catch(error){
+    const message=error instanceof Error?error.message:String(error);
+    publish({status:'error',lastError:`${label}: ${message}`});
+    return false;
+  }
+}
+
 async function runSync():Promise<number>{
   if(typeof navigator!=='undefined'&&!navigator.onLine){publish({status:'offline'});return 0;}
   const token=getToken();
@@ -83,14 +95,14 @@ async function runSync():Promise<number>{
       scheduleRetry();
     }
   }
-  const inventoryPullSucceeded=await pullServerInventory();
-  const projectPullSucceeded=await pullServerProjects();
-  const resourcePullSucceeded=await pullServerResources();
-  const financePullSucceeded=await pullServerFinance();
-  const locationPullSucceeded=await pullServerLocations();
-  const engineeringPullSucceeded=await pullServerEngineering();
-  const knowledgePullSucceeded=await pullServerKnowledge();
-  const notesPullSucceeded=await pullServerNotes();
+  const inventoryPullSucceeded=await runPullStep('Inventory pull',pullServerInventory);
+  const projectPullSucceeded=await runPullStep('Project pull',pullServerProjects);
+  const resourcePullSucceeded=await runPullStep('Resource pull',pullServerResources);
+  const financePullSucceeded=await runPullStep('Finance pull',pullServerFinance);
+  const locationPullSucceeded=await runPullStep('Location pull',pullServerLocations);
+  const engineeringPullSucceeded=await runPullStep('Engineering pull',pullServerEngineering);
+  const knowledgePullSucceeded=await runPullStep('Knowledge pull',pullServerKnowledge);
+  const notesPullSucceeded=await runPullStep('Notes pull',pullServerNotes);
   const pullSucceeded=inventoryPullSucceeded&&projectPullSucceeded&&resourcePullSucceeded&&financePullSucceeded&&locationPullSucceeded&&engineeringPullSucceeded&&knowledgePullSucceeded&&notesPullSucceeded;
   if(!pullSucceeded){syncSucceeded=false;publish({status:'error',lastError:runtimeState.lastError||'Unable to download the latest server changes'});scheduleRetry();}
   if(syncSucceeded&&pullSucceeded){clearRetryState();publish({status:'idle',lastSuccessAt:new Date().toISOString(),lastError:null});}
