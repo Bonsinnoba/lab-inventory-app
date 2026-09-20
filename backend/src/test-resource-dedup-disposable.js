@@ -10,7 +10,7 @@ if (!url) {
 
 const key = `labos-disposable-dedup-${randomUUID()}`;
 const resourceUrl = `https://example.invalid/${key}/`;
-const normalizedUrl = resourceUrl.trim().replace(/\\/+$/, '');
+const normalizedUrl = resourceUrl.trim().replace(/\/+$/, '');
 const lockKey = ['link', normalizedUrl.toLowerCase(), '', '', '', ''].join('|');
 const clients = [new Client({ connectionString: url }), new Client({ connectionString: url })];
 
