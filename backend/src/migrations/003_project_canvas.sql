@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS project_blocks (
         block_type IN ('text', 'image', 'video', 'pdf', 'audio', 'link', 'folder')
     ),
     text_content TEXT,
-    resource_id UUID REFERENCES resources(id) ON DELETE SET NULL,
+    resource_id UUID REFERENCES resources(id) ON DELETE CASCADE,
 
     -- Free-form canvas position and size, in pixels. (x, y) is the
     -- block's top-left corner relative to the canvas origin. Independent
