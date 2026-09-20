@@ -21,7 +21,8 @@
     "test:phase3-static": "node src/test-phase3-static.js",
     "test:phase4-static": "node src/test-phase4-static.js",
     "test:media-downloads-static": "node src/test-media-downloads-static.js",
-    "test:sync-reliability-static": "node src/test-sync-reliability-static.js"
+    "test:sync-reliability-static": "node src/test-sync-reliability-static.js",
+    "resources:clear": "node tools/clear-resources.js"
   },
   "dependencies": {
     "@google/genai": "^2.16.0",
