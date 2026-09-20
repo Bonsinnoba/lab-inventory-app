@@ -254,8 +254,9 @@ pub fn queue_local_resource_download(app: AppHandle, resource_id: String, qualit
     if valid == 0 { return Err("Offline authorization has expired. Connect to LabOS to refresh access.".into()); }
     let permissions: Vec<String> = serde_json::from_str(&permissions).map_err(|e| format!("Unable to decode local authorization: {e}"))?;
     if !permissions.iter().any(|p| p == "resources.edit") { return Err("Permission required: resources.edit".into()); }
-    let exists: Option<String> = conn.query_row("SELECT id FROM local_resources WHERE id=?1 AND kind='link' AND url IS NOT NULL", [&resource_id], |r| r.get(0)).optional().map_err(|e| format!("Unable to inspect local resource: {e}"))?;
-    if exists.is_none() { return Err("Resource not found".into()); }
+    let resources = read_resources(&conn)?;
+    let exists = resources.iter().any(|r| r.id == resource_id && r.kind == "link" && r.url.as_deref().is_some());
+    if !exists { return Err("Resource not found".into()); }
     let change_id = uuid::Uuid::new_v4().to_string();
     let job_id = uuid::Uuid::new_v4().to_string();
     let device_id: String = conn.query_row("SELECT device_id FROM device_identity WHERE id=1", [], |r| r.get(0)).map_err(|e| format!("Unable to read device identity: {e}"))?;
