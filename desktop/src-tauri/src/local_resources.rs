@@ -367,3 +367,77 @@ fn _validate_json_state(value: &Value) -> Result<(), String> {
     if !value.is_object() { return Err("Resource state must be an object".into()); }
     Ok(())
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn resource(id: &str, kind: &str, item_id: Option<&str>, parent_resource_id: Option<&str>) -> LocalResource {
+        LocalResource {
+            id: id.into(), name: id.into(), kind: kind.into(), file_type: "other".into(),
+            original_filename: None, mime_type: None, size_bytes: None, url: None,
+            thumbnail_url: None, local_media_path: None, local_media_filename: None,
+            local_media_mime_type: None, local_media_size_bytes: None,
+            local_media_downloaded_at: None, parent_resource_id: parent_resource_id.map(str::to_string),
+            relative_path: None, item_id: item_id.map(str::to_string), project_id: None,
+            note_id: None, item_name: None, project_name: None, note_title: None,
+            category: Some("general".into()), description: Some(String::new()), tags: vec![],
+            updated_at: "2026-09-20T00:00:00Z".into(), created_at: "2026-09-20T00:00:00Z".into(),
+            derived_from_resource_id: None,
+        }
+    }
+
+    #[test]
+    fn normalize_resource_url_trims_whitespace_and_trailing_slashes() {
+        assert_eq!(normalize_resource_url("  https://example.com/video///  "), "https://example.com/video");
+        assert_eq!(normalize_resource_url("https://example.com/"), "https://example.com");
+    }
+
+    #[test]
+    fn validate_parent_rejects_multiple_direct_parent_contexts() {
+        let resources = vec![];
+        let err = validate_parent(
+            &resources,
+            &Some("item-1".into()),
+            &Some("project-1".into()),
+            &None,
+            &None,
+        ).unwrap_err();
+        assert!(err.contains("at most one"));
+    }
+
+    #[test]
+    fn validate_parent_requires_existing_folder_for_nested_resource() {
+        let resources = vec![resource("not-a-folder", "link", None, None)];
+        let err = validate_parent(
+            &resources,
+            &None,
+            &None,
+            &None,
+            &Some("not-a-folder".into()),
+        ).unwrap_err();
+        assert!(err.contains("Parent resource folder was not found"));
+    }
+
+    #[test]
+    fn validate_parent_accepts_existing_folder() {
+        let resources = vec![resource("folder-1", "folder", None, None)];
+        assert!(validate_parent(
+            &resources,
+            &None,
+            &None,
+            &None,
+            &Some("folder-1".into()),
+        ).is_ok());
+    }
+
+    #[test]
+    fn normalize_tags_drops_empty_values_and_limits_count() {
+        let tags = normalize_tags(Some(vec![" alpha ".into(), "".into(), " beta".into()]));
+        assert_eq!(tags, vec!["alpha", "beta"]);
+
+        let many = normalize_tags(Some((0..40).map(|i| format!("tag-{i}")).collect()));
+        assert_eq!(many.len(), 30);
+    }
+}
