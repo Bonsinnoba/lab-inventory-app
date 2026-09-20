@@ -6,7 +6,22 @@ interface AddItemModalProps { onClose: () => void; }
 export default function AddItemModal({ onClose }: AddItemModalProps) {
   const queryClient = useQueryClient(); const { showToast } = useToast();
   const [formData, setFormData] = useState({ name:'', type:'tool' as Item['type'], category:'', sku:'', initial_quantity:1, unit:'', dimensions:'', status:'available' as Item['status'], storage_location:'', unit_cost:'', replacement_cost:'', supplier:'', part_number:'' });
-  const createMutation = useMutation({ mutationFn: createItem, onSuccess: () => { queryClient.invalidateQueries({ queryKey:['items'] }); showToast('Item created'); onClose(); }, onError:(err:any)=>showToast(err?.message||'Failed to create item','error') });
+  const createMutation = useMutation({
+    mutationFn: createItem,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey:['items'] });
+      showToast('Item created');
+      onClose();
+    },
+    onError: (err: unknown) => {
+      const message = typeof err === 'string'
+        ? err
+        : err && typeof err === 'object' && 'message' in err
+          ? String((err as { message?: unknown }).message || '')
+          : '';
+      showToast(message || 'Failed to create item', 'error');
+    },
+  });
   const handleSubmit=(e:React.FormEvent)=>{e.preventDefault();createMutation.mutate({...formData,initial_quantity:Number(formData.initial_quantity),unit_cost:formData.unit_cost?Number(formData.unit_cost):undefined,replacement_cost:formData.replacement_cost?Number(formData.replacement_cost):undefined,storage_location:formData.storage_location.trim()||undefined,current_quantity:Number(formData.initial_quantity)} as Omit<Item,'id'|'created_at'|'updated_at'>);};
   const field='w-full px-3 py-2 bg-bg border border-border rounded-sm text-text-primary focus:outline-none focus:border-accent';
   return <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"><div className="bg-surface border border-border rounded-md p-6 w-[600px] max-h-[90vh] overflow-y-auto"><h3 className="text-section-header font-ui font-semibold mb-4">Add Item</h3><form onSubmit={handleSubmit} className="space-y-4">
