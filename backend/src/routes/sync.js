@@ -567,27 +567,6 @@ async function applyKnowledgeEntity(client,change,user){
   return(await client.query('UPDATE '+cfg.table+' SET '+updates.join(',')+',updated_by=$'+(values.length-1)+' WHERE id=$'+values.length+' RETURNING *',values)).rows[0];
 }
 
-async function applyResourceDownloadJobEntity(client,change,user){
-  if(change.operation!=='create')fail(400,'UNSUPPORTED_SYNC_OPERATION','Download queue requests support create only');
-  const payload=object(change.payload,'Download queue payload');
-  const resourceId=id(payload.resource_id||payload.resourceId,'Resource ID');
-  const jobId=id(change.entity_id,'Download job ID');
-  const permissions=await getUserPermissions(user.userId,user.role);
-  if(!permissions.has('resources.edit'))fail(403,'PERMISSION_DENIED','Permission required: resources.edit');
-  const access=await requireResourceEditor(resourceId,user);
-  if(!access.ok)fail(access.status,access.error?.code||'RESOURCE_ACCESS_DENIED',access.error?.message||'You do not have edit access to this resource');
-  const resource=await client.query('SELECT * FROM resources WHERE id=$1',[resourceId]);
-  if(!resource.rowCount)fail(404,'RESOURCE_NOT_FOUND','Resource not found');
-  if(resource.rows[0].kind!=='link'||!resource.rows[0].url)fail(400,'INVALID_DOWNLOAD_RESOURCE','Only URL resources can be downloaded');
-  if(resource.rows[0].local_media_path)fail(409,'MEDIA_ALREADY_DOWNLOADED','This resource already has a local video copy');
-  const existing=await client.query("SELECT * FROM resource_download_jobs WHERE resource_id=$1 AND status IN ('queued','scheduled','downloading','paused') LIMIT 1",[resourceId]);
-  if(existing.rowCount)return existing.rows[0];
-  const settings=await client.query('SELECT default_quality,max_retries FROM media_download_settings WHERE id=1');
-  const quality=['best','1080p','720p','480p'].includes(payload.quality)?payload.quality:settings.rows[0]?.default_quality||'720p';
-  const maxAttempts=1+Math.max(0,Math.min(4,Number(settings.rows[0]?.max_retries)||0));
-  const inserted=await client.query('INSERT INTO resource_download_jobs(id,resource_id,requested_by,status,quality,scheduled_for,priority,max_attempts) VALUES($1,$2,$3,\'queued\',$4,NULL,0,$5) RETURNING *',[jobId,resourceId,user.userId,quality,maxAttempts]);
-  return inserted.rows[0];
-}
 
 async function applyChange(client,change,userId){if(change.entity_type==='resource_download_job')return applyResourceDownloadJobEntity(client,change,{userId,role:change.__role});if(change.entity_type==='note')return applyNoteEntity(client,change,{userId,role:change.__role});if(change.entity_type==='project_item')return applyProjectItemEntity(client,change,{userId,role:change.__role});if(change.entity_type==='project_task_experiment')return applyProjectTaskExperimentEntity(client,change,{userId,role:change.__role});if(knowledgeEntityType(change.entity_type))return applyKnowledgeEntity(client,change,{userId,role:change.__role});if(change.entity_type==='location')return applyLocationEntity(client,change,{userId,role:change.__role});if(engineeringEntityType(change.entity_type))return applyEngineeringEntity(client,change,{userId,role:change.__role});if(projectEntityType(change.entity_type))return applyProjectEntity(client,change,{userId,role:change.__role});if(change.entity_type==='resource')return applyResourceEntity(client,change,{userId,role:change.__role});if(FINANCE_CONFIG[change.entity_type])return applyFinanceEntity(client,change,{userId,role:change.__role});if(change.operation==='bulk_status'){const p=object(change.payload,'Bulk status payload');const ids=Array.isArray(p.ids)?p.ids:[];if(!ids.length||typeof p.status!=='string')fail(400,'INVALID_BULK_STATUS','ids and status are required');return{updated:Number((await client.query('UPDATE items SET status=$1,updated_at=now() WHERE id=ANY($2::uuid[])',[p.status,ids])).rowCount)};}if(change.operation==='bulk_delete'){const p=object(change.payload,'Bulk delete payload');const ids=Array.isArray(p.ids)?p.ids:[];if(!ids.length)return{deleted:0};const result=await client.query('DELETE FROM items WHERE id=ANY($1::uuid[]) RETURNING id', [ids]);for(const row of result.rows)await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) VALUES('item',$1) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()",[row.id]);return{deleted:Number(result.rowCount)};}if(change.entity_type==='item')return applyItem(client,change);if(change.entity_type==='item_movement'&&change.operation==='create')return applyMovement(client,change,userId);fail(400,'UNSUPPORTED_SYNC_CHANGE',`Unsupported sync change: ${change.entity_type}/${change.operation}`);}
 
