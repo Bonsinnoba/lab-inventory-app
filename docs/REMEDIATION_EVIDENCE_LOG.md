@@ -103,3 +103,58 @@ Reason: the database constraint must encode the same logical identity as the app
 Migration 043 remains deferred. Do not apply it to production until the revised migration has been executed successfully against the disposable/test PostgreSQL 16 environment and the production PostgreSQL major version is confirmed compatible.
 
 This review supersedes the earlier statement that migration 043 was already safe to apply solely on the basis of its original unique index.
+
+## Follow-up: converting Tauri-only claims into executable evidence
+
+The next verification pass did not accept “requires Tauri GUI” as an automatic reason to leave workflows untested.
+
+### CHANGE-006 — local resource unit coverage
+
+desktop/src-tauri/src/local_resources.rs now has Rust unit tests covering:
+
+- URL normalization (whitespace and trailing slashes);
+- rejection of multiple direct parent contexts;
+- rejection of non-folder nested parents;
+- acceptance of a valid folder parent;
+- tag normalization and 30-tag limit.
+
+These are deterministic tests and do not require the Tauri GUI.
+
+### CHANGE-007 — resource sync static contract checks
+
+Added backend/src/test-resource-sync-static.js and the npm script:
+
+npm run test:resource-sync-static
+
+The checks cover:
+
+- local resource state + outbox transactional persistence;
+- transactional server-pull merge;
+- protection of pending local resource mutations from server overwrite;
+- protection of pending local resources from server tombstone deletion;
+- download-job outbox creation;
+- server handling of download-job sync;
+- active-download-job deduplication;
+- resource deletion tombstones;
+- resource deletion propagation;
+- direct-link transaction rollback/commit structure;
+- local folder-parent identity.
+
+These are source-level contract checks, not runtime proof. They reduce the untested surface but do not replace the required workstation execution.
+
+### Remaining runtime evidence required
+
+The project workstation should now execute, from backend/:
+
+npm run check
+npm run test:resource-dedup-static
+npm run test:resource-sync-static
+npm run test:resource-dedup-disposable
+npm run test:sync-reliability-static
+npm run test:core-static
+
+And from desktop/src-tauri/:
+
+cargo test
+
+The actual output must be recorded before marking these tests PASS.
