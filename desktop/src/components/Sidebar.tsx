@@ -14,12 +14,12 @@ const standaloneItems = [
 const groups = [
   { id: 'laboratory', label: 'Laboratory', icon: Microscope, children: [{ label: 'Operations', path: '/operations' }, { label: 'Intelligence', path: '/lab-intelligence' }] },
 ];
-interface SidebarProps { user?: { username: string; display_name?: string | null; role: string } | null; onLogout?: () => void; }
+interface SidebarProps { user?: { username: string; display_name?: string | null; role: string } | null; permissions?: string[]; onLogout?: () => void; }
 const MIN_WIDTH = 200, MAX_WIDTH = 400, DEFAULT_WIDTH = 256, COLLAPSED_WIDTH = 76;
 const WIDTH_KEY = 'labos-sidebar-width', COLLAPSED_KEY = 'labos-sidebar-collapsed';
 type TooltipState = { label: string; top: number; left: number } | null;
 
-export default function Sidebar({ user, onLogout }: SidebarProps) {
+export default function Sidebar({ user, permissions = [], onLogout }: SidebarProps) {
   const { theme, setMode } = useTheme();
   const [showCollapsedProfile, setShowCollapsedProfile] = useState(false);
   const [showCollapsedGroup, setShowCollapsedGroup] = useState<string | null>(null);
@@ -58,7 +58,7 @@ export default function Sidebar({ user, onLogout }: SidebarProps) {
       <div onMouseDown={handleMouseDown} onMouseEnter={event => !collapsed && showTooltip(event, 'Drag to resize sidebar')} onMouseLeave={hideTooltip} role="separator" aria-orientation="vertical" aria-label="Resize sidebar" className="absolute right-0 top-0 bottom-0 w-1.5 -mr-0.5 cursor-col-resize z-10 group"><div className={`h-full w-full transition-colors ${isResizing ? 'bg-accent' : 'bg-transparent group-hover:bg-accent/50'}`} /></div>
       <div className="p-3 border-b border-border sidebar-brand-row"><div className="min-w-0"><div className="labos-brand" aria-label="LabOS">LAB<span>OS</span></div><div className="text-[10px] text-text-secondary font-mono mt-1 tracking-wider sidebar-brand-subtitle">LABORATORY OPERATING SYSTEM</div></div><button type="button" onClick={() => setCollapsed(value => !value)} onMouseEnter={event => showTooltip(event, collapsed ? 'Expand sidebar' : 'Collapse sidebar')} onMouseLeave={hideTooltip} onFocus={event => showTooltip(event, collapsed ? 'Expand sidebar' : 'Collapse sidebar')} onBlur={hideTooltip} className="sidebar-collapse-button" aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}>{collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}</button></div>
       <nav className="flex-1 p-2 overflow-y-auto sidebar-nav">
-        {primaryItems.map(item => renderLink(item))}<div className="sidebar-section-divider" aria-hidden="true" />
+        {primaryItems.filter(item => item.path !== '/downloads' || permissions.includes('resources.edit')).map(item => renderLink(item))}<div className="sidebar-section-divider" aria-hidden="true" />
         {standaloneItems.map(item => renderLink(item))}
         {groups.map(group => { const Icon = group.icon; const collapsedOpen = showCollapsedGroup === group.id; return <div key={group.id} className="mt-1"><button type="button" onClick={event => collapsed ? openCollapsedGroupMenu(event, group.id) : setOpenGroups(current => ({ ...current, [group.id]: !current[group.id] }))} onMouseEnter={event => collapsed && showTooltip(event, group.label)} onMouseLeave={hideTooltip} onFocus={event => collapsed && showTooltip(event, group.label)} onBlur={hideTooltip} aria-label={collapsed ? group.label : undefined} aria-expanded={collapsed ? collapsedOpen : openGroups[group.id]} className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-left transition-colors text-text-secondary hover:bg-surface-raised hover:text-text-primary"><Icon size={19} aria-hidden="true" /><span className="text-sm sidebar-nav-label flex-1">{group.label}</span>{!collapsed && <ChevronDown size={15} className={`transition-transform ${openGroups[group.id] ? '' : '-rotate-90'}`} aria-hidden="true" />}</button>{!collapsed && openGroups[group.id] && group.children.map(child => renderLink(child, true))}</div>; })}
         {user?.role === 'admin' && renderLink({ icon: User, label: 'Users', path: '/users' })}
