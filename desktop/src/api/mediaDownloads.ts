@@ -1,6 +1,7 @@
 import { apiFetch, apiUrl, getApiErrorMessage } from './http';
 import { getToken } from './auth';
 import { invoke } from '@tauri-apps/api/tauri';
+import { isTauriRuntime } from '../lib/runtime';
 
 export interface DownloadJob {
   id: string; resource_id: string; resource_name: string; resource_url?: string; thumbnail_url?: string;
@@ -20,7 +21,7 @@ export function getLocalMediaUrl(id: string) { const token=getToken(); return ap
 export function getLocalThumbnailUrl(id: string) { const token=getToken(); return apiUrl(`/media-downloads/${id}/thumbnail${token ? `?access_token=${encodeURIComponent(token)}` : ''}`); }
 export async function getDownloadJobs(): Promise<DownloadJob[]> { const r=await apiFetch('/media-downloads/queue'); if(!r.ok) throw new Error(await getApiErrorMessage(r,'Failed to fetch download queue')); return r.json(); }
 export async function queueVideoDownload(resource_id:string, quality?:DownloadQuality, scheduled_for?:string):Promise<DownloadJob>{
-  if(typeof window!=='undefined'&&Boolean((window as any).__TAURI_IPC__)&&!scheduled_for){
+  if(isTauriRuntime()&&!scheduled_for){
     return invoke<DownloadJob>('queue_local_resource_download',{resourceId:resource_id,quality});
   }
   const r=await apiFetch('/media-downloads/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({resource_id,quality,scheduled_for})});
