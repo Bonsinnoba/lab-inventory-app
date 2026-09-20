@@ -9,6 +9,17 @@ use crate::local_auth;
 const STATE_KEY: &str = "resources_state";
 const SCHEMA_VERSION: &str = "008_local_resources";
 
+fn deserialize_optional_i64<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where D: serde::Deserializer<'de> {
+    let value: Option<serde_json::Value> = Option::deserialize(deserializer)?;
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Number(n)) => n.as_i64().ok_or_else(|| serde::de::Error::custom("expected an integer")) .map(Some),
+        Some(serde_json::Value::String(s)) => s.parse::<i64>().map(Some).map_err(serde::de::Error::custom),
+        Some(_) => Err(serde::de::Error::custom("expected an integer or numeric string")),
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LocalResource {
     pub id: String,
