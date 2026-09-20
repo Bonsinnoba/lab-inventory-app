@@ -244,16 +244,18 @@ pub fn create_local_resource_link(app: AppHandle, url: String, name: Option<Stri
 pub fn queue_local_resource_download(app: AppHandle, resource_id: String, quality: Option<String>) -> Result<serde_json::Value, String> {
     let mut conn = open_local_connection(&app)?;
     ensure_schema(&conn)?;
-    let (permissions, expires): (String, Option<String>) = conn.query_row(
-        "SELECT u.permissions_json,u.offline_expires_at FROM local_users u JOIN local_session s ON s.user_id=u.id WHERE s.id=1 AND u.central_user_id IS NOT NULL AND u.is_active=1",
+    let (role, permissions, expires): (String, String, Option<String>) = conn.query_row(
+        "SELECT u.role,u.permissions_json,u.offline_expires_at FROM local_users u JOIN local_session s ON s.user_id=u.id WHERE s.id=1 AND u.central_user_id IS NOT NULL AND u.is_active=1",
         [],
-        |r| Ok((r.get(0)?, r.get(1)?))
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))
     ).map_err(|e| format!("Unable to read local authorization: {e}"))?;
     let expires = expires.ok_or_else(|| "Offline authorization has expired. Connect to LabOS to refresh access.".to_string())?;
     let valid: i64 = conn.query_row("SELECT CASE WHEN datetime('now') < datetime(?1) THEN 1 ELSE 0 END", [&expires], |r| r.get(0)).unwrap_or(0);
     if valid == 0 { return Err("Offline authorization has expired. Connect to LabOS to refresh access.".into()); }
     let permissions: Vec<String> = serde_json::from_str(&permissions).map_err(|e| format!("Unable to decode local authorization: {e}"))?;
-    if !permissions.iter().any(|p| p == "resources.edit") { return Err("Permission required: resources.edit".into()); }
+    if role != "admin" && !permissions.iter().any(|p| p == "resources.edit") {
+        return Err("Permission required: resources.edit".into());
+    }
     let resources = read_resources(&conn)?;
     let exists = resources.iter().any(|r| r.id == resource_id && r.kind == "link" && r.url.as_deref().is_some());
     if !exists { return Err("Resource not found".into()); }
