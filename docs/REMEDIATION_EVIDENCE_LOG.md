@@ -334,3 +334,30 @@ Migration 043 remains subject to the separate production compatibility/deploymen
 ### Next verification target
 
 Proceed to the remaining resource/sync runtime evidence, beginning with the resource sync contract and then the broader sync reliability/core regression suite. Do not treat static checks as substitutes for runtime evidence where a real database-backed workflow can be exercised.
+
+
+## Evidence update — 2026-09-20 (resource/sync workstation verification)
+
+The workstation reran the requested verification sequence from current `main`.
+
+### Results
+
+- `git pull origin main`: **Already up to date**.
+- `npm run check`: **PASS** — backend JavaScript syntax checks completed without errors.
+- `npm run test:resource-sync-static`: **PASS 11/11**.
+- `npm run test:sync-reliability-static`: **PASS 125/125**.
+- `npm run test:core-static`: **PASS** — all Phase 1 regression assertions passed.
+- `cargo test`: **PASS 5/5** Rust unit tests.
+- Rust compilation emitted **13 non-fatal warnings** (unused imports/variables, unnecessary `mut`, dead code, and non-snake-case parameter names). These warnings did not cause test failures and were not changed during this verification run.
+
+### Evidence classification
+
+This establishes fresh workstation execution evidence for backend syntax, resource-sync static contracts, the broader sync-reliability static suite, core regression checks, and Rust unit tests.
+
+It does **not** establish runtime PostgreSQL evidence for the broader sync workflows. The previously completed disposable PostgreSQL test establishes runtime evidence specifically for resource-link deduplication, but resource pull/push, tombstone convergence, offline outbox processing, conflict handling, and retry behavior still require a real runtime exercise where practical.
+
+No production code changes were required by this verification run.
+
+### Next verification target
+
+Proceed with a disposable PostgreSQL-backed sync runtime test rather than treating the 11/11 and 125/125 static results as runtime proof. The test should exercise at minimum a resource sync push/pull lifecycle, idempotency/convergence, deletion tombstone propagation, and the relevant transaction boundaries, while leaving the disposable database safe to destroy afterward.
