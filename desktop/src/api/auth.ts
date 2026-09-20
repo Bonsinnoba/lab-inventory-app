@@ -38,7 +38,11 @@ export async function getLocalAuthStatus(): Promise<LocalAuthStatus | null> {
 
 export async function login(username: string, password: string): Promise<AuthResponse> {
   const inTauri = isTauriRuntime();
-  if (!inTauri || typeof navigator === 'undefined' || navigator.onLine) {
+  // In Tauri, navigator.onLine is not a reliable indicator for a LAN-only
+  // LabOS server. Always try the central API first so a successful online
+  // login refreshes the local password and permission cache; only fall back
+  // to the cached account when the central request actually fails to connect.
+  if (!inTauri || inTauri) {
     try {
       const response = await fetch(`${API_BASE}/auth/login`, {
         method: 'POST',
