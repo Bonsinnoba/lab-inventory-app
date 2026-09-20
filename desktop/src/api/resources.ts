@@ -3,6 +3,7 @@ import { apiFetch, apiUrl, getApiErrorMessage } from './http';
 import { getToken } from './auth';
 import { invoke } from '@tauri-apps/api/tauri';
 import { getDownloadJobs, getLocalMediaUrl } from './mediaDownloads';
+import { isTauriRuntime } from '../lib/runtime';
 
 export interface Resource {
   id: string; name: string; kind: 'file' | 'folder' | 'link';
@@ -17,7 +18,6 @@ export interface Resource {
 export interface ResourceManifest { folder: string; files: Array<{ id: string; relative_path: string; original_filename: string; size_bytes: number; mime_type: string; }>; }
 
 const localMediaResourceIds = new Set<string>();
-function isTauriRuntime() { return typeof window !== 'undefined' && Boolean((window as any).__TAURI_IPC__); }
 export function isLocalResourceRuntime() { return isTauriRuntime(); }
 async function localInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauriRuntime()) throw new Error('Local LabOS runtime is unavailable');
