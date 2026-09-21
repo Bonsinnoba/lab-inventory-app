@@ -570,3 +570,48 @@ Required evidence from the workstation:
 8. record all output before treating the fresh deployment as production-runtime verified.
 
 No runtime PASS is claimed by this documentation change alone.
+
+
+## Evidence update — 2026-09-21 (fresh production PostgreSQL environment mapping remediation)
+
+The first fresh production-style PostgreSQL startup exposed a deployment configuration defect.
+
+### CHANGE-012 — map LabOS PG variables to PostgreSQL image variables
+
+The PostgreSQL 16 container requires the official image variables `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD`. LabOS application configuration intentionally uses `PGDATABASE`, `PGUSER`, and `PGPASSWORD` for the Node/PostgreSQL client.
+
+Runtime evidence showed:
+- `PGDATABASE=lab_inventory`
+- `PGUSER=labos`
+- `PGPASSWORD` was set
+- `POSTGRES_DB` and `POSTGRES_USER` were empty
+- PostgreSQL repeatedly aborted initialization with: `Database is uninitialized and superuser password is not specified.`
+
+The password itself was subsequently rotated by the workstation operator after it appeared in diagnostic output. No secret value is recorded here.
+
+The deployment correction:
+- keeps `.env.production` as the source for both services;
+- adds explicit `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD` mappings to the `db` service;
+- documents the required PostgreSQL image variables in `deploy/.env.production.example`;
+- retains the existing API `PG*` variables unchanged;
+- does not alter application code or database schema.
+
+Commits:
+- Compose remediation: `c44c241240faac15ca64a86f4d61220980468262`
+- Example environment documentation: `8764f175d5cf489e6f2d66ae963cc68380eb2bfc`
+
+### Evidence classification
+
+This remediation is **not yet runtime-verified**. The current database container was still unhealthy before the fix, so no migration or application runtime PASS is claimed.
+
+### Next workstation action
+
+Pull current `main`, then recreate the disposable production-style deployment. Capture:
+1. `docker compose config` without secrets;
+2. PostgreSQL initialization logs;
+3. API migration logs;
+4. container health;
+5. fresh `idx_resources_link_unique` definition;
+6. resource-dedup and sync runtime tests.
+
+Only those fresh-deployment results can establish production-runtime verification.
