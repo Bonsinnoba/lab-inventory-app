@@ -531,3 +531,42 @@ The Docker Compose warnings about unset host-shell `PGDATABASE`, `PGUSER`, and `
 ### Next verification target
 
 Proceed to the next runtime evidence gap in the broader sync reliability/outbox/convergence surface. Keep the same evidence standard: exercise the real API/database path where practical, document every defect and remediation, and do not convert static PASS results into runtime claims.
+
+
+## Evidence update — 2026-09-21 (production Compose environment cleanup before fresh deployment)
+
+The disposable PostgreSQL/API deployment is now being retired in favor of a fresh production-style deployment using the repository's current migration chain.
+
+### CHANGE-011 — remove host-shell PostgreSQL interpolation warnings
+
+deploy/docker-compose.yml was changed so the PostgreSQL service receives its database settings from the same .env.production file already used by labos-api.
+
+The previous Compose configuration interpolated PGDATABASE, PGUSER, and PGPASSWORD from the host shell before container startup. On the workstation these variables were not exported in the shell, so Compose emitted non-blocking warnings even though the API container received the correct deployment environment.
+
+The corrected configuration:
+- adds env_file: .env.production to the PostgreSQL service;
+- removes the duplicated host-shell interpolation for POSTGRES_DB, POSTGRES_USER, and POSTGRES_PASSWORD;
+- changes the database healthcheck to use the container's POSTGRES_USER and POSTGRES_DB at runtime via escaped Compose variables;
+- leaves the API service and PostgreSQL 16 image unchanged.
+
+Commit: d0f72f0b35406ed37fe20a988e6ecf75ec525e05.
+
+This change is configuration cleanup only. It does not change database schema or application behavior.
+
+### Production reset/test plan
+
+The next runtime phase is intentionally destructive to the disposable database volume and must only be performed because the current disposable data has been backed up elsewhere.
+
+The fresh production-style database must be created from the repository's migration chain, including migration 043. PostgreSQL 16 is explicitly compatible with NULLS NOT DISTINCT.
+
+Required evidence from the workstation:
+1. retire the current disposable containers and database volume;
+2. recreate the PostgreSQL 16/API deployment from current main;
+3. capture the migration output and confirm migration 043 applies successfully;
+4. confirm the API health endpoint/container remains healthy;
+5. verify the resulting idx_resources_link_unique definition in the fresh database;
+6. execute the real PostgreSQL-backed resource dedup and sync runtime tests against the fresh deployment;
+7. run the workstation static/Rust regression suite again if the deployment commit changes during this phase;
+8. record all output before treating the fresh deployment as production-runtime verified.
+
+No runtime PASS is claimed by this documentation change alone.
