@@ -60,11 +60,7 @@ fn save(conn: &mut Connection, projects: &[Value], changes: Vec<(String, String,
     tx.commit().map_err(|e| format!("Unable to commit local project change: {e}"))
 }
 
-fn id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let n = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
-    format!("{:032x}", n)
-}
+fn id() -> String { local_db::new_uuid() }
 
 fn now(conn: &Connection) -> Result<String, String> {
     conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')", [], |r| r.get(0))

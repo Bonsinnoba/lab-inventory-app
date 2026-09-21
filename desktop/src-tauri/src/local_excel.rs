@@ -46,8 +46,7 @@ pub fn import_local_inventory_rows(app: AppHandle, rows_json: String) -> Result<
         let supplied_id = row.get("id").and_then(Value::as_str).map(str::to_owned);
         let item_id = match supplied_id.clone() {
             Some(id) => id,
-            None => tx.query_row("SELECT lower(hex(randomblob(16)))", [], |r| r.get::<_, String>(0))
-                .map_err(|e| format!("Unable to generate local item id: {e}"))?,
+            None => local_db::new_uuid(),
         };
         if !seen.insert(item_id.clone()) {
             return Err(format!("Duplicate LabOS ID in workbook: {item_id}"));
@@ -70,8 +69,7 @@ pub fn import_local_inventory_rows(app: AppHandle, rows_json: String) -> Result<
             }
             snapshot[index] = next.clone();
             let payload = serde_json::json!({"id": item_id, "patch": next, "item": snapshot[index], "base_updated_at": base_updated_at});
-            let change_id: String = tx.query_row("SELECT lower(hex(randomblob(16)))", [], |r| r.get(0))
-                .map_err(|e| format!("Unable to create sync change id: {e}"))?;
+            let change_id = local_db::new_uuid();
             tx.execute(
                 "INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES (?1,?2,'item',?3,'update',?4)",
                 params![change_id, device, item_id, payload.to_string()],
@@ -79,8 +77,7 @@ pub fn import_local_inventory_rows(app: AppHandle, rows_json: String) -> Result<
             updated += 1;
         } else {
             snapshot.push(next.clone());
-            let change_id: String = tx.query_row("SELECT lower(hex(randomblob(16)))", [], |r| r.get::<_, String>(0))
-                .map_err(|e| format!("Unable to create sync change id: {e}"))?;
+            let change_id = local_db::new_uuid();
             tx.execute(
                 "INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES (?1,?2,'item',?3,'create',?4)",
                 params![change_id, device, item_id, next.to_string()],

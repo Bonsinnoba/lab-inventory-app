@@ -21,7 +21,7 @@ fn save(c:&mut Connection,state:&Value,change:Option<(String,String,String,Value
  if let Some((typ,id,op,payload))=change{let device:String=tx.query_row("SELECT device_id FROM device_identity WHERE id=1",[],|r|r.get(0)).map_err(|e|format!("Unable to read device identity: {e}"))?;tx.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES (?1,?2,?3,?4,?5,?6)",params![idgen(),device,typ,id,op,payload.to_string()]).map_err(|e|format!("Unable to queue knowledge change: {e}"))?;}
  tx.commit().map_err(|e|format!("Unable to commit knowledge change: {e}"))
 }
-fn idgen()->String{use std::time::{SystemTime,UNIX_EPOCH};format!("{:032x}",SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos())}
+fn idgen()->String{local_db::new_uuid()}
 fn now(c:&Connection)->Result<String,String>{c.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')",[],|r|r.get(0)).map_err(|e|e.to_string())}
 fn arr(state:&Value,key:&str)->Vec<Value>{state.get(key).and_then(Value::as_array).cloned().unwrap_or_default()}
 fn query(list:Vec<Value>,q:&str)->Vec<Value>{let q=q.to_lowercase();if q.is_empty(){return list}list.into_iter().filter(|v|serde_json::to_string(v).unwrap_or_default().to_lowercase().contains(&q)).collect()}

@@ -9,6 +9,61 @@ use tauri::{api::path::app_data_dir, AppHandle};
 const DB_FILE: &str = "labos-local.db";
 const LOCAL_SCHEMA_VERSION: &str = "002_sync_conflicts";
 
+pub fn new_uuid() -> String { uuid::Uuid::new_v4().to_string() }
+
+pub fn canonical_uuid(value: &str) -> String {
+    uuid::Uuid::parse_str(value).map(|id| id.to_string()).unwrap_or_else(|_| value.to_string())
+}
+
+fn canonicalize_json_ids(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            for (key, entry) in object.iter_mut() {
+                if (key == "id" || key.ends_with("_id")) && entry.as_str().is_some() {
+                    let current = entry.as_str().unwrap_or_default();
+                    *entry = Value::String(canonical_uuid(current));
+                } else {
+                    canonicalize_json_ids(entry);
+                }
+            }
+        }
+        Value::Array(values) => values.iter_mut().for_each(canonicalize_json_ids),
+        _ => {}
+    }
+}
+
+fn canonicalize_legacy_ids(connection: &Connection) -> Result<(), String> {
+    let tx = connection.unchecked_transaction().map_err(|e| format!("Unable to begin local UUID canonicalization: {e}"))?;
+    let states: Vec<(String, String)> = {
+        let mut statement = tx.prepare("SELECT key,value FROM sync_state").map_err(|e| format!("Unable to inspect local state for UUID canonicalization: {e}"))?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|e| format!("Unable to read local state for UUID canonicalization: {e}"))?
+            .collect::<Result<Vec<_>, _>>().map_err(|e| format!("Unable to decode local state for UUID canonicalization: {e}"))?;
+        rows
+    };
+    for (key, raw) in states {
+        let Ok(mut value) = serde_json::from_str::<Value>(&raw) else { continue; };
+        canonicalize_json_ids(&mut value);
+        let normalized = serde_json::to_string(&value).map_err(|e| format!("Unable to encode canonical local state: {e}"))?;
+        if normalized != raw { tx.execute("UPDATE sync_state SET value=?2 WHERE key=?1", params![key, normalized]).map_err(|e| format!("Unable to update canonical local state: {e}"))?; }
+    }
+    let outbox: Vec<(String, Option<String>, String)> = {
+        let mut statement = tx.prepare("SELECT change_id,entity_id,payload_json FROM sync_outbox WHERE synced_at IS NULL").map_err(|e| format!("Unable to inspect pending sync changes for UUID canonicalization: {e}"))?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .map_err(|e| format!("Unable to read pending sync changes for UUID canonicalization: {e}"))?
+            .collect::<Result<Vec<_>, _>>().map_err(|e| format!("Unable to decode pending sync changes for UUID canonicalization: {e}"))?;
+        rows
+    };
+    for (change_id, entity_id, raw) in outbox {
+        let normalized_entity_id = entity_id.as_deref().map(canonical_uuid);
+        let normalized_payload = serde_json::from_str::<Value>(&raw).ok().map(|mut value| { canonicalize_json_ids(&mut value); serde_json::to_string(&value) }).transpose().map_err(|e| format!("Unable to encode canonical sync payload: {e}"))?.unwrap_or(raw.clone());
+        if normalized_entity_id != entity_id || normalized_payload != raw {
+            tx.execute("UPDATE sync_outbox SET entity_id=?2,payload_json=?3 WHERE change_id=?1", params![change_id, normalized_entity_id, normalized_payload]).map_err(|e| format!("Unable to update canonical sync change: {e}"))?;
+        }
+    }
+    tx.commit().map_err(|e| format!("Unable to commit local UUID canonicalization: {e}"))
+}
+
 #[derive(Debug, Serialize)]
 pub struct LocalDatabaseStatus { pub path: String, pub device_id: String, pub schema_version: String, pub pending_sync_count: i64, pub sync_conflict_count: i64 }
 #[derive(Debug, Deserialize)]
@@ -27,7 +82,7 @@ CREATE INDEX IF NOT EXISTS idx_sync_outbox_entity ON sync_outbox(entity_type,ent
 CREATE TABLE IF NOT EXISTS sync_conflicts(id INTEGER PRIMARY KEY AUTOINCREMENT,change_id TEXT NOT NULL UNIQUE,entity_type TEXT NOT NULL,entity_id TEXT,operation TEXT NOT NULL,payload_json TEXT NOT NULL,error_code TEXT NOT NULL,error_message TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,resolved_at TEXT,resolution TEXT);
 CREATE INDEX IF NOT EXISTS idx_sync_conflicts_open ON sync_conflicts(resolved_at,created_at);
 "#).map_err(|e|format!("Unable to initialize local SQLite schema: {e}"))?; let applied:Option<String>=connection.query_row("SELECT version FROM local_schema_migrations WHERE version=?1",[LOCAL_SCHEMA_VERSION],|r|r.get(0)).optional().map_err(|e|format!("Unable to inspect local schema version: {e}"))?; if applied.is_none(){connection.execute("INSERT INTO local_schema_migrations(version) VALUES(?1)",[LOCAL_SCHEMA_VERSION]).map_err(|e|format!("Unable to record local schema version: {e}"))?;} connection.execute("INSERT OR IGNORE INTO device_identity(id,device_id) VALUES(1,lower(hex(randomblob(16))))",[]).map_err(|e|format!("Unable to initialize device identity: {e}"))?; Ok(())}
-pub fn initialize(app:&AppHandle)->Result<(),String>{let(connection,_)=open_connection(app)?;ensure_schema(&connection)}
+pub fn initialize(app:&AppHandle)->Result<(),String>{let(connection,_)=open_connection(app)?;ensure_schema(&connection)?;canonicalize_legacy_ids(&connection)}
 #[tauri::command]
 pub fn local_database_status(app:AppHandle)->Result<LocalDatabaseStatus,String>{let(connection,path)=open_connection(&app)?;ensure_schema(&connection)?;let device_id:String=connection.query_row("SELECT device_id FROM device_identity WHERE id=1",[],|r|r.get(0)).map_err(|e|format!("Unable to read device identity: {e}"))?;let pending:i64=connection.query_row("SELECT COUNT(*) FROM sync_outbox WHERE synced_at IS NULL",[],|r|r.get(0)).map_err(|e|format!("Unable to read sync queue state: {e}"))?;let conflicts:i64=connection.query_row("SELECT COUNT(*) FROM sync_conflicts WHERE resolved_at IS NULL",[],|r|r.get(0)).map_err(|e|format!("Unable to read sync conflict state: {e}"))?;Ok(LocalDatabaseStatus{path:path.to_string_lossy().into_owned(),device_id,schema_version:LOCAL_SCHEMA_VERSION.to_string(),pending_sync_count:pending,sync_conflict_count:conflicts})}
 #[tauri::command]

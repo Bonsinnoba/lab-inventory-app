@@ -10,7 +10,7 @@ fn inventory_counts(c:&Connection)->Result<std::collections::HashMap<String,i64>
  let raw:Option<String>=c.query_row("SELECT value FROM sync_state WHERE key='inventory_snapshot'",[],|r|r.get(0)).optional().map_err(|e|e.to_string())?;let mut counts=std::collections::HashMap::new();if let Some(raw)=raw{if let Ok(items)=serde_json::from_str::<Vec<Value>>(&raw){for item in items{if let Some(id)=item.get("location_id").and_then(Value::as_str){*counts.entry(id.to_string()).or_insert(0)+=1;}}}}Ok(counts)
 }
 fn load(c:&Connection)->Result<Vec<Value>,String>{ensure(c)?;let x:Option<String>=c.query_row("SELECT value FROM sync_state WHERE key=?1",[KEY],|r|r.get(0)).optional().map_err(|e|e.to_string())?;Ok(x.map(|s|serde_json::from_str(&s).unwrap_or_default()).unwrap_or_default())}
-fn id()->String{use std::time::{SystemTime,UNIX_EPOCH};format!("{:032x}",SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos())}
+fn id()->String{local_db::new_uuid()}
 fn save(c:&mut Connection,v:&[Value],change:Option<(String,String,Value)>)->Result<(),String>{
     if let Some((_,ref op,_))=change{
         let permission=match op.as_str(){"create"=>"inventory.create","delete"=>"inventory.delete",_=>"inventory.edit"};

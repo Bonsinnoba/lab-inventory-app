@@ -43,7 +43,7 @@ fn save(conn: &mut Connection, notes: &[Value], changes: Vec<(String,String,Stri
     tx.commit().map_err(|e|format!("Unable to commit local note change: {e}"))
 }
 
-fn id()->String { use std::time::{SystemTime,UNIX_EPOCH}; format!("{:032x}",SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos()) }
+fn id()->String { local_db::new_uuid() }
 fn now(conn:&Connection)->Result<String,String>{conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')",[],|r|r.get(0)).map_err(|e|format!("Unable to create timestamp: {e}"))}
 
 #[tauri::command]

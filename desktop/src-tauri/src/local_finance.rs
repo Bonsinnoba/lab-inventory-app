@@ -2,13 +2,14 @@ use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 use tauri::AppHandle;
 use crate::local_db::open_local_connection;
+use crate::local_db;
 use crate::local_auth;
 
 const KEY_TX:&str="finance_transactions_state";
 const KEY_BP:&str="finance_budget_periods_state";
 const KEY_FS:&str="finance_funding_sources_state";
 
-fn id(conn:&rusqlite::Connection)->Result<String,String>{conn.query_row("SELECT lower(hex(randomblob(16)))",[],|r|r.get(0)).map_err(|e|e.to_string())}
+fn id(_: &rusqlite::Connection)->Result<String,String>{Ok(local_db::new_uuid())}
 fn read(conn:&rusqlite::Connection,key:&str)->Result<Vec<Value>,String>{let raw:Option<String>=conn.query_row("SELECT value FROM sync_state WHERE key=?1",[key],|r|r.get(0)).optional().map_err(|e|e.to_string())?;Ok(raw.and_then(|s|serde_json::from_str(&s).ok()).unwrap_or_default())}
 fn write(conn:&rusqlite::Connection,key:&str,v:&Vec<Value>)->Result<(),String>{let raw=serde_json::to_string(v).map_err(|e|e.to_string())?;conn.execute("INSERT INTO sync_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[key,&raw]).map_err(|e|e.to_string())?;Ok(())}
 fn queue(conn:&mut rusqlite::Connection,entity:&str,entity_id:&str,op:&str,payload:&Value)->Result<(),String>{let tx=conn.transaction().map_err(|e|e.to_string())?;let device:String=tx.query_row("SELECT device_id FROM device_identity WHERE id=1",[],|r|r.get(0)).map_err(|e|e.to_string())?;let cid=id(&tx)?;tx.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES(?1,?2,?3,?4,?5,?6)",params![cid,device,entity,entity_id,op,payload.to_string()]).map_err(|e|e.to_string())?;tx.commit().map_err(|e|e.to_string())}
