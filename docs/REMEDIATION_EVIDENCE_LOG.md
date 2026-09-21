@@ -456,3 +456,28 @@ The workstation rebuilt and restarted `labos-api`, but the disposable sync runti
 - The disposable sync runtime test remains **NOT PASS** because the attempted rerun was blocked by the API syntax error before the test could start.
 - The next required evidence is to pull/rebuild/restart the API from this corrected `main`, confirm the container stays healthy, then rerun `npm run test:sync-runtime-disposable`.
 - Do not treat the restart-loop failure as a database or sync-runtime failure, and do not claim the full sync runtime scenario PASS until the test itself reports its required PASS results.
+
+
+## Evidence update — 2026-09-21 (sync runtime found shared-resource delete authorization defect)
+
+The corrected API container started successfully and the disposable PostgreSQL-backed sync runtime test executed. The scenario progressed through resource creation, canonical URL persistence, idempotent replay, duplicate protection, changed-payload rejection, resource pull visibility, and invalid-resource rollback. It then failed specifically at resource deletion: HTTP 200 contained a rejected change with `RESOURCE_ACCESS_DENIED`.
+
+Diagnosis from the production code:
+
+- The sync resource create path creates an unattached resource with `uploaded_by = user.userId` and no project/item/note context.
+- `getResourceAccess()` correctly classifies such a resource as `shared`.
+- `requireResourceEditor()` correctly permits an administrator or the original uploader to edit/delete a shared resource.
+- The sync update/delete path was instead calling `getResourceAccess()` directly and only accepting `edit` or `admin`, which incorrectly rejected the valid `shared` access state even for the administrator/original uploader.
+- Therefore this was a real production authorization defect exposed by the runtime test, not a test-harness problem.
+
+### Remediation
+
+- Changed the sync resource update/delete authorization to use the existing `requireResourceEditor()` policy helper, preserving the established shared-resource rule instead of duplicating a narrower check.
+- No permission definitions, test expectations, database schema, or resource ownership model were changed.
+- Production fix committed directly to `main`: `f9a35cc8015d0a3b44cc3f265b29dc2b51e9ddcd`.
+- Updated `sync.js` blob SHA: `6d83ce09fff29f8a562f288e2fef22d22236a1c6`.
+
+### Runtime evidence status
+
+- The disposable sync runtime test is **NOT PASS yet** because it correctly stopped at the authorization defect before verifying deletion/tombstone behavior.
+- Required next evidence: pull/rebuild/restart the API from the remediation commit, then rerun `npm run test:sync-runtime-disposable`. A PASS requires the complete scenario to reach its final success output.
