@@ -227,7 +227,10 @@ async function applyResourceEntity(client,change,user){
   const values=[entityId],columns=['id'];
   for(const field of RESOURCE_FIELDS){
    if(field==='file_type'&&record.kind==='folder'&&!record.file_type){columns.push(field);values.push('schematic_folder');continue;}
-   if(Object.prototype.hasOwnProperty.call(record,field)){columns.push(field);values.push(record[field]??null);}
+   if(Object.prototype.hasOwnProperty.call(record,field)){
+    const value=field==='url'&&record.url!=null ? String(record.url).trim().replace(/\\/+$/,'') : record[field];
+    columns.push(field);values.push(value??null);
+   }
   }
   columns.push('uploaded_by');values.push(user.userId);
   const placeholders=values.map((_,i)=>'$'+(i+1)).join(',');
