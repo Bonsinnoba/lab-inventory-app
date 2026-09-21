@@ -667,3 +667,41 @@ POSTGRES_PASSWORD=SET
 with no Compose interpolation warnings for these variables.
 
 Only after that should the fresh database volume be created and the migration/API/runtime verification continue.
+
+## Evidence update — 2026-09-21 (ultra-clean physical-test reset preparation)
+
+The physical-test environment exposed a state-isolation problem: resetting the Docker PostgreSQL volume did not reset the desktop's persistent Tauri SQLite database or cached WebView authentication state. The desktop therefore remained capable of presenting data from an older local/server session even after a fresh PostgreSQL volume was created.
+
+### CHANGE-013 — deterministic deployment/test reset
+
+The deployment baseline was cleaned up without changing the LabOS database architecture:
+
+- `deploy/docker-compose.yml` now has an explicit Compose project name `labos`.
+- PostgreSQL and storage use explicit volume names `labos_postgres` and `labos_storage`.
+- The API is exposed consistently on host port 4000 for local physical testing.
+- PostgreSQL remains unpublished to the host.
+- Both services receive their runtime environment directly from `.env.production`.
+- Added `deploy/scripts/reset-clean-test.ps1`, which removes only the LabOS Compose project, its containers, and the two named LabOS volumes.
+- Rewrote `deploy/README.md` to distinguish server reset from desktop-local reset and to explicitly prohibit running a second backend on port 4000 during physical testing.
+
+Commits:
+- `1e6fe053580e7bc1dea5e501178ad3f3d6346e80` — deterministic Compose baseline
+- `3444b4d8c7159a126d19593bb7f4df4cb0d9f379` — clean-test reset script
+- `2d04bacf6292f3bcbed616da1f8734e8cf0cbf03` — deployment/reset documentation
+
+### Evidence classification
+
+These are configuration/documentation changes and are **NOT runtime-verified yet**.
+
+The user-reported symptom strongly indicates that the physical-test workstation also contains persistent desktop state or another API process. The clean reset must therefore cover both sides:
+
+1. stop all LabOS/Tauri/Vite/backend processes;
+2. remove the LabOS Docker containers and named volumes;
+3. recreate PostgreSQL/API from current `main`;
+4. verify exactly one API is listening on host port 4000;
+5. remove the desktop's old `labos-local.db` and cached application/WebView state;
+6. start the Tauri desktop from the same repository checkout;
+7. create the first central administrator through the actual application flow;
+8. verify login against the freshly recreated PostgreSQL database before creating any projects.
+
+No claim is made that the user's current desktop session is clean until those steps are physically executed.
