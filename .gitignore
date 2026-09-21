@@ -166,3 +166,5 @@ src-tauri/target/
 # Local media downloader binary
 # ------------------------------------------------------------
 backend/yt-dlp.exe
+backend/labos-reset-backups/
+deploy/backups/

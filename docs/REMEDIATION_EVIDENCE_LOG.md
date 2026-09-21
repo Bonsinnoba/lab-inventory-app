@@ -705,3 +705,35 @@ The user-reported symptom strongly indicates that the physical-test workstation 
 8. verify login against the freshly recreated PostgreSQL database before creating any projects.
 
 No claim is made that the user's current desktop session is clean until those steps are physically executed.
+
+
+## CHANGE-014 — Repository cleanup for Codex handoff
+
+**Date:** 2026-09-21
+
+### Scope
+Removed obsolete one-time development/test harnesses and generated backup artifacts from the tracked repository. The production application code, migrations, deployment compose configuration, backup/restore scripts, and architecture/evidence documentation remain.
+
+### Removed
+- Legacy phase/track/static test scripts under `backend/src/test-*.js`.
+- Disposable runtime test harnesses for resource deduplication and sync.
+- One-time schema/data helper scripts under `backend/src/fix-canvas-schema.js` and `backend/src/verify-total-contributed.js`.
+- One-time backend data tools under `backend/tools/`.
+- Tracked historical JSON reset/resource backups under `backend/labos-reset-backups/`.
+- Test-only deployment compose configuration `deploy/docker-compose.test.yml`.
+- Destructive one-time reset helper `deploy/scripts/reset-clean-test.ps1`.
+
+### Package cleanup
+`backend/package.json` now exposes only normal development/start/migration/syntax-check commands. Obsolete test and destructive data-management npm scripts were removed so the repository cannot advertise deleted one-time tooling.
+
+### Deployment cleanup
+`deploy/README.md` was rewritten as the stable deployment/operations guide. Destructive local resets are documented as explicit operator commands rather than a tracked reset script.
+
+### Ignore rules
+Added generated local reset backups and deployment backup output to `.gitignore` so future operator artifacts are not accidentally committed.
+
+### Verification status
+**STATIC ONLY / NOT RUNTIME-VERIFIED IN THIS ENVIRONMENT.** GitHub repository content was inspected before the cleanup. Runtime verification must be performed by Codex/local workstation after the cleanup commit is pulled.
+
+### Handoff rule
+Future automated tests should be maintained as intentional, named test infrastructure rather than accumulating one-time scripts in production source directories. Any new test harness must document its purpose, execution scope, cleanup behavior, and whether it is safe against disposable or persistent data.
