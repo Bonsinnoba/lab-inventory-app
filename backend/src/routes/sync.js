@@ -238,8 +238,8 @@ async function applyResourceEntity(client,change,user){
  }
  const existing=await client.query('SELECT * FROM resources WHERE id=$1 FOR UPDATE',[entityId]);
  if(!existing.rowCount)fail(409,'RESOURCE_NOT_FOUND',`Resource ${entityId} does not exist on the server`);
- const access=await getResourceAccess(entityId,{userId:user.userId,role:user.role});
- if(!['edit','admin'].includes(access.access))fail(403,'RESOURCE_ACCESS_DENIED','You do not have edit access to this resource');
+ const access=await requireResourceEditor(entityId,{userId:user.userId,role:user.role});
+ if(!access.ok)fail(access.status,access.error.code,access.error.message);
  if(change.operation==='update'){
   const updates=[],values=[];
   for(const field of ['category','description','tags'])if(Object.prototype.hasOwnProperty.call(record,field)){values.push(record[field]??null);updates.push(field+'=$'+values.length);}
