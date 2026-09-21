@@ -615,3 +615,55 @@ Pull current `main`, then recreate the disposable production-style deployment. C
 6. resource-dedup and sync runtime tests.
 
 Only those fresh-deployment results can establish production-runtime verification.
+
+
+## Evidence update — 2026-09-21 (corrected PostgreSQL environment mapping approach)
+
+The workstation reran the PostgreSQL environment diagnostic after CHANGE-012 and still received empty `POSTGRES_DB` and `POSTGRES_USER`, with Compose warnings that those interpolation variables were unset.
+
+This exposed a second deployment-configuration issue in the first CHANGE-012 remediation:
+
+- `env_file: .env.production` supplies variables to the container environment, but its values are **not** available for Docker Compose's `${...}` interpolation.
+- Therefore adding `environment: POSTGRES_DB: ${POSTGRES_DB}`, etc. did not map the values from `.env.production`; Compose substituted blank host-shell values before the container started.
+- The repeated diagnostic result is evidence that the first mapping approach was ineffective. It is not a PostgreSQL or application failure.
+
+### Corrective change
+
+`deploy/docker-compose.yml` was corrected again on `main`:
+
+- removed the erroneous `environment:` interpolation block from the PostgreSQL service;
+- kept `env_file: .env.production` as the direct container environment source;
+- retained the escaped runtime healthcheck using `POSTGRES_USER` and `POSTGRES_DB`;
+- the PostgreSQL image will therefore receive the official `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD` variables directly from the local `.env.production` file.
+
+Commit: `5795c1bdd6cf59d3429a3081bcf52425d602578e`.
+
+### Required local configuration
+
+The workstation's untracked `deploy/.env.production` must contain both naming conventions, using the same current database credentials:
+
+```env
+PGDATABASE=lab_inventory
+PGUSER=labos
+PGPASSWORD=<current-secret>
+
+POSTGRES_DB=lab_inventory
+POSTGRES_USER=labos
+POSTGRES_PASSWORD=<same-current-secret>
+```
+
+No secret value is recorded in this evidence log.
+
+### Runtime status
+
+This correction is **NOT runtime-verified yet**. The next diagnostic must show:
+
+```text
+POSTGRES_DB=lab_inventory
+POSTGRES_USER=labos
+POSTGRES_PASSWORD=SET
+```
+
+with no Compose interpolation warnings for these variables.
+
+Only after that should the fresh database volume be created and the migration/API/runtime verification continue.
