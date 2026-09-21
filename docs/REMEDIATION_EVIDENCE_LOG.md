@@ -433,3 +433,26 @@ Runtime evidence status:
 - The failure was useful evidence and identified a real production defect.
 - The test must be rerun after rebuilding/restarting `labos-api`.
 - No PASS claim is made for the full sync runtime scenario until the rerun completes.
+
+
+## Evidence update — 2026-09-21 (sync runtime rerun exposed over-escaped production regex)
+
+The workstation rebuilt and restarted `labos-api`, but the disposable sync runtime test could not execute because the API container entered a restart loop. The container logs provided the exact production-source failure:
+
+- `backend/src/routes/sync.js:231` contained `replace(/\\\\/+$/,'')` in the URL canonicalization expression.
+- Node 22 reported `SyntaxError: Unexpected token ','` while loading `sync.js`.
+- The migration runner completed successfully before the API process failed, and the PostgreSQL container remained healthy. Therefore this was a JavaScript source syntax defect, not a migration/database failure and not a sync-runtime test result.
+- The same class of over-escaped trailing-slash regex had previously been found at another sync implementation site. The evidence from the container proves that the effective committed source still contained the bad escaping after the previous remediation attempt.
+
+### Remediation
+
+- Corrected the sync resource INSERT URL canonicalization expression to the valid JavaScript regex `/\\/+$/`, matching the already-correct normalization used by the sync lock/duplicate lookup path.
+- No database schema, migration, synchronization policy, or test expectation was changed.
+- Corrected directly on `main` in commit `b561f1a7f1a218a26c21ff4c82c55f1b859d0789`.
+- Updated file blob SHA: `560478218a135e54eeb51e1f6008a535d188aa89`.
+
+### Runtime evidence status
+
+- The disposable sync runtime test remains **NOT PASS** because the attempted rerun was blocked by the API syntax error before the test could start.
+- The next required evidence is to pull/rebuild/restart the API from this corrected `main`, confirm the container stays healthy, then rerun `npm run test:sync-runtime-disposable`.
+- Do not treat the restart-loop failure as a database or sync-runtime failure, and do not claim the full sync runtime scenario PASS until the test itself reports its required PASS results.
