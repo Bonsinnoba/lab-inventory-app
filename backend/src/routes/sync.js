@@ -228,7 +228,7 @@ async function applyResourceEntity(client,change,user){
   for(const field of RESOURCE_FIELDS){
    if(field==='file_type'&&record.kind==='folder'&&!record.file_type){columns.push(field);values.push('schematic_folder');continue;}
    if(Object.prototype.hasOwnProperty.call(record,field)){
-    const value=field==='url'&&record.url!=null ? String(record.url).trim().replace(/\\/+$/,'') : record[field];
+    const value=field==='url'&&record.url!=null ? String(record.url).trim().replace(/\/+$/,'') : record[field];
     columns.push(field);values.push(value??null);
    }
   }
