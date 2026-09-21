@@ -1,84 +1,124 @@
 # LabOS v2.2 — Deployment & Operations
 
-This directory provides a production-oriented deployment baseline for a LabOS server. It does not expose PostgreSQL directly.
+This directory provides the production-oriented LabOS server deployment. PostgreSQL is private to the server and is never exposed directly to desktop clients.
 
-## Recommended topology
+## Topology
 
-Internet/VPN -> HTTPS reverse proxy -> LabOS API -> PostgreSQL
-                                  \-> persistent storage
-
-For a LAN-only lab, keep the server private and bind the API to the lab network. For remote access, use a properly secured HTTPS reverse proxy or private VPN.
-
-## Docker quick start
-
-1. Copy `.env.production.example` to `.env.production`.
-2. Replace every placeholder secret and set the real public URL/origins.
-3. Choose the API bind boundary:
-   - **HTTPS reverse proxy:** set `LABOS_BIND_ADDRESS=127.0.0.1` and `TRUST_PROXY=true`.
-   - **LAN-only without reverse proxy:** set `LABOS_BIND_ADDRESS` to the server's LAN IP and `TRUST_PROXY=false`; firewall TCP 4000 to the lab network only.
-4. Run `docker compose --env-file .env.production up -d --build`.
-5. Check container health with `docker compose ps`.
-6. Check `/api/health` from the server or reverse proxy. The API container runs migrations automatically before starting.
-7. If you need to rerun migrations manually, use `docker compose --env-file .env.production exec labos-api npm run migrate`.
-
-The Compose file persists PostgreSQL and LabOS storage in named volumes. PostgreSQL has no published host port.
-
-## Backups
-
-The PostgreSQL backup script is Docker-native and uses the same database container/configuration as production; it does not depend on a separate host `DATABASE_URL`.
-
-From the `deploy` directory:
-
-```bash
-./scripts/backup-postgres.sh ./backups
 ```
-
-Back up the LabOS storage volume at the same time as the database. The database dump and storage backup must be treated as one backup set because uploaded/generated files are referenced by database records.
-
-At minimum:
-- PostgreSQL: `scripts/backup-postgres.sh`
-- persistent storage: back up the `labos_storage` Docker volume
-- retain the SHA-256 checksum generated for each database dump
-- periodically perform a full restore test on a separate environment
-
-A backup that has never been restored is not considered verified.
-
-## Restore
-
-Stop application writes before restoring. Use the matching database/storage backup set.
-
-```bash
-./scripts/restore-postgres.sh ./backups/labos-postgres-YYYYMMDDT...dump
-```
-
-The restore script is Docker-native and targets the Compose PostgreSQL service. Restore the matching `labos_storage` volume separately, then run migrations if the release requires them.
-
-## HTTPS
-
-`nginx/labos.conf.example` is a reference reverse-proxy configuration. Supply your real certificate paths and domain. Do not commit private keys.
-
-When nginx is active, the API should remain bound to `127.0.0.1:4000`; only nginx should be Internet-facing. Set `TRUST_PROXY=true` only when the API is behind a trusted reverse proxy.
-
-## Server role
-
-The production backend runs on a **dedicated server machine**, separate from every LabOS desktop. Desktop installers contain the Tauri client and local SQLite runtime only; they do not contain the Node/Express backend or PostgreSQL.
-
-Production topology:
-
-```text
 LabOS Desktop A ─┐
-LabOS Desktop B ─┼── HTTPS / LAN / VPN ──> LabOS Server
+LabOS Desktop B ─┼── LAN / HTTPS / VPN ──> LabOS Server
 LabOS Desktop C ─┘                         ├─ Node/Express API
                                            ├─ PostgreSQL
                                            └─ persistent storage
 ```
 
-The repository remains the development source of truth. Developers can continue running `backend/npm run dev` locally while production uses the Dockerized backend on the server machine.
+The desktop remains an offline-first Tauri + SQLite client. The server remains the central PostgreSQL authority.
 
-### Desktop release endpoint
+## Clean deployment
 
-Release builds receive their central API endpoint from the GitHub repository variable `LABOS_API_BASE_URL`. Set it to the server URL including `/api`, for example `https://labos.example.com/api` or a private LAN endpoint when appropriate.
+The Compose file is intentionally deterministic:
 
-### Remote/mobile readiness
+- Compose project name: `labos`
+- PostgreSQL volume: `labos_postgres`
+- persistent storage volume: `labos_storage`
+- API: `localhost:4000` by default
+- PostgreSQL: never published to the host
+- both services read `.env.production` directly
+- migrations run automatically before the API starts
 
-The server remains the single source of truth for future mobile clients. Mobile is not part of V1 implementation. When mobile is added later, it should use the same HTTPS API/auth/sync boundary; PostgreSQL and Docker volumes must remain private.
+### First setup
+
+1. Copy `.env.production.example` to `.env.production`.
+2. Set the real secrets. Keep `PGDATABASE/PGUSER/PGPASSWORD` and `POSTGRES_DB/POSTGRES_USER/POSTGRES_PASSWORD` aligned.
+3. Choose the server exposure:
+   - HTTPS reverse proxy: `LABOS_BIND_ADDRESS=127.0.0.1`, `TRUST_PROXY=true`
+   - LAN-only: use the server LAN address and `TRUST_PROXY=false`; firewall TCP 4000 to the lab network.
+4. Start:
+
+```powershell
+docker compose --env-file .env.production up -d --build
+docker compose ps
+```
+
+5. Confirm the API health endpoint and migration logs before opening the desktop.
+
+## Ultra-clean disposable test reset
+
+Use this only when the current LabOS Docker data is disposable.
+
+From `deploy`:
+
+```powershell
+.\scripts\reset-clean-test.ps1
+docker compose --env-file .env.production up -d --build
+docker compose ps
+```
+
+The reset removes only the LabOS Compose project, its containers, and the named LabOS PostgreSQL/storage volumes. It does not delete unrelated Docker projects.
+
+**Important:** this resets the server database, but it does not reset a desktop's local SQLite database or WebView session.
+
+### Reset a desktop installation before physical testing
+
+Close every LabOS Tauri window and Vite/Tauri process first.
+
+The desktop stores its local SQLite database as `labos-local.db` under Tauri's application data directory. On Windows, Tauri's `appDataDir` is based on the configured bundle identifier; LabOS uses `com.lab-inventory.app`.
+
+For a disposable clean workstation test, remove the LabOS application-data directory after confirming it contains only LabOS data. This clears the cached local account/session and local SQLite state together.
+
+You can locate the database first:
+
+```powershell
+Get-ChildItem "$env:APPDATA" -Filter labos-local.db -Recurse -ErrorAction SilentlyContinue |
+    Select-Object FullName
+```
+
+Do not delete a directory until its contents are confirmed to belong to LabOS.
+
+Tauri documents that `appDataDir` resolves to an application-specific directory based on the bundle identifier; on Windows the underlying data directory is the user's roaming application-data directory. urlTauri appDataDir documentationhttps://tauri.app/reference/javascript/api/namespacepath/
+
+## Backups
+
+From `deploy`:
+
+```powershell
+.\scripts\backup-postgres.sh .\backups
+```
+
+Back up PostgreSQL and the `labos_storage` volume as one set because database records reference uploaded/generated files. A backup is not considered verified until a restore has been tested.
+
+## Restore
+
+Stop application writes and restore the matching database/storage backup set:
+
+```powershell
+.\scripts\restore-postgres.sh .\backups\labos-postgres-YYYYMMDDT...dump
+```
+
+## HTTPS
+
+`nginx/labos.conf.example` is a reference reverse-proxy configuration. Keep private keys out of Git.
+
+When nginx is active, bind the API to `127.0.0.1:4000`; nginx is the Internet-facing component.
+
+## Desktop release endpoint
+
+Release builds receive their central API endpoint from the GitHub repository variable `LABOS_API_BASE_URL`. It must include `/api`, for example:
+
+```
+https://labos.example.com/api
+```
+
+For local physical testing, the development desktop defaults to:
+
+```
+http://localhost:4000/api
+```
+
+Do not run a second backend on port 4000 while testing the Dockerized LabOS API. A second API process can make the desktop appear to be connected to an old database.
+
+## Deployment rule
+
+The desktop must never connect directly to PostgreSQL. The supported production path is:
+
+**Tauri SQLite → sync/outbox → LabOS API → PostgreSQL.**
