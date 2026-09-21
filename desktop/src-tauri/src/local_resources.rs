@@ -112,9 +112,31 @@ fn now(conn: &rusqlite::Connection) -> Result<String, String> {
         .map_err(|e| format!("Unable to create resource timestamp: {e}"))
 }
 
-fn new_id(conn: &rusqlite::Connection) -> Result<String, String> {
-    conn.query_row("SELECT lower(hex(randomblob(16)))", [], |r| r.get(0))
-        .map_err(|e| format!("Unable to create local resource id: {e}"))
+fn new_id(_: &rusqlite::Connection) -> Result<String, String> {
+    Ok(uuid::Uuid::new_v4().to_string())
+}
+
+// PostgreSQL accepts compact UUID input but returns the canonical hyphenated
+// representation. Treat both representations as the same resource while
+// reconciling older local state created before resource IDs used UUID strings.
+fn canonical_resource_id(id: &str) -> String {
+    id.chars().filter(|c| *c != '-').collect::<String>().to_ascii_lowercase()
+}
+
+fn merge_server_resource(current: &mut Vec<LocalResource>, mut incoming: LocalResource) {
+    let incoming_id = canonical_resource_id(&incoming.id);
+    current.retain(|existing| {
+        if canonical_resource_id(&existing.id) != incoming_id {
+            return true;
+        }
+        if incoming.local_media_path.is_none() { incoming.local_media_path = existing.local_media_path.clone(); }
+        if incoming.local_media_filename.is_none() { incoming.local_media_filename = existing.local_media_filename.clone(); }
+        if incoming.local_media_mime_type.is_none() { incoming.local_media_mime_type = existing.local_media_mime_type.clone(); }
+        if incoming.local_media_size_bytes.is_none() { incoming.local_media_size_bytes = existing.local_media_size_bytes; }
+        if incoming.local_media_downloaded_at.is_none() { incoming.local_media_downloaded_at = existing.local_media_downloaded_at.clone(); }
+        false
+    });
+    current.push(incoming);
 }
 
 fn normalize_resource_url(url: &str) -> String {
@@ -202,25 +224,11 @@ pub fn cache_local_resources(app: AppHandle, resources_json: String) -> Result<u
             .map_err(|e| format!("Unable to inspect pending resource changes: {e}"))?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))
             .map_err(|e| format!("Unable to inspect pending resource changes: {e}"))?;
-        rows.filter_map(|r| r.ok()).collect()
+        rows.filter_map(|r| r.ok()).map(|id| canonical_resource_id(&id)).collect()
     };
     for incoming_resource in incoming {
-        if pending.contains(&incoming_resource.id) { continue; }
-        if let Some(existing) = current.iter_mut().find(|r| r.id == incoming_resource.id) {
-            let local_media_path = existing.local_media_path.clone();
-            let local_media_filename = existing.local_media_filename.clone();
-            let local_media_mime_type = existing.local_media_mime_type.clone();
-            let local_media_size_bytes = existing.local_media_size_bytes;
-            let local_media_downloaded_at = existing.local_media_downloaded_at.clone();
-            *existing = incoming_resource;
-            existing.local_media_path = local_media_path;
-            existing.local_media_filename = local_media_filename;
-            existing.local_media_mime_type = local_media_mime_type;
-            existing.local_media_size_bytes = local_media_size_bytes;
-            existing.local_media_downloaded_at = local_media_downloaded_at;
-        } else {
-            current.push(incoming_resource);
-        }
+        if pending.contains(&canonical_resource_id(&incoming_resource.id)) { continue; }
+        merge_server_resource(&mut current, incoming_resource);
     }
     write_resources(&conn, &current)?;
     Ok(current.len())
@@ -330,27 +338,13 @@ pub fn apply_server_resource_pull(app: AppHandle, resources_json: String, delete
             .map_err(|e| format!("Unable to inspect pending resource changes: {e}"))?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))
             .map_err(|e| format!("Unable to inspect pending resource changes: {e}"))?;
-        for row in rows { pending.insert(row.map_err(|e| format!("Unable to read pending resource id: {e}"))?); }
+        for row in rows { pending.insert(canonical_resource_id(&row.map_err(|e| format!("Unable to read pending resource id: {e}"))?)); }
     }
     let deleted: HashSet<String> = deleted_resource_ids.into_iter().collect();
-    current.retain(|r| !deleted.contains(&r.id) || pending.contains(&r.id));
+    current.retain(|r| !deleted.iter().any(|id| canonical_resource_id(id) == canonical_resource_id(&r.id)) || pending.contains(&canonical_resource_id(&r.id)));
     for incoming_resource in incoming {
-        if pending.contains(&incoming_resource.id) { continue; }
-        if let Some(existing) = current.iter_mut().find(|r| r.id == incoming_resource.id) {
-            let local_media_path = existing.local_media_path.clone();
-            let local_media_filename = existing.local_media_filename.clone();
-            let local_media_mime_type = existing.local_media_mime_type.clone();
-            let local_media_size_bytes = existing.local_media_size_bytes;
-            let local_media_downloaded_at = existing.local_media_downloaded_at.clone();
-            *existing = incoming_resource;
-            existing.local_media_path = local_media_path;
-            existing.local_media_filename = local_media_filename;
-            existing.local_media_mime_type = local_media_mime_type;
-            existing.local_media_size_bytes = local_media_size_bytes;
-            existing.local_media_downloaded_at = local_media_downloaded_at;
-        } else {
-            current.push(incoming_resource);
-        }
+        if pending.contains(&canonical_resource_id(&incoming_resource.id)) { continue; }
+        merge_server_resource(&mut current, incoming_resource);
     }
     write_resources(&tx, &current)?;
     tx.commit().map_err(|e| format!("Unable to commit server resource merge: {e}"))
@@ -392,6 +386,25 @@ mod tests {
     fn normalize_resource_url_trims_whitespace_and_trailing_slashes() {
         assert_eq!(normalize_resource_url("  https://example.com/video///  "), "https://example.com/video");
         assert_eq!(normalize_resource_url("https://example.com/"), "https://example.com");
+    }
+
+    #[test]
+    fn merge_server_resource_reconciles_compact_and_hyphenated_uuid_ids() {
+        let mut legacy = resource("fe42da30ac8b41af6cee47ef14f1ba72", "link", None, None);
+        legacy.thumbnail_url = Some("https://img.youtube.com/vi/example/hqdefault.jpg".into());
+        legacy.local_media_path = Some("C:/LabOS/example.mp4".into());
+        legacy.local_media_filename = Some("example.mp4".into());
+
+        let mut server = resource("fe42da30-ac8b-41af-6cee-47ef14f1ba72", "link", None, None);
+        server.thumbnail_url = Some("/api/media-downloads/fe42da30-ac8b-41af-6cee-47ef14f1ba72/thumbnail".into());
+
+        let mut resources = vec![legacy];
+        merge_server_resource(&mut resources, server);
+
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].id, "fe42da30-ac8b-41af-6cee-47ef14f1ba72");
+        assert_eq!(resources[0].thumbnail_url.as_deref(), Some("/api/media-downloads/fe42da30-ac8b-41af-6cee-47ef14f1ba72/thumbnail"));
+        assert_eq!(resources[0].local_media_filename.as_deref(), Some("example.mp4"));
     }
 
     #[test]

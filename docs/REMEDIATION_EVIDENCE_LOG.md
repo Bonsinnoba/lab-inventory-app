@@ -737,3 +737,31 @@ Added generated local reset backups and deployment backup output to `.gitignore`
 
 ### Handoff rule
 Future automated tests should be maintained as intentional, named test infrastructure rather than accumulating one-time scripts in production source directories. Any new test harness must document its purpose, execution scope, cleanup behavior, and whether it is safe against disposable or persistent data.
+
+## Evidence update — 2026-09-21 (fresh server and desktop-local physical-test reset)
+
+### Observed cause
+
+The reported "old data without login" condition was reproduced after resetting the Docker side alone. The PostgreSQL service was fresh, but the desktop was still reading its pre-existing local operational state:
+
+- `%APPDATA%\\com.lab-inventory.app\\labos-local.db` contained the prior local SQLite state, including cached offline authorization;
+- `%LOCALAPPDATA%\\com.lab-inventory.app\\EBWebView` contained the WebView local storage, including the browser-side remembered session.
+
+This is consistent with LabOS's offline-first design: a previously authorized workstation may continue to operate from SQLite while disconnected. It does not mean the new PostgreSQL database contains the old projects/resources.
+
+### Physical reset performed
+
+1. Removed the obsolete `deploy` LabOS containers and their `deploy_labos_postgres`, `deploy_labos_storage`, `deploy_labos_test_postgres`, and `deploy_labos_test_storage` volumes. The obsolete API owned host port 4000.
+2. Recreated the named `labos_postgres` and `labos_storage` volumes through the `labos` Compose project and started the Docker API/DB stack.
+3. Closed the LabOS desktop processes and removed only the confirmed LabOS application-data directories listed above.
+4. Relaunched the Tauri client against `http://127.0.0.1:4000/api`.
+
+### Runtime verification — PASS
+
+- Docker PostgreSQL is healthy and the Docker API health endpoint returned HTTP 200.
+- The API initialized the base schema and applied 46 migrations.
+- The fresh central PostgreSQL `users` table contains `0` rows.
+- The newly created `labos-local.db` contains `0` `local_users` rows and `0` `local_session` rows.
+- Its initialized synchronization state is only `inventory_snapshot = []`; no prior project/resource tables or pending local operations were present.
+
+The expected next UI state is the unauthenticated first-run/login flow. Create the first central account through that flow before testing new data or synchronization.
