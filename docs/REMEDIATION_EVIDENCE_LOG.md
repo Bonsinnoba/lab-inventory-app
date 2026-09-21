@@ -481,3 +481,53 @@ Diagnosis from the production code:
 
 - The disposable sync runtime test is **NOT PASS yet** because it correctly stopped at the authorization defect before verifying deletion/tombstone behavior.
 - Required next evidence: pull/rebuild/restart the API from the remediation commit, then rerun `npm run test:sync-runtime-disposable`. A PASS requires the complete scenario to reach its final success output.
+
+
+## Evidence update — 2026-09-21 (shared-resource authorization remediation verified)
+
+The project workstation pulled production fix commit `063f243665f3afc8116cfbd49c5eabb41ae1049f`, rebuilt and restarted `labos-api`, and reran the disposable PostgreSQL-backed sync runtime test.
+
+### Workstation execution
+
+The workstation executed:
+
+```powershell
+cd C:\Users\balik\Iven\lab-inventory-app\deploy
+git pull origin main
+docker compose build labos-api
+docker compose up -d labos-api
+docker compose ps
+docker compose exec labos-api npm run test:sync-runtime-disposable
+```
+
+The API image built successfully and the API container started. PostgreSQL remained healthy.
+
+### Runtime results
+
+The disposable sync runtime test reported all required scenario checks as PASS:
+
+```text
+PASS: disposable sync push creates and persists a resource
+PASS: sync idempotency replay returns the original result without duplication
+PASS: sync rejects idempotency payload mismatch
+PASS: resource pull returns the pushed resource
+PASS: rejected resource mutation rolls back without creating a row
+PASS: resource deletion creates a PostgreSQL tombstone
+PASS: resource pull returns the deletion tombstone
+```
+
+This is real PostgreSQL-backed runtime evidence for the exercised sync push/pull lifecycle, idempotency protection, invalid-mutation rollback, resource deletion, tombstone creation, and tombstone propagation.
+
+### Evidence classification
+
+The previously failing shared-resource deletion authorization path is now verified in the complete runtime scenario after replacing the narrower `getResourceAccess()` check with the established `requireResourceEditor()` policy.
+
+The disposable sync runtime scenario is now **PASS**.
+
+This does not by itself establish every possible sync/retry/conflict workflow as runtime-verified. The existing static suites and Rust unit tests remain separate evidence categories, and broader runtime coverage should continue where practical.
+
+The Docker Compose warnings about unset host-shell `PGDATABASE`, `PGUSER`, and `PGPASSWORD` did not prevent the deployment from starting or the runtime test from passing; the deployment's configured environment remained functional. They are therefore recorded as non-blocking environment warnings, not test failures.
+
+### Next verification target
+
+Proceed to the next runtime evidence gap in the broader sync reliability/outbox/convergence surface. Keep the same evidence standard: exercise the real API/database path where practical, document every defect and remediation, and do not convert static PASS results into runtime claims.
