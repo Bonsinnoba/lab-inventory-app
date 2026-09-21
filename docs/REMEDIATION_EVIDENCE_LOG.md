@@ -408,3 +408,28 @@ docker compose exec labos-api npm run test:sync-runtime-disposable
 ```
 
 This test must report all seven PASS lines before broader sync runtime evidence is classified as PASS. A failure must be diagnosed before any conclusion about the production sync implementation is made.
+
+
+## Evidence update — 2026-09-21 (sync runtime test found production URL-canonicalization defect)
+
+The first real PostgreSQL-backed sync runtime execution failed at the canonical URL persistence assertion:
+
+`resource create push did not persist the canonical URL`
+
+Diagnosis from the live production path:
+- `applyResourceEntity()` correctly normalized URLs for advisory locking and duplicate lookup.
+- The subsequent INSERT loop copied `record.url` directly into `resources.url`.
+- Therefore a sync-created URL ending in `/` could be stored with the trailing slash even though the deduplication identity used the normalized form.
+- This was a production implementation defect, not a test-harness defect.
+
+Fix:
+- `backend/src/routes/sync.js` now canonicalizes the `url` field during resource sync INSERT using trim + trailing-slash removal, matching the existing direct `POST /api/resources/link` behavior and deduplication identity.
+
+Commit:
+- `06e7f22b4c9f4f1a333af82081fe94b66cc84479`
+
+Runtime evidence status:
+- The disposable sync runtime test is **NOT PASS yet**.
+- The failure was useful evidence and identified a real production defect.
+- The test must be rerun after rebuilding/restarting `labos-api`.
+- No PASS claim is made for the full sync runtime scenario until the rerun completes.
