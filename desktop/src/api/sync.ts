@@ -33,7 +33,7 @@ export function subscribeSyncStatus(listener:(state:SyncRuntimeState)=>void):()=
 
 export async function getPendingSyncCount():Promise<number>{try{const status=await invoke<{pending_sync_count:number}>('local_database_status');return Number(status.pending_sync_count||0);}catch{return 0;}}
 export async function getSyncConflictCount():Promise<number>{try{const status=await invoke<{sync_conflict_count:number}>('local_database_status');return Number(status.sync_conflict_count||0);}catch{return 0;}}
-export async function listSyncConflicts():Promise<unknown[]>{try{return await invoke<unknown[]>('list_sync_conflicts');}catch{return [];}}
+export async function listSyncConflicts():Promise<unknown[]>{return invoke<unknown[]>('list_sync_conflicts');}
 export async function resolveSyncConflict(changeId:string,resolution:'keep_local'|'accept_server'|'dismiss'):Promise<void>{await invoke('resolve_sync_conflict',{changeId,resolution});}
 export async function syncPendingChanges(force=false):Promise<number>{if(activeSync)return activeSync;if(!force&&nextRetryAt>Date.now()){return 0;}activeSync=runSync().finally(()=>{activeSync=null;});return activeSync;}
 
