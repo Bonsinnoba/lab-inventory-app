@@ -12,7 +12,7 @@ export interface BudgetPeriod {
   created_at: string;
 }
 
-export async function getBudgetPeriods(): Promise<BudgetPeriod[]> { if(isTauri())try{return await invoke<BudgetPeriod[]>('get_local_budget_periods')}catch{} const response=await apiFetch('/budget-periods');if(!response.ok)throw new Error('Failed to fetch');return response.json(); }
+export async function getBudgetPeriods(): Promise<BudgetPeriod[]> { if(isTauri())try{return await invoke<BudgetPeriod[]>('get_local_budget_periods')}catch(error){throw new Error('Local finance access failed: '+String(error))} const response=await apiFetch('/budget-periods');if(!response.ok)throw new Error('Failed to fetch');return response.json(); }
 
 export async function getCurrentBudgetPeriod(): Promise<BudgetPeriod | null> {
   if (isTauri()) {
@@ -27,7 +27,7 @@ export async function getCurrentBudgetPeriod(): Promise<BudgetPeriod | null> {
         })
         .sort((a, b) => String(b.start_date || '').localeCompare(String(a.start_date || '')))[0];
       return current || null;
-    } catch {}
+    } catch (error) { throw new Error('Local finance access failed: ' + String(error)); }
   }
   const response = await apiFetch(`/budget-periods/current`);
   if (!response.ok) throw new Error('Failed to fetch current budget period');
