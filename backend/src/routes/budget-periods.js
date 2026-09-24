@@ -6,7 +6,7 @@ import { writeAuditLog } from '../middleware/audit.js';
 const router = Router();
 
 // GET /api/budget-periods — list, ordered by start_date descending
-router.get('/', hasPermission('finance.view'), async (req, res) => {
+router.get('/', hasPermission('finance.view_sensitive'), async (req, res) => {
   try {
     const result = await pool.query(
       'SELECT * FROM budget_periods ORDER BY start_date DESC NULLS LAST, created_at DESC'
@@ -19,7 +19,7 @@ router.get('/', hasPermission('finance.view'), async (req, res) => {
 });
 
 // GET /api/budget-periods/current — returns period containing today's date, or null
-router.get('/current', hasPermission('finance.view'), async (req, res) => {
+router.get('/current', hasPermission('finance.view_sensitive'), async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT * FROM budget_periods 
@@ -36,7 +36,7 @@ router.get('/current', hasPermission('finance.view'), async (req, res) => {
 });
 
 // GET /api/budget-periods/:id
-router.get('/:id', hasPermission('finance.view'), async (req, res) => {
+router.get('/:id', hasPermission('finance.view_sensitive'), async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM budget_periods WHERE id = $1', [req.params.id]);
     if (result.rows.length === 0) {
