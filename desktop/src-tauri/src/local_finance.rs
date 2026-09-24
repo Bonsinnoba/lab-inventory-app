@@ -17,7 +17,15 @@ fn mutate(app:&AppHandle,key:&str,entity:&str,op:&str,mut value:Value)->Result<V
 local_auth::require_local_permission(&conn,permission)?;
 if entity!="transaction" || value.get("direction").and_then(Value::as_str)==Some("income"){
     local_auth::require_local_permission(&conn,"finance.view_sensitive")?;
-}let mut rows=read(&conn,key)?;let entity_id=value.get("id").and_then(Value::as_str).ok_or("id is required")?.to_string();if op=="delete"{rows.retain(|v|v.get("id").and_then(Value::as_str)!=Some(&entity_id));}else if let Some(old)=rows.iter_mut().find(|v|v.get("id").and_then(Value::as_str)==Some(&entity_id)){*old=value.clone();}else{rows.push(value.clone());}write(&conn,key,&rows)?;queue(&mut conn,entity,&entity_id,op,&value)?;Ok(value)}
+}let mut rows=read(&conn,key)?;
+if entity=="transaction" {
+    let target=value.get("id").and_then(Value::as_str);
+    let old_income=rows.iter().any(|row|row.get("id").and_then(Value::as_str)==target && row.get("direction").and_then(Value::as_str)==Some("income"));
+    if old_income || value.get("direction").and_then(Value::as_str)==Some("income"){
+        local_auth::require_local_permission(&conn,"finance.view_sensitive")?;
+    }
+}
+let entity_id=value.get("id").and_then(Value::as_str).ok_or("id is required")?.to_string();if op=="delete"{rows.retain(|v|v.get("id").and_then(Value::as_str)!=Some(&entity_id));}else if let Some(old)=rows.iter_mut().find(|v|v.get("id").and_then(Value::as_str)==Some(&entity_id)){*old=value.clone();}else{rows.push(value.clone());}write(&conn,key,&rows)?;queue(&mut conn,entity,&entity_id,op,&value)?;Ok(value)}
 fn all(app:&AppHandle,key:&str)->Result<Vec<Value>,String>{
     let c=open_local_connection(app)?;
     local_auth::require_local_permission(&c,"finance.view")?;
