@@ -43,4 +43,33 @@ fn merge(app:&AppHandle,key:&str,entity:&str,incoming:Vec<Value>,deleted:Vec<Str
 #[tauri::command] pub fn create_local_funding_source(app:AppHandle,source:Value)->Result<Value,String>{mutate(&app,KEY_FS,"funding_source","create",source)}
 #[tauri::command] pub fn update_local_funding_source(app:AppHandle,id:String,source:Value)->Result<Value,String>{let mut v=source;v.as_object_mut().ok_or("source must be object")?.insert("id".into(),json!(id));mutate(&app,KEY_FS,"funding_source","update",v)}
 #[tauri::command] pub fn delete_local_funding_source(app:AppHandle,id:String)->Result<Value,String>{mutate(&app,KEY_FS,"funding_source","delete",json!({"id":id}))}
-#[tauri::command] pub fn apply_server_finance_pull(app:AppHandle,transactions:Vec<Value>,budget_periods:Vec<Value>,funding_sources:Vec<Value>,deleted_transactions:Vec<String>,deleted_budget_periods:Vec<String>,deleted_funding_sources:Vec<String>)->Result<(),String>{merge(&app,KEY_TX,"transaction",transactions,deleted_transactions)?;merge(&app,KEY_BP,"budget_period",budget_periods,deleted_budget_periods)?;merge(&app,KEY_FS,"funding_source",funding_sources,deleted_funding_sources)}
+#[tauri::command]
+pub fn apply_server_finance_pull(app:AppHandle,transactions:Vec<Value>,budget_periods:Vec<Value>,funding_sources:Vec<Value>,deleted_transactions:Vec<String>,deleted_budget_periods:Vec<String>,deleted_funding_sources:Vec<String>,sensitive_access:bool)->Result<(),String>{
+    let mut c=open_local_connection(&app)?;
+    local_auth::require_local_permission(&c,"finance.view")?;
+    if sensitive_access {
+        local_auth::require_local_permission(&c,"finance.view_sensitive")?;
+    }else{
+        // Refuse a destructive reconciliation while unsent finance edits remain.
+        // They must be resolved explicitly rather than silently discarded.
+        let pending:i64=c.query_row("SELECT COUNT(*) FROM sync_outbox WHERE synced_at IS NULL AND entity_type IN ('transaction','budget_period','funding_source')",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+        if pending>0{return Err("Cannot purge restricted finance cache while finance changes are pending sync. Resolve pending changes first.".into())}
+        let tx=c.transaction().map_err(|e|e.to_string())?;
+        let cleaned:Vec<Value>=transactions.into_iter().filter_map(|mut row|{
+            if row.get("direction").and_then(Value::as_str)!=Some("expense"){return None}
+            if let Some(obj)=row.as_object_mut(){
+                for field in ["funding_source_id","funding_source_name","budget_period_id","budget_period_label"]{obj.remove(field);}
+            }
+            Some(row)
+        }).collect();
+        write(&tx,KEY_TX,&cleaned)?;
+        write(&tx,KEY_BP,&Vec::new())?;
+        write(&tx,KEY_FS,&Vec::new())?;
+        tx.commit().map_err(|e|e.to_string())?;
+        return Ok(())
+    }
+    drop(c);
+    merge(&app,KEY_TX,"transaction",transactions,deleted_transactions)?;
+    merge(&app,KEY_BP,"budget_period",budget_periods,deleted_budget_periods)?;
+    merge(&app,KEY_FS,"funding_source",funding_sources,deleted_funding_sources)
+}
