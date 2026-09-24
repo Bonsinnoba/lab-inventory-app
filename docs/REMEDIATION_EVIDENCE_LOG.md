@@ -876,3 +876,10 @@ Policy agreed: all active authorized staff may see laboratory expenditure; incom
 - Quick Use modal now checks effective inventory.adjust_stock permission before presenting movement submission. Server/local inventory movement authorization must remain authoritative.
 - Checked combined GitHub commit status for Search Dock commit b67d4f1: no reported status checks; this is not evidence of passing CI. Static connector-only edits; no frontend build, Rust compilation, or runtime tests executed.
 - Outstanding: test both search surfaces, modal document access and offline cache, quick checkout/consumption and project permissions, conflict handling and finance security items from prior changes. Resolve user-specific project eligibility and reusable item classification against authoritative item schema before release.
+
+
+## CHANGE-028 — Inventory acquisition provenance (2026-09-24)
+
+- Added PostgreSQL migration backend/src/migrations/20260924_inventory_acquisition.sql with acquisition_method (unspecified/purchased/salvaged/donated/transferred/fabricated/other), acquisition_source and acquisition_notes. Existing inventory defaults to unspecified; no invented purchase history or zero-cost valuation.
+- Backend inventory create and update routes persist provenance; offline inventory sync ITEM_FIELDS includes all three fields. Desktop Item type and Add Item form now capture method, source and optional notes, with contextual donor/salvaged-from prompts. Unit purchase cost remains optional and replacement cost separate.
+- All edits directly committed to main. STATIC ONLY: migrations, backend checks, TypeScript build and online/offline roundtrip tests not executed. Before deployment run npm run migrate against staging, verify migration on existing data, item create/update, offline create/push/pull, reports and exports; review whether donation details need access controls. Existing finance and search-action verification blockers remain.
