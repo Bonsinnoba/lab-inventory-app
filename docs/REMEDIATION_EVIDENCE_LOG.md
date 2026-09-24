@@ -852,3 +852,11 @@ Policy agreed: all active authorized staff may see laboratory expenditure; incom
 - Non-sensitive desktop pull performs a SQLite transaction replacing cached transactions with redacted server expense rows and clearing cached funding sources and budget periods. If unsent finance outbox changes exist, it refuses destructive reconciliation and reports an error. Restricted local finance read commands already enforce current local permissions.
 - Offline income create now requires `finance.create_income` and sensitive access; income edit/delete require sensitive access; local funding/budget mutations require sensitive access.
 - **STATIC ONLY — NOT RELEASE VERIFIED:** GitHub connector changes not compiled or runtime-tested. Must verify Node syntax, Rust compilation, sync push project authorization, user permission refresh/revocation, desktop sync retry, cache purge, pending outbox conflict resolution, shared-device cross-user caching, filesystem/backup exposure, and UI null income/net handling. Existing SQLite backups and previously exported files cannot be remotely purged. Review project budget fields, expense free text and other indirect disclosure paths. Local finance mutation write/outbox atomicity remains a separate known concern.
+
+
+## CHANGE-025 — Conflict resolution page foundation (2026-09-24)
+
+- Fixed sync_conflicts INSERT missing operation parameter, which prevented rejected changes from being recorded.
+- Added desktop/src/pages/SyncConflictsPage.tsx, /sync/conflicts route, and sidebar navigation. Displays unresolved conflicts and error details; offers retry-local and accept-server actions with confirmation.
+- Removed silent failure-to-empty fallback in listSyncConflicts, allowing actual loading errors to appear.
+- STATIC ONLY, NOT RELEASE VERIFIED: compile and runtime testing required. Remaining: per-user conflict visibility (especially finance payloads), server-side comparison and movement reconciliation, verify retry/refresh per entity, implement datasheet/specs and quick-use search actions. Finance verification blockers from CHANGE-024 remain.
