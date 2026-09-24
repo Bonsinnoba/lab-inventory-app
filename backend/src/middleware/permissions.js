@@ -3,7 +3,7 @@ import { pool } from '../db.js';
 export const PERMISSIONS = Object.freeze([
   'inventory.view', 'inventory.create', 'inventory.edit', 'inventory.delete', 'inventory.adjust_stock', 'inventory.import',
   'projects.view', 'projects.create', 'projects.edit', 'projects.delete', 'projects.manage_members', 'projects.manage_owner',
-  'finance.view', 'finance.create_income', 'finance.create_expense', 'finance.edit', 'finance.delete', 'finance.import',
+  'finance.view', 'finance.view_sensitive', 'finance.create_income', 'finance.create_expense', 'finance.edit', 'finance.delete', 'finance.import',
   'reports.view', 'reports.export', 'audit.view',
   'users.view', 'users.create', 'users.edit', 'users.manage_permissions', 'users.manage_roles', 'users.reset_password',
   'engineering.view', 'engineering.create', 'engineering.edit', 'engineering.delete',
