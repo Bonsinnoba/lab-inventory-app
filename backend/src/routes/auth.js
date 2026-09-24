@@ -121,16 +121,22 @@ router.patch('/users/:id', authenticateToken, hasPermission('users.edit'), async
   if (req.params.id === req.user.userId && is_active === false) return res.status(400).json({ error: 'You cannot disable your own account' });
   const actorPermissions = req.permissions || await getUserPermissions(req.user.userId, req.user.role);
   if (role !== undefined && !actorPermissions.has('users.manage_roles')) return res.status(403).json({ error: { code: 'PERMISSION_DENIED', message: 'Permission required: users.manage_roles', permission: 'users.manage_roles' } });
+  const client = await pool.connect();
   try {
-    const current = await pool.query('SELECT id, username, role, is_active FROM users WHERE id = $1', [req.params.id]); if (!current.rowCount) return res.status(404).json({ error: 'User not found' });
+    await client.query('BEGIN');
+    // Serialize role/status changes, including the last-active-admin invariant.
+    await client.query('SELECT pg_advisory_xact_lock($1)', [981235]);
+    const current = await client.query('SELECT id, username, role, is_active FROM users WHERE id = $1 FOR UPDATE', [req.params.id]); if (!current.rowCount) return res.status(404).json({ error: 'User not found' });
     const before = current.rows[0]; const nextRole = role ?? before.role; const nextActive = is_active ?? before.is_active;
     if (!canManageTarget(req.user, before)) return res.status(403).json(deny('Only an administrator can manage an administrator account', 'ADMIN_TARGET_PROTECTED', 'users.edit'));
     if (nextRole === 'admin' && req.user.role !== 'admin') return res.status(403).json(deny('Only an administrator can assign the administrator role', 'ADMIN_ROLE_REQUIRED', 'users.manage_roles'));
-    if (before.role === 'admin' && nextRole !== 'admin') { const count = await pool.query("SELECT COUNT(*)::int AS count FROM users WHERE role = 'admin' AND is_active = TRUE"); if (count.rows[0].count <= 1) return res.status(400).json({ error: 'At least one active administrator is required' }); }
-    if (before.role === 'admin' && before.is_active && nextActive === false) { const count = await pool.query("SELECT COUNT(*)::int AS count FROM users WHERE role = 'admin' AND is_active = TRUE"); if (count.rows[0].count <= 1) return res.status(400).json({ error: 'At least one active administrator is required' }); }
-    const result = await pool.query('UPDATE users SET role = $1, is_active = $2 WHERE id = $3 RETURNING id, username, role, is_active, last_login_at, created_at', [nextRole, nextActive, req.params.id]);
-    await writeAuditLog({ req, action: 'UPDATE', entityType: 'user', entityId: req.params.id, oldValue: before, newValue: result.rows[0] }); res.json({ user: result.rows[0] });
-  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to update user' }); }
+    if (before.role === 'admin' && nextRole !== 'admin') { const count = await client.query("SELECT COUNT(*)::int AS count FROM users WHERE role = 'admin' AND is_active = TRUE"); if (count.rows[0].count <= 1) return res.status(400).json({ error: 'At least one active administrator is required' }); }
+    if (before.role === 'admin' && before.is_active && nextActive === false) { const count = await client.query("SELECT COUNT(*)::int AS count FROM users WHERE role = 'admin' AND is_active = TRUE"); if (count.rows[0].count <= 1) return res.status(400).json({ error: 'At least one active administrator is required' }); }
+    const result = await client.query('UPDATE users SET role = $1, is_active = $2 WHERE id = $3 RETURNING id, username, role, is_active, last_login_at, created_at', [nextRole, nextActive, req.params.id]);
+    await writeAuditLog({ req, action: 'UPDATE', entityType: 'user', entityId: req.params.id, oldValue: before, newValue: result.rows[0], client, required: true });
+    await client.query('COMMIT');
+    res.json({ user: result.rows[0] });
+  } catch (err) { try { await client.query('ROLLBACK'); } catch {} console.error(err); res.status(500).json({ error: 'Failed to update user' }); } finally { client.release(); }
 });
 
 router.post('/users/:id/password', authenticateToken, hasPermission('users.reset_password'), async (req, res) => {
