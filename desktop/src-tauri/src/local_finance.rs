@@ -14,7 +14,22 @@ fn read(conn:&rusqlite::Connection,key:&str)->Result<Vec<Value>,String>{let raw:
 fn write(conn:&rusqlite::Connection,key:&str,v:&Vec<Value>)->Result<(),String>{let raw=serde_json::to_string(v).map_err(|e|e.to_string())?;conn.execute("INSERT INTO sync_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[key,&raw]).map_err(|e|e.to_string())?;Ok(())}
 fn queue(conn:&mut rusqlite::Connection,entity:&str,entity_id:&str,op:&str,payload:&Value)->Result<(),String>{let tx=conn.transaction().map_err(|e|e.to_string())?;let device:String=tx.query_row("SELECT device_id FROM device_identity WHERE id=1",[],|r|r.get(0)).map_err(|e|e.to_string())?;let cid=id(&tx)?;tx.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES(?1,?2,?3,?4,?5,?6)",params![cid,device,entity,entity_id,op,payload.to_string()]).map_err(|e|e.to_string())?;tx.commit().map_err(|e|e.to_string())}
 fn mutate(app:&AppHandle,key:&str,entity:&str,op:&str,mut value:Value)->Result<Value,String>{let mut conn=open_local_connection(app)?;let permission=if op=="delete"{"finance.delete"}else if op=="create"&&entity=="transaction"{"finance.create_expense"}else{"finance.edit"};local_auth::require_local_permission(&conn,permission)?;let mut rows=read(&conn,key)?;let entity_id=value.get("id").and_then(Value::as_str).ok_or("id is required")?.to_string();if op=="delete"{rows.retain(|v|v.get("id").and_then(Value::as_str)!=Some(&entity_id));}else if let Some(old)=rows.iter_mut().find(|v|v.get("id").and_then(Value::as_str)==Some(&entity_id)){*old=value.clone();}else{rows.push(value.clone());}write(&conn,key,&rows)?;queue(&mut conn,entity,&entity_id,op,&value)?;Ok(value)}
-fn all(app:&AppHandle,key:&str)->Result<Vec<Value>,String>{let c=open_local_connection(app)?;read(&c,key)}
+fn all(app:&AppHandle,key:&str)->Result<Vec<Value>,String>{
+    let c=open_local_connection(app)?;
+    local_auth::require_local_permission(&c,"finance.view")?;
+    if key==KEY_TX {
+        if local_auth::require_local_permission(&c,"finance.view_sensitive").is_ok(){return read(&c,key)}
+        return Ok(read(&c,key)?.into_iter().filter_map(|mut row|{
+            if row.get("direction").and_then(Value::as_str)!=Some("expense"){return None}
+            if let Some(obj)=row.as_object_mut(){
+                for field in ["funding_source_id","funding_source_name","budget_period_id","budget_period_label"]{obj.remove(field);}
+            }
+            Some(row)
+        }).collect());
+    }
+    local_auth::require_local_permission(&c,"finance.view_sensitive")?;
+    read(&c,key)
+}
 fn merge(app:&AppHandle,key:&str,entity:&str,incoming:Vec<Value>,deleted:Vec<String>)->Result<(),String>{let mut c=open_local_connection(app)?;let mut rows=read(&c,key)?;let pending:std::collections::HashSet<String>={let mut s=c.prepare("SELECT entity_id FROM sync_outbox WHERE synced_at IS NULL AND entity_type=?1 AND entity_id IS NOT NULL").map_err(|e|e.to_string())?;let x=s.query_map([entity],|r|r.get(0)).map_err(|e|e.to_string())?.filter_map(Result::ok).collect();x};rows.retain(|v|!deleted.contains(&v.get("id").and_then(Value::as_str).unwrap_or("").to_string())||pending.contains(v.get("id").and_then(Value::as_str).unwrap_or("")));for x in incoming{let xid=x.get("id").and_then(Value::as_str).unwrap_or("");if pending.contains(xid){continue}if let Some(old)=rows.iter_mut().find(|v|v.get("id").and_then(Value::as_str)==Some(xid)){*old=x}else{rows.push(x)}}write(&c,key,&rows)}
 #[tauri::command] pub fn get_local_transactions(app:AppHandle)->Result<Vec<Value>,String>{all(&app,KEY_TX)}
 #[tauri::command] pub fn create_local_transaction(app:AppHandle,transaction:Value)->Result<Value,String>{mutate(&app,KEY_TX,"transaction","create",transaction)}
