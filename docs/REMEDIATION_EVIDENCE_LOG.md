@@ -774,3 +774,12 @@ The expected next UI state is the unauthenticated first-run/login flow. Create t
 - Added a defense-in-depth admin-role check in `hasPermission('audit.view')` so even a mistakenly granted non-admin override cannot expose sensitive audit records.
 - No finance-scope policy was assumed and no local databases were reset.
 - Verification: STATIC ONLY — source fetched and edits committed on main; API runtime authorization tests NOT RUN in this environment. Required regression: authenticate as viewer/researcher and confirm audit GET returns 403; admin returns 200; non-admin with explicit `audit.view` override still returns 403; ensure audit UI and exports do not leak records.
+
+
+## CHANGE-016 — Finance desktop mutation write-path correction (2026-09-24)
+
+- Confirmed silent `catch {}` fallback to direct REST mutations in `desktop/src/api/transactions.ts`, `funding-sources.ts`, and `budget-periods.ts`.
+- Removed the Tauri mutation fallbacks for create/update/delete in all three modules. Desktop now propagates local SQLite command failure; browser-only behavior retains REST writes. Existing read fallbacks were left unchanged pending separate review.
+- No schema, migration, sync engine, finance visibility policy, or Codex UUID/resource changes were modified.
+- Verification: STATIC ONLY — inspected fetched source and committed targeted replacements. Frontend TypeScript check, desktop runtime offline/reconnect test, outbox atomicity inspection, and API integration tests NOT RUN here. Check local Rust commands write entity+outbox atomically before declaring full offline-first compliance.
+- Regression scenarios: force a local SQLite failure while online and verify zero direct POST/PUT/DELETE requests; create/update/delete offline and confirm one queued event per mutation, retry idempotency, and one server record after reconnect.
