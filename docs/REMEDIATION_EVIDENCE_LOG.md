@@ -868,3 +868,11 @@ Policy agreed: all active authorized staff may see laboratory expenditure; incom
 - Updated desktop/src/pages/SearchPage.tsx item result cards to expose both actions without navigating to item detail. Existing card navigation remains.
 - Updated desktop/src-tauri/src/local_db.rs conflict listing and resolution to require authenticated local inventory.view and sensitive finance permission for transaction/funding/budget conflict payloads. This is a coarse safeguard; review role-specific visibility and non-finance entities before release.
 - STATIC ONLY: no TypeScript/Rust build or runtime tests executed. Validate resource URL behavior offline, project access and item classification for checkout vs consumption, quantity race/stock limits, movement history, shared SearchDock parity, accessibility, and finance-conflict payload exposure. Finish finance verification items from CHANGE-024 and conflict behavior from CHANGE-025. User-facing implementation is not release verified.
+
+
+## CHANGE-027 — Compact Search Dock action parity and stock permission (2026-09-24)
+
+- Added Datasheet & Specs and Use item buttons to Search Dock item results, reusing the same modal as full Global Search; retained item detail navigation.
+- Quick Use modal now checks effective inventory.adjust_stock permission before presenting movement submission. Server/local inventory movement authorization must remain authoritative.
+- Checked combined GitHub commit status for Search Dock commit b67d4f1: no reported status checks; this is not evidence of passing CI. Static connector-only edits; no frontend build, Rust compilation, or runtime tests executed.
+- Outstanding: test both search surfaces, modal document access and offline cache, quick checkout/consumption and project permissions, conflict handling and finance security items from prior changes. Resolve user-specific project eligibility and reusable item classification against authoritative item schema before release.
