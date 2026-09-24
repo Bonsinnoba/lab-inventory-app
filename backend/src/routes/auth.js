@@ -85,8 +85,24 @@ router.patch('/me/password', authenticateToken, async (req, res) => {
   if (!current_password || !new_password) return res.status(400).json({ error: 'current_password and new_password are required' });
   if (new_password.length < 8 || new_password.length > 128) return res.status(400).json({ error: 'new password must be between 8 and 128 characters' });
   if (current_password === new_password) return res.status(400).json({ error: 'new password must differ from the current password' });
-  try { const current = await pool.query('SELECT id, password_hash FROM users WHERE id = $1 AND is_active = TRUE', [req.user.userId]); if (!current.rowCount || !(await bcrypt.compare(current_password, current.rows[0].password_hash))) return res.status(400).json({ error: 'Current password is incorrect' }); const passwordHash = await bcrypt.hash(new_password, 12); await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [passwordHash, req.user.userId]); await writeAuditLog({ req, action: 'UPDATE', entityType: 'user_password', entityId: req.user.userId }); res.json({ message: 'Password updated successfully' }); }
-  catch (err) { console.error(err); res.status(500).json({ error: 'Failed to update password' }); }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const current = await client.query('SELECT id, password_hash FROM users WHERE id = $1 AND is_active = TRUE FOR UPDATE', [req.user.userId]);
+    if (!current.rowCount || !(await bcrypt.compare(current_password, current.rows[0].password_hash))) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Current password is incorrect' });
+    }
+    const passwordHash = await bcrypt.hash(new_password, 12);
+    await client.query('UPDATE users SET password_hash = $1 WHERE id = $2', [passwordHash, req.user.userId]);
+    await writeAuditLog({ req, action: 'UPDATE', entityType: 'user_password', entityId: req.user.userId, client, required: true });
+    await client.query('COMMIT');
+    res.json({ message: 'Password updated successfully' });
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch {}
+    console.error(err);
+    res.status(500).json({ error: 'Failed to update password' });
+  } finally { client.release(); }
 });
 
 router.post('/users', authenticateToken, hasPermission('users.create'), async (req, res) => {
@@ -143,8 +159,28 @@ router.post('/users/:id/password', authenticateToken, hasPermission('users.reset
   const { new_password } = req.body || {};
   if (!new_password) return res.status(400).json({ error: 'new_password is required' });
   if (new_password.length < 8 || new_password.length > 128) return res.status(400).json({ error: 'new password must be between 8 and 128 characters' });
-  try { const target = await pool.query('SELECT id, username, role FROM users WHERE id = $1', [req.params.id]); if (!target.rowCount) return res.status(404).json({ error: 'User not found' }); if (!canManageTarget(req.user, target.rows[0])) return res.status(403).json(deny('Only an administrator can reset an administrator password', 'ADMIN_TARGET_PROTECTED', 'users.reset_password')); const passwordHash = await bcrypt.hash(new_password, 12); await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [passwordHash, req.params.id]); await writeAuditLog({ req, action: 'UPDATE', entityType: 'user_password', entityId: req.params.id, metadata: { username: target.rows[0].username, reset_by_admin: req.user.role === 'admin' } }); res.json({ message: 'Password reset successfully' }); }
-  catch (err) { console.error(err); res.status(500).json({ error: 'Failed to reset password' }); }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const target = await client.query('SELECT id, username, role FROM users WHERE id = $1 FOR UPDATE', [req.params.id]);
+    if (!target.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'User not found' });
+    }
+    if (!canManageTarget(req.user, target.rows[0])) {
+      await client.query('ROLLBACK');
+      return res.status(403).json(deny('Only an administrator can reset an administrator password', 'ADMIN_TARGET_PROTECTED', 'users.reset_password'));
+    }
+    const passwordHash = await bcrypt.hash(new_password, 12);
+    await client.query('UPDATE users SET password_hash = $1 WHERE id = $2', [passwordHash, req.params.id]);
+    await writeAuditLog({ req, action: 'UPDATE', entityType: 'user_password', entityId: req.params.id, metadata: { username: target.rows[0].username, reset_by_admin: req.user.role === 'admin' }, client, required: true });
+    await client.query('COMMIT');
+    res.json({ message: 'Password reset successfully' });
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch {}
+    console.error(err);
+    res.status(500).json({ error: 'Failed to reset password' });
+  } finally { client.release(); }
 });
 
 router.get('/users', authenticateToken, hasPermission('users.view'), async (req, res) => { const result = await pool.query('SELECT id, username, role, is_active, last_login_at, created_at FROM users ORDER BY username'); res.json(result.rows); });
