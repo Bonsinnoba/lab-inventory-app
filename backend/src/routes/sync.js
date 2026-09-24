@@ -383,7 +383,23 @@ router.get('/locations/pull',async(req,res,next)=>{
  }catch(e){next(e);}
 });
 
-router.get('/finance/pull',async(req,res,next)=>{try{const permissions=await getUserPermissions(req.user.userId,req.user.role);if(!permissions.has('finance.view'))return res.status(403).json({error:{code:'PERMISSION_DENIED',message:'Permission required: finance.view'}});const [transactions,budget_periods,funding_sources]=await Promise.all([pool.query('SELECT * FROM transactions ORDER BY created_at DESC'),pool.query('SELECT * FROM budget_periods ORDER BY start_date DESC NULLS LAST,created_at DESC'),pool.query('SELECT * FROM funding_sources ORDER BY created_at DESC')]);const tomb=await pool.query("SELECT entity_type,entity_id FROM sync_tombstones WHERE entity_type IN ('transaction','budget_period','funding_source') ORDER BY deleted_at DESC LIMIT 1000");const deleted={transaction:[],budget_period:[],funding_source:[]};for(const r of tomb.rows)if(deleted[r.entity_type])deleted[r.entity_type].push(r.entity_id);res.setHeader('Cache-Control','no-store');res.json({transactions:transactions.rows,budget_periods:budget_periods.rows,funding_sources:funding_sources.rows,deleted,deleted_transactions:deleted.transaction,deleted_budget_period:deleted.budget_period,deleted_budget_periods:deleted.budget_period,deleted_funding_sources:deleted.funding_source});}catch(e){next(e);}});
+router.get('/finance/pull',async(req,res,next)=>{
+  try {
+    const permissions=await getUserPermissions(req.user.userId,req.user.role);
+    if(!permissions.has('finance.view'))return res.status(403).json({error:{code:'PERMISSION_DENIED',message:'Permission required: finance.view'}});
+    const sensitive=permissions.has('finance.view_sensitive');
+    const transactions=await pool.query(sensitive?'SELECT * FROM transactions ORDER BY created_at DESC':"SELECT * FROM transactions WHERE direction = 'expense' ORDER BY created_at DESC");
+    const [budget_periods,funding_sources]=sensitive?await Promise.all([
+      pool.query('SELECT * FROM budget_periods ORDER BY start_date DESC NULLS LAST,created_at DESC'),
+      pool.query('SELECT * FROM funding_sources ORDER BY created_at DESC')
+    ]):[{rows:[]},{rows:[]}];
+    const tomb=await pool.query("SELECT entity_type,entity_id FROM sync_tombstones WHERE entity_type IN ('transaction','budget_period','funding_source') ORDER BY deleted_at DESC LIMIT 1000");
+    const deleted={transaction:[],budget_period:[],funding_source:[]};
+    for(const r of tomb.rows)if(deleted[r.entity_type]&&(sensitive||r.entity_type==='transaction'))deleted[r.entity_type].push(r.entity_id);
+    res.setHeader('Cache-Control','no-store');
+    res.json({transactions:transactions.rows,budget_periods:budget_periods.rows,funding_sources:funding_sources.rows,deleted,deleted_transactions:deleted.transaction,deleted_budget_period:deleted.budget_period,deleted_budget_periods:deleted.budget_period,deleted_funding_sources:deleted.funding_source});
+  }catch(e){next(e);}
+});
 router.get('/resources/pull',async(req,res,next)=>{
   try{
     const permissions=await getUserPermissions(req.user.userId,req.user.role);
