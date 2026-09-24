@@ -1,6 +1,6 @@
 import { pool } from '../db.js';
 
-export async function writeAuditLog({ req, actorUserId = null, action, entityType, entityId = null, oldValue = null, newValue = null, metadata = null, deviceId = null }) {
+export async function writeAuditLog({ req, actorUserId = null, action, entityType, entityId = null, oldValue = null, newValue = null, metadata = null, deviceId = null, client = pool, required = false }) {
   try {
     const auditMetadata = {
       ...(metadata && typeof metadata === 'object' ? metadata : {}),
@@ -9,7 +9,7 @@ export async function writeAuditLog({ req, actorUserId = null, action, entityTyp
       ...(deviceId ? { device_id: deviceId } : {}),
     };
 
-    await pool.query(
+    await client.query(
       `INSERT INTO audit_log
         (actor_user_id, action, entity_type, entity_id, old_value, new_value, metadata, ip_address, user_agent, device_id)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
@@ -31,5 +31,6 @@ export async function writeAuditLog({ req, actorUserId = null, action, entityTyp
     // operation into a failed request. Critical actions can be made
     // transactional with the audit row later if the lab requires it.
     console.error('Audit log write failed:', err);
+    if (required) throw err;
   }
 }
