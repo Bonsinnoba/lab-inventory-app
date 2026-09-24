@@ -294,7 +294,7 @@ const FINANCE_CONFIG={transaction:{table:'transactions',permission:{create:'fina
   const nextProject=change.operation==='delete'?null:(record.project_id===undefined?previousProject:record.project_id||null);
   for(const projectId of new Set([previousProject,nextProject].filter(Boolean))){
     const access=await getProjectAccess(projectId,user);
-    if(access!=='edit'&&access!=='admin')fail(403,'PROJECT_EDIT_DENIED','Project edit access required for finance change');
+    if(access.access!=='edit'&&access.access!=='admin')fail(403,'PROJECT_EDIT_DENIED','Project edit access required for finance change');
   }
 }else if(!((await getUserPermissions(user.userId,user.role)).has('finance.view_sensitive'))){
   fail(403,'PERMISSION_DENIED','Sensitive finance access required for funding and budget changes');
