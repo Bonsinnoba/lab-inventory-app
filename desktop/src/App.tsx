@@ -15,6 +15,7 @@ import SearchDock from "./components/SearchDock";
 import MusicDock from "./components/MusicDock";
 import MusicMiniPlayer from "./components/MusicMiniPlayer";
 import InventoryPage from "./pages/InventoryPage";
+import SyncConflictsPage from "./pages/SyncConflictsPage";
 import DashboardPage from "./pages/DashboardPage";
 import ItemDetailPage from "./pages/ItemDetailPage";
 import FinancialsPage from "./pages/FinancialsPage";
@@ -271,6 +272,7 @@ function AppContent() {
                 <Route path="/" element={<Navigate to="/dashboard" replace />} />
                 <Route path="/dashboard" element={<DashboardPage />} />
                 <Route path="/inventory" element={<InventoryPage />} />
+                <Route path="/sync/conflicts" element={<SyncConflictsPage />} />
                 <Route path="/lab-intelligence" element={<LabIntelligencePage />} />
                 <Route path="/operations" element={<OperationsPage />} />
                 <Route path="/inventory/:itemId" element={<ItemDetailPage />} />
