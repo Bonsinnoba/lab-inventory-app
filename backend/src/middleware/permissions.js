@@ -4,7 +4,7 @@ export const PERMISSIONS = Object.freeze([
   'inventory.view', 'inventory.create', 'inventory.edit', 'inventory.delete', 'inventory.adjust_stock', 'inventory.import',
   'projects.view', 'projects.create', 'projects.edit', 'projects.delete', 'projects.manage_members', 'projects.manage_owner',
   'finance.view', 'finance.create_income', 'finance.create_expense', 'finance.edit', 'finance.delete', 'finance.import',
-  'reports.view', 'reports.export',
+  'reports.view', 'reports.export', 'audit.view',
   'users.view', 'users.create', 'users.edit', 'users.manage_permissions', 'users.manage_roles', 'users.reset_password',
   'engineering.view', 'engineering.create', 'engineering.edit', 'engineering.delete',
   'automation.view', 'automation.run',
@@ -39,6 +39,7 @@ export function hasPermission(permission) {
       const user = await pool.query('SELECT role, is_active FROM users WHERE id = $1', [req.user.userId]);
       if (!user.rowCount || !user.rows[0].is_active) return res.status(403).json({ error: { code: 'ACCOUNT_DISABLED', message: 'Account is disabled' } });
       const permissions = await getUserPermissions(req.user.userId, user.rows[0].role);
+      if (permission === 'audit.view' && user.rows[0].role !== 'admin') return res.status(403).json({ error: { code: 'ADMIN_ROLE_REQUIRED', message: 'Audit records are restricted to administrators' } });
       if (!permissions.has(permission)) return res.status(403).json({ error: { code: 'PERMISSION_DENIED', message: `Permission required: ${permission}`, permission } });
 
       // Role management is granular, but administrator assignment remains an
