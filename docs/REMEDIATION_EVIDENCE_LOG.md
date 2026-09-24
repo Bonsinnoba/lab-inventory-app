@@ -801,3 +801,10 @@ The expected next UI state is the unauthenticated first-run/login flow. Create t
 - Existing role and permission checks are retained. No changes to finance scope or desktop synchronization.
 - Verification: STATIC SOURCE INSPECTION ONLY. Live PostgreSQL integration and concurrent requests NOT RUN. Required failure injection: make audit INSERT fail and verify registration, user creation and role/status changes leave no committed account changes. Concurrently attempt to disable/demote two active admins; verify at least one active admin remains. Confirm existing permission override audit transaction and first-account registration behavior.
 - Remaining critical scope: self-service and administrator password changes are still best-effort audited; address in a separate targeted pass. Do not claim full audit transactionality yet.
+
+
+## CHANGE-019 — Transactional password security events (2026-09-24)
+
+- `backend/src/routes/auth.js`: self-service password change and administrator-initiated password reset now use one PostgreSQL transaction per operation. Target account is locked with `FOR UPDATE`, password hash is updated, required `user_password` audit row is inserted through the same client, then COMMIT. Failed credential check, missing target, and forbidden admin target explicitly ROLLBACK before returning.
+- The audit event does not contain password material or password hashes. Existing password-length validation and target authorization retained.
+- Verification: STATIC ONLY; source committed on main. Required live tests: correct old password updates successfully with audit row; wrong old password leaves hash unchanged; unauthorized admin-target reset denied; forced audit insert failure leaves hash unchanged for both paths; concurrent self-service changes revalidate under row lock. Run `npm run check` and backend integration suite before runtime PASS.
