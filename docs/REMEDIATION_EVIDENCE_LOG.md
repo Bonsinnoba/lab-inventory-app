@@ -765,3 +765,12 @@ This is consistent with LabOS's offline-first design: a previously authorized wo
 - Its initialized synchronization state is only `inventory_snapshot = []`; no prior project/resource tables or pending local operations were present.
 
 The expected next UI state is the unauthenticated first-run/login flow. Create the first central account through that flow before testing new data or synchronization.
+
+
+## CHANGE-015 — Audit read access restriction (2026-09-24)
+
+- Current main was inspected after Codex's recent commits; the audit GET route still required `reports.view`, which the viewer baseline includes.
+- Added `audit.view` to the permission registry (admin baseline receives it automatically); changed `backend/src/routes/audit.js` to require it.
+- Added a defense-in-depth admin-role check in `hasPermission('audit.view')` so even a mistakenly granted non-admin override cannot expose sensitive audit records.
+- No finance-scope policy was assumed and no local databases were reset.
+- Verification: STATIC ONLY — source fetched and edits committed on main; API runtime authorization tests NOT RUN in this environment. Required regression: authenticate as viewer/researcher and confirm audit GET returns 403; admin returns 200; non-admin with explicit `audit.view` override still returns 403; ensure audit UI and exports do not leak records.
