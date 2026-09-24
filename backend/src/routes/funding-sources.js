@@ -6,7 +6,7 @@ import { writeAuditLog } from '../middleware/audit.js';
 const router = Router();
 
 // GET /api/funding-sources — list with total_contributed
-router.get('/', hasPermission('finance.view'), async (req, res) => {
+router.get('/', hasPermission('finance.view_sensitive'), async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT fs.*,
@@ -24,7 +24,7 @@ router.get('/', hasPermission('finance.view'), async (req, res) => {
 });
 
 // GET /api/funding-sources/:id — single source + transaction history
-router.get('/:id', hasPermission('finance.view'), async (req, res) => {
+router.get('/:id', hasPermission('finance.view_sensitive'), async (req, res) => {
   try {
     const sourceResult = await pool.query(
       `SELECT fs.*,
