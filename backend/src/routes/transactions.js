@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { hasPermission } from '../middleware/permissions.js';
+import { hasPermission, getUserPermissions } from '../middleware/permissions.js';
 import { writeAuditLog } from '../middleware/audit.js';
 import { requireProjectEditForTransaction, requireExistingTransactionProjectEdit, requireExistingTransactionProjectDelete } from '../middleware/project-transaction-boundary.js';
 import { pool } from '../db.js';
@@ -7,8 +7,10 @@ import { pool } from '../db.js';
 const router = Router();
 
 router.get('/', hasPermission('finance.view'), async (req, res) => {
+  const permissions = await getUserPermissions(req.user.userId, req.user.role);
+  const sensitive = permissions.has('finance.view_sensitive');
   const { type, direction, item_id, project_id, budget_period_id, from, to } = req.query;
-  const conditions = [], values = [];
+  const conditions = sensitive ? [] : ["t.direction = 'expense'"], values = [];
   if (type) { values.push(type); conditions.push(`t.type = $${values.length}`); }
   if (direction) { values.push(direction); conditions.push(`t.direction = $${values.length}`); }
   if (item_id) { values.push(item_id); conditions.push(`t.item_id = $${values.length}`); }
@@ -22,10 +24,12 @@ router.get('/', hasPermission('finance.view'), async (req, res) => {
 });
 
 router.get('/summary', hasPermission('finance.view'), async (req, res) => {
-  const { from, to, budget_period_id } = req.query; const conditions = [], values = [];
+  const permissions = await getUserPermissions(req.user.userId, req.user.role);
+  const sensitive = permissions.has('finance.view_sensitive');
+  const { from, to, budget_period_id } = req.query; const conditions = sensitive ? [] : ["direction = 'expense'"], values = [];
   if (from) { values.push(from); conditions.push(`date >= $${values.length}`); } if (to) { values.push(to); conditions.push(`date <= $${values.length}`); } if (budget_period_id) { values.push(budget_period_id); conditions.push(`budget_period_id = $${values.length}`); }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-  try { const totals = await pool.query(`SELECT direction, SUM(amount)::float AS total FROM transactions ${where} GROUP BY direction`, values); const incomeTotal = totals.rows.find(r => r.direction === 'income')?.total || 0; const expenseTotal = totals.rows.find(r => r.direction === 'expense')?.total || 0; const byCategory = await pool.query(`SELECT direction, type, SUM(amount)::float AS total FROM transactions ${where} GROUP BY direction, type ORDER BY direction, total DESC`, values); const response = { totals: { income: incomeTotal, expense: expenseTotal, net: incomeTotal - expenseTotal }, by_category: { expense: byCategory.rows.filter(r => r.direction === 'expense').map(r => ({ type: r.type, total: r.total })), income: byCategory.rows.filter(r => r.direction === 'income').map(r => ({ type: r.type, total: r.total })) } }; response.by_month = (await pool.query(`SELECT to_char(date_trunc('month', date), 'YYYY-MM') AS month, direction, type, SUM(amount)::float AS total FROM transactions ${where} GROUP BY 1, direction, type ORDER BY 1 ASC`, values)).rows; if (budget_period_id) { const budgetPeriod = await pool.query('SELECT id, label, total_budget, start_date, end_date FROM budget_periods WHERE id = $1', [budget_period_id]); if (budgetPeriod.rowCount) { const period = budgetPeriod.rows[0]; const spent = Number((await pool.query(`SELECT COALESCE(SUM(amount), 0)::float AS total FROM transactions WHERE budget_period_id = $1 AND direction = 'expense'`, [budget_period_id])).rows[0].total || 0); const totalBudget = Number(period.total_budget || 0); response.budget = { period_id: period.id, label: period.label, total_budget: totalBudget, spent, remaining: totalBudget - spent, start_date: period.start_date, end_date: period.end_date }; } } res.json(response); }
+  try { const totals = await pool.query(`SELECT direction, SUM(amount)::float AS total FROM transactions ${where} GROUP BY direction`, values); const incomeTotal = totals.rows.find(r => r.direction === 'income')?.total || 0; const expenseTotal = totals.rows.find(r => r.direction === 'expense')?.total || 0; const byCategory = await pool.query(`SELECT direction, type, SUM(amount)::float AS total FROM transactions ${where} GROUP BY direction, type ORDER BY direction, total DESC`, values); const response = { totals: { income: incomeTotal, expense: expenseTotal, net: incomeTotal - expenseTotal }, by_category: { expense: byCategory.rows.filter(r => r.direction === 'expense').map(r => ({ type: r.type, total: r.total })), income: byCategory.rows.filter(r => r.direction === 'income').map(r => ({ type: r.type, total: r.total })) } }; response.by_month = (await pool.query(`SELECT to_char(date_trunc('month', date), 'YYYY-MM') AS month, direction, type, SUM(amount)::float AS total FROM transactions ${where} GROUP BY 1, direction, type ORDER BY 1 ASC`, values)).rows; if (sensitive && budget_period_id) { const budgetPeriod = await pool.query('SELECT id, label, total_budget, start_date, end_date FROM budget_periods WHERE id = $1', [budget_period_id]); if (budgetPeriod.rowCount) { const period = budgetPeriod.rows[0]; const spent = Number((await pool.query(`SELECT COALESCE(SUM(amount), 0)::float AS total FROM transactions WHERE budget_period_id = $1 AND direction = 'expense'`, [budget_period_id])).rows[0].total || 0); const totalBudget = Number(period.total_budget || 0); response.budget = { period_id: period.id, label: period.label, total_budget: totalBudget, spent, remaining: totalBudget - spent, start_date: period.start_date, end_date: period.end_date }; } } res.json(response); }
   catch (err) { console.error(err); res.status(500).json({ error: err.message || 'Failed to compute summary' }); }
 });
 
