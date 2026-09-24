@@ -19,7 +19,9 @@ router.get('/', hasPermission('finance.view'), async (req, res) => {
   if (from) { values.push(from); conditions.push(`t.date >= $${values.length}`); }
   if (to) { values.push(to); conditions.push(`t.date <= $${values.length}`); }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-  try { const result = await pool.query(`SELECT t.*, i.name AS item_name, p.name AS project_name, fs.name AS funding_source_name, bp.label AS budget_period_label FROM transactions t LEFT JOIN items i ON t.item_id = i.id LEFT JOIN projects p ON t.project_id = p.id LEFT JOIN funding_sources fs ON t.funding_source_id = fs.id LEFT JOIN budget_periods bp ON t.budget_period_id = bp.id ${where} ORDER BY date DESC, created_at DESC`, values); res.json(result.rows); }
+  const fundingName = sensitive ? 'fs.name' : 'NULL';
+  const budgetLabel = sensitive ? 'bp.label' : 'NULL';
+  try { const result = await pool.query(`SELECT t.*, i.name AS item_name, p.name AS project_name, ${fundingName} AS funding_source_name, ${budgetLabel} AS budget_period_label FROM transactions t LEFT JOIN items i ON t.item_id = i.id LEFT JOIN projects p ON t.project_id = p.id LEFT JOIN funding_sources fs ON t.funding_source_id = fs.id LEFT JOIN budget_periods bp ON t.budget_period_id = bp.id ${where} ORDER BY date DESC, created_at DESC`, values); res.json(result.rows); }
   catch (err) { console.error(err); res.status(500).json({ error: err.message || 'Failed to fetch transactions' }); }
 });
 
