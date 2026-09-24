@@ -126,12 +126,12 @@ router.patch('/users/:id', authenticateToken, hasPermission('users.edit'), async
     await client.query('BEGIN');
     // Serialize role/status changes, including the last-active-admin invariant.
     await client.query('SELECT pg_advisory_xact_lock($1)', [981235]);
-    const current = await client.query('SELECT id, username, role, is_active FROM users WHERE id = $1 FOR UPDATE', [req.params.id]); if (!current.rowCount) return res.status(404).json({ error: 'User not found' });
+    const current = await client.query('SELECT id, username, role, is_active FROM users WHERE id = $1 FOR UPDATE', [req.params.id]); if (!current.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'User not found' }); }
     const before = current.rows[0]; const nextRole = role ?? before.role; const nextActive = is_active ?? before.is_active;
-    if (!canManageTarget(req.user, before)) return res.status(403).json(deny('Only an administrator can manage an administrator account', 'ADMIN_TARGET_PROTECTED', 'users.edit'));
-    if (nextRole === 'admin' && req.user.role !== 'admin') return res.status(403).json(deny('Only an administrator can assign the administrator role', 'ADMIN_ROLE_REQUIRED', 'users.manage_roles'));
-    if (before.role === 'admin' && nextRole !== 'admin') { const count = await client.query("SELECT COUNT(*)::int AS count FROM users WHERE role = 'admin' AND is_active = TRUE"); if (count.rows[0].count <= 1) return res.status(400).json({ error: 'At least one active administrator is required' }); }
-    if (before.role === 'admin' && before.is_active && nextActive === false) { const count = await client.query("SELECT COUNT(*)::int AS count FROM users WHERE role = 'admin' AND is_active = TRUE"); if (count.rows[0].count <= 1) return res.status(400).json({ error: 'At least one active administrator is required' }); }
+    if (!canManageTarget(req.user, before)) { await client.query('ROLLBACK'); return res.status(403).json(deny('Only an administrator can manage an administrator account', 'ADMIN_TARGET_PROTECTED', 'users.edit')); }
+    if (nextRole === 'admin' && req.user.role !== 'admin') { await client.query('ROLLBACK'); return res.status(403).json(deny('Only an administrator can assign the administrator role', 'ADMIN_ROLE_REQUIRED', 'users.manage_roles')); }
+    if (before.role === 'admin' && nextRole !== 'admin') { const count = await client.query("SELECT COUNT(*)::int AS count FROM users WHERE role = 'admin' AND is_active = TRUE"); if (count.rows[0].count <= 1) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'At least one active administrator is required' }); } }
+    if (before.role === 'admin' && before.is_active && nextActive === false) { const count = await client.query("SELECT COUNT(*)::int AS count FROM users WHERE role = 'admin' AND is_active = TRUE"); if (count.rows[0].count <= 1) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'At least one active administrator is required' }); } }
     const result = await client.query('UPDATE users SET role = $1, is_active = $2 WHERE id = $3 RETURNING id, username, role, is_active, last_login_at, created_at', [nextRole, nextActive, req.params.id]);
     await writeAuditLog({ req, action: 'UPDATE', entityType: 'user', entityId: req.params.id, oldValue: before, newValue: result.rows[0], client, required: true });
     await client.query('COMMIT');
