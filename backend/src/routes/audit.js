@@ -4,7 +4,7 @@ import { hasPermission } from '../middleware/permissions.js';
 
 const router = Router();
 
-router.get('/', hasPermission('reports.view'), async (req, res) => {
+router.get('/', hasPermission('audit.view'), async (req, res) => {
   const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
   const before = req.query.before || null;
   const values = [limit];
