@@ -4,6 +4,7 @@ import { X, FileText, ExternalLink } from 'lucide-react';
 import { getItem, createItemMovement } from '../api/items';
 import { getResources, getResourceAccessUrl, Resource } from '../api/resources';
 import { getProjects } from '../api/projects';
+import { getCurrentPermissions } from '../api/auth';
 import { useToast } from '../contexts/ToastContext';
 
 type Props={itemId:string; mode:'specs'|'use'; onClose:()=>void};
@@ -13,10 +14,12 @@ export default function SearchItemActionModal({itemId,mode,onClose}:Props){
  const {data:item,isLoading,error}=useQuery({queryKey:['item',itemId],queryFn:()=>getItem(itemId)});
  const {data:resources=[],isLoading:resourcesLoading}=useQuery({queryKey:['resources','item',itemId],queryFn:()=>getResources({item_id:itemId}),enabled:mode==='specs'});
  const {data:projects=[]}=useQuery({queryKey:['projects'],queryFn:getProjects,enabled:mode==='use'});
+ const {data:permissions=[]}=useQuery({queryKey:['current-permissions'],queryFn:getCurrentPermissions,enabled:mode==='use'});
  const [quantity,setQuantity]=useState('1');const [projectId,setProjectId]=useState('');const [saving,setSaving]=useState(false);
  const [viewer,setViewer]=useState<{resource:Resource;url:string}|null>(null);
  const [viewError,setViewError]=useState<string|null>(null);
  useEffect(()=>{const escape=(e:KeyboardEvent)=>{if(e.key==='Escape')onClose()};window.addEventListener('keydown',escape);return()=>window.removeEventListener('keydown',escape)},[onClose]);
+ const canUse=permissions.includes('inventory.edit')||permissions.includes('inventory.manage');
  const documents=resources.filter(r=>r.kind!=='folder'&&(r.file_type==='pdf'||r.file_type==='document'||/datasheet|specification|manual|schematic/i.test([r.name,r.category,r.description,...(r.tags||[])].join(' '))));
  async function openResource(resource:Resource){
   setViewError(null);
