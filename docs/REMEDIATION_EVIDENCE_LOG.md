@@ -791,3 +791,13 @@ The expected next UI state is the unauthenticated first-run/login flow. Create t
 - `backend/src/routes/auth.js`: user-permission override replacement and required audit INSERT now share the same PostgreSQL transaction, with COMMIT after both succeed. Existing catch rolls back on failure.
 - Scope: permission override updates only. Account creation, role/status changes, password changes, and deletion events remain separate follow-up work; do not infer they are transactional.
 - Verification: STATIC ONLY. GitHub source edits committed; no backend Node syntax execution or live PostgreSQL failure-injection tests run here. Required tests: successful override produces audit row; forced audit INSERT failure rolls back overrides; confirm no partial change; existing noncritical audit behavior remains best-effort.
+
+
+## CHANGE-018 — Critical account audit atomicity (2026-09-24)
+
+- `backend/src/routes/auth.js`: first-account registration now inserts the administrator and required audit event in the same PostgreSQL transaction; JWT is issued after COMMIT. Existing registration advisory lock retained.
+- Administrator/delegated account creation now inserts the account and required audit event in the same transaction; an audit failure rolls back account creation.
+- Role/account-status updates now acquire a transaction-scoped advisory lock (981235), lock the target row with `FOR UPDATE`, check last-active-admin under the lock, update the account, insert the required audit event, then COMMIT. All early-return paths after BEGIN explicitly ROLLBACK before releasing the connection.
+- Existing role and permission checks are retained. No changes to finance scope or desktop synchronization.
+- Verification: STATIC SOURCE INSPECTION ONLY. Live PostgreSQL integration and concurrent requests NOT RUN. Required failure injection: make audit INSERT fail and verify registration, user creation and role/status changes leave no committed account changes. Concurrently attempt to disable/demote two active admins; verify at least one active admin remains. Confirm existing permission override audit transaction and first-account registration behavior.
+- Remaining critical scope: self-service and administrator password changes are still best-effort audited; address in a separate targeted pass. Do not claim full audit transactionality yet.
