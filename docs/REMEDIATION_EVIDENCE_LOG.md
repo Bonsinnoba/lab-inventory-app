@@ -860,3 +860,11 @@ Policy agreed: all active authorized staff may see laboratory expenditure; incom
 - Added desktop/src/pages/SyncConflictsPage.tsx, /sync/conflicts route, and sidebar navigation. Displays unresolved conflicts and error details; offers retry-local and accept-server actions with confirmation.
 - Removed silent failure-to-empty fallback in listSyncConflicts, allowing actual loading errors to appear.
 - STATIC ONLY, NOT RELEASE VERIFIED: compile and runtime testing required. Remaining: per-user conflict visibility (especially finance payloads), server-side comparison and movement reconciliation, verify retry/refresh per entity, implement datasheet/specs and quick-use search actions. Finance verification blockers from CHANGE-024 remain.
+
+
+## CHANGE-026 — Search item actions and finance conflict guard (2026-09-24)
+
+- Created desktop/src/components/SearchItemActionModal.tsx. Datasheet & Specs mode loads item metadata and associated Resources records, filters relevant document types/tags and supports a document access URL and embedded PDF when supported. Quick Use mode preloads item details, quantity 1 and active project options, and submits existing local-first inventory movement API using consume for components and checkout for tools/equipment inferred from item type. No parallel stock mutation pathway was introduced.
+- Updated desktop/src/pages/SearchPage.tsx item result cards to expose both actions without navigating to item detail. Existing card navigation remains.
+- Updated desktop/src-tauri/src/local_db.rs conflict listing and resolution to require authenticated local inventory.view and sensitive finance permission for transaction/funding/budget conflict payloads. This is a coarse safeguard; review role-specific visibility and non-finance entities before release.
+- STATIC ONLY: no TypeScript/Rust build or runtime tests executed. Validate resource URL behavior offline, project access and item classification for checkout vs consumption, quantity race/stock limits, movement history, shared SearchDock parity, accessibility, and finance-conflict payload exposure. Finish finance verification items from CHANGE-024 and conflict behavior from CHANGE-025. User-facing implementation is not release verified.
