@@ -12,7 +12,7 @@ export interface FundingSource {
   total_contributed?: number;
 }
 
-export async function getFundingSources(): Promise<FundingSource[]> { if(isTauri())try{return await invoke<FundingSource[]>('get_local_funding_sources')}catch{} const response=await apiFetch('/funding-sources');if(!response.ok)throw new Error('Failed to fetch');return response.json(); }
+export async function getFundingSources(): Promise<FundingSource[]> { if(isTauri())try{return await invoke<FundingSource[]>('get_local_funding_sources')}catch(error){throw new Error('Local finance access failed: '+String(error))} const response=await apiFetch('/funding-sources');if(!response.ok)throw new Error('Failed to fetch');return response.json(); }
 
 export async function createFundingSource(value:any):Promise<FundingSource>{if(isTauri()){return await invoke<FundingSource>('create_local_funding_source',{source:value})} const response=await apiFetch('/funding-sources',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});if(!response.ok)throw new Error('Failed to create');return response.json();}
 
