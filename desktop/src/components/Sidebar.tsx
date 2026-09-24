@@ -1,4 +1,4 @@
-import { Box, Brain, ChevronDown, DollarSign, FileBarChart, Layers, LogOut, Microscope, PanelLeftClose, PanelLeftOpen, Sun, User, Users, BookOpen, Settings, LayoutDashboard, Download, Moon, Library } from 'lucide-react';
+import { Box, Brain, ChevronDown, DollarSign, FileBarChart, Layers, LogOut, Microscope, PanelLeftClose, PanelLeftOpen, Sun, User, Users, BookOpen, Settings, LayoutDashboard, Download, Moon, Library, GitMerge } from 'lucide-react';
 import { useState, useCallback, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useTheme } from '../contexts/ThemeContext';
@@ -10,6 +10,7 @@ const standaloneItems = [
   { icon: Brain, label: 'Knowledge', path: '/knowledge' },
   { icon: Library, label: 'Resources', path: '/resources' },
   { icon: Box, label: 'Inventory', path: '/inventory' },
+  { icon: GitMerge, label: 'Sync conflicts', path: '/sync/conflicts' },
 ];
 const groups = [
   { id: 'laboratory', label: 'Laboratory', icon: Microscope, children: [{ label: 'Operations', path: '/operations' }, { label: 'Intelligence', path: '/lab-intelligence' }] },
