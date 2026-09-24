@@ -19,7 +19,7 @@ export default function SearchItemActionModal({itemId,mode,onClose}:Props){
  const [viewer,setViewer]=useState<{resource:Resource;url:string}|null>(null);
  const [viewError,setViewError]=useState<string|null>(null);
  useEffect(()=>{const escape=(e:KeyboardEvent)=>{if(e.key==='Escape')onClose()};window.addEventListener('keydown',escape);return()=>window.removeEventListener('keydown',escape)},[onClose]);
- const canUse=permissions.includes('inventory.edit')||permissions.includes('inventory.manage');
+ const canUse=permissions.includes('inventory.adjust_stock');
  const documents=resources.filter(r=>r.kind!=='folder'&&(r.file_type==='pdf'||r.file_type==='document'||/datasheet|specification|manual|schematic/i.test([r.name,r.category,r.description,...(r.tags||[])].join(' '))));
  async function openResource(resource:Resource){
   setViewError(null);
