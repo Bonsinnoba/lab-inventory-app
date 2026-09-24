@@ -397,7 +397,7 @@ router.get('/finance/pull',async(req,res,next)=>{
     const deleted={transaction:[],budget_period:[],funding_source:[]};
     for(const r of tomb.rows)if(deleted[r.entity_type]&&(sensitive||r.entity_type==='transaction'))deleted[r.entity_type].push(r.entity_id);
     res.setHeader('Cache-Control','no-store');
-    res.json({transactions:transactions.rows,budget_periods:budget_periods.rows,funding_sources:funding_sources.rows,deleted,deleted_transactions:deleted.transaction,deleted_budget_period:deleted.budget_period,deleted_budget_periods:deleted.budget_period,deleted_funding_sources:deleted.funding_source});
+    res.json({transactions:sensitive ? transactions.rows : transactions.rows.map(({funding_source_id,budget_period_id,...expense})=>expense),budget_periods:budget_periods.rows,funding_sources:funding_sources.rows,deleted,deleted_transactions:deleted.transaction,deleted_budget_period:deleted.budget_period,deleted_budget_periods:deleted.budget_period,deleted_funding_sources:deleted.funding_source});
   }catch(e){next(e);}
 });
 router.get('/resources/pull',async(req,res,next)=>{
