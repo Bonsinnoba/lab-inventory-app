@@ -783,3 +783,11 @@ The expected next UI state is the unauthenticated first-run/login flow. Create t
 - No schema, migration, sync engine, finance visibility policy, or Codex UUID/resource changes were modified.
 - Verification: STATIC ONLY — inspected fetched source and committed targeted replacements. Frontend TypeScript check, desktop runtime offline/reconnect test, outbox atomicity inspection, and API integration tests NOT RUN here. Check local Rust commands write entity+outbox atomically before declaring full offline-first compliance.
 - Regression scenarios: force a local SQLite failure while online and verify zero direct POST/PUT/DELETE requests; create/update/delete offline and confirm one queued event per mutation, retry idempotency, and one server record after reconnect.
+
+
+## CHANGE-017 — Transactional permission-change audit (2026-09-24)
+
+- `backend/src/middleware/audit.js`: `writeAuditLog` accepts optional `client` (defaults to pool) and `required` (defaults to false). Required audit errors are logged and rethrown so callers can roll back; existing noncritical audit callers retain best-effort behavior.
+- `backend/src/routes/auth.js`: user-permission override replacement and required audit INSERT now share the same PostgreSQL transaction, with COMMIT after both succeed. Existing catch rolls back on failure.
+- Scope: permission override updates only. Account creation, role/status changes, password changes, and deletion events remain separate follow-up work; do not infer they are transactional.
+- Verification: STATIC ONLY. GitHub source edits committed; no backend Node syntax execution or live PostgreSQL failure-injection tests run here. Required tests: successful override produces audit row; forced audit INSERT failure rolls back overrides; confirm no partial change; existing noncritical audit behavior remains best-effort.
