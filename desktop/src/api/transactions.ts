@@ -57,7 +57,7 @@ export async function getTransactions(filters?: any): Promise<Transaction[]> {
         if (filters.budget_period_id && transaction.budget_period_id !== filters.budget_period_id) return false;
         return true;
       });
-    } catch {}
+    } catch (error) { throw new Error('Local transaction access failed: ' + String(error)); }
   }
   const params=new URLSearchParams();
   if(filters)Object.entries(filters).forEach(([k,v])=>v&&params.append(k,String(v)));
@@ -113,7 +113,7 @@ export async function getTransactionSummary(filters?: {
         }
       }
       return summary;
-    } catch {}
+    } catch (error) { throw new Error('Local transaction summary failed: ' + String(error)); }
   }
   const response = await apiFetch(`/transactions/summary?${params}`);
   if (!response.ok) throw new Error('Failed to fetch transaction summary');
