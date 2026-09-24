@@ -159,8 +159,8 @@ router.put('/users/:id/permissions', authenticateToken, hasPermission('users.man
     await client.query('BEGIN');
     await client.query('DELETE FROM user_permission_overrides WHERE user_id = $1', [req.params.id]);
     for (const [permission, effect] of deduped) await client.query('INSERT INTO user_permission_overrides (user_id, permission, effect, updated_by) VALUES ($1,$2,$3,$4)', [req.params.id, permission, effect, req.user.userId]);
+    await writeAuditLog({ req, action: 'UPDATE', entityType: 'user_permissions', entityId: req.params.id, metadata: { overrides: [...deduped.entries()] }, client, required: true });
     await client.query('COMMIT');
-    await writeAuditLog({ req, action: 'UPDATE', entityType: 'user_permissions', entityId: req.params.id, metadata: { overrides: [...deduped.entries()] } });
     const effective = await getUserPermissions(req.params.id, target.rows[0].role);
     res.json({ user: target.rows[0], permissions: PERMISSIONS.map((permission) => ({ permission, baseline: rolePermissions(target.rows[0].role).has(permission), effect: deduped.get(permission) || 'inherited', effective: effective.has(permission) })) });
   } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ error: 'Failed to update permissions' }); } finally { client.release(); }
