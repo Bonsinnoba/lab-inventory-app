@@ -33,8 +33,9 @@ router.post('/register', async (req, res) => {
     if (countResult.rows[0].count !== 0) { await client.query('ROLLBACK'); return res.status(403).json({ error: 'Registration is closed. Ask a lab administrator to create your account.' }); }
     const passwordHash = await bcrypt.hash(password, 12);
     const result = await client.query(`INSERT INTO users (username, password_hash, role) VALUES ($1, $2, 'admin') RETURNING id, username, role, is_active, created_at`, [username.trim(), passwordHash]);
-    await client.query('COMMIT'); const user = result.rows[0]; const token = issueToken(user);
-    await writeAuditLog({ req, actorUserId: user.id, action: 'CREATE', entityType: 'user', entityId: user.id, newValue: user });
+    const user = result.rows[0];
+    await writeAuditLog({ req, actorUserId: user.id, action: 'CREATE', entityType: 'user', entityId: user.id, newValue: user, client, required: true });
+    await client.query('COMMIT'); const token = issueToken(user);
     res.status(201).json({ user, token });
   } catch (err) { try { await client.query('ROLLBACK'); } catch {} console.error(err); if (err.code === '23505') return res.status(409).json({ error: 'Username already exists' }); res.status(500).json({ error: 'Registration failed' }); } finally { client.release(); }
 });
@@ -97,8 +98,20 @@ router.post('/users', authenticateToken, hasPermission('users.create'), async (r
   const actorPermissions = req.permissions || await getUserPermissions(req.user.userId, req.user.role);
   if (role !== 'member' && !actorPermissions.has('users.manage_roles')) return res.status(403).json(deny('Permission required: users.manage_roles', 'PERMISSION_DENIED', 'users.manage_roles'));
   if (role === 'admin' && req.user.role !== 'admin') return res.status(403).json(deny('Only an administrator can create an administrator account', 'ADMIN_ROLE_REQUIRED', 'users.manage_roles'));
-  try { const passwordHash = await bcrypt.hash(password, 12); const result = await pool.query(`INSERT INTO users (username, password_hash, role) VALUES ($1, $2, $3) RETURNING id, username, role, created_at`, [username.trim(), passwordHash, role]); await writeAuditLog({ req, action: 'CREATE', entityType: 'user', entityId: result.rows[0].id, newValue: result.rows[0] }); res.status(201).json({ user: result.rows[0] }); }
-  catch (err) { console.error(err); if (err.code === '23505') return res.status(409).json({ error: 'Username already exists' }); res.status(500).json({ error: 'Failed to create user' }); }
+  const client = await pool.connect();
+  try {
+    const passwordHash = await bcrypt.hash(password, 12);
+    await client.query('BEGIN');
+    const result = await client.query(`INSERT INTO users (username, password_hash, role) VALUES ($1, $2, $3) RETURNING id, username, role, created_at`, [username.trim(), passwordHash, role]);
+    await writeAuditLog({ req, action: 'CREATE', entityType: 'user', entityId: result.rows[0].id, newValue: result.rows[0], client, required: true });
+    await client.query('COMMIT');
+    res.status(201).json({ user: result.rows[0] });
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch {}
+    console.error(err);
+    if (err.code === '23505') return res.status(409).json({ error: 'Username already exists' });
+    res.status(500).json({ error: 'Failed to create user' });
+  } finally { client.release(); }
 });
 
 router.patch('/users/:id', authenticateToken, hasPermission('users.edit'), async (req, res) => {
