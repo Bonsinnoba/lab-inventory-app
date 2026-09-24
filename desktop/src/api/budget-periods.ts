@@ -34,8 +34,8 @@ export async function getCurrentBudgetPeriod(): Promise<BudgetPeriod | null> {
   return response.json();
 }
 
-export async function createBudgetPeriod(value:any):Promise<BudgetPeriod>{if(isTauri())try{return await invoke<BudgetPeriod>('create_local_budget_period',{period:value})}catch{} const response=await apiFetch('/budget-periods',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});if(!response.ok)throw new Error('Failed to create');return response.json();}
+export async function createBudgetPeriod(value:any):Promise<BudgetPeriod>{if(isTauri()){return await invoke<BudgetPeriod>('create_local_budget_period',{period:value})} const response=await apiFetch('/budget-periods',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});if(!response.ok)throw new Error('Failed to create');return response.json();}
 
-export async function updateBudgetPeriod(id:string,value:any):Promise<BudgetPeriod>{if(isTauri())try{return await invoke<BudgetPeriod>('update_local_budget_period',{id,period:value})}catch{} const response=await apiFetch(`/budget-periods/${id}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});if(!response.ok)throw new Error('Failed to update');return response.json();}
+export async function updateBudgetPeriod(id:string,value:any):Promise<BudgetPeriod>{if(isTauri()){return await invoke<BudgetPeriod>('update_local_budget_period',{id,period:value})} const response=await apiFetch(`/budget-periods/${id}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});if(!response.ok)throw new Error('Failed to update');return response.json();}
 
-export async function deleteBudgetPeriod(id:string):Promise<void>{if(isTauri())try{await invoke('delete_local_budget_period',{id});return}catch{} const response=await apiFetch(`/budget-periods/${id}`,{method:'DELETE'});if(!response.ok)throw new Error('Failed to delete');}
+export async function deleteBudgetPeriod(id:string):Promise<void>{if(isTauri()){await invoke('delete_local_budget_period',{id});return} const response=await apiFetch(`/budget-periods/${id}`,{method:'DELETE'});if(!response.ok)throw new Error('Failed to delete');}
