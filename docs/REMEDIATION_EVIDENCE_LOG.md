@@ -1055,3 +1055,13 @@ VERIFICATION STATUS: NOT EXECUTED. GitHub connector allowed source inspection an
 ### Codex reminder
 
 Independently revisit Laboratory > Operations > Overview > Project readiness and Requirements, plus Project > Bill of materials. Cross-check CHANGE-047 aggregation and CHANGE-048 safeguards against actual SQLite/PostgreSQL records and UI behavior. Report defects with exact reproduction steps and commit IDs. Keep Requirements and BOM distinct until a reviewed design explicitly connects them. CHANGE-032 Finance loading issue remains separately assigned.
+
+
+## CHANGE-050 — First GitHub Actions verification and remediation (2026-09-25)
+
+Workflow run https://github.com/Bonsinnoba/lab-inventory-app/actions/runs/36194475363 on ef847f34fc22bdc954c22453eb1f6485f3d55fe7: backend syntax PASS; desktop TypeScript/Vite FAIL at ResourcesPage.tsx:25 (TS2339 mixed Item|Project|Note name/title); Tauri Rust FAIL because generate_context! requires ../dist, absent in isolated Rust job. Full job logs retrieved from GitHub Actions, not inferred from screenshot.
+
+- 75720c242802ea8e88b43c11bed9c28e835bd3f1: normalize Resources attachment destination list into common optional name/title fields before lookup; intended to fix TS2339.
+- 8f5fbdbb75ee5e179310b7ff4afe63689b7b8444: add frontend npm ci/build step to isolated Rust job before cargo check --locked so ../dist exists.
+
+Follow-up: inspect fresh workflow run for 8f5fbdb; if desktop or Rust still fails, fetch job logs and remediate the next concrete error. The prior Rust log also reports seven warnings, which are not the failure cause. The checks do not exercise SQLite/offline behavior, PostgreSQL synchronization or UI interactions; CHANGE-049 regression matrix remains open. Codex should revisit Laboratory Operations Overview/Requirements and Project BOM as specified in CHANGE-047/049.
