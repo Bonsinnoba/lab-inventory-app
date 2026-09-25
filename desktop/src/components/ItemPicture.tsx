@@ -121,7 +121,7 @@ export default function ItemPicture({ itemId, imageResourceId }: ItemPictureProp
         </button>
         {downloadUrl && (
           <button
-            onClick={() => removeMutation.mutate()}
+            onClick={() => { if (window.confirm('Remove this item picture?')) removeMutation.mutate(); }}
             disabled={removeMutation.isPending}
             className="text-sm text-text-secondary hover:text-status-danger text-left flex items-center gap-1 disabled:opacity-50"
           >
