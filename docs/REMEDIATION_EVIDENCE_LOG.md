@@ -1034,3 +1034,24 @@ Please independently review these exact screens and their upstream sources after
 - ProjectBomPanel: staged removal with an in-app alertdialog identifying the BOM component, initial Cancel focus, Escape dismissal, keyboard Tab cycling and explicit Remove permanently. Commit e7a23b9d0cba90135c7c65142b5d72735ae3d12e.
 - OperationsPage Suppliers: replaced direct delete mutation with an in-app alertdialog identifying the supplier, initial Cancel focus, Escape dismissal, keyboard Tab cycling and explicit Delete permanently. Commit 1fddc240495c11662c0f6b660560beebb538d5a0.
 - STATIC ONLY: GitHub edits, no build, runtime or automated accessibility tests. Dialog focus return, data retention, pending mutation error and offline supplier behavior need verification. The previous CHANGE-047 Codex note to revisit Laboratory Operations Overview/Requirements and BOM aggregation remains open. No soft delete or restore mechanism exists yet.
+
+
+## CHANGE-049 — Operations regression verification handoff (2026-09-25)
+
+Commit 28fa26a7e1c36a5102159619b24f2fb3c3d45882: Operations failure state now displays the underlying query error instead of only 'The operational summary could not be retrieved'. The original 'Try again' remains. Treat error text as potentially sensitive; review production logging and user-visible sanitization before release.
+
+VERIFICATION STATUS: NOT EXECUTED. GitHub connector allowed source inspection and file edits but no full repository checkout, desktop runtime, backend, database or CI test runner. Desktop package.json has `npm run build` (tsc and Vite), but no dedicated test script for Operations/BOM/Requirements. Do not mark any of the following as passing until evidenced.
+
+### Required execution checklist for Codex / desktop tester
+
+1. Pull main and record commit SHA. In desktop run `npm ci` and `npm run build`; in desktop/src-tauri run `cargo check`. Record commands, versions, logs, exit codes and failures. Test installed Tauri app separately from web preview.
+2. With populated local SQLite, disconnect backend/network. Open Laboratory > Operations > Overview and Requirements; verify actual inventory totals, stock value, low-stock and calibration, no false 'no shortages', and supplier failure does not crash the overview. Repeat with empty local snapshot and record the explicit behavior.
+3. Create two projects with overlapping preferred BOM stock and a third BOM line with an alternative. Verify per-line quantities and names in Project BOM, cross-project shortage counts in Operations, pagination, and that no stock is silently consumed. Document the known limitation: each line is checked independently; competing projects do not reserve stock.
+4. Create/edit/delete a project resource requirement offline, sync to PostgreSQL and pull to a second workstation. Verify quantity, status, preferred item, project name and absence of duplicates. Test conflict resolution and revoked permissions.
+5. Test deletion confirmations for BOM lines and suppliers: open/cancel/Escape/Tab/confirm, mutation failure, keyboard focus return, double-click and read-only user. Ensure no API call occurs before confirmation. Verify supplier delete with backend unavailable shows an actionable error rather than success.
+6. Repeat Operations with backend online, compare local and server BOM shortage results using identical fixtures, verify project visibility permissions, units, partial stock and missing preferred/alternative IDs. Inspect API errors in the new diagnostic panel and remove sensitive details before production release.
+7. Add automated regression coverage for pure BOM shortage calculation, requirements filtering and modal confirmation; preserve test fixtures and link CI runs/screenshots here.
+
+### Codex reminder
+
+Independently revisit Laboratory > Operations > Overview > Project readiness and Requirements, plus Project > Bill of materials. Cross-check CHANGE-047 aggregation and CHANGE-048 safeguards against actual SQLite/PostgreSQL records and UI behavior. Report defects with exact reproduction steps and commit IDs. Keep Requirements and BOM distinct until a reviewed design explicitly connects them. CHANGE-032 Finance loading issue remains separately assigned.
