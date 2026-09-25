@@ -985,3 +985,10 @@ Codex handoff: reproduce in the actual desktop app with the affected admin sessi
 - Reported accidental deletion involved test data; prevention is the priority. Resources individual and bulk delete now stage an in-app confirmation dialog instead of relying on native window.confirm (commits 119d935, 69f98cd). Inventory bulk delete also now requires an in-app confirmation (commit b89bc07).
 - Both dialogs default focus to Cancel, show an explicit Delete permanently action and allow Escape to dismiss. No deletion is triggered by merely opening the dialog.
 - UNVERIFIED: no running Tauri desktop session or build/test result available from GitHub file editing. Keyboard focus trap and focus restoration, cross-page native confirmation audit, and soft-delete/restore remain outstanding. Do not label platform-wide deletion safety complete.
+
+
+## CHANGE-043 — Finance management deletion dialogs (2026-09-25)
+
+- Replaced native window.confirm in ManageBudgetPeriodsModal and ManageFundingSourcesModal with in-app alertdialogs. Both stage the selected ID and name, default focus to Cancel, support Escape, and call the delete mutation only after the explicit Delete permanently action. Mutations remain disabled while pending.
+- Commits: 86d6a368c9c35ab590154a5c2bfdb24d9b79fe33 and 3d8a21fa21e79d1a53ebce5f33d4e9147addf3e2.
+- STATIC ONLY: GitHub file edits; no local frontend build, Tauri runtime or automated accessibility test performed. Verify nested dialog focus trap and focus return, mutation success/error, Escape behavior, permissions and actual desktop rendering. Existing Finance admin loading defect (CHANGE-032) remains assigned to Codex. Continue auditing remaining native confirms before claiming platform-wide completion.
