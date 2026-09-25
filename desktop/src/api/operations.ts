@@ -1,5 +1,6 @@
 import { apiFetch, getApiErrorMessage } from './http';
 import { localBackend } from './local-backend';
+import { getItems } from './items';
 import { getProjectRequirements, createProjectRequirement, updateProjectRequirement, deleteProjectRequirement } from './projects';
 
 export interface OperationsOverview {
@@ -13,12 +14,12 @@ async function json<T>(path:string, init?:RequestInit):Promise<T>{const r=await 
 
 async function localOverview():Promise<OperationsOverview>{
   const [items, requirements] = await Promise.all([
-    localBackend.invoke<any[]>('get_local_inventory_items'),
+    getItems(),
     localBackend.invoke<any[]>('get_local_resource_requirements').catch(()=>[]),
   ]);
   const total=(items||[]).length;
   const low=(items||[]).filter(i=>Number(i.quantity??i.current_quantity??0)<=Number(i.reorder_level??i.minimum_quantity??0));
-  return {summary:{total_items:total,equipment:(items||[]).filter(i=>i.category==='equipment').length,tools:(items||[]).filter(i=>i.category==='tool').length,components:(items||[]).filter(i=>i.category==='component').length,materials:(items||[]).filter(i=>i.category==='material').length,low_stock:low.length,stock_value:(items||[]).reduce((s,i)=>s+Number(i.quantity??i.current_quantity??0)*Number(i.unit_cost??0),0)},low_stock:low,calibration_due:[],maintenance_due:[],equipment:(items||[]).filter(i=>i.category==='equipment'),missing_bom:[],requirements:requirements||[]};
+  return {summary:{total_items:total,equipment:(items||[]).filter(i=>i.type==='equipment').length,tools:(items||[]).filter(i=>i.type==='tool').length,components:(items||[]).filter(i=>['component','spare_part'].includes(i.type)).length,materials:(items||[]).filter(i=>i.type==='material').length,low_stock:low.length,stock_value:(items||[]).reduce((s,i)=>s+Number(i.quantity??i.current_quantity??0)*Number(i.unit_cost??0),0)},low_stock:low,calibration_due:[],maintenance_due:[],equipment:(items||[]).filter(i=>i.category==='equipment'),missing_bom:[],requirements:requirements||[]};
 }
 export const getOperationsOverview=()=>localBackend.isAvailable()?localOverview():json<OperationsOverview>('/operations/overview');
 export const getSuppliers=()=>json<Supplier[]>('/operations/suppliers');
