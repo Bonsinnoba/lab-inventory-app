@@ -197,14 +197,21 @@ export async function getCurrentPermissions(): Promise<string[]> {
   if (isTauriRuntime()) {
     try {
       const permissions = await localInvoke<string[]>('local_current_permissions');
-      if (permissions) return permissions;
-    } catch {}
+      if (permissions !== null) return permissions;
+    } catch (localError) {
+      const token = getToken();
+      if (!token || token.startsWith('local:')) throw new Error('Cached desktop permissions unavailable: ' + String(localError));
+      try {
+        const permissions = await fetchServerPermissions();
+        const user = getStoredUser();
+        if (user?.id) await localInvoke('cache_server_permissions', { centralUserId: user.id, role: user.role, permissions });
+        return permissions;
+      } catch (serverError) {
+        throw new Error('Unable to refresh desktop permissions: ' + String(serverError) + '; local error: ' + String(localError));
+      }
+    }
   }
-  try {
-    return await fetchServerPermissions();
-  } catch {
-    return [];
-  }
+  return fetchServerPermissions();
 }
 
 export function getStoredUser(): User | null {
