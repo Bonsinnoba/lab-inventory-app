@@ -114,6 +114,16 @@ export async function createLink(url: string, parent: { item_id?: string; projec
   if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to create link'));
   return response.json();
 }
+export async function attachExistingResource(id: string, destination: {item_id?:string|null;project_id?:string|null;note_id?:string|null}): Promise<Resource> {
+  // Reassignment is server-backed until the desktop outbox supports attachment moves.
+  if (isTauriRuntime() && typeof navigator !== 'undefined' && !navigator.onLine)
+    throw new Error('Reconnect to change resource attachments.');
+  const response=await apiFetch(`/resources/${encodeURIComponent(id)}/attachment`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(destination)});
+  if(!response.ok)throw new Error(await getApiErrorMessage(response,'Unable to attach resource'));
+  const resource:Resource=await response.json();
+  await cacheLocalResources([resource]);
+  return resource;
+}
 export async function updateResourceMetadata(id: string, metadata: { category?: string; description?: string; tags?: string[] }): Promise<Resource> {
   if (isTauriRuntime()) {
     return localInvoke<Resource>('update_local_resource_metadata', { id, ...metadata });
