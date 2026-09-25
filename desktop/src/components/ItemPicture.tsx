@@ -16,6 +16,7 @@ export default function ItemPicture({ itemId, imageResourceId }: ItemPictureProp
   const fileInputRef = useRef<HTMLInputElement>(null);
   const datasheetInputRef = useRef<HTMLInputElement>(null);
   const [datasheetBusy, setDatasheetBusy] = useState(false);
+  const [pendingRemoval,setPendingRemoval] = useState<{kind:'picture'|'datasheet';id?:string;name:string}|null>(null);
   const [datasheetError, setDatasheetError] = useState<string | null>(null);
   const { data: linkedResources = [], isLoading: loadingDatasheets } = useQuery<Resource[]>({ queryKey: ['resources', { item_id: itemId }], queryFn: () => getResources({ item_id: itemId }) });
   const datasheets = linkedResources.filter(r => r.kind === 'file' && (r.file_type === 'pdf' || /datasheet/i.test([r.name, r.category, ...(r.tags || [])].join(' '))));
@@ -121,7 +122,7 @@ export default function ItemPicture({ itemId, imageResourceId }: ItemPictureProp
         </button>
         {downloadUrl && (
           <button
-            onClick={() => { if (window.confirm('Remove this item picture?')) removeMutation.mutate(); }}
+            onClick={() => setPendingRemoval({kind:'picture',name:'item picture'})}
             disabled={removeMutation.isPending}
             className="text-sm text-text-secondary hover:text-status-danger text-left flex items-center gap-1 disabled:opacity-50"
           >
@@ -143,8 +144,9 @@ export default function ItemPicture({ itemId, imageResourceId }: ItemPictureProp
       <div className="flex items-center justify-between gap-2 mb-2"><span className="flex items-center gap-1.5 text-sm font-medium"><FileText size={16}/> Datasheets</span><button type="button" disabled={datasheetBusy} onClick={()=>datasheetInputRef.current?.click()} className="text-xs text-accent hover:underline disabled:opacity-50">{datasheetBusy?'Uploading…':'+ Add'}</button></div>
       <input ref={datasheetInputRef} type="file" accept=".pdf,.doc,.docx,.txt,application/pdf" className="hidden" onChange={e=>{const file=e.target.files?.[0];if(file)void addDatasheet(file);e.target.value='';}}/>
       {datasheetError&&<p role="alert" className="text-xs text-status-danger mb-2">{datasheetError}</p>}
-      {loadingDatasheets?<p className="text-xs text-text-secondary">Loading…</p>:datasheets.length===0?<p className="text-xs text-text-secondary">No datasheets attached. Add a PDF or document.</p>:<ul className="space-y-1">{datasheets.map(resource=><li key={resource.id} className="flex items-center gap-2 min-w-0"><button type="button" onClick={()=>void openDatasheet(resource)} title={resource.name} className="text-xs text-accent hover:underline truncate text-left flex-1">{resource.name}</button><ExternalLink size={12} className="shrink-0 text-text-secondary"/><button type="button" title={'Remove '+resource.name} aria-label={'Remove '+resource.name} onClick={async()=>{if(!window.confirm('Remove this datasheet?'))return;try{await deleteResource(resource.id);await queryClient.invalidateQueries({queryKey:['resources',{item_id:itemId}]});showToast('Datasheet removed')}catch(e){setDatasheetError(e instanceof Error?e.message:'Unable to remove datasheet')}}} className="text-text-secondary hover:text-status-danger"><X size={13}/></button></li>)}</ul>}
+      {loadingDatasheets?<p className="text-xs text-text-secondary">Loading…</p>:datasheets.length===0?<p className="text-xs text-text-secondary">No datasheets attached. Add a PDF or document.</p>:<ul className="space-y-1">{datasheets.map(resource=><li key={resource.id} className="flex items-center gap-2 min-w-0"><button type="button" onClick={()=>void openDatasheet(resource)} title={resource.name} className="text-xs text-accent hover:underline truncate text-left flex-1">{resource.name}</button><ExternalLink size={12} className="shrink-0 text-text-secondary"/><button type="button" title={'Remove '+resource.name} aria-label={'Remove '+resource.name} onClick={()=>setPendingRemoval({kind:'datasheet',id:resource.id,name:resource.name})} className="text-text-secondary hover:text-status-danger"><X size={13}/></button></li>)}</ul>}
     </div>
+    {pendingRemoval&&<div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-4"><div role="alertdialog" aria-modal="true" aria-labelledby="item-remove-title" className="w-full max-w-md rounded-lg border border-border bg-surface p-5 shadow-xl" onKeyDown={e=>{if(e.key==='Escape'){e.stopPropagation();setPendingRemoval(null)}}}><h3 id="item-remove-title" className="text-lg font-semibold">Confirm removal</h3><p className="my-4 text-sm">Remove "{pendingRemoval.name}"? This cannot be undone.</p><div className="flex justify-end gap-2"><button type="button" autoFocus onClick={()=>setPendingRemoval(null)} className="rounded border border-border px-4 py-2">Cancel</button><button type="button" disabled={removeMutation.isPending||datasheetBusy} onClick={async()=>{const request=pendingRemoval;setPendingRemoval(null);if(request.kind==='picture'){removeMutation.mutate();return}if(!request.id)return;setDatasheetBusy(true);try{await deleteResource(request.id);await queryClient.invalidateQueries({queryKey:['resources',{item_id:itemId}]});showToast('Datasheet removed')}catch(e){setDatasheetError(e instanceof Error?e.message:'Unable to remove datasheet')}finally{setDatasheetBusy(false)}}} className="rounded bg-status-danger px-4 py-2 text-white disabled:opacity-50">Remove permanently</button></div></div></div>}
     </div>
   );
 }
