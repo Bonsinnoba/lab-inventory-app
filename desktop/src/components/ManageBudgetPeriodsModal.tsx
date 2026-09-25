@@ -177,7 +177,7 @@ export default function ManageBudgetPeriodsModal({ onClose }: ManageBudgetPeriod
                   <button onClick={() => handleEdit(period)} className="p-1.5 hover:bg-surface rounded-sm transition-colors">
                     <Edit size={14} />
                   </button>
-                  <button onClick={() => deleteMutation.mutate(period.id)} className="p-1.5 hover:bg-status-danger hover:text-bg rounded-sm transition-colors">
+                  <button onClick={() => { if (window.confirm('Delete budget period "' + period.label + '"? This cannot be undone.')) deleteMutation.mutate(period.id); }} aria-label={`Delete ${period.label}`} disabled={deleteMutation.isPending} className="p-1.5 hover:bg-status-danger hover:text-bg rounded-sm transition-colors">
                     <Trash2 size={14} />
                   </button>
                 </div>
