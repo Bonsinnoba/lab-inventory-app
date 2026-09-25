@@ -194,21 +194,37 @@ export function setStoredUser(user: User): void {
 }
 
 export async function getCurrentPermissions(): Promise<string[]> {
+  const user = getStoredUser();
+  const token = getToken();
+  const onlineSession = Boolean(token && !token.startsWith('local:'));
   if (isTauriRuntime()) {
+    let localPermissions: string[] | null = null;
+    let localError: unknown = null;
     try {
-      const permissions = await localInvoke<string[]>('local_current_permissions');
-      if (permissions !== null) return permissions;
-    } catch (localError) {
-      const token = getToken();
-      if (!token || token.startsWith('local:')) throw new Error('Cached desktop permissions unavailable: ' + String(localError));
-      try {
-        const permissions = await fetchServerPermissions();
-        const user = getStoredUser();
-        if (user?.id) await localInvoke('cache_server_permissions', { centralUserId: user.id, role: user.role, permissions });
-        return permissions;
-      } catch (serverError) {
-        throw new Error('Unable to refresh desktop permissions: ' + String(serverError) + '; local error: ' + String(localError));
+      localPermissions = await localInvoke<string[]>('local_current_permissions');
+    } catch (error) {
+      localError = error;
+    }
+    // Older cached admin sessions can contain a partial permission set. Refresh
+    // from the authoritative server rather than treating missing entries as denial.
+    const staleAdminCache = user?.role === 'admin' &&
+      localPermissions !== null && !localPermissions.includes('finance.view_sensitive');
+    if (localPermissions !== null && !staleAdminCache) return localPermissions;
+    if (!onlineSession) {
+      if (staleAdminCache) throw new Error('Cached administrator permissions are incomplete. Reconnect and sign in online to refresh access.');
+      throw new Error('Cached desktop permissions unavailable: ' + String(localError ?? 'No local session'));
+    }
+    try {
+      const permissions = await fetchServerPermissions();
+      if (user?.id) {
+        await localInvoke('cache_server_permissions', {
+          centralUserId: user.id, role: user.role, permissions,
+        });
       }
+      return permissions;
+    } catch (serverError) {
+      throw new Error('Unable to refresh desktop permissions: ' + String(serverError) +
+        (localError ? '; local error: ' + String(localError) : ''));
     }
   }
   return fetchServerPermissions();
