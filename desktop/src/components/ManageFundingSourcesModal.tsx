@@ -169,7 +169,7 @@ export default function ManageFundingSourcesModal({ onClose }: ManageFundingSour
                   <button onClick={() => handleEdit(source)} className="p-1.5 hover:bg-surface rounded-sm transition-colors">
                     <Edit size={14} />
                   </button>
-                  <button onClick={() => deleteMutation.mutate(source.id)} className="p-1.5 hover:bg-status-danger hover:text-bg rounded-sm transition-colors">
+                  <button onClick={() => { if (window.confirm('Delete funding source "' + source.name + '"? This cannot be undone.')) deleteMutation.mutate(source.id); }} aria-label={`Delete ${source.name}`} disabled={deleteMutation.isPending} className="p-1.5 hover:bg-status-danger hover:text-bg rounded-sm transition-colors">
                     <Trash2 size={14} />
                   </button>
                 </div>
