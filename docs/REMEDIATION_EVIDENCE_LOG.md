@@ -926,3 +926,10 @@ Codex handoff: reproduce in the actual desktop app with the affected admin sessi
 - Updated AddItemModal and ManageBudgetPeriodsModal and ManageFundingSourcesModal to use a non-scrolling, compact header with action buttons and an independently scrolling body. Form submissions retain existing handlers and pending-state disablement; finance form top Save/Add uses the form attribute to submit its scrollable form. Close remains available at the top.
 - Accessibility: added dialog roles/aria-modal to these forms and an accessible close label in finance management modals. Remaining: focus trap, focus return, unsaved-change warnings, keyboard Escape policy and systematic audit of all other modals. No finance permissions or data logic changed; unresolved admin finance issue CHANGE-032 stays assigned to Codex.
 - STATIC ONLY: no TypeScript build or desktop runtime checks executed. Verify top action buttons, validation focus and scrolling, keyboard operation, small screens and all affected forms before release. Extend this pattern to remaining long modals after verification.
+
+
+## CHANGE-035 — Persistent actions in transaction and Excel finance modals (2026-09-25)
+
+- Updated LogTransactionModal: compact fixed top Save/Cancel bar, separately scrollable form body, explicit dialog name/role and alert semantics for submission errors. The existing submit handler, validation and pending-state lock remain in place; top Save uses HTML form association.
+- Updated ExcelFinanceModal: compact fixed top Close/Validate/Import actions with independently scrollable workbook content. Retained preview-before-import gating and disabled actions while busy. Removed bottom-only action bar.
+- All changes committed directly to main. STATIC ONLY: no TypeScript compilation or desktop runtime testing was executed. Validate responsive layout, keyboard tab/focus, form submission, inline error visibility, long workbook previews and finance permission behavior before release. Continue auditing other long modals, add focus trapping and return focus, and confirm unsaved-change protection. CHANGE-032 unresolved admin finance access remains assigned to Codex.
