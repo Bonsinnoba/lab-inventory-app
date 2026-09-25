@@ -170,10 +170,16 @@ export default function LogTransactionModal({ onClose }: LogTransactionModalProp
   const isSubmitting = createMutation.isPending || createSourceMutation.isPending;
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-surface border border-border rounded-md p-6 w-[600px] max-h-[90vh] overflow-y-auto">
-        <h3 className="text-section-header font-ui font-semibold mb-4">Log Transaction</h3>
-        <form onSubmit={handleSubmit} className="space-y-4">
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-3">
+      <div role="dialog" aria-modal="true" aria-labelledby="log-transaction-title" className="bg-surface border border-border rounded-md w-[600px] max-w-full max-h-[90vh] flex flex-col overflow-hidden">
+        <header className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-border shrink-0">
+          <h3 id="log-transaction-title" className="text-section-header font-ui font-semibold">Log Transaction</h3>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={onClose} disabled={isSubmitting} className="px-3 py-1.5 text-sm border border-border rounded-sm disabled:opacity-50">Cancel</button>
+            <button type="submit" form="log-transaction-form" disabled={isSubmitting} className="px-3 py-1.5 text-sm bg-accent text-bg rounded-sm disabled:opacity-50">{isSubmitting ? 'Saving…' : 'Save'}</button>
+          </div>
+        </header>
+        <form id="log-transaction-form" onSubmit={handleSubmit} className="space-y-4 overflow-y-auto min-h-0 p-4">
           <div>
             <label className="block text-sm text-text-secondary mb-2">Direction</label>
             <div className="flex gap-2">
@@ -407,27 +413,11 @@ export default function LogTransactionModal({ onClose }: LogTransactionModalProp
           </div>
 
           {formError && (
-            <div className="px-3 py-2 bg-status-danger/10 border border-status-danger/30 rounded-sm text-sm text-status-danger">
+            <div role="alert" className="px-3 py-2 bg-status-danger/10 border border-status-danger/30 rounded-sm text-sm text-status-danger">
               {formError}
             </div>
           )}
 
-          <div className="flex gap-2 justify-end">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 bg-surface-raised border border-border rounded-sm hover:bg-surface-raised transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="px-4 py-2 bg-accent text-bg rounded-sm hover:bg-accent-dim transition-colors disabled:opacity-50"
-            >
-              {isSubmitting ? 'Logging...' : 'Log Transaction'}
-            </button>
-          </div>
         </form>
       </div>
     </div>
