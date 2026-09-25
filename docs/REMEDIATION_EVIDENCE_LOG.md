@@ -992,3 +992,10 @@ Codex handoff: reproduce in the actual desktop app with the affected admin sessi
 - Replaced native window.confirm in ManageBudgetPeriodsModal and ManageFundingSourcesModal with in-app alertdialogs. Both stage the selected ID and name, default focus to Cancel, support Escape, and call the delete mutation only after the explicit Delete permanently action. Mutations remain disabled while pending.
 - Commits: 86d6a368c9c35ab590154a5c2bfdb24d9b79fe33 and 3d8a21fa21e79d1a53ebce5f33d4e9147addf3e2.
 - STATIC ONLY: GitHub file edits; no local frontend build, Tauri runtime or automated accessibility test performed. Verify nested dialog focus trap and focus return, mutation success/error, Escape behavior, permissions and actual desktop rendering. Existing Finance admin loading defect (CHANGE-032) remains assigned to Codex. Continue auditing remaining native confirms before claiming platform-wide completion.
+
+
+## CHANGE-044 — Item image and datasheet removal confirmation (2026-09-25)
+
+- Replaced native window.confirm for ItemPicture's explicit Remove picture and Remove datasheet buttons with a staged in-app alertdialog. Dialog names the target, initially focuses Cancel, supports Escape, and invokes the existing mutation/API only after Remove permanently. Commit e17688b64872ceeaad01e10198685348c480d6c7.
+- LIMITATION: picture replacement still deletes the prior resource automatically after successful upload/update, which is an intended replacement workflow and requires separate retention/recovery design. No soft-delete exists.
+- STATIC ONLY: no TypeScript build, desktop runtime or keyboard/screen-reader test performed. Focus trapping/return and permission-specific visibility remain to verify. ProjectDetailPage still has native confirmations and is next in the audit. Do not claim deletion-safety completion.
