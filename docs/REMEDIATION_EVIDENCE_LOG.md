@@ -939,3 +939,10 @@ Codex handoff: reproduce in the actual desktop app with the affected admin sessi
 
 - Updated both desktop/src/api/item-sku.ts and backend/src/routes/items.js SKU generators to use LAB-<name>-<type initial>-<existing six-character random hex suffix>. Single-word names contribute their first four alphanumeric characters; names with two or more words contribute the first two characters of each of the first two words; type contributes its first alphanumeric initial. Examples: Arduino/component -> LAB-ARDU-C-XXXXXX; Power Supply/equipment -> LAB-POSU-E-XXXXXX. The existing six-character UUID-derived suffix remains unchanged. Manual SKUs and previously saved SKUs are untouched; no database migration.
 - STATIC ONLY: no build or runtime tests executed. Verify desktop/backend format parity, offline creation and sync, collisions/unique constraint behavior, punctuation, short names and existing SKU preservation. CHANGE-032 unresolved admin Finance issue remains assigned to Codex.
+
+
+## CHANGE-037 — Confirm resource deletion and bulk selection (2026-09-25)
+
+- Added confirmation before each Resources card delete. Item Detail already had a delete confirmation; a repository-wide audit of other destructive actions is still outstanding.
+- Added keyboard-accessible checkbox selection on Resources cards, Select all, Clear, selection count and Delete selected. Bulk delete requires one explicit confirmation with count, executes the existing deleteResource API sequentially, retains failed selections and reports partial failure rather than claiming all succeeded. No new backend bulk endpoint or implicit bypass of existing per-resource authorization. Selected IDs are pruned when the resource query changes.
+- STATIC ONLY: no frontend compilation or runtime tests executed. Verify nested card keyboard interactions, permissions, offline deletion, concurrent changes, partial failures, bulk selection of many records and accessibility. Expand bulk actions to metadata editing/association only after defining safe per-record permissions and validation. Review remaining deletion flows for consistent confirmation. CHANGE-032 finance issue remains open for Codex.
