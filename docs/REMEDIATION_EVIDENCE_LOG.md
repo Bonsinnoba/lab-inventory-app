@@ -1012,3 +1012,18 @@ Codex handoff: reproduce in the actual desktop app with the affected admin sessi
 - User supplied a desktop screenshot showing 'Unable to load laboratory operations'. Static trace found desktop/src/api/operations.ts called get_local_inventory_items, which is absent from the Tauri command registration in desktop/src-tauri/src/main.rs. This throws before the Operations overview renders.
 - Updated localOverview to use the existing getItems() inventory API, preserving its local snapshot path; corrected category counts to use the canonical item.type values (including spare_part). Commit a01f613d11318054879aafa6cc6ac35fc52297d1.
 - STATIC ONLY: no Tauri runtime, build or user data verification performed. After pulling/rebuilding, check online and offline overview, inventory totals, low-stock logic, empty cache behavior, requirements and supplier endpoints. The existing getItems() implementation can attempt remote loading when local snapshot is absent; do not claim fully offline first-run coverage.
+
+
+## CHANGE-047 — Requirements and BOM aggregation; Codex revisit requested (2026-09-25)
+
+Decision: Keep project resource Requirements and project BOM as distinct records. Requirements describe broader project resource needs and status; BOM lists component quantities and preferred/alternative inventory matches. Laboratory Operations should aggregate both without silently creating duplicate records or consuming stock.
+
+Changes on main:
+- 094030b7116bc6a0d135688240f9f1cea40e0d2e: desktop local Operations overview aggregates project BOM shortages, outstanding requirements, inventory names/quantities, low stock, calibration dates and equipment from local-first APIs. Previously local BOM was always an empty array. Project/BOM read errors now propagate rather than masquerading as zero shortages.
+- 2fbb513d7cd1da0fb1df84c0b4b11596561d7191: project BOM panel resolves current preferred/alternative inventory names and quantities from inventory rather than depending exclusively on server-enriched BOM fields.
+
+IMPORTANT LIMITATIONS: This is a quantity-only availability comparison, not a reservation/allocation engine. A component can appear available to multiple projects simultaneously. Local maintenance_due is still empty. Stock valuation is not permission-redacted in local overview; inspect access control before release. No build, tests, desktop runtime, or synchronization verification has been performed. A local project BOM reader may return differently shaped records than the remote API; verify with realistic data.
+
+### NOTE FOR CODEX — Revisit Laboratory > Operations > Overview > Project readiness and Requirements
+
+Please independently review these exact screens and their upstream sources after the above changes. Verify desktop offline and online operation, first-run empty cache, sync/outbox correctness, permission handling, and consistency of local vs PostgreSQL aggregation. Check that BOM shortages use actual stock and alternatives correctly, and that Requirements reflects current status and preferred item quantity. Investigate linking Requirements to BOM without creating duplicate demand, project navigation, shortage drill-down, cross-project contention, unit conversion, and eventual reservation/procurement workflow. Check calibration and maintenance coverage and avoid claiming completeness where local data is absent. Review BOM delete confirmation (still direct) and supplier delete confirmation (still direct). Provide reproducible tests, screenshots or logs, documented decisions, exact commits, and remaining risks. Do not silently redesign or merge the two data models; request approval for structural changes. Finance admin loading issue (CHANGE-032) remains separately Codex-owned.
