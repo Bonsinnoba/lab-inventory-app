@@ -946,3 +946,12 @@ Codex handoff: reproduce in the actual desktop app with the affected admin sessi
 - Added confirmation before each Resources card delete. Item Detail already had a delete confirmation; a repository-wide audit of other destructive actions is still outstanding.
 - Added keyboard-accessible checkbox selection on Resources cards, Select all, Clear, selection count and Delete selected. Bulk delete requires one explicit confirmation with count, executes the existing deleteResource API sequentially, retains failed selections and reports partial failure rather than claiming all succeeded. No new backend bulk endpoint or implicit bypass of existing per-resource authorization. Selected IDs are pruned when the resource query changes.
 - STATIC ONLY: no frontend compilation or runtime tests executed. Verify nested card keyboard interactions, permissions, offline deletion, concurrent changes, partial failures, bulk selection of many records and accessibility. Expand bulk actions to metadata editing/association only after defining safe per-record permissions and validation. Review remaining deletion flows for consistent confirmation. CHANGE-032 finance issue remains open for Codex.
+
+
+## CHANGE-038 — Destructive-action confirmation audit (2026-09-25)
+
+- Continued CHANGE-037: added explicit confirmation before deleting a budget period or funding source in management modals; added accessible names and pending-state disablement to their delete buttons.
+- Item Picture removal now asks for confirmation. Replacing an existing picture still uses the existing upload-and-replace flow; verify replacement cleanup separately.
+- Project Detail now confirms deletion of tasks, experiments, measurements, observations and comments, and confirms removing project members. Added accessible names to compact measurement, observation and member removal buttons. Existing Inventory bulk delete and Item Detail delete already require confirmation.
+- No server API or permission changes; existing per-action authorization remains authoritative. Changes committed directly to main.
+- STATIC ONLY: no TypeScript build, unit tests or desktop runtime tests executed. Audit remaining deletion/unlink/detach actions, verify confirmation wording and keyboard operation, and consider an accessible reusable confirmation dialog rather than native window.confirm for consistent focus handling. CHANGE-032 unresolved admin finance issue remains assigned to Codex.
