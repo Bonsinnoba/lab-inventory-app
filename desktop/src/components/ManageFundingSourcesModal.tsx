@@ -84,14 +84,15 @@ export default function ManageFundingSourcesModal({ onClose }: ManageFundingSour
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-surface border border-border rounded-md p-6 w-[700px] max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between mb-4">
+      <div role="dialog" aria-modal="true" className="bg-surface border border-border rounded-md w-[700px] max-w-[95vw] max-h-[90vh] flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-border shrink-0">
           <h3 className="text-section-header font-ui font-semibold">Manage Funding Sources</h3>
-          <button onClick={onClose} className="text-text-secondary hover:text-text-primary">✕</button>
+          <div className="flex items-center gap-2">{showAddForm && <><button type="button" onClick={handleCancel} className="px-3 py-1.5 text-sm border border-border rounded-sm">Cancel</button><button type="submit" form="funding-source-form" disabled={createMutation.isPending || updateMutation.isPending} className="px-3 py-1.5 text-sm bg-accent text-bg rounded-sm disabled:opacity-50">{editingId ? 'Save' : 'Add'}</button></>}<button type="button" aria-label="Close modal" onClick={onClose} className="px-2 py-1.5 text-text-secondary hover:text-text-primary">✕</button></div>
         </div>
 
+        <div className="overflow-y-auto min-h-0 p-4">
         {showAddForm ? (
-          <form onSubmit={handleSubmit} className="space-y-4 mb-6 p-4 bg-surface-raised border border-border rounded-md">
+          <form id="funding-source-form" onSubmit={handleSubmit} className="space-y-4 mb-6 p-4 bg-surface-raised border border-border rounded-md">
             <h4 className="text-sm font-medium">{editingId ? 'Edit' : 'Add'} Funding Source</h4>
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -138,14 +139,6 @@ export default function ManageFundingSourcesModal({ onClose }: ManageFundingSour
                 rows={2}
               />
             </div>
-            <div className="flex gap-2 justify-end">
-              <button type="button" onClick={handleCancel} className="px-4 py-2 bg-surface border border-border rounded-sm hover:bg-surface-raised transition-colors">
-                Cancel
-              </button>
-              <button type="submit" disabled={createMutation.isPending || updateMutation.isPending} className="px-4 py-2 bg-accent text-bg rounded-sm hover:bg-accent-dim transition-colors disabled:opacity-50">
-                {editingId ? 'Update' : 'Add'}
-              </button>
-            </div>
           </form>
         ) : (
           <button
@@ -184,6 +177,7 @@ export default function ManageFundingSourcesModal({ onClose }: ManageFundingSour
             ))}
           </div>
         )}
+        </div>
       </div>
     </div>
   );
