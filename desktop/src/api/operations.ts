@@ -1,7 +1,7 @@
 import { apiFetch, getApiErrorMessage } from './http';
 import { localBackend } from './local-backend';
 import { getItems } from './items';
-import { getProjectRequirements, createProjectRequirement, updateProjectRequirement, deleteProjectRequirement } from './projects';
+import { getProjects, getProjectBom, getProjectRequirements, createProjectRequirement, updateProjectRequirement, deleteProjectRequirement } from './projects';
 
 export interface OperationsOverview {
   summary: { total_items:number; equipment:number; tools:number; components:number; materials:number; low_stock:number; stock_value:number };
@@ -13,13 +13,40 @@ export interface ResourceRequirement { id:string; project_id:string; project_nam
 async function json<T>(path:string, init?:RequestInit):Promise<T>{const r=await apiFetch(path,init);if(!r.ok)throw new Error(await getApiErrorMessage(r));return r.status===204?undefined as T:r.json();}
 
 async function localOverview():Promise<OperationsOverview>{
-  const [items, requirements] = await Promise.all([
-    getItems(),
-    localBackend.invoke<any[]>('get_local_resource_requirements').catch(()=>[]),
-  ]);
-  const total=(items||[]).length;
-  const low=(items||[]).filter(i=>Number(i.quantity??i.current_quantity??0)<=Number(i.reorder_level??i.minimum_quantity??0));
-  return {summary:{total_items:total,equipment:(items||[]).filter(i=>i.type==='equipment').length,tools:(items||[]).filter(i=>i.type==='tool').length,components:(items||[]).filter(i=>['component','spare_part'].includes(i.type)).length,materials:(items||[]).filter(i=>i.type==='material').length,low_stock:low.length,stock_value:(items||[]).reduce((s,i)=>s+Number(i.quantity??i.current_quantity??0)*Number(i.unit_cost??0),0)},low_stock:low,calibration_due:[],maintenance_due:[],equipment:(items||[]).filter(i=>i.category==='equipment'),missing_bom:[],requirements:requirements||[]};
+  // Use the workstation's existing local-first project and inventory APIs.
+  // Do not turn failed reads into empty arrays: an empty result means no shortages.
+  const [items, projects, requirements] = await Promise.all([getItems(), getProjects(), getProjectRequirements()]);
+  const bomByProject = await Promise.all(projects.map(async project => ({
+    project, lines: await getProjectBom(project.id),
+  })));
+  const quantities = new Map(items.map(item => [item.id, Number(item.current_quantity || 0)]));
+  const missing_bom = bomByProject.flatMap(({project,lines}) => lines.filter(line => {
+    const required = Number(line.required_quantity);
+    return !(line.preferred_item_id && (quantities.get(line.preferred_item_id) ?? 0) >= required)
+      && !(line.alternative_item_id && (quantities.get(line.alternative_item_id) ?? 0) >= required);
+  }).map(line => ({...line, project_name:project.name, availability:'missing'})));
+  const low_stock = items.filter(item => item.status === 'low_stock' || Number(item.current_quantity) <= Number(item.initial_quantity || 0) * 0.2);
+  const now = new Date();
+  const due = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+  const calibration_due = items.filter(item => item.next_calibration_date && new Date(item.next_calibration_date) <= due);
+  const equipment = items.filter(item => ['equipment','instrument','tool'].includes(item.type));
+  const enrichedRequirements = requirements.filter(row => !['fulfilled','cancelled'].includes(row.status)).map(row => {
+    const match = items.find(item => item.id === row.preferred_item_id);
+    return {...row, preferred_item_name:match?.name ?? row.preferred_item_name ?? null,
+      preferred_quantity:match?.current_quantity ?? null};
+  });
+  return {
+    summary: {
+      total_items:items.length,
+      equipment:items.filter(item => item.type === 'equipment').length,
+      tools:items.filter(item => item.type === 'tool').length,
+      components:items.filter(item => ['component','spare_part'].includes(item.type)).length,
+      materials:items.filter(item => item.type === 'material').length,
+      low_stock:low_stock.length,
+      stock_value:items.reduce((sum,item) => sum + Number(item.current_quantity || 0) * Number(item.unit_cost || 0),0),
+    },
+    low_stock, calibration_due, maintenance_due:[], equipment, missing_bom, requirements:enrichedRequirements,
+  };
 }
 export const getOperationsOverview=()=>localBackend.isAvailable()?localOverview():json<OperationsOverview>('/operations/overview');
 export const getSuppliers=()=>json<Supplier[]>('/operations/suppliers');
