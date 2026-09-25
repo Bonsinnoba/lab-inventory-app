@@ -1,6 +1,7 @@
 import { apiFetch, getApiErrorMessage } from './http';
 import { localBackend } from './local-backend';
 import { getItems } from './items';
+import { findMissingBom, enrichOutstandingRequirements } from './operations-calculations';
 import { getProjects, getProjectBom, getProjectRequirements, createProjectRequirement, updateProjectRequirement, deleteProjectRequirement } from './projects';
 
 export interface OperationsOverview {
@@ -19,20 +20,15 @@ async function localOverview():Promise<OperationsOverview>{
   const bomByProject = await Promise.all(projects.map(async project => ({
     project, lines: await getProjectBom(project.id),
   })));
-  const quantities = new Map(items.map(item => [item.id, Number(item.current_quantity || 0)]));
-  const missing_bom = bomByProject.flatMap(({project,lines}) => lines.filter(line => {
-    const required = Number(line.required_quantity);
-    return !(line.preferred_item_id && (quantities.get(line.preferred_item_id) ?? 0) >= required)
-      && !(line.alternative_item_id && (quantities.get(line.alternative_item_id) ?? 0) >= required);
-  }).map(line => ({...line, project_name:project.name, availability:'missing'})));
+  const missing_bom = bomByProject.flatMap(({project,lines}) =>
+    findMissingBom(lines,items).map(line => ({...line,project_name:project.name,availability:'missing'})));
   const low_stock = items.filter(item => item.status === 'low_stock' || Number(item.current_quantity) <= Number(item.initial_quantity || 0) * 0.2);
   const now = new Date();
   const due = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
   const calibration_due = items.filter(item => item.next_calibration_date && new Date(item.next_calibration_date) <= due);
   const equipment = items.filter(item => ['equipment','instrument','tool'].includes(item.type));
-  const enrichedRequirements = requirements.filter(row => !['fulfilled','cancelled'].includes(row.status)).map(row => {
-    const match = items.find(item => item.id === row.preferred_item_id);
-    return {...row, preferred_item_name:match?.name ?? row.preferred_item_name ?? null,
+  const enrichedRequirements = enrichOutstandingRequirements(requirements,items);
+  return {...row, preferred_item_name:match?.name ?? row.preferred_item_name ?? null,
       preferred_quantity:match?.current_quantity ?? null};
   });
   return {
