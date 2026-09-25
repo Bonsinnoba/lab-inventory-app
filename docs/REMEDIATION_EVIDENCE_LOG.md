@@ -999,3 +999,9 @@ Codex handoff: reproduce in the actual desktop app with the affected admin sessi
 - Replaced native window.confirm for ItemPicture's explicit Remove picture and Remove datasheet buttons with a staged in-app alertdialog. Dialog names the target, initially focuses Cancel, supports Escape, and invokes the existing mutation/API only after Remove permanently. Commit e17688b64872ceeaad01e10198685348c480d6c7.
 - LIMITATION: picture replacement still deletes the prior resource automatically after successful upload/update, which is an intended replacement workflow and requires separate retention/recovery design. No soft-delete exists.
 - STATIC ONLY: no TypeScript build, desktop runtime or keyboard/screen-reader test performed. Focus trapping/return and permission-specific visibility remain to verify. ProjectDetailPage still has native confirmations and is next in the audit. Do not claim deletion-safety completion.
+
+
+## CHANGE-045 — Project workspace destructive-action confirmation (2026-09-25)
+
+- Replaced all six window.confirm calls in desktop/src/pages/ProjectDetailPage.tsx with a shared context-driven in-app alertdialog. Affected actions: task deletion, experiment deletion, measurement deletion, observation deletion, project member removal and comment deletion. The dialog stages a callback; only explicit Confirm permanently invokes the mutation. Cancel and Escape dismiss; Cancel has initial focus. Commit 46f9985f3725a45633202505a2ac879f94897770.
+- STATIC ONLY: no TypeScript build or Tauri runtime verification. Test each of six operations, role restrictions, nested modal focus trapping and focus restoration, double-click prevention, screen reader labels and error behavior. Project attachment unlink/detach flows and other pages still require separate audit. No recycle bin/soft-delete implemented.
