@@ -963,3 +963,10 @@ Codex handoff: reproduce in the actual desktop app with the affected admin sessi
 - Added desktop API attachExistingResource. This operation is server-backed, requires connectivity, and updates local resource cache after a successful response; offline attachment queue and resource sync update support are NOT implemented.
 - Resources page now has Attach / Move on individual cards and Attach selected in bulk toolbar. Both open a compact destination selector for projects, items and notes. Bulk action uses per-resource authorization via sequential existing API calls; preserves failed selections and reports partial failures. Warns before moving previously attached resources. No new backend bulk endpoint.
 - STATIC ONLY: no TypeScript build, backend tests or runtime verification. Test server access controls, resource ownership, cross-project moves, cache refresh after online reassignment, failure/retry behavior, selection keyboard access, and folder/nested resource handling. Current schema permits one direct parent only; supporting one resource in multiple projects simultaneously requires a separate junction table and access/sync model. Codex admin finance issue CHANGE-032 remains unresolved.
+
+
+## CHANGE-040 — Contextual resource selection controls (2026-09-25)
+
+- Resource card checkboxes are visually hidden until card hover or keyboard focus, matching the existing contextual delete button. A checked box stays visible even after pointer hover ends so selection remains obvious. Keyboard focus reveals the checkbox through group-focus-within; native input retains its accessible label.
+- The resource bulk-action bar now appears only when at least one resource is selected; it disappears when selection is cleared or all selected resources are deleted. Existing Select all, Clear, Attach selected and Delete selected actions remain unchanged.
+- STATIC ONLY: no desktop runtime or frontend build verification. Test keyboard-only focus, touch-device selection discoverability, selected-state contrast, and bulk toolbar appearance/disappearance. CHANGE-032 finance issue remains open for Codex.
