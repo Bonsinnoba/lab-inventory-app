@@ -9,6 +9,7 @@ import { config } from '../config.js';
 import { pool } from '../db.js';
 import { writeAuditLog } from '../middleware/audit.js';
 import { getProjectAccess } from '../middleware/project-access.js';
+import { getUserPermissions } from '../middleware/permissions.js';
 import { getResourceAccess, requireResourceRead, requireResourceEditor, validateResourceParent } from '../middleware/resource-access.js';
 import { STORAGE_DIR, inferFileType, resolveStoragePath, sanitizeRelativePath } from '../storage.js';
 
@@ -34,6 +35,8 @@ router.post('/link', async (req, res) => { const parents=parentFields(req.body);
 router.put('/:id', async (req,res)=>{const metadata=knowledgeMetadata(req.body);try{const access=await requireResourceEditor(req.params.id,req.user);if(!access.ok)return res.status(access.status).json({error:access.error});const result=await pool.query(`UPDATE resources SET category=$1,description=$2,tags=$3 WHERE id=$4 RETURNING *`,[metadata.category,metadata.description,metadata.tags,req.params.id]);if(!result.rowCount)return res.status(404).json({error:'Resource not found'});await writeAuditLog({req,action:'UPDATE',entityType:'resource',entityId:req.params.id,newValue:result.rows[0]});res.json(result.rows[0]);}catch(err){console.error(err);res.status(500).json({error:'Failed to update resource metadata'});} });
 // Reassign an existing resource without re-uploading it. A resource has one direct parent.
 router.put('/:id/attachment', async (req,res)=>{
+ const permissions=await getUserPermissions(req.user.userId,req.user.role);
+ if(!permissions.has('resources.edit'))return res.status(403).json({error:{code:'PERMISSION_DENIED',message:'Permission required: resources.edit'}});
  const parents=parentFields(req.body);
  if(!validateAtMostOneParent(parents))return res.status(400).json({error:'Choose only one attachment destination'});
  try{
