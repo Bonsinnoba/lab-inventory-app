@@ -1005,3 +1005,10 @@ Codex handoff: reproduce in the actual desktop app with the affected admin sessi
 
 - Replaced all six window.confirm calls in desktop/src/pages/ProjectDetailPage.tsx with a shared context-driven in-app alertdialog. Affected actions: task deletion, experiment deletion, measurement deletion, observation deletion, project member removal and comment deletion. The dialog stages a callback; only explicit Confirm permanently invokes the mutation. Cancel and Escape dismiss; Cancel has initial focus. Commit 46f9985f3725a45633202505a2ac879f94897770.
 - STATIC ONLY: no TypeScript build or Tauri runtime verification. Test each of six operations, role restrictions, nested modal focus trapping and focus restoration, double-click prevention, screen reader labels and error behavior. Project attachment unlink/detach flows and other pages still require separate audit. No recycle bin/soft-delete implemented.
+
+
+## CHANGE-046 — Laboratory Operations overview load failure (2026-09-25)
+
+- User supplied a desktop screenshot showing 'Unable to load laboratory operations'. Static trace found desktop/src/api/operations.ts called get_local_inventory_items, which is absent from the Tauri command registration in desktop/src-tauri/src/main.rs. This throws before the Operations overview renders.
+- Updated localOverview to use the existing getItems() inventory API, preserving its local snapshot path; corrected category counts to use the canonical item.type values (including spare_part). Commit a01f613d11318054879aafa6cc6ac35fc52297d1.
+- STATIC ONLY: no Tauri runtime, build or user data verification performed. After pulling/rebuilding, check online and offline overview, inventory totals, low-stock logic, empty cache behavior, requirements and supplier endpoints. The existing getItems() implementation can attempt remote loading when local snapshot is absent; do not claim fully offline first-run coverage.
