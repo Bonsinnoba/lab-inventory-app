@@ -978,3 +978,10 @@ Codex handoff: reproduce in the actual desktop app with the affected admin sessi
 - Added explicit server resources.edit permission enforcement to PUT /resources/:id/attachment, in addition to existing source-resource editor and destination authorization checks.
 - LIMITATION: per-resource/project-specific editor access is enforced by server but not yet represented in individual card visibility; a globally authorized user with read-only access to a specific project may still see its action and receive 403. Existing resource DELETE and metadata endpoints use requireResourceEditor; a separate comprehensive server permission audit for all legacy routes is still required. Resource modal edit entry points and offline authorization also need dedicated review.
 - STATIC ONLY: no build, unit or runtime permission-matrix testing performed. Test viewer/member/technician/researcher/admin, custom overrides, project read-only, shared uploader, permission refresh and offline behavior. CHANGE-032 finance issue remains Codex-owned.
+
+
+## CHANGE-042 — Destructive action safety follow-up (2026-09-25)
+
+- Reported accidental deletion involved test data; prevention is the priority. Resources individual and bulk delete now stage an in-app confirmation dialog instead of relying on native window.confirm (commits 119d935, 69f98cd). Inventory bulk delete also now requires an in-app confirmation (commit b89bc07).
+- Both dialogs default focus to Cancel, show an explicit Delete permanently action and allow Escape to dismiss. No deletion is triggered by merely opening the dialog.
+- UNVERIFIED: no running Tauri desktop session or build/test result available from GitHub file editing. Keyboard focus trap and focus restoration, cross-page native confirmation audit, and soft-delete/restore remain outstanding. Do not label platform-wide deletion safety complete.
