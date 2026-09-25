@@ -16,6 +16,7 @@ export default function ManageBudgetPeriodsModal({ onClose }: ManageBudgetPeriod
     queryFn: getBudgetPeriods,
   });
 
+  const [pendingDelete, setPendingDelete] = useState<{id:string;name:string}|null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formData, setFormData] = useState({
@@ -177,7 +178,7 @@ export default function ManageBudgetPeriodsModal({ onClose }: ManageBudgetPeriod
                   <button onClick={() => handleEdit(period)} className="p-1.5 hover:bg-surface rounded-sm transition-colors">
                     <Edit size={14} />
                   </button>
-                  <button onClick={() => { if (window.confirm('Delete budget period "' + period.label + '"? This cannot be undone.')) deleteMutation.mutate(period.id); }} aria-label={`Delete ${period.label}`} disabled={deleteMutation.isPending} className="p-1.5 hover:bg-status-danger hover:text-bg rounded-sm transition-colors">
+                  <button onClick={() => setPendingDelete({id:period.id,name:period.label})} aria-label={`Delete ${period.label}`} disabled={deleteMutation.isPending} className="p-1.5 hover:bg-status-danger hover:text-bg rounded-sm transition-colors">
                     <Trash2 size={14} />
                   </button>
                 </div>
@@ -187,6 +188,7 @@ export default function ManageBudgetPeriodsModal({ onClose }: ManageBudgetPeriod
         )}
         </div>
       </div>
+      {pendingDelete && <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-4"><div role="alertdialog" aria-modal="true" aria-label="Confirm deletion" className="w-full max-w-md rounded-lg border border-border bg-surface p-5 shadow-xl" onKeyDown={e=>{if(e.key==='Escape'){e.stopPropagation();setPendingDelete(null)}}}><h3 className="text-lg font-semibold">Delete budget period?</h3><p className="my-4 text-sm">Permanently delete "{pendingDelete.name}"? This cannot be undone.</p><div className="flex justify-end gap-2"><button type="button" autoFocus onClick={()=>setPendingDelete(null)} className="rounded border border-border px-4 py-2">Cancel</button><button type="button" disabled={deleteMutation.isPending} onClick={()=>{if(deleteMutation.isPending)return;const id=pendingDelete.id;setPendingDelete(null);deleteMutation.mutate(id)}} className="rounded bg-status-danger px-4 py-2 text-white disabled:opacity-50">Delete permanently</button></div></div></div>}
     </div>
   );
 }
