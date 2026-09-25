@@ -1065,3 +1065,8 @@ Workflow run https://github.com/Bonsinnoba/lab-inventory-app/actions/runs/361944
 - 8f5fbdbb75ee5e179310b7ff4afe63689b7b8444: add frontend npm ci/build step to isolated Rust job before cargo check --locked so ../dist exists.
 
 Follow-up: inspect fresh workflow run for 8f5fbdb; if desktop or Rust still fails, fetch job logs and remediate the next concrete error. The prior Rust log also reports seven warnings, which are not the failure cause. The checks do not exercise SQLite/offline behavior, PostgreSQL synchronization or UI interactions; CHANGE-049 regression matrix remains open. Codex should revisit Laboratory Operations Overview/Requirements and Project BOM as specified in CHANGE-047/049.
+
+
+## CHANGE-051 — Tauri icon failure exposed by CI (2026-09-25)
+
+Run https://github.com/Bonsinnoba/lab-inventory-app/actions/runs/36197918635: desktop TypeScript/Vite PASS, backend syntax PASS, Tauri Rust FAIL (`tauri::generate_context!` could not read `desktop/src-tauri/icons/icon.png`; exit 101). The prior missing `../dist` error was resolved by building the frontend first. `build.rs` materializes `icon.ico` from `icons/icon.ico.b64`, but does not materialize `icon.png`; the Tauri macro requires PNG even though tauri.conf.json lists ICO. Commit 4e2f12bc58acb7f09f6360e36e393d58b6703fa3 adds a CI step to derive PNG from the existing embedded ICO with Pillow before `cargo check --locked`. This is a CI fixture, not a validated installer/package fix. Verify subsequent workflow result and separately audit real desktop build packaging/icon generation. Node 20 deprecation and Ubuntu runner notices are nonblocking warnings.
