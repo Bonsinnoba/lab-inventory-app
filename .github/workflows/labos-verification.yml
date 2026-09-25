@@ -61,4 +61,17 @@ jobs:
         run: npm ci && npm run build
       - uses: dtolnay/rust-toolchain@stable
       - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.0-dev build-essential curl wget libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - name: Materialize PNG icon required by Tauri context
+        run: |
+          python3 -m pip install --user Pillow
+          python3 - <<'PY'
+          import base64
+          from io import BytesIO
+          from pathlib import Path
+          from PIL import Image
+          icons = Path("icons")
+          ico = base64.b64decode((icons / "icon.ico.b64").read_text())
+          image = Image.open(BytesIO(ico))
+          image.save(icons / "icon.png", format="PNG")
+          PY
       - run: cargo check --locked
