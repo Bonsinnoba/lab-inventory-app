@@ -1097,3 +1097,14 @@ User-approved design: project leads and admins plan scope, BOM, Requirements, bu
 - PostgreSQL base schema defaults to Planning; tracked migration `backend/src/migrations/20260926_project_planning_status.sql` updates the existing CHECK constraint and default without rewriting existing rows. Run backend migrations before using Planning against an existing central database. A mistakenly created migration in `backend/migrations` was removed and installed in the actual `backend/src/migrations` runner directory.
 
 Verification pending GitHub Actions for latest commit. CI does not run PostgreSQL migrations against a real database, execute offline desktop integration, or prove that approval/reservation workflow exists. Next: model planning review state separately from status; enforce admin-only activation server-side and on sync, plus offline approval semantics; add proposed versus confirmed reservations with central conflict resolution and tests before enabling any inventory lock. Do not treat a Planning status dropdown as approval enforcement.
+
+
+## CHANGE-055 — Initial project activation authorization (2026-09-26)
+
+The Planning foundation passed GitHub Actions run 36238838560. Implemented first activation guard on main:
+- Express create validates status; non-admin users must create in Planning. Express update rejects non-admin attempts to set Active.
+- Offline sync rejects non-admin project creation outside Planning and non-admin transitions into Active, with explicit error codes.
+- Tauri local creation starts in Planning and local transition into Active is blocked pending online admin authorization; desktop creation modal only offers Planning.
+- Existing project statuses are not rewritten. No reservation stock is locked by these changes.
+
+LIMITATIONS: This is an initial authorization guard, NOT a complete project review workflow. Admin activation is possible through existing online project editing without a recorded readiness checklist or review decision. Desktop Tauri local-first project updates do not yet expose an online admin activation route; a separate online admin review/activation action is needed. Existing offline project sync conflict resolution and project-state refresh after online approval require integration tests. Proposed/confirmed reservations, priority and date arbitration, inventory locking and admin reallocation remain unimplemented. CI for these authorization commits must be checked; GitHub Actions compilation is not a database-backed authorization integration test.
