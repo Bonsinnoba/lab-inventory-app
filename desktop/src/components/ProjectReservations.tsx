@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation,useQuery,useQueryClient } from '@tanstack/react-query';
-import { decideProjectReservation,getProjectReservations,requestProjectReservation,Project } from '../api/projects';
+import { decideProjectReservation,fulfillProjectReservation,getProjectReservations,requestProjectReservation,Project } from '../api/projects';
 import { getItems } from '../api/items';
 import { getStoredUser } from '../api/auth';
 
@@ -11,6 +11,7 @@ export default function ProjectReservations({project,canEdit}:{project:Project;c
  const items=useQuery({queryKey:['items'],queryFn:()=>getItems()});
  const request=useMutation({mutationFn:()=>requestProjectReservation(project.id,{item_id:itemId,quantity:Number(quantity),needed_from:new Date(from).toISOString(),needed_until:until?new Date(until).toISOString():undefined,note}),onSuccess:()=>{setError('');setNote('');qc.invalidateQueries({queryKey:['project-reservations',project.id]});},onError:(e:Error)=>setError(e.message)});
  const decide=useMutation({mutationFn:({id,decision}:{id:string;decision:'confirm'|'reject'|'release'})=>decideProjectReservation(project.id,id,decision,note),onSuccess:()=>{setError('');setNote('');qc.invalidateQueries({queryKey:['project-reservations',project.id]});},onError:(e:Error)=>setError(e.message)});
+ const fulfill=useMutation({mutationFn:(id:string)=>fulfillProjectReservation(project.id,id),onSuccess:()=>{setError('');qc.invalidateQueries({queryKey:['project-reservations',project.id]});qc.invalidateQueries({queryKey:['items']});},onError:(e:Error)=>setError(e.message)});
  if(!['planning','active'].includes(project.status))return null;
  return <section className="border border-border rounded-md bg-surface p-4 my-4" aria-label="Project reservations">
   <h3 className="font-semibold">Resource reservations</h3>
@@ -30,6 +31,7 @@ export default function ProjectReservations({project,canEdit}:{project:Project;c
    <p className="text-xs text-text-secondary mt-1">{new Date(r.needed_from).toLocaleString()} – {r.needed_until?new Date(r.needed_until).toLocaleString():'Until released'} · Project priority: {r.project_priority} · Due: {r.project_due_date?new Date(r.project_due_date).toLocaleDateString():'Not set'}</p>
    {r.note&&<p className="text-xs mt-1">Request: {r.note}</p>}{r.review_note&&<p className="text-xs mt-1">Decision: {r.review_note}</p>}
    {isAdmin&&r.status==='pending_review'&&<div className="flex gap-2 mt-2"><button type="button" disabled={decide.isPending} className="ui-button ui-button-primary ui-button-sm" onClick={()=>decide.mutate({id:r.id,decision:'confirm'})}>Confirm</button><button type="button" disabled={decide.isPending||!note.trim()} className="ui-button ui-button-sm" onClick={()=>decide.mutate({id:r.id,decision:'reject'})}>Reject (reason required)</button></div>}
+   {isAdmin&&r.status==='confirmed'&&<button type="button" disabled={fulfill.isPending} className="ui-button ui-button-primary ui-button-sm mt-2 mr-2" onClick={()=>{if(window.confirm('Consume the full reserved quantity and record the physical stock movement? This cannot be undone.'))fulfill.mutate(r.id);}}>Fulfill consumables</button>}
    {isAdmin&&r.status==='confirmed'&&<button type="button" disabled={decide.isPending} className="ui-button ui-button-sm mt-2" onClick={()=>decide.mutate({id:r.id,decision:'release'})}>Release</button>}
   </li>)}</ul>
  </section>;
