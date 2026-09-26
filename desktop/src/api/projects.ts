@@ -158,7 +158,7 @@ export async function getReservationReviewQueue():Promise<ReservationReviewQueue
 }
 
 export async function fulfillProjectReservation(projectId:string,reservationId:string,quantity:number):Promise<{reservation:ProjectReservation;movement:{id:string;quantity:number|string};already_fulfilled?:boolean}>{
- const r=await apiFetch(`/projects/${projectId}/reservations/${reservationId}/fulfill`,{method:'POST'});
+ const r=await apiFetch(`/projects/${projectId}/reservations/${reservationId}/fulfill`,{method:'POST',body:JSON.stringify({quantity})});
  if(!r.ok)throw new Error(await getApiErrorMessage(r,'Unable to fulfill reservation'));
  return r.json();
 }
