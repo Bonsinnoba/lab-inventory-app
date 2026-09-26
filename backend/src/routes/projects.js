@@ -83,6 +83,36 @@ router.post('/:id/reservations/:reservationId/decision',hasPermission('projects.
   res.json(updated.rows[0]);
  }catch(err){await client.query('ROLLBACK');console.error(err);res.status(500).json({error:'Unable to decide reservation'});}finally{client.release();}
 });
+// Fulfillment consumes a confirmed non-returnable reservation and physical stock together.
+router.post('/:id/reservations/:reservationId/fulfill',hasPermission('inventory.adjust_stock'),async(req,res)=>{
+ const client=await pool.connect();
+ try{
+  await client.query('BEGIN');
+  const found=await client.query('SELECT * FROM project_reservations WHERE id=$1 AND project_id=$2 FOR UPDATE',[req.params.reservationId,req.params.id]);
+  if(!found.rowCount){await client.query('ROLLBACK');return res.status(404).json({error:'Reservation not found'});}
+  const reservation=found.rows[0];
+  if(reservation.status==='fulfilled'){
+   const movement=await client.query('SELECT * FROM item_movements WHERE id=$1',[reservation.fulfillment_movement_id]);
+   await client.query('COMMIT');return res.json({reservation,movement:movement.rows[0],already_fulfilled:true});
+  }
+  if(reservation.status!=='confirmed'){await client.query('ROLLBACK');return res.status(409).json({error:'Only confirmed reservations can be fulfilled'});}
+  const stock=await client.query('SELECT * FROM items WHERE id=$1 FOR UPDATE',[reservation.item_id]);
+  if(!stock.rowCount){await client.query('ROLLBACK');return res.status(404).json({error:'Item not found'});}
+  const item=stock.rows[0];
+  if(['equipment','instrument','tool'].includes(item.type)){await client.query('ROLLBACK');return res.status(409).json({error:'Returnable equipment requires a separate checkout/return workflow'});}
+  const next=Number(item.current_quantity)-Number(reservation.quantity);
+  if(!Number.isFinite(next)||next<0){await client.query('ROLLBACK');return res.status(409).json({error:'Insufficient physical stock'});}
+  const others=await client.query("SELECT COALESCE(SUM(quantity),0)::numeric AS reserved FROM project_reservations WHERE item_id=$1 AND status='confirmed' AND id<>$2",[reservation.item_id,reservation.id]);
+  if(next<Number(others.rows[0].reserved)){await client.query('ROLLBACK');return res.status(409).json({error:'Fulfillment would consume another project’s confirmed reservation'});}
+  const movement=await client.query(`INSERT INTO item_movements(item_id,movement_type,quantity,quantity_before,quantity_after,project_id,reason,reference,performed_by)
+    VALUES($1,'consume',$2,$3,$4,$5,$6,$7,$8) RETURNING *`,[reservation.item_id,reservation.quantity,item.current_quantity,next,reservation.project_id,'Fulfillment of confirmed project reservation',reservation.id,req.user.userId]);
+  await client.query('UPDATE items SET current_quantity=$1,updated_at=now() WHERE id=$2',[next,reservation.item_id]);
+  const updated=await client.query("UPDATE project_reservations SET status='fulfilled',fulfilled_at=now(),fulfilled_by=$1,fulfillment_movement_id=$2,updated_at=now() WHERE id=$3 RETURNING *",[req.user.userId,movement.rows[0].id,reservation.id]);
+  await client.query('COMMIT');
+  try{await writeAuditLog({req,action:'UPDATE',entityType:'project_reservation',entityId:reservation.id,newValue:{status:'fulfilled',movement_id:movement.rows[0].id}});}catch(auditError){console.error('Reservation fulfillment audit log failed:',auditError);}
+  res.json({reservation:updated.rows[0],movement:movement.rows[0]});
+ }catch(err){await client.query('ROLLBACK');console.error(err);res.status(500).json({error:'Unable to fulfill reservation'});}finally{client.release();}
+});
 router.get('/:id/review',hasPermission('projects.view'),async(req,res)=>{
  try{
   const access=await getProjectAccess(req.params.id,req.user);
