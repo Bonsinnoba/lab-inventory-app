@@ -44,8 +44,8 @@ jobs:
           cache-dependency-path: backend/package-lock.json
       - run: npm ci
       - run: npm run check
-      - name: Reserved-stock regression tests
-        run: node --test src/reservation-stock.test.js
+      - name: Reserved-stock and context regression tests
+        run: node --test src/reservation-stock.test.js src/routes/context.test.js
 
   rust:
     name: Tauri Rust check
