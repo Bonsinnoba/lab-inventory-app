@@ -1080,3 +1080,8 @@ Run https://github.com/Bonsinnoba/lab-inventory-app/actions/runs/36197918635: de
 - b3a89302053ef9a7e83fb7f702506e2d949b75e7: desktop GitHub Actions job runs `node --experimental-strip-types --test src/api/operations-calculations.test.mjs` before `npm run build` on Node 22.
 
 STATUS: tests committed but not yet observed passing in CI; check the workflow run on this commit. Tests explicitly document existing *independent line* semantics: overlapping projects can each appear covered by the same stock. No reservation/allocation, SQLite/REST sync, UI deletion, permission or end-to-end desktop test is claimed. Codex must revisit Laboratory > Operations > Overview/Requirements and Project BOM, verify offline fixtures and cross-project demand, and report defects with logs and commits as previously requested in CHANGE-047/049.
+
+
+## CHANGE-053 — Functional test CI integration syntax repair (2026-09-26)
+
+Run https://github.com/Bonsinnoba/lab-inventory-app/actions/runs/36203211893: seven BOM/Requirements Node regression tests passed (0 failures); backend syntax passed; desktop build and Tauri frontend prerequisite failed with TS1128 at operations.ts:33 and :46. Root cause: CHANGE-052 extraction accidentally left an orphaned three-line `return {...row}` mapping after `enrichOutstandingRequirements(...)`. Commit c6c68b5771c533f166a3b2f210452293d936e540 removed those lines. Follow-up workflow run https://github.com/Bonsinnoba/lab-inventory-app/actions/runs/36237613761 was in progress when this note was written. No runtime SQLite/sync/UI behavior has been tested. Codex must still revisit Operations Overview/Requirements and project BOM with real offline fixtures.
