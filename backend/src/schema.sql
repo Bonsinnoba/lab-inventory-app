@@ -34,7 +34,7 @@ CREATE TABLE locations (
 CREATE TABLE projects (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'completed', 'on_hold', 'cancelled')),
+    status TEXT NOT NULL DEFAULT 'planning' CHECK (status IN ('planning', 'active', 'completed', 'on_hold', 'cancelled')),
     budget NUMERIC(12, 2),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
