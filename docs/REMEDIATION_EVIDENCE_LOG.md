@@ -1085,3 +1085,15 @@ STATUS: tests committed but not yet observed passing in CI; check the workflow r
 ## CHANGE-053 — Functional test CI integration syntax repair (2026-09-26)
 
 Run https://github.com/Bonsinnoba/lab-inventory-app/actions/runs/36203211893: seven BOM/Requirements Node regression tests passed (0 failures); backend syntax passed; desktop build and Tauri frontend prerequisite failed with TS1128 at operations.ts:33 and :46. Root cause: CHANGE-052 extraction accidentally left an orphaned three-line `return {...row}` mapping after `enrichOutstandingRequirements(...)`. Commit c6c68b5771c533f166a3b2f210452293d936e540 removed those lines. Follow-up workflow run https://github.com/Bonsinnoba/lab-inventory-app/actions/runs/36237613761 was in progress when this note was written. No runtime SQLite/sync/UI behavior has been tested. Codex must still revisit Operations Overview/Requirements and project BOM with real offline fixtures.
+
+
+## CHANGE-054 — Planning project status foundation (2026-09-26)
+
+User-approved design: project leads and admins plan scope, BOM, Requirements, budgets and timelines before activation; project-lead reservation requests should be priority/date-aware, with admin review of conflicts. This change implements the status foundation ONLY, not reservation approvals or automatic stock locks.
+
+- Desktop Project type, project register labels, create-project modal (Planning default) and detail status editor support `planning`.
+- Tauri local project creation defaults to `planning` while existing project statuses remain unchanged.
+- Express project creation defaults to `planning`; update validation and offline sync project validation accept it.
+- PostgreSQL base schema defaults to Planning; tracked migration `backend/src/migrations/20260926_project_planning_status.sql` updates the existing CHECK constraint and default without rewriting existing rows. Run backend migrations before using Planning against an existing central database. A mistakenly created migration in `backend/migrations` was removed and installed in the actual `backend/src/migrations` runner directory.
+
+Verification pending GitHub Actions for latest commit. CI does not run PostgreSQL migrations against a real database, execute offline desktop integration, or prove that approval/reservation workflow exists. Next: model planning review state separately from status; enforce admin-only activation server-side and on sync, plus offline approval semantics; add proposed versus confirmed reservations with central conflict resolution and tests before enabling any inventory lock. Do not treat a Planning status dropdown as approval enforcement.
