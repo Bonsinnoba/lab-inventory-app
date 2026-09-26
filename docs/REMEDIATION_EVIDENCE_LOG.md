@@ -1070,3 +1070,13 @@ Follow-up: inspect fresh workflow run for 8f5fbdb; if desktop or Rust still fail
 ## CHANGE-051 — Tauri icon failure exposed by CI (2026-09-25)
 
 Run https://github.com/Bonsinnoba/lab-inventory-app/actions/runs/36197918635: desktop TypeScript/Vite PASS, backend syntax PASS, Tauri Rust FAIL (`tauri::generate_context!` could not read `desktop/src-tauri/icons/icon.png`; exit 101). The prior missing `../dist` error was resolved by building the frontend first. `build.rs` materializes `icon.ico` from `icons/icon.ico.b64`, but does not materialize `icon.png`; the Tauri macro requires PNG even though tauri.conf.json lists ICO. Commit 4e2f12bc58acb7f09f6360e36e393d58b6703fa3 adds a CI step to derive PNG from the existing embedded ICO with Pillow before `cargo check --locked`. This is a CI fixture, not a validated installer/package fix. Verify subsequent workflow result and separately audit real desktop build packaging/icon generation. Node 20 deprecation and Ubuntu runner notices are nonblocking warnings.
+
+
+## CHANGE-052 — First automated BOM and Requirements regression tests (2026-09-26)
+
+- 2f7348e3fac02c644b8b9489f219bc70da419f1b: extracted pure `findMissingBom` and `enrichOutstandingRequirements` into `desktop/src/api/operations-calculations.ts`. Invalid/negative BOM quantities are treated as missing rather than silently covered; saved requirement name/quantity retained when the linked local item is absent.
+- c8e6b92afa5f961549c97e08122fd0f3ddd164a0: local Operations overview now uses these shared pure functions.
+- 157be6422e0f3622071960a262bff733d5094778: seven Node built-in tests in `desktop/src/api/operations-calculations.test.mjs` for preferred stock, insufficient stock, alternatives, invalid/absent/partial stock, competing projects, requirement status and fallback enrichment.
+- b3a89302053ef9a7e83fb7f702506e2d949b75e7: desktop GitHub Actions job runs `node --experimental-strip-types --test src/api/operations-calculations.test.mjs` before `npm run build` on Node 22.
+
+STATUS: tests committed but not yet observed passing in CI; check the workflow run on this commit. Tests explicitly document existing *independent line* semantics: overlapping projects can each appear covered by the same stock. No reservation/allocation, SQLite/REST sync, UI deletion, permission or end-to-end desktop test is claimed. Codex must revisit Laboratory > Operations > Overview/Requirements and Project BOM, verify offline fixtures and cross-project demand, and report defects with logs and commits as previously requested in CHANGE-047/049.
