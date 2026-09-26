@@ -119,3 +119,16 @@ export async function removeTaskAttachment(id:string,taskId:string,attachmentId:
 export async function getExperimentAttachments(id:string,experimentId:string):Promise<any[]>{const local=await localInvoke<any[]>('get_local_project_attachments',{projectId:id,workId:experimentId,workType:'experiment'});if(local!==null)return local;const r=await apiFetch(`/projects/${id}/experiments/${experimentId}/attachments`);if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to fetch experiment attachments'));return r.json();}
 export async function attachExperimentResource(id:string,experimentId:string,resource_id:string):Promise<any>{const local=await localInvoke<any>('create_local_project_attachment',{projectId:id,workId:experimentId,workType:'experiment',resourceId:resource_id});if(local!==null)return local;const r=await apiFetch(`/projects/${id}/experiments/${experimentId}/attachments`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({resource_id})});if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to attach resource'));return r.json();}
 export async function removeExperimentAttachment(id:string,experimentId:string,attachmentId:string):Promise<void>{const local=await localInvoke<any>('delete_local_project_attachment',{projectId:id,attachmentId});if(local!==null)return;const r=await apiFetch(`/projects/${id}/experiments/${experimentId}/attachments/${attachmentId}`,{method:'DELETE'});if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to remove attachment'));}
+
+export interface ProjectReviewEvent {id:string;decision:'submit'|'request_changes'|'approve';note:string|null;created_at:string;actor:string;}
+export interface ProjectReview {project:Pick<Project,'id'|'status'|'priority'|'start_date'|'due_date'> & {review_status:'draft'|'submitted'|'changes_requested'|'approved'};events:ProjectReviewEvent[];}
+export async function getProjectReview(projectId:string):Promise<ProjectReview>{
+ const r=await apiFetch(`/projects/${projectId}/review`);
+ if(!r.ok)throw new Error(await getApiErrorMessage(r,'Unable to load project review'));
+ return r.json();
+}
+export async function decideProjectReview(projectId:string,decision:'submit'|'request_changes'|'approve',note:string):Promise<Project>{
+ const r=await apiFetch(`/projects/${projectId}/review`,{method:'POST',body:JSON.stringify({decision,note})});
+ if(!r.ok)throw new Error(await getApiErrorMessage(r,'Unable to submit project review'));
+ return r.json();
+}
