@@ -1173,3 +1173,8 @@ RISKS / TESTS: GitHub Actions must be checked after the final documentation comm
 - Desktop sends a generated UUID with the selected quantity and keeps it stable for retries within the same confirmation dialog. Changing the quantity generates a new request ID.
 
 LIMITS: The desktop UUID is held in component state, not durable across application restarts; automatic retry after restart requires persisting pending request metadata. The API's idempotency applies to an identical reservation/request ID/quantity only. No real PostgreSQL concurrent test yet. The migration must run before deployment. Equipment checkout and return are still separate pending work. GitHub Actions result for CHANGE-062 must be checked after final commit.
+
+
+## CHANGE-063 — LabOS Context Foundation (2026-09-26)
+
+Implemented first vertical slice directly on main: authenticated, permission-scoped, read-only `GET /api/context/projects/:id` backed by shared `assembleProjectContext` service; bounded experiments, tasks, inventory, reservations, notes and resource metadata; central snapshot timestamp, provenance and access level. Added typed desktop API, project context panel and existing Gemini assistant `get_project_context` tool using same service. No new write tools, embeddings, long-term memory or graph database. Offline panel explicitly reports central context unavailable instead of presenting an outdated live snapshot. See `docs/CODEX_CONTEXT_FOUNDATION_REVIEW.md` for Codex's independent audit, defect remediation, test mandate and architecture roadmap. CI after final documentation commit must be verified. No real PostgreSQL runtime or security tests have been executed by this implementation; schema drift and ACL coverage require Codex review.
