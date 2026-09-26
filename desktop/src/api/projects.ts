@@ -13,7 +13,7 @@ export interface ProjectFinancialSummary {
 
 export interface Project {
   id: string; name: string;
-  status: 'active' | 'completed' | 'on_hold' | 'cancelled';
+  status: 'planning' | 'active' | 'completed' | 'on_hold' | 'cancelled';
   budget?: string | number; total_spent?: string | number;
   description?: string; priority?: 'low'|'normal'|'high'|'critical';
   start_date?: string | null; due_date?: string | null; owner_id?: string | null;
