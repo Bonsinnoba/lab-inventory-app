@@ -9,6 +9,23 @@ router.get('/', hasPermission('projects.view'), async (req, res) => { try { cons
 router.get('/financial-summary', hasPermission('projects.view'), hasPermission('finance.view'), async (req,res)=>{ try{const values=[];const visibility=req.user.role==='admin'?'':`WHERE pfs.project_id IN (SELECT p.id FROM projects p WHERE p.owner_id=$1 OR EXISTS (SELECT 1 FROM project_members visible_pm WHERE visible_pm.project_id=p.id AND visible_pm.user_id=$1))`;if(req.user.role!=='admin')values.push(req.user.userId);const result=await pool.query(`SELECT pfs.*,CASE WHEN pfs.budget IS NULL THEN NULL ELSE (pfs.budget-pfs.actual_expense)::float END AS budget_remaining,CASE WHEN pfs.budget IS NULL OR pfs.budget=0 THEN NULL ELSE ROUND((pfs.actual_expense/pfs.budget*100)::numeric,1)::float END AS budget_used_percent FROM project_financial_summary pfs ${visibility} ORDER BY pfs.actual_expense DESC,pfs.name`,values);res.json(result.rows);}catch(err){console.error(err);res.status(500).json({error:'Failed to fetch project financial summary'});} });
 // Planning review decisions are online-only and serialized per project.
 // Central reservation ledger: proposed demand never reduces availability.
+router.get('/reservations/review-queue',hasPermission('projects.view'),async(req,res)=>{
+ if(req.user.role!=='admin')return res.status(403).json({error:'Admin access required'});
+ try{
+  const result=await pool.query(`SELECT r.*,p.name AS project_name,p.status AS project_status,p.priority AS project_priority,
+   p.start_date AS project_start_date,p.due_date AS project_due_date,i.name AS item_name,i.type AS item_type,
+   i.current_quantity,
+   (SELECT COALESCE(SUM(c.quantity),0)::numeric FROM project_reservations c
+     WHERE c.item_id=r.item_id AND c.status='confirmed'
+       AND (i.type NOT IN ('equipment','instrument','tool') OR
+         ((c.needed_until IS NULL OR c.needed_until>r.needed_from)
+          AND (r.needed_until IS NULL OR c.needed_from<r.needed_until)))) AS overlapping_confirmed
+   FROM project_reservations r JOIN projects p ON p.id=r.project_id JOIN items i ON i.id=r.item_id
+   WHERE r.status='pending_review'
+   ORDER BY r.created_at ASC LIMIT 200`);
+  res.json(result.rows);
+ }catch(err){console.error(err);res.status(500).json({error:'Unable to load reservation review queue'});}
+});
 router.get('/:id/reservations',hasPermission('projects.view'),async(req,res)=>{
  try{
   const access=await getProjectAccess(req.params.id,req.user);
