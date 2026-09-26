@@ -133,7 +133,7 @@ export async function decideProjectReview(projectId:string,decision:'submit'|'re
  return r.json();
 }
 
-export interface ProjectReservation {id:string;project_id:string;item_id:string;item_name:string;quantity:number|string;needed_from:string;needed_until:string|null;status:'pending_review'|'confirmed'|'rejected'|'released'|'proposed'|'fulfilled';note:string|null;review_note:string|null;project_priority:string;project_start_date:string|null;project_due_date:string|null;created_at:string;}
+export interface ProjectReservation {id:string;project_id:string;item_id:string;item_name:string;quantity:number|string;original_quantity?:number|string;fulfilled_quantity?:number|string;needed_from:string;needed_until:string|null;status:'pending_review'|'confirmed'|'rejected'|'released'|'proposed'|'fulfilled';note:string|null;review_note:string|null;project_priority:string;project_start_date:string|null;project_due_date:string|null;created_at:string;}
 export async function getProjectReservations(projectId:string):Promise<ProjectReservation[]>{
  const r=await apiFetch(`/projects/${projectId}/reservations`);
  if(!r.ok)throw new Error(await getApiErrorMessage(r,'Unable to load reservations'));
@@ -157,7 +157,7 @@ export async function getReservationReviewQueue():Promise<ReservationReviewQueue
  return r.json();
 }
 
-export async function fulfillProjectReservation(projectId:string,reservationId:string):Promise<{reservation:ProjectReservation;movement:{id:string;quantity:number|string};already_fulfilled?:boolean}>{
+export async function fulfillProjectReservation(projectId:string,reservationId:string,quantity:number):Promise<{reservation:ProjectReservation;movement:{id:string;quantity:number|string};already_fulfilled?:boolean}>{
  const r=await apiFetch(`/projects/${projectId}/reservations/${reservationId}/fulfill`,{method:'POST'});
  if(!r.ok)throw new Error(await getApiErrorMessage(r,'Unable to fulfill reservation'));
  return r.json();
