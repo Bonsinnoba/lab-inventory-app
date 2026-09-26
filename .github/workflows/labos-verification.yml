@@ -25,6 +25,8 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
       - run: npm ci
+      - name: BOM and Requirements regression tests
+        run: node --experimental-strip-types --test src/api/operations-calculations.test.mjs
       - run: npm run build
 
   backend:
