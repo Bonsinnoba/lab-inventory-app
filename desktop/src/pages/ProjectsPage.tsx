@@ -5,6 +5,7 @@ import { Plus, RefreshCw, FolderKanban, ArrowRight } from 'lucide-react';
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import AddProjectModal from '../components/AddProjectModal';
+import ReservationReviewQueue from '../components/ReservationReviewQueue';
 
 const statusColors = { planning: 'var(--color-status-warn)', active: 'var(--color-status-ok)', completed: 'var(--color-accent)', on_hold: 'var(--color-status-warn)', cancelled: 'var(--color-status-danger)' };
 const statusLabels = { planning: 'Planning', active: 'Active', completed: 'Completed', on_hold: 'On Hold', cancelled: 'Cancelled' } as const;
@@ -22,6 +23,7 @@ export default function ProjectsPage() {
       <div className="flex items-center gap-2 shrink-0"><button type="button" onClick={() => refetch()} disabled={isFetching} aria-label="Refresh projects" title="Refresh projects" className="ui-button ui-button-sm px-2.5 disabled:opacity-50"><RefreshCw size={15} className={isFetching ? 'animate-spin' : ''} /></button><button type="button" onClick={() => setShowAddModal(true)} className="ui-button ui-button-primary ui-button-sm"><Plus size={16} /> Add Project</button></div>
     </header>
 
+    <ReservationReviewQueue/>
     <section className="bg-surface border border-border rounded-md overflow-hidden shadow-sm" aria-label="Projects list">
       <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-border bg-surface-raised/60"><div className="flex items-center gap-2 min-w-0"><FolderKanban size={15} className="text-accent shrink-0" /><span className="text-xs font-semibold uppercase tracking-wider text-text-secondary">Project register</span></div>{!isLoading && !error && projects.length > 0 && <span className="hidden sm:inline text-[10px] font-mono text-text-secondary">SELECT A ROW TO OPEN</span>}</div>
       <div className="overflow-x-auto"><table className="w-full min-w-[720px]"><thead className="bg-surface-raised border-b border-border"><tr><th scope="col" className="text-left px-4 py-3 text-text-secondary text-[11px] uppercase tracking-wider font-semibold">Project</th><th scope="col" className="text-left px-4 py-3 text-text-secondary text-[11px] uppercase tracking-wider font-semibold">Status</th><th scope="col" className="text-left px-4 py-3 text-text-secondary text-[11px] uppercase tracking-wider font-semibold">Priority</th><th scope="col" className="text-left px-4 py-3 text-text-secondary text-[11px] uppercase tracking-wider font-semibold">Due</th><th scope="col" className="text-right px-4 py-3 text-text-secondary text-[11px] uppercase tracking-wider font-semibold font-mono">Remaining</th><th scope="col" className="w-10 px-3 py-3" aria-label="Open" /></tr></thead>
