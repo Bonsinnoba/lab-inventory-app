@@ -88,6 +88,8 @@ router.post('/:id/reservations/:reservationId/decision',hasPermission('projects.
 router.post('/:id/reservations/:reservationId/fulfill',hasPermission('inventory.adjust_stock'),async(req,res)=>{
  const access=await getProjectAccess(req.params.id,req.user);
  if(access.access==='none'||access.access==='view')return res.status(403).json({error:'Project editor access required'});
+ const requestId=req.body?.request_id;
+ if(typeof requestId!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestId))return res.status(400).json({error:'A valid UUID request_id is required for safe retries'});
  const requested=Number(req.body?.quantity);
  if(!Number.isFinite(requested)||requested<=0||Math.round(requested*1000)!==requested*1000)return res.status(400).json({error:'Specify a positive quantity with at most three decimal places'});
  const client=await pool.connect();
@@ -96,6 +98,13 @@ router.post('/:id/reservations/:reservationId/fulfill',hasPermission('inventory.
   const found=await client.query('SELECT * FROM project_reservations WHERE id=$1 AND project_id=$2 FOR UPDATE',[req.params.reservationId,req.params.id]);
   if(!found.rowCount){await client.query('ROLLBACK');return res.status(404).json({error:'Reservation not found'});}
   const reservation=found.rows[0];
+  const previous=await client.query(`SELECT f.*,m.quantity AS movement_quantity FROM project_reservation_fulfillments f
+    JOIN item_movements m ON m.id=f.movement_id WHERE f.reservation_id=$1 AND f.request_id=$2`,[reservation.id,requestId]);
+  if(previous.rowCount){
+   if(Number(previous.rows[0].quantity)!==requested){await client.query('ROLLBACK');return res.status(409).json({error:'Idempotency key already used for a different quantity'});}
+   const movement=await client.query('SELECT * FROM item_movements WHERE id=$1',[previous.rows[0].movement_id]);
+   await client.query('COMMIT');return res.json({reservation,movement:movement.rows[0],already_fulfilled:true});
+  }
   if(reservation.status!=='confirmed'){await client.query('ROLLBACK');return res.status(409).json({error:'Only confirmed reservations with remaining quantity can be fulfilled'});}
   if(requested>Number(reservation.quantity)){await client.query('ROLLBACK');return res.status(409).json({error:'Requested quantity exceeds remaining reservation'});}
   const stock=await client.query('SELECT * FROM items WHERE id=$1 FOR UPDATE',[reservation.item_id]);
@@ -115,7 +124,7 @@ router.post('/:id/reservations/:reservationId/fulfill',hasPermission('inventory.
     fulfilled_at=CASE WHEN $1::numeric=0 THEN now() ELSE fulfilled_at END,
     fulfilled_by=$3,fulfillment_movement_id=$4,updated_at=now()
     WHERE id=$5 RETURNING *`,[remaining,requested,req.user.userId,movement.rows[0].id,reservation.id]);
-  await client.query('INSERT INTO project_reservation_fulfillments(reservation_id,movement_id,quantity,performed_by) VALUES($1,$2,$3,$4)',[reservation.id,movement.rows[0].id,requested,req.user.userId]);
+  await client.query('INSERT INTO project_reservation_fulfillments(reservation_id,movement_id,quantity,performed_by,request_id) VALUES($1,$2,$3,$4,$5)',[reservation.id,movement.rows[0].id,requested,req.user.userId,requestId]);
   await client.query('COMMIT');
   try{await writeAuditLog({req,action:'UPDATE',entityType:'project_reservation',entityId:reservation.id,newValue:{fulfilled_quantity:requested,remaining_quantity:remaining,movement_id:movement.rows[0].id}});}catch(auditError){console.error('Reservation audit failure:',auditError);}
   res.json({reservation:updated.rows[0],movement:movement.rows[0]});
