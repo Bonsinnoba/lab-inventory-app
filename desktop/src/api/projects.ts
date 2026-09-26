@@ -132,3 +132,20 @@ export async function decideProjectReview(projectId:string,decision:'submit'|'re
  if(!r.ok)throw new Error(await getApiErrorMessage(r,'Unable to submit project review'));
  return r.json();
 }
+
+export interface ProjectReservation {id:string;project_id:string;item_id:string;item_name:string;quantity:number|string;needed_from:string;needed_until:string|null;status:'pending_review'|'confirmed'|'rejected'|'released'|'proposed';note:string|null;review_note:string|null;project_priority:string;project_start_date:string|null;project_due_date:string|null;created_at:string;}
+export async function getProjectReservations(projectId:string):Promise<ProjectReservation[]>{
+ const r=await apiFetch(`/projects/${projectId}/reservations`);
+ if(!r.ok)throw new Error(await getApiErrorMessage(r,'Unable to load reservations'));
+ return r.json();
+}
+export async function requestProjectReservation(projectId:string,input:{item_id:string;quantity:number;needed_from:string;needed_until?:string;note?:string}):Promise<ProjectReservation>{
+ const r=await apiFetch(`/projects/${projectId}/reservations`,{method:'POST',body:JSON.stringify(input)});
+ if(!r.ok)throw new Error(await getApiErrorMessage(r,'Unable to request reservation'));
+ return r.json();
+}
+export async function decideProjectReservation(projectId:string,reservationId:string,decision:'confirm'|'reject'|'release',review_note:string):Promise<ProjectReservation>{
+ const r=await apiFetch(`/projects/${projectId}/reservations/${reservationId}/decision`,{method:'POST',body:JSON.stringify({decision,review_note})});
+ if(!r.ok)throw new Error(await getApiErrorMessage(r,'Unable to decide reservation'));
+ return r.json();
+}
