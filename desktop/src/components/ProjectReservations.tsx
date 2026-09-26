@@ -8,7 +8,7 @@ export default function ProjectReservations({project,canEdit}:{project:Project;c
  const qc=useQueryClient(),isAdmin=getStoredUser()?.role==='admin';
  const [itemId,setItemId]=useState(''),[quantity,setQuantity]=useState('1'),[from,setFrom]=useState(''),[until,setUntil]=useState(''),[note,setNote]=useState(''),[error,setError]=useState('');
  const reservations=useQuery({queryKey:['project-reservations',project.id],queryFn:()=>getProjectReservations(project.id)});
- const items=useQuery({queryKey:['items'],queryFn:getItems});
+ const items=useQuery({queryKey:['items'],queryFn:()=>getItems()});
  const request=useMutation({mutationFn:()=>requestProjectReservation(project.id,{item_id:itemId,quantity:Number(quantity),needed_from:new Date(from).toISOString(),needed_until:until?new Date(until).toISOString():undefined,note}),onSuccess:()=>{setError('');setNote('');qc.invalidateQueries({queryKey:['project-reservations',project.id]});},onError:(e:Error)=>setError(e.message)});
  const decide=useMutation({mutationFn:({id,decision}:{id:string;decision:'confirm'|'reject'|'release'})=>decideProjectReservation(project.id,id,decision,note),onSuccess:()=>{setError('');setNote('');qc.invalidateQueries({queryKey:['project-reservations',project.id]});},onError:(e:Error)=>setError(e.message)});
  if(!['planning','active'].includes(project.status))return null;
