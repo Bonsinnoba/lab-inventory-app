@@ -149,3 +149,10 @@ export async function decideProjectReservation(projectId:string,reservationId:st
  if(!r.ok)throw new Error(await getApiErrorMessage(r,'Unable to decide reservation'));
  return r.json();
 }
+
+export interface ReservationReviewQueueItem extends ProjectReservation {project_name:string;project_status:string;item_type:string;current_quantity:number|string;overlapping_confirmed:number|string;}
+export async function getReservationReviewQueue():Promise<ReservationReviewQueueItem[]>{
+ const r=await apiFetch('/projects/reservations/review-queue');
+ if(!r.ok)throw new Error(await getApiErrorMessage(r,'Unable to load reservation review queue'));
+ return r.json();
+}
