@@ -1,3 +1,4 @@
+import {projectContextEdges} from '../context-relationships.js';
 import {Router} from 'express';
 import {pool} from '../db.js';
 import {getProjectAccess} from '../middleware/project-access.js';
@@ -25,9 +26,10 @@ export async function assembleProjectContext(projectId,user,db=pool,accessResolv
  const fetched={experiments:experiments.rows,tasks:tasks.rows,inventory:inventory.rows,reservations:reservations.rows,notes:notes.rows,resources:resources.rows};
  const truncated=Object.fromEntries(Object.entries(fetched).map(([key,rows])=>[key,rows.length>limits[key]]));
  const sections=Object.fromEntries(Object.entries(fetched).map(([key,rows])=>[key,rows.slice(0,limits[key])]));
- return {schema_version:1,scope:{type:'project',id:projectId},generated_at:new Date().toISOString(),freshness:'central_live',access:access.access,
+ const base={schema_version:2,scope:{type:'project',id:projectId},generated_at:new Date().toISOString(),freshness:'central_live',access:access.access,
   project:project.rows[0],sections,
   provenance:{authority:'central_postgresql',source:'labos_project_context',consistency:'multi_query_non_atomic',limits,truncated}};
+ return {...base,relationships:projectContextEdges(base)};
 
 }
 router.get('/projects/:id',hasPermission('projects.view'),async(req,res)=>{
