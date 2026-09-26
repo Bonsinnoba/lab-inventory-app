@@ -85,6 +85,8 @@ router.post('/:id/reservations/:reservationId/decision',hasPermission('projects.
 });
 // Fulfillment consumes a confirmed non-returnable reservation and physical stock together.
 router.post('/:id/reservations/:reservationId/fulfill',hasPermission('inventory.adjust_stock'),async(req,res)=>{
+ const access=await getProjectAccess(req.params.id,req.user);
+ if(access.access==='none'||access.access==='view')return res.status(403).json({error:'Project editor access required to fulfill its reservation'});
  const client=await pool.connect();
  try{
   await client.query('BEGIN');
