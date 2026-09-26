@@ -162,6 +162,8 @@ async function applyProjectEntity(client,change,user){
   if(entityType!=='project'&&!(await canEditProject(client,projectId,user)))fail(403,'PROJECT_ACCESS_DENIED','You do not have edit access to this project');
   if(entityType==='project'&&change.operation!=='create'&&!(await canEditProject(client,entityId,user)))fail(403,'PROJECT_ACCESS_DENIED','You do not have edit access to this project');
   validateProjectRecord(entityType,record);
+  if(entityType==='project'&&change.operation==='create'&&user?.role!=='admin'&&record.status&&record.status!=='planning')fail(403,'PROJECT_ACTIVATION_REQUIRES_ADMIN','New projects must begin in Planning');
+  if(entityType==='project'&&change.operation==='update'&&record.status==='active'&&existing?.status!=='active'&&user?.role!=='admin')fail(403,'PROJECT_ACTIVATION_REQUIRES_ADMIN','Only admins can activate projects');
   if(change.operation==='create'){
     if(existing)return existing;
     if(entityType!=='project'&&!projectId)fail(400,'INVALID_PROJECT_REFERENCE','project_id is required');
