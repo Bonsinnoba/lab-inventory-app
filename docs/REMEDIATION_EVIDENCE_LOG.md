@@ -1164,3 +1164,12 @@ LIMITATIONS: This supports FULL-quantity fulfillment of non-returnable reservati
 - Updated desktop API to send the selected quantity and project reservation UI to offer partial/full fulfillment with in-app confirmation and remaining/fulfilled display. Corrected a discovered API omission in follow-up commit 8309c7f9122dd0d85fd34de582c77eef8c1f8cd0: the POST now actually includes `{quantity}` JSON.
 
 RISKS / TESTS: GitHub Actions must be checked after the final documentation commit. No real PostgreSQL concurrency/integration tests yet. Retried partial POST requests are NOT idempotent after a successful partial fulfillment if the client loses the response; clients must not blindly retry. Next step: idempotency keys and database uniqueness for each fulfillment request, then equipment checkout/return. Existing `fulfillment_movement_id` now holds the most recent movement; full history is in `project_reservation_fulfillments`. Audit helper runs after commit, not atomically. Pending inventory sync and other stock writers need integration coverage.
+
+
+## CHANGE-062 — Idempotent partial fulfillment (2026-09-26)
+
+- CHANGE-061 run 36261814298 passed all CI jobs. Added tracked `20260926_fulfillment_idempotency.sql` migration: nullable UUID request_id with unique (reservation_id,request_id) index on fulfillment ledger; historical rows remain valid.
+- Partial fulfillment POST now requires request_id UUID. It locks the reservation, looks up an existing matching request before checking status/remaining quantity, returns the original movement without further stock changes for identical retries, and rejects reuse of a key with a different quantity (409). Each successful fulfillment writes its request ID into the same transaction as the stock movement and reservation update. A unique index backs up the row-lock serialization.
+- Desktop sends a generated UUID with the selected quantity and keeps it stable for retries within the same confirmation dialog. Changing the quantity generates a new request ID.
+
+LIMITS: The desktop UUID is held in component state, not durable across application restarts; automatic retry after restart requires persisting pending request metadata. The API's idempotency applies to an identical reservation/request ID/quantity only. No real PostgreSQL concurrent test yet. The migration must run before deployment. Equipment checkout and return are still separate pending work. GitHub Actions result for CHANGE-062 must be checked after final commit.
