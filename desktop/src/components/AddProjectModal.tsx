@@ -67,10 +67,8 @@ export default function AddProjectModal({ onClose }: AddProjectModalProps) {
               className="w-full px-3 py-2 bg-bg border border-border rounded-sm text-text-primary focus:outline-none focus:border-accent"
               required
             >
-              <option value="planning">Planning</option><option value="active">Active</option>
-              <option value="completed">Completed</option>
-              <option value="on_hold">On Hold</option>
-              <option value="cancelled">Cancelled</option>
+              <option value="planning">Planning</option>
+
             </select>
           </div>
 
