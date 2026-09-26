@@ -1,3 +1,4 @@
+import { assertReservationStockFloor } from '../reservation-stock.js';
 import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import { pool } from '../db.js';
@@ -81,11 +82,12 @@ router.post('/:id/movements', hasPermission('inventory.adjust_stock'), async (re
     const item = itemResult.rows[0]; const incoming = new Set(['receive','return','repair_in']); const outgoing = new Set(['checkout','consume','damage','loss','repair_out']); let next = Number(item.current_quantity);
     if (incoming.has(movement_type)) next += qty; else if (outgoing.has(movement_type)) next -= qty; else if (movement_type === 'adjust') next = qty;
     if (next < 0) { await client.query('ROLLBACK'); return res.status(400).json({ error: { code: 'INSUFFICIENT_STOCK', message: 'Movement would make stock negative' } }); }
+    await assertReservationStockFloor(client,req.params.id,next);
     const nextStorageLocation = movement_type === 'transfer' ? (destination || (to_location_id ? null : item.storage_location)) : item.storage_location;
     const movement = await client.query(`INSERT INTO item_movements (item_id,movement_type,quantity,from_location_id,to_location_id,from_storage_location,to_storage_location,project_id,reason,reference,performed_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`, [req.params.id,movement_type,qty,null,to_location_id,item.storage_location,nextStorageLocation,project_id,reason,reference,req.user?.userId || null]);
     const updated = await client.query('UPDATE items SET current_quantity=$1,storage_location=$2 WHERE id=$3 RETURNING *', [next,nextStorageLocation,req.params.id]);
     await client.query('COMMIT'); await writeAuditLog({ req, action: 'CREATE', entityType: 'item_movement', entityId: movement.rows[0].id, newValue: movement.rows[0] }); res.status(201).json({ movement: movement.rows[0], item: updated.rows[0] });
-  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ error: { code: 'MOVEMENT_FAILED', message: err.message || 'Failed to record movement' } }); } finally { client.release(); }
+  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(err.status||500).json({ error: { code: err.code||'MOVEMENT_FAILED', message: err.message || 'Failed to record movement', ...(err.details||{}) } }); } finally { client.release(); }
 });
 
 export default router;
