@@ -85,7 +85,7 @@ pub fn create_local_project(app: AppHandle, mut project: Value) -> Result<Value,
         return Err("name is required".into());
     }
     project["id"] = json!(project_id);
-    project["status"] = project.get("status").cloned().unwrap_or(json!("active"));
+    project["status"] = project.get("status").cloned().unwrap_or(json!("planning"));
     project["priority"] = project.get("priority").cloned().unwrap_or(json!("normal"));
     project["description"] = project.get("description").cloned().unwrap_or(json!(""));
     project["owner_id"] = Value::Null;
