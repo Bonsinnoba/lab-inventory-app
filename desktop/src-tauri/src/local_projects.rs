@@ -84,6 +84,7 @@ pub fn create_local_project(app: AppHandle, mut project: Value) -> Result<Value,
     if project.get("name").and_then(Value::as_str).map(|s| s.trim().is_empty()).unwrap_or(true) {
         return Err("name is required".into());
     }
+    if project.get("status").and_then(Value::as_str).unwrap_or("planning") != "planning" { return Err("New offline projects must begin in Planning; activation requires online admin approval".into()); }
     project["id"] = json!(project_id);
     project["status"] = project.get("status").cloned().unwrap_or(json!("planning"));
     project["priority"] = project.get("priority").cloned().unwrap_or(json!("normal"));
@@ -110,6 +111,7 @@ pub fn update_local_project(app: AppHandle, project_id: String, patch: Value) ->
     let mut c = conn(&app)?; let mut projects = load(&c)?;
     let p = projects.iter_mut().find(|p| p.get("id").and_then(Value::as_str) == Some(project_id.as_str())).ok_or("Project not found")?;
     let old = p.clone();
+    if patch.get("status").and_then(Value::as_str) == Some("active") && old.get("status").and_then(Value::as_str) != Some("active") { return Err("Activation requires online admin approval. Sync your planning changes and ask an admin to activate this project.".into()); }
     if let Some(obj) = patch.as_object() {
         for (k,v) in obj { if !matches!(k.as_str(), "id"|"created_at"|"tasks"|"experiments"|"items"|"bom") { p[k] = v.clone(); } }
     }
