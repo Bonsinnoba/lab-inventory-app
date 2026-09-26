@@ -54,7 +54,8 @@ router.post('/:id/reservations/:reservationId/decision',hasPermission('projects.
    const stock=await client.query('SELECT id,current_quantity,type,status FROM items WHERE id=$1 FOR UPDATE',[reservation.item_id]);
    if(!stock.rowCount||!['available','low_stock'].includes(stock.rows[0].status)){await client.query('ROLLBACK');return res.status(409).json({error:'Item unavailable for reservation'});}
    const allocated=await client.query(`SELECT COALESCE(SUM(quantity),0)::numeric AS total FROM project_reservations
-     WHERE item_id=$1 AND status='confirmed' AND id<>$2 AND (needed_until IS NULL OR needed_until>$3) AND ($4::timestamptz IS NULL OR needed_from<$4)`,[reservation.item_id,reservation.id,reservation.needed_from,reservation.needed_until]);
+     WHERE item_id=$1 AND status='confirmed' AND id<>$2
+       AND (CASE WHEN $5::boolean THEN true ELSE (needed_until IS NULL OR needed_until>$3) AND ($4::timestamptz IS NULL OR needed_from<$4) END)`,[reservation.item_id,reservation.id,reservation.needed_from,reservation.needed_until,!['equipment','instrument','tool'].includes(stock.rows[0].type)]);
    const available=Number(stock.rows[0].current_quantity)-Number(allocated.rows[0].total);
    if(available<Number(reservation.quantity)){await client.query('ROLLBACK');return res.status(409).json({error:{code:'RESERVATION_CONFLICT',message:'Insufficient unreserved stock during requested period',available,requested:Number(reservation.quantity)}});}
   }
