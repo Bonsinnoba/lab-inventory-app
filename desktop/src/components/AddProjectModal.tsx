@@ -12,7 +12,7 @@ export default function AddProjectModal({ onClose }: AddProjectModalProps) {
   const { showToast } = useToast();
   const [formData, setFormData] = useState({
     name: '',
-    status: 'active' as Project['status'],
+    status: 'planning' as Project['status'],
     budget: '',
     description: '',
     priority: 'normal' as Project['priority'],
@@ -67,7 +67,7 @@ export default function AddProjectModal({ onClose }: AddProjectModalProps) {
               className="w-full px-3 py-2 bg-bg border border-border rounded-sm text-text-primary focus:outline-none focus:border-accent"
               required
             >
-              <option value="active">Active</option>
+              <option value="planning">Planning</option><option value="active">Active</option>
               <option value="completed">Completed</option>
               <option value="on_hold">On Hold</option>
               <option value="cancelled">Cancelled</option>
