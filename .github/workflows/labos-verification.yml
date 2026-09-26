@@ -45,7 +45,7 @@ jobs:
       - run: npm ci
       - run: npm run check
       - name: Reserved-stock and context regression tests
-        run: node --test src/reservation-stock.test.js src/routes/context.test.js
+        run: node --test src/reservation-stock.test.js src/routes/context.test.js src/context-relationships.test.js
 
   rust:
     name: Tauri Rust check
