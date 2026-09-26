@@ -6,6 +6,7 @@ import { getStoredUser } from '../api/auth';
 
 export default function ProjectReservations({project,canEdit}:{project:Project;canEdit:boolean}){
  const qc=useQueryClient(),isAdmin=getStoredUser()?.role==='admin';
+ const [fulfillTarget,setFulfillTarget]=useState<string|null>(null);
  const [itemId,setItemId]=useState(''),[quantity,setQuantity]=useState('1'),[from,setFrom]=useState(''),[until,setUntil]=useState(''),[note,setNote]=useState(''),[error,setError]=useState('');
  const reservations=useQuery({queryKey:['project-reservations',project.id],queryFn:()=>getProjectReservations(project.id)});
  const items=useQuery({queryKey:['items'],queryFn:()=>getItems()});
@@ -24,6 +25,7 @@ export default function ProjectReservations({project,canEdit}:{project:Project;c
    <label className="text-xs md:col-span-2">Request note / admin decision reason<textarea value={note} onChange={e=>setNote(e.target.value)} rows={2} maxLength={2000} className="block w-full bg-bg border border-border p-2 rounded-sm mt-1"/></label>
    <button type="button" className="ui-button ui-button-primary ui-button-sm" disabled={!itemId||!from||!(Number(quantity)>0)||request.isPending||!!(until&&Date.parse(until)<=Date.parse(from))} onClick={()=>request.mutate()}>Request reservation</button>
   </div>}
+  {fulfillTarget&&<div role="alertdialog" aria-modal="true" aria-label="Confirm reservation fulfillment" className="border border-status-warning rounded-sm p-3 mt-3"><p className="text-sm">Consume the entire confirmed quantity and permanently record the stock movement? This action cannot be undone.</p><div className="flex gap-2 mt-2"><button type="button" className="ui-button ui-button-primary ui-button-sm" disabled={fulfill.isPending} onClick={()=>fulfill.mutate(fulfillTarget,{onSuccess:()=>setFulfillTarget(null)})}>Confirm consumption</button><button type="button" className="ui-button ui-button-sm" onClick={()=>setFulfillTarget(null)}>Cancel</button></div></div>}
   {error&&<p role="alert" className="text-status-danger text-xs mt-2">{error}</p>}
   {reservations.isError&&<p role="alert" className="text-status-warning text-xs mt-2">Central reservation service unavailable. Reconnect to view or request reservations.</p>}
   <ul className="mt-3 space-y-2">{reservations.data?.map(r=><li key={r.id} className="border border-border rounded-sm p-3 text-sm">
@@ -31,7 +33,7 @@ export default function ProjectReservations({project,canEdit}:{project:Project;c
    <p className="text-xs text-text-secondary mt-1">{new Date(r.needed_from).toLocaleString()} – {r.needed_until?new Date(r.needed_until).toLocaleString():'Until released'} · Project priority: {r.project_priority} · Due: {r.project_due_date?new Date(r.project_due_date).toLocaleDateString():'Not set'}</p>
    {r.note&&<p className="text-xs mt-1">Request: {r.note}</p>}{r.review_note&&<p className="text-xs mt-1">Decision: {r.review_note}</p>}
    {isAdmin&&r.status==='pending_review'&&<div className="flex gap-2 mt-2"><button type="button" disabled={decide.isPending} className="ui-button ui-button-primary ui-button-sm" onClick={()=>decide.mutate({id:r.id,decision:'confirm'})}>Confirm</button><button type="button" disabled={decide.isPending||!note.trim()} className="ui-button ui-button-sm" onClick={()=>decide.mutate({id:r.id,decision:'reject'})}>Reject (reason required)</button></div>}
-   {isAdmin&&r.status==='confirmed'&&<button type="button" disabled={fulfill.isPending} className="ui-button ui-button-primary ui-button-sm mt-2 mr-2" onClick={()=>{if(window.confirm('Consume the full reserved quantity and record the physical stock movement? This cannot be undone.'))fulfill.mutate(r.id);}}>Fulfill consumables</button>}
+   {isAdmin&&r.status==='confirmed'&&<button type="button" disabled={fulfill.isPending} className="ui-button ui-button-primary ui-button-sm mt-2 mr-2" onClick={()=>setFulfillTarget(r.id)}>Fulfill consumables</button>}
    {isAdmin&&r.status==='confirmed'&&<button type="button" disabled={decide.isPending} className="ui-button ui-button-sm mt-2" onClick={()=>decide.mutate({id:r.id,decision:'release'})}>Release</button>}
   </li>)}</ul>
  </section>;
