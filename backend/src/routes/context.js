@@ -8,8 +8,8 @@ const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Context is an explicitly bounded, permission-checked snapshot, not an authorization token.
 // Every section is independently sourced; no AI-generated values are stored here.
-export async function assembleProjectContext(projectId,user,db=pool){
- const access=await getProjectAccess(projectId,user);
+export async function assembleProjectContext(projectId,user,db=pool,accessResolver=getProjectAccess){
+ const access=await accessResolver(projectId,user);
  if(access.access==='none')return null;
  const project=await db.query('SELECT id,name,status,description,priority,start_date,due_date,updated_at FROM projects WHERE id=$1',[projectId]);
  if(!project.rowCount)return null;
