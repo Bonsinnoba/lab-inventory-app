@@ -28,9 +28,6 @@ async function localOverview():Promise<OperationsOverview>{
   const calibration_due = items.filter(item => item.next_calibration_date && new Date(item.next_calibration_date) <= due);
   const equipment = items.filter(item => ['equipment','instrument','tool'].includes(item.type));
   const enrichedRequirements = enrichOutstandingRequirements(requirements,items);
-  return {...row, preferred_item_name:match?.name ?? row.preferred_item_name ?? null,
-      preferred_quantity:match?.current_quantity ?? null};
-  });
   return {
     summary: {
       total_items:items.length,
