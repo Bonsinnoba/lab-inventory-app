@@ -5,6 +5,7 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import ProjectCanvas from '../components/ProjectCanvas';
 import ProjectBomPanel from '../components/ProjectBomPanel';
 import ProjectPlanningReview from '../components/ProjectPlanningReview';
+import ProjectReservations from '../components/ProjectReservations';
 import { SkeletonCard } from '../components/Skeleton';
 import Tabs from '../components/Tabs';
 import { getItems, Item } from '../api/items';
@@ -53,7 +54,7 @@ export default function ProjectDetailPage() {
       {!isCanvas&&<div className="hidden lg:flex items-center gap-5 text-right"><div><div className="text-[10px] text-text-secondary uppercase">Tasks</div><div className="font-mono text-sm">{workspace.data?.tasks?.filter((t:any)=>t.status==='done').length||0}/{workspace.data?.tasks?.length||0}</div></div><div><div className="text-[10px] text-text-secondary uppercase">Spent</div><div className="font-mono text-sm">${spent.toFixed(2)}</div></div><div><div className="text-[10px] text-text-secondary uppercase">Remaining</div><div className="font-mono text-sm">{remaining==null?'N/A':`$${remaining.toFixed(2)}`}</div></div></div>}
     </div>
     <Tabs tabs={tabs} activePath={location.pathname}/>
-    {!isCanvas&&<div className="mx-4 md:mx-6 mt-2"><ProjectPlanningReview project={project} canEdit={canEdit}/></div>}
+    {!isCanvas&&<div className="mx-4 md:mx-6 mt-2"><ProjectPlanningReview project={project} canEdit={canEdit}/><ProjectReservations project={project} canEdit={canEdit}/></div>}
     {!canEdit&&!isCanvas&&<div className="mx-4 md:mx-6 mt-2 px-3 py-2 bg-surface-raised border border-border rounded-sm text-xs text-text-secondary">This project is read-only for your current project role.</div>}
     {isCanvas?<div className="flex-1 min-h-0"><ProjectCanvas projectId={projectId!}/></div>:<div className={`flex-1 overflow-auto p-4 md:p-6 max-w-[1500px] mx-auto w-full ${canEdit?'':'[& button]:pointer-events-none [& button]:opacity-40 [& input]:pointer-events-none [& input]:opacity-60 [& textarea]:pointer-events-none [& textarea]:opacity-60 [& select]:pointer-events-none [& select]:opacity-60'}`}><WorkspaceContent active={active} project={project} workspace={workspace.data} projectId={projectId!} user={user} budget={budget} spent={spent} remaining={remaining} qc={qc} showToast={showToast} navigate={navigate} canEdit={canEdit}/></div>}
   {pendingDelete&&<div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-4"><div role="alertdialog" aria-modal="true" aria-labelledby="project-delete-heading" className="w-full max-w-md rounded-lg border border-border bg-surface p-5 shadow-xl" onKeyDown={e=>{if(e.key==='Escape'){e.stopPropagation();setPendingDelete(null)}}}><h3 id="project-delete-heading" className="text-lg font-semibold">Confirm destructive action</h3><p className="my-4 text-sm">{pendingDelete.description} This cannot be undone.</p><div className="flex justify-end gap-2"><button type="button" autoFocus onClick={()=>setPendingDelete(null)} className="rounded border border-border px-4 py-2">Cancel</button><button type="button" onClick={()=>{const action=pendingDelete.action;setPendingDelete(null);action()}} className="rounded bg-status-danger px-4 py-2 text-white">Confirm permanently</button></div></div></div>}
