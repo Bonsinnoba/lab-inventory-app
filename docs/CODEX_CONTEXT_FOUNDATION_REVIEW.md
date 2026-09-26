@@ -29,3 +29,7 @@ Independently inspect the actual code on `main`, challenge assumptions, repair d
 - Equipment checkout/return and PostgreSQL concurrency verification remain independent operational prerequisites.
 
 **Permission:** Codex may directly implement fixes and tests on `main` in small, reviewable commits. Do not introduce a new branch unless the repository owner asks. Record every change, trade-off, test and unresolved issue. Never mark unrun tests as passed.
+
+
+## Additional review: context relationship projection
+Context v2 now derives typed edges from existing project foreign keys and reservation item links in `backend/src/context-relationships.js`. Review the edge vocabulary, source metadata, access inheritance and limit behavior. It is a bounded projection of the context response, NOT a comprehensive persisted knowledge graph; do not infer missing edges. Verify CI includes `src/context-relationships.test.js`. In particular, a relationship may reveal the existence of a project-linked record: confirm per-record ACLs before expanding this projection beyond the currently permission-checked project scope. Assess adding a canonical relation registry, pagination and versioned provenance, then implement real PostgreSQL integration tests. Document every fix and its evidence.
