@@ -46,7 +46,7 @@ async function canEditProject(client,projectId,user){
 function validateProjectRecord(entityType,record){
   if(entityType==='project'){
     if(!String(record.name||'').trim())fail(400,'INVALID_PROJECT','Project name is required');
-    if(!['active','completed','on_hold','cancelled'].includes(record.status||'active'))fail(400,'INVALID_PROJECT','Invalid project status');
+    if(!['planning','active','completed','on_hold','cancelled'].includes(record.status||'planning'))fail(400,'INVALID_PROJECT','Invalid project status');
     if(!['low','normal','high','critical'].includes(record.priority||'normal'))fail(400,'INVALID_PROJECT','Invalid project priority');
   }
   if(entityType==='project_task'){
