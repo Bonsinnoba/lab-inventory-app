@@ -5,7 +5,7 @@ const names=['x','y','z'];
 const format=(n:number)=>Number(n.toPrecision(10)).toString();
 export default function EquationWorkspace({onSolved}:{onSolved:(result:Solved)=>void}){
  const [mode,setMode]=useState<'2'|'3'|'quadratic'>('2');
- const [matrix,setMatrix]=useState<string[][]>([['2','1','0','5'],['1','-1','0','1'],['1','1','1','3']]);
+ const [matrix,setMatrix]=useState<string[][]>([['2','1','5','5'],['1','-1','1','1'],['1','1','1','3']]);
  const [quad,setQuad]=useState(['1','-3','2']);
  const [solution,setSolution]=useState<{lines:string[];note:string}|null>(null);
  const [error,setError]=useState('');
