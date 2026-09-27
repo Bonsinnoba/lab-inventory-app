@@ -41,6 +41,26 @@ test('migrated PostgreSQL schema supports finance and sync queries', async () =>
     }
     assert.equal((await pool.query('SELECT 1 FROM projects WHERE id=$1',[projectId])).rowCount,0,
       'Rolled-back project must not persist');
+    // Database constraints must reject invalid finance and stock references.
+    const constrained = await pool.connect();
+    try {
+      await constrained.query('BEGIN');
+      await constrained.query('SAVEPOINT invalid_direction');
+      await assert.rejects(
+        constrained.query("INSERT INTO transactions(type,direction,amount) VALUES ('purchase','invalid',10)"),
+        error => error.code === '23514'
+      );
+      await constrained.query('ROLLBACK TO SAVEPOINT invalid_direction');
+      await constrained.query('SAVEPOINT invalid_project');
+      await assert.rejects(
+        constrained.query("INSERT INTO transactions(type,direction,amount,project_id) VALUES ('purchase','expense',10,'00000000-0000-0000-0000-000000000001')"),
+        error => error.code === '23503'
+      );
+      await constrained.query('ROLLBACK TO SAVEPOINT invalid_project');
+      await constrained.query('ROLLBACK');
+    } finally {
+      constrained.release();
+    }
     // Check two independent database sessions respect transaction-scoped locks.
     const first = await pool.connect();
     const second = await pool.connect();
