@@ -5,7 +5,7 @@ import { config } from '../config.js';
 import { writeAuditLog } from '../middleware/audit.js';
 import { getProjectAccess } from '../middleware/project-access.js';
 import {assembleProjectContext,searchProjectEvidence} from './context.js';
-import { getUserPermissions } from '../middleware/permissions.js';
+import { getUserPermissions, LAB_WIDE_READ_PERMISSIONS } from '../middleware/permissions.js';
 
 const router = Router();
 const ai = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
@@ -34,7 +34,7 @@ If the user asks for an action, you may explain the intended action as a proposa
 const BASE_TOOLS = [
   {
     name:'search_project_evidence',
-    description:'Find source-linked project notes and resource descriptions by keyword. Requires permission to view both the project and notes; results are lexical matches, not verified scientific conclusions.',
+    description:'Find source-linked project notes and resource descriptions by keyword. Requires ordinary laboratory read access; results are lexical matches, not verified scientific conclusions.',
     parameters:{type:'object',properties:{project_id:{type:'string'},query:{type:'string'},limit:{type:'integer'}},required:['project_id','query']}
   },
   {
@@ -160,7 +160,7 @@ const TOOL_PERMISSIONS = Object.freeze({
   get_project: 'projects.view',
   get_project_workspace: 'projects.view',
   get_project_context: 'projects.view',
-  search_project_evidence: ['projects.view','notes.view'],
+  search_project_evidence: ['projects.view','notes.view','resources.view'],
   get_project_financials: ['projects.view','finance.view'],
   get_transaction_summary: 'finance.view',
   list_locations: 'inventory.view',
@@ -174,7 +174,9 @@ async function assistantPermissions(user) {
   if (!user?.userId) throw new Error('Authentication required');
   const account = await pool.query('SELECT role, is_active FROM users WHERE id=$1', [user.userId]);
   if (!account.rowCount || !account.rows[0].is_active) throw new Error('Account is disabled');
-  return getUserPermissions(user.userId, account.rows[0].role);
+  const permissions = await getUserPermissions(user.userId, account.rows[0].role);
+  for (const permission of LAB_WIDE_READ_PERMISSIONS) permissions.add(permission);
+  return permissions;
 }
 
 async function requireAssistantPermission(permission, user) {
@@ -431,7 +433,7 @@ async function listRecentActivity({ limit }, user) {
   return result(rows);
 }
 
-const toolImplementations={search_project_evidence:async({project_id,query,limit},user)=>{await requireAssistantPermission('projects.view',user);await requireAssistantPermission('notes.view',user);const result=await searchProjectEvidence(project_id,user,query,limit);if(!result)throw new Error('Project not found or access denied');return result;},get_project_context:async({project_id},user)=>{await requireAssistantPermission('projects.view',user);if(!/^[0-9a-f-]{36}$/i.test(String(project_id||'')))throw new Error('Valid project UUID required');const snapshot=await assembleProjectContext(project_id,user);if(!snapshot)throw new Error('Project not found or access denied');return snapshot;},search_global:searchGlobal,search_items:searchItems,get_item:getItem,list_projects:listProjects,get_project:getProject,get_project_workspace:getProjectWorkspace,get_project_financials:getProjectFinancials,get_transaction_summary:getTransactionSummary,list_locations:listLocations,get_location:getLocation,search_knowledge:searchKnowledge,list_notes:listNotes,list_recent_activity:listRecentActivity};
+const toolImplementations={search_project_evidence:async({project_id,query,limit},user)=>{await requireAssistantPermission('projects.view',user);await requireAssistantPermission('notes.view',user);await requireAssistantPermission('resources.view',user);const result=await searchProjectEvidence(project_id,user,query,limit);if(!result)throw new Error('Project not found or access denied');return result;},get_project_context:async({project_id},user)=>{await requireAssistantPermission('projects.view',user);if(!/^[0-9a-f-]{36}$/i.test(String(project_id||'')))throw new Error('Valid project UUID required');const snapshot=await assembleProjectContext(project_id,user);if(!snapshot)throw new Error('Project not found or access denied');return snapshot;},search_global:searchGlobal,search_items:searchItems,get_item:getItem,list_projects:listProjects,get_project:getProject,get_project_workspace:getProjectWorkspace,get_project_financials:getProjectFinancials,get_transaction_summary:getTransactionSummary,list_locations:listLocations,get_location:getLocation,search_knowledge:searchKnowledge,list_notes:listNotes,list_recent_activity:listRecentActivity};
 
 async function createRun(userId, conversationId) {
   const r=await pool.query(`INSERT INTO ai_runs(user_id,conversation_id,model,status) VALUES($1,$2,$3,'running') RETURNING id`,[userId,conversationId,MODEL_NAME]);
