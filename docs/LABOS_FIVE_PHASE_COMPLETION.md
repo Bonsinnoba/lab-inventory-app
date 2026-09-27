@@ -87,3 +87,9 @@ Owner requests implementation across all five phases before one final manual acc
 ### LabCalc visual refinement against collaborator design specification v1.0 (2026-09-27)
 - 3d9ddff: searchable category-based electronics toolbox, active-tool cards, expandable formula/assumption panel, reset, refined responsive spacing and controls.
 - Remaining: actual dual-size interactive mini calculator (current mini remains result-only), docking/resizing/persistence, expanded near-fullscreen shell, live calculation, unit selectors, accessibility/focus testing, 4/5/6-band visualizer, advanced tool breadth, high-fidelity mockups and consolidated desktop build. Do not claim full spec acceptance.
+
+### LabCalc follow-up for owner test (2026-09-27)
+- 5e549c1: floating calculator now renders actual active tool and quick tool switcher, rather than a result-only bar.
+- 2a92259: expanded workspace defaults to ~92% width/88% height; floating position persists in localStorage.
+- 5077bce and fbeeae2: selected electronics mode persists; inputs reset when switching modes to avoid cross-mode stale data.
+- Owner test still needed: TypeScript/Vite build, desktop launch, drag/restore and calculator input, notebook/project/BOM permissions, offline/restart behavior. Unimplemented specification details include mini resizing/docking, spring transition, full live calculation/unit selectors and advanced tool breadth. Do not claim full v1 design-spec completion without implementing and testing those.
