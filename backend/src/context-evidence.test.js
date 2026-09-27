@@ -30,7 +30,7 @@ test('scopes both evidence queries to project and caps returned results',async()
 });
 
 test('escapes SQL wildcard and backslash metacharacters as literal query content',()=>{
- assert.equal(escapeLikePattern('20%_'),String.raw`20\\%\\_`);
+ assert.equal(escapeLikePattern('20%_'),String.raw`20\%\_`);
  assert.equal(escapeLikePattern('\\\\'),String.raw`\\\\`);
 });
 test('excerpts center on the matching passage instead of unrelated document introduction',()=>{
@@ -44,6 +44,6 @@ test('SQL searches literal pattern within project boundary and returns bounded s
  const db={query:async(sql,params)=>{calls.push({sql,params});return {rows:[]};}};
  await searchProjectEvidence(id,{userId:'u'},'10%_ drift',3,db,async()=>({access:'view'}));
  assert.equal(calls.length,2);
- assert.ok(calls.every(c=>c.params[2]===String.raw`10\\%\\_ drift`&&c.params[3]===4));
+ assert.ok(calls.every(c=>c.params[2]===String.raw`10\%\_ drift`&&c.params[3]===4));
  assert.ok(calls.every(c=>c.sql.includes('ESCAPE')&&c.sql.includes('FOR 280')));
 });
