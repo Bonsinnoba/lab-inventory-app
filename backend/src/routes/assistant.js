@@ -5,7 +5,7 @@ import { config } from '../config.js';
 import { writeAuditLog } from '../middleware/audit.js';
 import { getProjectAccess } from '../middleware/project-access.js';
 import {assembleProjectContext,searchProjectEvidence} from './context.js';
-import { getUserPermissions, LAB_WIDE_READ_PERMISSIONS, projectFinancialProjection, projectFinancialSummaryProjection } from '../middleware/permissions.js';
+import { getUserPermissions, LAB_WIDE_READ_PERMISSIONS, projectFinancialProjection, projectFinancialSummaryProjection, canReadSensitiveFinance } from '../middleware/permissions.js';
 
 const router = Router();
 const ai = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
@@ -374,7 +374,7 @@ async function getProjectFinancials({ project_id }, user) {
 
 async function getTransactionSummary({ from, to }, user) {
   const permissions = await requireAssistantPermission('finance.view', user);
-  const sensitive = permissions.has('finance.view_sensitive');
+  const sensitive = canReadSensitiveFinance(permissions);
   const conditions=sensitive?[]:["direction = 'expense'"]; const values=[];
   if (from) { values.push(from); conditions.push(`date >= $${values.length}`); }
   if (to) { values.push(to); conditions.push(`date <= $${values.length}`); }
