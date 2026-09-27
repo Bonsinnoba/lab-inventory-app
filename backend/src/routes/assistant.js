@@ -4,7 +4,7 @@ import { pool } from '../db.js';
 import { config } from '../config.js';
 import { writeAuditLog } from '../middleware/audit.js';
 import { getProjectAccess } from '../middleware/project-access.js';
-import {assembleProjectContext} from './context.js';
+import {assembleProjectContext,searchProjectEvidence} from './context.js';
 import { getUserPermissions } from '../middleware/permissions.js';
 
 const router = Router();
@@ -32,6 +32,11 @@ ACTION REQUESTS:
 If the user asks for an action, you may explain the intended action as a proposal, but it must be clearly labeled as a proposal and must not be represented as completed. Ask the user to perform/confirm it through the appropriate LabOS UI.`;
 
 const BASE_TOOLS = [
+  {
+    name:'search_project_evidence',
+    description:'Find source-linked project notes and resource descriptions by keyword. Requires permission to view both the project and notes; results are lexical matches, not verified scientific conclusions.',
+    parameters:{type:'object',properties:{project_id:{type:'string'},query:{type:'string'},limit:{type:'integer'}},required:['project_id','query']}
+  },
   {
     name:'get_project_context',
     description:'Retrieve a bounded, permission-filtered live project context snapshot, including experiments, tasks, inventory, confirmed and pending reservations, notes, resources, and source provenance.',
@@ -143,8 +148,8 @@ const BASE_TOOLS = [
 const CONTEXT_SCOPES = new Set(['none','project','project_workspace','project_lab_data','full_project','custom']);
 const TOOL_GROUPS = {
   project: ['get_project','get_project_context'],
-  workspace: ['get_project_context','get_project_workspace','list_notes','search_knowledge'],
-  lab_data: ['get_project_context','get_project_workspace'],
+  workspace: ['search_project_evidence','get_project_context','get_project_workspace','list_notes','search_knowledge'],
+  lab_data: ['search_project_evidence','get_project_context','get_project_workspace'],
   full: ['get_project_financials'],
 };
 const TOOL_PERMISSIONS = Object.freeze({
@@ -155,6 +160,7 @@ const TOOL_PERMISSIONS = Object.freeze({
   get_project: 'projects.view',
   get_project_workspace: 'projects.view',
   get_project_context: 'projects.view',
+  search_project_evidence: ['projects.view','notes.view'],
   get_project_financials: ['projects.view','finance.view'],
   get_transaction_summary: 'finance.view',
   list_locations: 'inventory.view',
@@ -425,7 +431,7 @@ async function listRecentActivity({ limit }, user) {
   return result(rows);
 }
 
-const toolImplementations={get_project_context:async({project_id},user)=>{await requireAssistantPermission('projects.view',user);if(!/^[0-9a-f-]{36}$/i.test(String(project_id||'')))throw new Error('Valid project UUID required');const snapshot=await assembleProjectContext(project_id,user);if(!snapshot)throw new Error('Project not found or access denied');return snapshot;},search_global:searchGlobal,search_items:searchItems,get_item:getItem,list_projects:listProjects,get_project:getProject,get_project_workspace:getProjectWorkspace,get_project_financials:getProjectFinancials,get_transaction_summary:getTransactionSummary,list_locations:listLocations,get_location:getLocation,search_knowledge:searchKnowledge,list_notes:listNotes,list_recent_activity:listRecentActivity};
+const toolImplementations={search_project_evidence:async({project_id,query,limit},user)=>{await requireAssistantPermission('projects.view',user);await requireAssistantPermission('notes.view',user);const result=await searchProjectEvidence(project_id,user,query,limit);if(!result)throw new Error('Project not found or access denied');return result;},get_project_context:async({project_id},user)=>{await requireAssistantPermission('projects.view',user);if(!/^[0-9a-f-]{36}$/i.test(String(project_id||'')))throw new Error('Valid project UUID required');const snapshot=await assembleProjectContext(project_id,user);if(!snapshot)throw new Error('Project not found or access denied');return snapshot;},search_global:searchGlobal,search_items:searchItems,get_item:getItem,list_projects:listProjects,get_project:getProject,get_project_workspace:getProjectWorkspace,get_project_financials:getProjectFinancials,get_transaction_summary:getTransactionSummary,list_locations:listLocations,get_location:getLocation,search_knowledge:searchKnowledge,list_notes:listNotes,list_recent_activity:listRecentActivity};
 
 async function createRun(userId, conversationId) {
   const r=await pool.query(`INSERT INTO ai_runs(user_id,conversation_id,model,status) VALUES($1,$2,$3,'running') RETURNING id`,[userId,conversationId,MODEL_NAME]);
