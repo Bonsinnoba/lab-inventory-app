@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {LAB_WIDE_READ_PERMISSIONS,rolePermissions,projectFinancialProjection,projectFinancialSummaryProjection} from './permissions.js';
+import {LAB_WIDE_READ_PERMISSIONS,rolePermissions,projectFinancialProjection,projectFinancialSummaryProjection,transactionResponseProjection} from './permissions.js';
 
 test('ordinary laboratory reads do not include financial or administrative views',()=>{
  for(const permission of ['inventory.view','projects.view','notes.view','resources.view','engineering.view','automation.view'])
@@ -58,4 +58,12 @@ test('project write response projection excludes finance and future fields witho
  const standard=projectFinancialProjection(databaseRow,new Set(['projects.edit','finance.view']));
  assert.equal(standard.budget,100);
  assert.ok(!Object.hasOwn(standard,'future_private_field'));
+});
+
+test('transaction mutation echoes fail closed without both financial read grants',()=>{
+ const row={id:'t1',direction:'expense',amount:25,project_id:'p1',funding_source_id:'secret',budget_period_id:'private',future_bank_reference:'hidden'};
+ for(const permissions of [new Set(['finance.create_expense']),new Set(['finance.view']),new Set(['finance.view_sensitive'])]){
+  assert.deepEqual(transactionResponseProjection(row,permissions),{id:'t1',direction:'expense',amount:25,project_id:'p1'});
+ }
+ assert.deepEqual(transactionResponseProjection(row,new Set(['finance.view','finance.view_sensitive'])),row);
 });
