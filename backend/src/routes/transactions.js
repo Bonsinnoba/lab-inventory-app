@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { hasPermission, getUserPermissions, transactionResponseProjection, canReadSensitiveFinance } from '../middleware/permissions.js';
+import { hasPermission, transactionResponseProjection, canReadSensitiveFinance } from '../middleware/permissions.js';
 import { writeAuditLog } from '../middleware/audit.js';
 import { requireProjectEditForTransaction, requireExistingTransactionProjectEdit, requireExistingTransactionProjectDelete } from '../middleware/project-transaction-boundary.js';
 import { pool } from '../db.js';
@@ -7,7 +7,7 @@ import { pool } from '../db.js';
 const router = Router();
 
 router.get('/', hasPermission('finance.view'), async (req, res) => {
-  const permissions = await getUserPermissions(req.user.userId, req.user.role);
+  const permissions = req.permissions;
   const sensitive = canReadSensitiveFinance(permissions);
   const { type, direction, item_id, project_id, budget_period_id, from, to } = req.query;
   if (budget_period_id && !sensitive) return res.status(403).json({error:{code:'PERMISSION_DENIED',permission:'finance.view_sensitive',message:'Budget-period filtering requires sensitive financial access'}});
@@ -27,7 +27,7 @@ router.get('/', hasPermission('finance.view'), async (req, res) => {
 });
 
 router.get('/summary', hasPermission('finance.view'), async (req, res) => {
-  const permissions = await getUserPermissions(req.user.userId, req.user.role);
+  const permissions = req.permissions;
   const sensitive = canReadSensitiveFinance(permissions);
   const { from, to, budget_period_id } = req.query; if (budget_period_id && !sensitive) return res.status(403).json({error:{code:'PERMISSION_DENIED',permission:'finance.view_sensitive',message:'Budget-period filtering requires sensitive financial access'}}); const conditions = sensitive ? [] : ["direction = 'expense'"], values = [];
   if (from) { values.push(from); conditions.push(`date >= $${values.length}`); } if (to) { values.push(to); conditions.push(`date <= $${values.length}`); } if (budget_period_id) { values.push(budget_period_id); conditions.push(`budget_period_id = $${values.length}`); }
