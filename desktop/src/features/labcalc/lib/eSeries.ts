@@ -1,0 +1,5 @@
+export type ESeries='E6'|'E12'|'E24'|'E48'|'E96'|'E192';
+const e24=[10,11,12,13,15,16,18,20,22,24,27,30,33,36,39,43,47,51,56,62,68,75,82,91];
+const count:Record<ESeries,number>={E6:6,E12:12,E24:24,E48:48,E96:96,E192:192};
+export function seriesValues(series:ESeries):number[]{const n=count[series];if(n===24)return e24.map(x=>x/10);if(n===6)return [1,1.5,2.2,3.3,4.7,6.8];if(n===12)return [1,1.2,1.5,1.8,2.2,2.7,3.3,3.9,4.7,5.6,6.8,8.2];return Array.from({length:n},(_,i)=>Number(Math.pow(10,i/n).toPrecision(n===192?4:3)));}
+export function nearestStandard(value:number,series:ESeries='E24'){if(!(value>0&&Number.isFinite(value)))throw Error('Value must be positive and finite');const decade=Math.floor(Math.log10(value));let nearest=value,delta=Infinity;for(const d of [decade-1,decade,decade+1])for(const base of seriesValues(series)){const candidate=base*Math.pow(10,d);const error=Math.abs(candidate-value);if(error<delta){delta=error;nearest=candidate}}return {value:Number(nearest.toPrecision(9)),error_percent:delta/value*100,series};}
