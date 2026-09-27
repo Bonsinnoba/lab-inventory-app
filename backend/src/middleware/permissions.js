@@ -26,6 +26,16 @@ const ROLE_BASELINES = Object.freeze({
 
 export function rolePermissions(role) { return new Set(ROLE_BASELINES[role] || []); }
 
+export function canReadOrdinaryLabData(permission, permissions) {
+  return LAB_WIDE_READ_PERMISSIONS.has(permission) || permissions.has(permission);
+}
+
+export function projectFinancialProjection(project, permissions) {
+  if (permissions.has('finance.view')) return {...project};
+  const {budget,total_spent,actual_expense,project_income,allocated_inventory_value,budget_remaining,net_spend,...ordinary} = project;
+  return ordinary;
+}
+
 export async function getUserPermissions(userId, role) {
   const permissions = rolePermissions(role);
   // Administrator access is defined by the role baseline and is not reduced by
