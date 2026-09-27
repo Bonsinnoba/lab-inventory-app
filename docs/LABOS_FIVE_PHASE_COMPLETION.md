@@ -70,3 +70,10 @@ Owner requests implementation across all five phases before one final manual acc
 - ae2bd91: consolidated final release/restore/manual acceptance checklist and calculator integration contract.
 - Owner will supply collaborator-approved calculator files after the surrounding work; approved redesign integration and its end-to-end tests remain pending until supplied.
 - No claim of full five-phase completion: fresh CI run results, comprehensive multi-client testing, final UI audit, restore/installer exercise, calculator integration and independent Codex review have not been evidenced in this session.
+
+### LabCalc implementation on main (2026-09-27)
+- 22cab44: expanded electronics panel with ten calculation modes, client-side calculations and input guards.
+- 827a265: Engineering Tools now uses LabCalc panel; project-note, notebook, BOM and clipboard actions use existing desktop API paths (and their local-first fallbacks where implemented).
+- 2c56f95 and 1ab7046: draggable minimized bar shows latest result; remove unused callback.
+- IMPORTANT: This is a functional integration inspired by the approved bundle, **not yet a verbatim installation of all six collaborator source files**. Full fidelity to the collaborator's MiniResultBar, InsertActions, E-series, inventory suggestions and source math needs a follow-up source import. Do not label approved-design integration complete until that import and visual review are evidenced.
+- Fresh desktop TypeScript/Vite CI and manual acceptance are pending; no passing result has been observed for these commits.
