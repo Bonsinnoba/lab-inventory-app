@@ -47,6 +47,48 @@ jobs:
       - name: Reserved-stock and context regression tests
         run: node --test src/reservation-stock.test.js src/routes/context.test.js src/context-relationships.test.js src/context-evidence.test.js
 
+  postgres-integration:
+    name: PostgreSQL migrations and schema integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: labos_test
+          POSTGRES_PASSWORD: labos_test
+          POSTGRES_DB: labos_integration
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U labos_test -d labos_integration"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      PGHOST: localhost
+      PGPORT: '5432'
+      PGUSER: labos_test
+      PGPASSWORD: labos_test
+      PGDATABASE: labos_integration
+      LABOS_INTEGRATION_TEST_DB: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - name: Migrate clean PostgreSQL database
+        run: npm run migrate
+      - name: Verify migration replay is idempotent
+        run: npm run migrate
+      - name: Exercise real schema and finance query
+        run: node --test src/postgres-integration.test.js
+
   rust:
     name: Tauri Rust check
     runs-on: ubuntu-22.04
