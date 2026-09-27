@@ -110,3 +110,9 @@ Owner requests implementation across all five phases before one final manual acc
 - 5b185a5: constrain app shell to viewport width and clip horizontal overflow in main page scroller while retaining vertical scroll.
 - 6710000: elevate both expanded and floating Engineering Tools above sidebar/navigation stacking layers.
 - Verify on desktop: horizontal trackpad/shift-wheel on dashboard, sidebar and Engineering Tools; ensure sidebar never overlays calculator, page scroll remains usable and no page content is unintentionally clipped. No verified build/visual acceptance yet.
+
+### Global vertical and horizontal shell scroll remediation (2026-09-27)
+- Screenshot demonstrates entire app shell moving vertically: topbar partially outside viewport and empty area at bottom. Earlier overflow-x clipping was insufficient.
+- 1b64c1c: lock html/body/#root and app-shell to viewport in both axes, enforce min-height:0 on flex scroll containers, and isolate sidebar/page overscroll.
+- 22df9af: app shell uses bounded h-full/overflow-hidden; main content uses min-h-0 with internal vertical scroll.
+- Verify scrolling over dashboard, sidebar, assistant, and horizontal trackpad input; topbar/sidebar must remain anchored and content must not be clipped. Build and visual acceptance remain unverified.
