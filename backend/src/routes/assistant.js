@@ -5,7 +5,7 @@ import { config } from '../config.js';
 import { writeAuditLog } from '../middleware/audit.js';
 import { getProjectAccess } from '../middleware/project-access.js';
 import {assembleProjectContext,searchProjectEvidence} from './context.js';
-import { getUserPermissions, LAB_WIDE_READ_PERMISSIONS } from '../middleware/permissions.js';
+import { getUserPermissions, LAB_WIDE_READ_PERMISSIONS, projectFinancialProjection } from '../middleware/permissions.js';
 
 const router = Router();
 const ai = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
@@ -338,7 +338,8 @@ async function getProject({ project_id }, user) {
   const r = await pool.query(`SELECT id,name,status,description,start_date,due_date,owner_id,created_at,updated_at FROM projects WHERE id=$1`, [project_id]);
   if (!r.rowCount) throw new Error('Project not found');
   const row = r.rows[0];
-  return result(row, [source('project', row.id, row.name)]);
+  const permissions = await assistantPermissions(user);
+  return result(projectFinancialProjection(row, permissions), [source('project', row.id, row.name)]);
 }
 
 async function getProjectWorkspace({ project_id }, user) {
