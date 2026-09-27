@@ -260,13 +260,13 @@ function AppContent() {
 
   return (
     <>
-      <div className="app-shell flex h-screen text-text-primary">
+      <div className="app-shell flex h-screen w-full min-w-0 overflow-x-clip text-text-primary">
         <Sidebar user={user} permissions={permissions} onLogout={handleLogout} />
         <MobileDrawer open={mobileMenuOpen} onClose={() => setMobileMenuOpen(false)} user={user} onLogout={handleLogout} />
         <div className="flex-1 flex flex-col min-w-0 min-h-0">
           <TopBar title={getPageTitle()} onOpenCommandPalette={() => setCommandPaletteOpen(true)} onScan={() => setDesktopScanOpen(true)} />
           <MobileHeader title={getPageTitle()} onMenu={() => setMobileMenuOpen(true)} onScan={() => setMobileScanOpen(true)} />
-          <main className="app-main flex-1 overflow-auto pb-safe">
+          <main className="app-main min-w-0 flex-1 overflow-y-auto overflow-x-hidden pb-safe">
             <div key={location.pathname} className="animate-fade-in h-full">
               <Routes>
                 <Route path="/" element={<Navigate to="/dashboard" replace />} />
