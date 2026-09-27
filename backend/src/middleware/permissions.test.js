@@ -74,3 +74,11 @@ test('sensitive finance gate requires both read permissions in every combination
  assert.equal(canReadSensitiveFinance(new Set(['finance.view_sensitive'])),false);
  assert.equal(canReadSensitiveFinance(new Set(['finance.view','finance.view_sensitive'])),true);
 });
+
+test('standard financial projections never expose sensitive transaction metadata',()=>{
+ const row={id:'tx',direction:'expense',amount:12,funding_source_id:'secret',budget_period_id:'period',search_vector:'private',future_private:'hidden'};
+ const standard=transactionResponseProjection(row,new Set(['finance.view']));
+ assert.deepEqual(standard,{id:'tx',direction:'expense',amount:12});
+ assert.deepEqual(transactionResponseProjection(row,new Set(['finance.view_sensitive'])),standard);
+ assert.deepEqual(transactionResponseProjection(row,new Set(['finance.view','finance.view_sensitive'])),row);
+});
