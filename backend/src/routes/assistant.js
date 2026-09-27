@@ -271,9 +271,9 @@ async function searchGlobal({ query, types }, user) {
   const permissions = await assistantPermissions(user);
   const typePermissions = {
     items: 'inventory.view', projects: 'projects.view', notes: 'notes.view', resources: 'resources.view',
-    transactions: 'finance.view', users: 'users.view', tasks: 'projects.view', experiments: 'projects.view', blocks: 'projects.view'
+    transactions: 'finance.view_sensitive', users: 'users.view', tasks: 'projects.view', experiments: 'projects.view', blocks: 'projects.view'
   };
-  const authorized = selected.filter((type) => permissions.has(typePermissions[type]));
+  const authorized = selected.filter((type) => permissions.has(typePermissions[type]) && (type !== 'transactions' || permissions.has('finance.view')));
   if (!authorized.length) throw new Error('You do not have permission to search the selected laboratory data');
 
   const q = query.trim().slice(0, 200);
