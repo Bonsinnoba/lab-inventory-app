@@ -21,7 +21,7 @@ export function escapeLikePattern(query){
 }
 /** Short excerpt surrounding the first literal match; never return the full document. */
 export function evidenceExcerpt(value,query,maxLength=280){
- const text=String(value||'').replace(/\\s+/g,' ').trim();
+ const text=String(value||'').replace(/\s+/g,' ').trim();
  const position=text.toLocaleLowerCase().indexOf(query.toLocaleLowerCase());
  const start=position<0?0:Math.max(0,position-70);
  const excerpt=text.slice(start,start+maxLength);
