@@ -30,7 +30,7 @@ test('future and unknown project columns fail closed for ordinary readers',()=>{
  const source={id:'p2',name:'Example',description:'ordinary',budget:100,secret_future_financial_column:999,internal_future_column:'private'};
  const projected=projectFinancialProjection(source,new Set(['projects.view']));
  assert.deepEqual(projected,{id:'p2',name:'Example',description:'ordinary'});
- assert.equal(projectFinancialProjection(source,new Set(['finance.view'])).secret_future_financial_column,999);
+ assert.equal(projectFinancialProjection(source,new Set(['finance.view'])).secret_future_financial_column,undefined);
 });
 
 test('standard finance cannot read unexpected sensitive financial columns',()=>{
