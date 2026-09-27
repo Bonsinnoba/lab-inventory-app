@@ -1,3 +1,4 @@
+import {normalizeEvidenceQuery,evidenceLimit,evidenceResult} from '../context-evidence.js';
 import {projectContextEdges} from '../context-relationships.js';
 import {Router} from 'express';
 import {pool} from '../db.js';
@@ -32,6 +33,36 @@ export async function assembleProjectContext(projectId,user,db=pool,accessResolv
  return {...base,relationships:projectContextEdges(base)};
 
 }
+export async function searchProjectEvidence(projectId,user,query,limit=10,db=pool,accessResolver=getProjectAccess){
+ const access=await accessResolver(projectId,user);
+ if(access.access==='none')return null;
+ const normalized=normalizeEvidenceQuery(query),cap=evidenceLimit(limit);
+ // Scope both searches by the project FK; project access alone never expands results to other projects.
+ const [notes,resources]=await Promise.all([
+  db.query(`SELECT id,title,updated_at,
+    LEFT(REGEXP_REPLACE(COALESCE(body,''),'[[:space:]]+',' ','g'),280) AS excerpt
+    FROM notes WHERE project_id=$1 AND (title ILIKE '%'||$2||'%' OR body ILIKE '%'||$2||'%')
+    ORDER BY CASE WHEN LOWER(title)=LOWER($2) THEN 0 WHEN title ILIKE $2||'%' THEN 1 ELSE 2 END,updated_at DESC,id LIMIT $3`,[projectId,normalized,cap+1]),
+  db.query(`SELECT id,name,updated_at,
+    LEFT(REGEXP_REPLACE(COALESCE(description,''),'[[:space:]]+',' ','g'),280) AS excerpt
+    FROM resources WHERE project_id=$1 AND (name ILIKE '%'||$2||'%' OR description ILIKE '%'||$2||'%')
+    ORDER BY CASE WHEN LOWER(name)=LOWER($2) THEN 0 WHEN name ILIKE $2||'%' THEN 1 ELSE 2 END,updated_at DESC,id LIMIT $3`,[projectId,normalized,cap+1])
+ ]);
+ const merged=[...notes.rows.slice(0,cap).map(r=>evidenceResult('note',r)),...resources.rows.slice(0,cap).map(r=>evidenceResult('resource',r))];
+ merged.sort((a,b)=>Date.parse(b.updated_at)-Date.parse(a.updated_at));
+ return {schema_version:1,scope:{type:'project',id:projectId},query:normalized,generated_at:new Date().toISOString(),retrieval:'lexical_project_scoped',results:merged.slice(0,cap),truncated:notes.rows.length>cap||resources.rows.length>cap||merged.length>cap,provenance:{authority:'central_postgresql',consistency:'multi_query_non_atomic'}};
+}
+router.get('/projects/:id/evidence',hasPermission('projects.view'),hasPermission('notes.view'),async(req,res)=>{
+ if(!uuid.test(req.params.id))return res.status(400).json({error:{code:'INVALID_PROJECT_ID',message:'Valid project UUID required'}});
+ try{
+  const result=await searchProjectEvidence(req.params.id,req.user,req.query.q,req.query.limit);
+  if(!result)return res.status(404).json({error:{code:'PROJECT_NOT_FOUND',message:'Project not found'}});
+  res.setHeader('Cache-Control','private, no-store');res.json(result);
+ }catch(err){
+  if(err instanceof RangeError||err instanceof TypeError)return res.status(400).json({error:{code:'INVALID_QUERY',message:err.message}});
+  console.error('Project evidence retrieval failed',err);res.status(500).json({error:{code:'EVIDENCE_UNAVAILABLE',message:'Evidence retrieval unavailable'}});
+ }
+});
 router.get('/projects/:id',hasPermission('projects.view'),async(req,res)=>{
  if(!uuid.test(req.params.id))return res.status(400).json({error:{code:'INVALID_PROJECT_ID',message:'Valid project UUID required'}});
  try{
