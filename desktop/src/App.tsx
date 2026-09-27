@@ -323,7 +323,7 @@ function AppContent() {
         </div>
       )}
       {musicDockOpen && musicMinimized && <MusicMiniPlayer onRestore={restoreMusic} onClose={closeMusic} />}
-      <EngineeringToolsPage open={engineeringToolsOpen} minimized={engineeringToolsMinimized} onClose={() => setEngineeringToolsOpen(false)} onMinimize={() => setEngineeringToolsMinimized(true)} />
+      <EngineeringToolsPage open={engineeringToolsOpen} minimized={engineeringToolsMinimized} onClose={() => setEngineeringToolsOpen(false)} onMinimize={setEngineeringToolsMinimized} />
       <MobileNav />
       {mobileScanOpen && <ScanLookupModal onClose={() => setMobileScanOpen(false)} />}
       {desktopScanOpen && <ScanLookupModal onClose={() => setDesktopScanOpen(false)} />}
