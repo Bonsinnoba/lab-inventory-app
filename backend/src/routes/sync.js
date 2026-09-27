@@ -2,7 +2,7 @@ import { assertReservationStockFloor } from '../reservation-stock.js';
 import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import { pool } from '../db.js';
-import { getUserPermissions } from '../middleware/permissions.js';
+import { getUserPermissions, canReadSensitiveFinance, projectFinancialProjection, transactionResponseProjection } from '../middleware/permissions.js';
 import { writeAuditLog } from '../middleware/audit.js';
 import { getResourceAccess, requireResourceEditor, validateResourceParent } from '../middleware/resource-access.js';
 import { getProjectAccess } from '../middleware/project-access.js';
@@ -411,7 +411,7 @@ router.get('/finance/pull',async(req,res,next)=>{
   try {
     const permissions=await getUserPermissions(req.user.userId,req.user.role);
     if(!permissions.has('finance.view'))return res.status(403).json({error:{code:'PERMISSION_DENIED',message:'Permission required: finance.view'}});
-    const sensitive=permissions.has('finance.view_sensitive');
+    const sensitive=canReadSensitiveFinance(permissions);
     const transactions=await pool.query(sensitive?'SELECT * FROM transactions ORDER BY created_at DESC':"SELECT * FROM transactions WHERE direction = 'expense' ORDER BY created_at DESC");
     const [budget_periods,funding_sources]=sensitive?await Promise.all([
       pool.query('SELECT * FROM budget_periods ORDER BY start_date DESC NULLS LAST,created_at DESC'),
@@ -419,9 +419,9 @@ router.get('/finance/pull',async(req,res,next)=>{
     ]):[{rows:[]},{rows:[]}];
     const tomb=await pool.query("SELECT entity_type,entity_id FROM sync_tombstones WHERE entity_type IN ('transaction','budget_period','funding_source') ORDER BY deleted_at DESC LIMIT 1000");
     const deleted={transaction:[],budget_period:[],funding_source:[]};
-    for(const r of tomb.rows)if(deleted[r.entity_type]&&(sensitive||r.entity_type==='transaction'))deleted[r.entity_type].push(r.entity_id);
+    for(const r of tomb.rows)if(deleted[r.entity_type]&&sensitive)deleted[r.entity_type].push(r.entity_id);
     res.setHeader('Cache-Control','no-store');
-    res.json({sensitive_access:sensitive,transactions:sensitive ? transactions.rows : transactions.rows.map(({funding_source_id,budget_period_id,...expense})=>expense),budget_periods:budget_periods.rows,funding_sources:funding_sources.rows,deleted,deleted_transactions:deleted.transaction,deleted_budget_period:deleted.budget_period,deleted_budget_periods:deleted.budget_period,deleted_funding_sources:deleted.funding_source});
+    res.json({sensitive_access:sensitive,transactions:transactions.rows.map(row=>transactionResponseProjection(row,permissions)),budget_periods:budget_periods.rows,funding_sources:funding_sources.rows,deleted,deleted_transactions:deleted.transaction,deleted_budget_period:deleted.budget_period,deleted_budget_periods:deleted.budget_period,deleted_funding_sources:deleted.funding_source});
   }catch(e){next(e);}
 });
 router.get('/resources/pull',async(req,res,next)=>{
@@ -466,8 +466,8 @@ router.get('/projects/pull',async(req,res,next)=>{
   try{
     const permissions=await getUserPermissions(req.user.userId,req.user.role);
     if(!permissions.has('projects.view'))return res.status(403).json({error:{code:'PERMISSION_DENIED',message:'Permission required: projects.view'}});
-    const values=req.user.role==='admin'?[]:[req.user.userId];
-    const visibility=req.user.role==='admin'?'':'WHERE (p.owner_id=$1 OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id=p.id AND pm.user_id=$1))';
+    const values=[];
+    const visibility='';
     const projects=await pool.query(`SELECT p.* FROM projects p ${visibility} ORDER BY p.updated_at DESC`,values);
     const ids=projects.rows.map(p=>p.id);
     const deletedRows=await pool.query("SELECT entity_type,entity_id FROM sync_tombstones WHERE entity_type IN ('project','project_task','project_experiment','project_bom','project_block','project_connector','project_experiment_measurement','project_experiment_observation','project_task_experiment','project_work_attachment','project_resource_requirement') AND (project_id=ANY($1::uuid[]) OR (project_id IS NULL AND entity_type='project')) ORDER BY deleted_at DESC LIMIT 2500",[ids]); const deletedByType={project:[],project_task:[],project_experiment:[],project_bom:[],project_block:[],project_connector:[],project_experiment_measurement:[],project_experiment_observation:[],project_task_experiment:[],project_work_attachment:[],project_resource_requirement:[]}; for(const row of deletedRows.rows)if(deletedByType[row.entity_type])deletedByType[row.entity_type].push(row.entity_id); if(!ids.length)return res.json({projects:[],deleted_project_ids:deletedByType.project,deleted_project_entities:deletedByType});
@@ -489,7 +489,7 @@ router.get('/projects/pull',async(req,res,next)=>{
     for(const e of experiments.rows){e.measurements=measurementMap.get(e.id)||[];e.observations=observationMap.get(e.id)||[];e.attachments=attachmentExperimentMap.get(e.id)||[];}
     for(const t of tasks.rows){t.attachments=attachmentTaskMap.get(t.id)||[];t.experiments=taskExperimentMap.get(t.id)||[];}
     res.setHeader('Cache-Control','no-store');
-    res.json({projects:projects.rows.map(p=>({...p,tasks:taskMap.get(p.id)||[],experiments:experimentMap.get(p.id)||[],bom:bomMap.get(p.id)||[],items:itemMap.get(p.id)||[],blocks:blockMap.get(p.id)||[],connectors:connectorMap.get(p.id)||[],requirements:requirementMap.get(p.id)||[],task_experiments:taskExperimentProjectMap.get(p.id)||[]})),deleted_project_ids:deletedByType.project,deleted_project_entities:deletedByType});
+    res.json({projects:projects.rows.map(p=>({...projectFinancialProjection(p,permissions),tasks:taskMap.get(p.id)||[],experiments:experimentMap.get(p.id)||[],bom:bomMap.get(p.id)||[],items:itemMap.get(p.id)||[],blocks:blockMap.get(p.id)||[],connectors:connectorMap.get(p.id)||[],requirements:requirementMap.get(p.id)||[],task_experiments:taskExperimentProjectMap.get(p.id)||[]})),deleted_project_ids:deletedByType.project,deleted_project_entities:deletedByType});
   }catch(error){next(error);}
 });
 router.get('/pull',async(req,res,next)=>{try{const raw=typeof req.query.since==='string'?req.query.since.trim():'';let cursor=null;if(raw){cursor=decodePullCursor(raw);if(!cursor){const legacy=new Date(raw);if(Number.isNaN(legacy.getTime()))return res.status(400).json({error:{code:'INVALID_SYNC_CURSOR',message:'since must be a valid inventory sync cursor'}});cursor={at:legacy.toISOString(),type:'',id:''};}}const limit=Math.min(500,Math.max(1,Number(req.query.limit||500)));const values=cursor?[cursor.at,cursor.type,cursor.id,limit+1]:[limit+1];const where=cursor?`WHERE event_at > $1 OR (event_at = $1 AND (event_type > $2 OR (event_type = $2 AND event_id > $3)))`:'';const result=await pool.query(`SELECT event_type,event_id,event_at,item,deleted FROM (SELECT 'item'::text AS event_type,id::text AS event_id,updated_at AS event_at,to_jsonb(items) AS item,false AS deleted FROM items UNION ALL SELECT 'delete'::text AS event_type,entity_id::text AS event_id,deleted_at AS event_at,NULL::jsonb AS item,true AS deleted FROM sync_tombstones WHERE entity_type='item') events ${where} ORDER BY event_at ASC,event_type ASC,event_id ASC LIMIT $${values.length}`,values);const rows=result.rows;const hasMore=rows.length>limit;const page=hasMore?rows.slice(0,limit):rows;const last=page[page.length-1];const nextCursor=last?encodePullCursor(last.event_at,last.event_type,last.event_id):(cursor?raw:null);res.setHeader('Cache-Control','no-store');res.json({items:page.filter(row=>!row.deleted).map(row=>row.item),deleted_item_ids:page.filter(row=>row.deleted).map(row=>row.event_id),next_cursor:nextCursor,has_more:hasMore});}catch(error){next(error);}});
