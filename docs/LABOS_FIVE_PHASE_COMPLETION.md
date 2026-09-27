@@ -116,3 +116,9 @@ Owner requests implementation across all five phases before one final manual acc
 - 1b64c1c: lock html/body/#root and app-shell to viewport in both axes, enforce min-height:0 on flex scroll containers, and isolate sidebar/page overscroll.
 - 22df9af: app shell uses bounded h-full/overflow-hidden; main content uses min-h-0 with internal vertical scroll.
 - Verify scrolling over dashboard, sidebar, assistant, and horizontal trackpad input; topbar/sidebar must remain anchored and content must not be clipped. Build and visual acceptance remain unverified.
+
+### Scientific calculator equation solver (2026-09-27)
+- Added pure offline 2x2 and 3x3 simultaneous linear equation solver with partial pivoting and classification of unique, inconsistent and dependent systems; added quadratic solver with real/repeated/complex roots, linear-degenerate handling and vertex.
+- Added compact Equation Solver tab inside scientific calculator with coefficient entry, solution display and integration with existing 20-entry Questions & Answers pin panel.
+- Scoped global scientific keyboard shortcuts to keypad mode and non-editable targets to prevent interference with equation coefficient inputs.
+- Owner verification pending: TypeScript/Vite build, 2x2/3x3 unique solutions, dependent/inconsistent cases, quadratic positive/zero/negative discriminants, mobile-sized layout and pinning solutions. Do not mark verified until run.
