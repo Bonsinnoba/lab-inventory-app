@@ -63,3 +63,10 @@ Owner requests implementation across all five phases before one final manual acc
 - Phase 3: c8c3d90 binds idempotency replays to user, device, entity type and operation, including unique-violation race recovery, and projects replay responses by current permissions.
 - Phase 4: calculator redesign integration is BLOCKED on collaborator-approved code/design handoff; preserve existing calculator in the meantime. Context intelligence can progress independently.
 - Phase 5: prepare release verification and final owner acceptance checklist once implementation is ready. No phase may be represented as tested or released solely because code was committed.
+
+### Additional cross-phase implementation (2026-09-27)
+- a37ba3a: security regression suite runs in primary CI workflow as well as dedicated security workflow.
+- 746c6a9 and 47a65ce: project context now includes per-section stable source references and regression coverage; remains a bounded non-atomic snapshot, not a complete knowledge graph.
+- ae2bd91: consolidated final release/restore/manual acceptance checklist and calculator integration contract.
+- Owner will supply collaborator-approved calculator files after the surrounding work; approved redesign integration and its end-to-end tests remain pending until supplied.
+- No claim of full five-phase completion: fresh CI run results, comprehensive multi-client testing, final UI audit, restore/installer exercise, calculator integration and independent Codex review have not been evidenced in this session.
