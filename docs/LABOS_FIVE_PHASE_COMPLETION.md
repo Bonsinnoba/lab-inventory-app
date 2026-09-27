@@ -98,3 +98,9 @@ Owner requests implementation across all five phases before one final manual acc
 - Screenshot showed the floating scientific calculator clipped at ~400px height and the keypad/footer scrolled below the visible widget.
 - 1fae787 and 5982df8: floating calculator defaults to 90% of viewport height, has independent scrollable content and a bottom-right pointer resize handle (320px minimum width, 240px minimum height), and persists resized dimensions in localStorage. Initial position is clamped against tall viewport size rather than prior 400px size.
 - Desktop build and owner visual/interaction tests are pending; edge docking, keyboard-operated resizing and automatic compact-mode layout remain outside this change.
+
+### LabCalc floating viewport and restore fix (2026-09-27)
+- d28d858: fixed root cause of expand button not restoring: App previously passed an onMinimize callback that ignored the requested boolean and always set minimized=true; now passes the state setter.
+- f5ad8ee: floating panel defaults to 98vh within 8px viewport margins; drag starts from the header only, leaving interactive content scrollable and editable.
+- 59ff6d3: versioned floating size storage v2 so old 400px saved height does not suppress the new default; users can resize and persist their new preferred size.
+- Await owner TypeScript/Vite build and desktop drag/resize/minimize/restore checks; do not mark verified until results arrive.
