@@ -1,0 +1,36 @@
+import {useState} from 'react';
+type Result={formula:string;inputs:Record<string,unknown>;result_numeric:number;result_unit:string;extras?:Record<string,unknown>};
+type Mode='ohm'|'power'|'divider'|'led'|'rc'|'parallel'|'series'|'battery'|'pcb'|'color';
+const MODES:[Mode,string][]=[['ohm',"Ohm's Law"],['power','Power'],['divider','Voltage Divider'],['led','LED Resistor'],['rc','RC Filter / τ'],['parallel','Parallel R'],['series','Series R'],['battery','Battery Life'],['pcb','PCB Trace Width'],['color','Resistor Color Code']];
+const colors=['black','brown','red','orange','yellow','green','blue','violet','grey','white','gold','silver'];
+const fieldClass='w-full px-2.5 py-2 bg-bg border border-border rounded-sm text-sm focus:outline-none focus:ring-2 focus:ring-accent/40';
+function positive(x:number,label:string){if(!Number.isFinite(x)||x<=0)throw Error(label+' must be positive');return x;}
+export default function ElectronicsTools({onResult}:{onResult:(r:Result|null)=>void}){
+ const [mode,setMode]=useState<Mode>('ohm'),[v,setV]=useState<Record<string,string>>({}),[error,setError]=useState(''),[bands,setBands]=useState(['brown','black','black','gold']);
+ const set=(k:string,value:string)=>setV(old=>({...old,[k]:value}));
+ const field=(k:string,label:string,placeholder='')=><label key={k} className="block"><span className="text-[10px] uppercase tracking-[0.12em] text-text-secondary">{label}</span><input className={fieldClass+' mt-1'} value={v[k]||''} onChange={e=>set(k,e.target.value)} placeholder={placeholder} inputMode={k==='list'?'text':'decimal'}/></label>;
+ const run=()=>{setError('');try{
+  const n=(k:string)=>v[k]?.trim()?Number(v[k]):NaN;const present=(k:string)=>v[k]?.trim()!==undefined&&v[k]?.trim()!=='';
+  let value=0,unit='',formula='',extras:Record<string,unknown>={};
+  if(mode==='ohm'||mode==='power'){const count=['v','i','r'].filter(present).length;if(count!==2)throw Error('Provide exactly two of voltage, current and resistance');let V=n('v'),I=n('i'),R=n('r');if(!present('v'))V=I*R;else if(!present('i'))I=V/positive(R,'Resistance');else R=V/positive(I,'Current');if(![V,I,R].every(Number.isFinite))throw Error('Invalid input');value=mode==='power'?V*I:!present('v')?V:!present('i')?I:R;unit=mode==='power'?'W':!present('v')?'V':!present('i')?'A':'Ω';formula=mode==='power'?'P = V × I':'V = I × R';extras={voltage_V:V,current_A:I,resistance_ohm:R,power_W:V*I};}
+  if(mode==='divider'){const V=n('vin'),a=positive(n('r1'),'R1'),b=positive(n('r2'),'R2');value=V*b/(a+b);unit='V';formula='Vout = Vin × R2 / (R1 + R2)';}
+  if(mode==='led'){const s=n('vs'),f=n('vf'),i=positive(n('i'),'Current');if(!(s>f))throw Error('Supply voltage must exceed LED forward voltage');value=(s-f)/i;unit='Ω';formula='R = (Vs − Vf) / I';extras={power_W:(s-f)*i};}
+  if(mode==='rc'){const r=positive(n('r'),'Resistance'),c=positive(n('c'),'Capacitance')*1e-6;value=1/(2*Math.PI*r*c);unit='Hz';formula='fc = 1 / (2πRC)';extras={time_constant_s:r*c,filter:v.type||'lowpass'};}
+  if(mode==='series'||mode==='parallel'){const values=(v.list||'').split(/[,;\s]+/).filter(Boolean).map(Number);if(!values.length)throw Error('Enter resistor values');values.forEach(x=>positive(x,'Resistance'));value=mode==='series'?values.reduce((a,b)=>a+b,0):1/values.reduce((a,b)=>a+1/b,0);unit='Ω';formula=mode==='series'?'R = ΣRᵢ':'1/R = Σ(1/Rᵢ)';}
+  if(mode==='battery'){const cap=positive(n('cap'),'Capacity'),load=positive(n('load'),'Load'),d=present('der')?n('der'):0.8;if(!(d>0&&d<=1))throw Error('Derating must be greater than 0 and at most 1');value=cap*d/load;unit='h';formula='Runtime = capacity × derating / load';}
+  if(mode==='pcb'){const I=positive(n('i'),'Current'),oz=present('oz')?positive(n('oz'),'Copper thickness'):1,dt=present('dt')?positive(n('dt'),'Temperature rise'):10;const area=Math.pow(I/(0.048*Math.pow(dt,0.44)),1/0.725);value=area/(1.378*oz)*0.0254;unit='mm';formula='IPC-2221 external trace width (estimate)';extras={assumption:'External copper; verify against current design standards'};}
+  if(mode==='color'){const digits=bands.slice(0,bands.length-2).map(b=>colors.indexOf(b));if(digits.some(d=>d<0||d>9))throw Error('Invalid digit band');const multiplier=colors.indexOf(bands[bands.length-2]);const exponent=multiplier===10?-1:multiplier===11?-2:multiplier;if(exponent< -2||exponent>9)throw Error('Invalid multiplier band');value=Number(digits.join(''))*Math.pow(10,exponent);unit='Ω';formula='Resistor color bands';}
+  if(!Number.isFinite(value))throw Error('Result is not finite');onResult({formula,inputs:{...v,...(mode==='color'?{bands}:{}),mode},result_numeric:value,result_unit:unit,extras});
+ }catch(e){setError(e instanceof Error?e.message:'Calculation failed');onResult(null)}};
+ const change=(m:Mode)=>{setMode(m);setV({});setError('');onResult(null)};
+ return <div className="space-y-4"><div className="flex flex-wrap gap-1.5">{MODES.map(([id,label])=><button key={id} type="button" onClick={()=>change(id)} className={'px-2.5 py-1.5 rounded-sm text-xs font-medium focus:outline-none focus:ring-2 focus:ring-accent/50 '+(mode===id?'bg-accent text-bg':'bg-surface-raised border border-border text-text-secondary hover:bg-bg')}>{label}</button>)}</div><div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+ {(mode==='ohm'||mode==='power')&&<>{field('v','Voltage (V)','optional')}{field('i','Current (A)','optional')}{field('r','Resistance (Ω)','optional')}<p className="col-span-full text-[11px] text-text-secondary">Provide exactly two values.</p></>}
+ {mode==='divider'&&<>{field('vin','Vin (V)')}{field('r1','R1 (Ω)')}{field('r2','R2 (Ω)')}</>}
+ {mode==='led'&&<>{field('vs','Supply (V)')}{field('vf','LED Vf (V)')}{field('i','Current (A)','0.02')}</>}
+ {mode==='rc'&&<>{field('r','Resistance (Ω)')}{field('c','Capacitance (µF)')}<label className="text-xs">Filter<select className={fieldClass} value={v.type||'lowpass'} onChange={e=>set('type',e.target.value)}><option value="lowpass">Low-pass</option><option value="highpass">High-pass</option></select></label></>}
+ {(mode==='parallel'||mode==='series')&&<div className="col-span-full">{field('list','Resistances (Ω), separated by comma or space','100, 220, 330')}</div>}
+ {mode==='battery'&&<>{field('cap','Capacity (mAh)')}{field('load','Load (mA)')}{field('der','Derating (0–1)','0.8')}</>}
+ {mode==='pcb'&&<>{field('i','Current (A)')}{field('oz','Copper (oz)','1')}{field('dt','Temperature rise (°C)','10')}</>}
+ {mode==='color'&&<div className="col-span-full space-y-2"><div className="flex flex-wrap gap-2">{bands.map((b,i)=><select key={i} aria-label={'Band '+(i+1)} className={fieldClass+' w-auto'} value={b} onChange={e=>setBands(old=>old.map((x,j)=>j===i?e.target.value:x))}>{colors.map(c=><option key={c}>{c}</option>)}</select>)}</div><div className="flex gap-2"><button className="text-xs border border-border p-2" onClick={()=>setBands(['brown','black','black','gold'])}>4-band</button><button className="text-xs border border-border p-2" onClick={()=>setBands(['brown','black','black','black','brown'])}>5-band</button></div></div>}
+ </div>{error&&<p role="alert" className="text-xs text-status-danger">{error}</p>}<button type="button" onClick={run} className="px-4 py-2 bg-accent text-bg rounded-sm text-sm font-medium">Calculate</button></div>;
+}
