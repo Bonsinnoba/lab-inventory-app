@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {normalizeEvidenceQuery,evidenceLimit,evidenceResult} from './context-evidence.js';
+import {normalizeEvidenceQuery,evidenceLimit,evidenceResult,escapeLikePattern,evidenceExcerpt} from './context-evidence.js';
 import {searchProjectEvidence} from './routes/context.js';
 const id='00000000-0000-4000-8000-000000000001';
 test('normalizes and bounds evidence queries',()=>{
@@ -24,7 +24,25 @@ test('scopes both evidence queries to project and caps returned results',async()
  const db={query:async(sql,params)=>{calls.push({sql,params});return {rows:Array.from({length:3},(_,i)=>({id:String(i),title:'Note '+i,name:'Resource '+i,updated_at:'2026-01-01',excerpt:'match'}))};}};
  const result=await searchProjectEvidence(id,{userId:'u'},'drift',2,db,async()=>({access:'view'}));
  assert.equal(calls.length,2);
- assert.ok(calls.every(c=>c.sql.includes('project_id=$1')&&c.params[0]===id&&c.params[2]===3));
+ assert.ok(calls.every(c=>c.sql.includes('project_id=$1')&&c.params[0]===id&&c.params[2]==='drift'&&c.params[3]===3));
  assert.equal(result.results.length,2);assert.equal(result.truncated,true);
  assert.ok(result.results.every(x=>x.source.record_id&&x.ref.type));
+});
+
+test('escapes SQL wildcard and backslash metacharacters as literal query content',()=>{
+ assert.equal(escapeLikePattern('20%_\\\\calibration'),'20\\\\%\\\\_\\\\\\\\calibration');
+});
+test('excerpts center on the matching passage instead of unrelated document introduction',()=>{
+ const text='a'.repeat(350)+'calibration drift confirmed'+'z'.repeat(350);
+ const excerpt=evidenceExcerpt(text,'calibration drift');
+ assert.ok(excerpt.includes('calibration drift'));
+ assert.ok(excerpt.length<=282);
+});
+test('SQL searches literal pattern within project boundary and returns bounded snippets',async()=>{
+ const calls=[];
+ const db={query:async(sql,params)=>{calls.push({sql,params});return {rows:[]};}};
+ await searchProjectEvidence(id,{userId:'u'},'10%_ drift',3,db,async()=>({access:'view'}));
+ assert.equal(calls.length,2);
+ assert.ok(calls.every(c=>c.params[2]==='10\\\\%\\\\_ drift'&&c.params[3]===4));
+ assert.ok(calls.every(c=>c.sql.includes('ESCAPE')&&c.sql.includes('FOR 280')));
 });
