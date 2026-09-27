@@ -1,21 +1,21 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
-import { getUserPermissions } from '../middleware/permissions.js';
+import { getUserPermissions, LAB_WIDE_READ_PERMISSIONS, canReadSensitiveFinance } from '../middleware/permissions.js';
 
 const router = Router();
 
 // Search uses text matching so short/prefix queries work immediately instead of
 // depending on a pre-built search_vector.
 const TYPE_QUERIES = {
-  projects: `SELECT id, name, status, budget, 1.0 AS rank FROM projects p WHERE (COALESCE(p.name,'') ILIKE '%' || $1 || '%' OR COALESCE(p.description,'') ILIKE '%' || $1 || '%') AND ($3 = 'admin' OR p.owner_id = $2 OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = p.id AND pm.user_id = $2)) ORDER BY CASE WHEN lower(p.name)=lower($1) THEN 3 WHEN lower(p.name) LIKE lower($1) || '%' THEN 2 ELSE 1 END DESC, p.name ASC LIMIT 30`,
+  projects: `SELECT id, name, status, 1.0 AS rank FROM projects p WHERE (COALESCE(p.name,'') ILIKE '%' || $1 || '%' OR COALESCE(p.description,'') ILIKE '%' || $1 || '%')  ORDER BY CASE WHEN lower(p.name)=lower($1) THEN 3 WHEN lower(p.name) LIKE lower($1) || '%' THEN 2 ELSE 1 END DESC, p.name ASC LIMIT 30`,
   items: `SELECT i.id, i.name, i.type, i.status, i.current_quantity, i.unit, i.sku, i.storage_location, i.location_id, l.name AS legacy_location_name, sc.name AS storage_container_name, sc.storage_location AS storage_container_location, 1.0 AS rank FROM items i LEFT JOIN locations l ON l.id = i.location_id LEFT JOIN storage_containers sc ON sc.id = i.storage_container_id WHERE (COALESCE(i.name,'') ILIKE '%' || $1 || '%' OR COALESCE(i.sku,'') ILIKE '%' || $1 || '%' OR COALESCE(i.storage_location,'') ILIKE '%' || $1 || '%' OR COALESCE(l.name,'') ILIKE '%' || $1 || '%' OR COALESCE(sc.name,'') ILIKE '%' || $1 || '%' OR COALESCE(sc.storage_location,'') ILIKE '%' || $1 || '%') ORDER BY CASE WHEN lower(i.name)=lower($1) THEN 3 WHEN lower(i.name) LIKE lower($1) || '%' THEN 2 ELSE 1 END DESC, i.name ASC LIMIT 30`,
-  notes: `SELECT id, title, body, tags, updated_at, 1.0 AS rank FROM notes WHERE (COALESCE(title,'') ILIKE '%' || $1 || '%' OR COALESCE(body,'') ILIKE '%' || $1 || '%' OR EXISTS (SELECT 1 FROM unnest(COALESCE(tags, ARRAY[]::text[])) tag WHERE tag ILIKE '%' || $1 || '%')) AND ($3 = 'admin' OR project_id IS NULL OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = notes.project_id AND pm.user_id = $2)) ORDER BY CASE WHEN lower(title)=lower($1) THEN 3 WHEN lower(title) LIKE lower($1) || '%' THEN 2 ELSE 1 END DESC, updated_at DESC LIMIT 30`,
-  transactions: `SELECT id, type, amount, date, vendor, notes, item_id, project_id, 1.0 AS rank FROM transactions WHERE (COALESCE(vendor,'') ILIKE '%' || $1 || '%' OR COALESCE(notes,'') ILIKE '%' || $1 || '%' OR COALESCE(type,'') ILIKE '%' || $1 || '%') AND ($3 = 'admin' OR project_id IS NULL OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = transactions.project_id AND pm.user_id = $2)) ORDER BY date DESC LIMIT 30`,
-  resources: `SELECT id, name, kind, file_type, original_filename, item_id, project_id, note_id, category, description, tags, updated_at, 1.0 AS rank FROM resources WHERE (COALESCE(name,'') ILIKE '%' || $1 || '%' OR COALESCE(original_filename,'') ILIKE '%' || $1 || '%' OR COALESCE(description,'') ILIKE '%' || $1 || '%' OR COALESCE(category,'') ILIKE '%' || $1 || '%' OR EXISTS (SELECT 1 FROM unnest(COALESCE(tags, ARRAY[]::text[])) tag WHERE tag ILIKE '%' || $1 || '%')) AND ($3 = 'admin' OR project_id IS NULL OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = resources.project_id AND pm.user_id = $2)) ORDER BY CASE WHEN lower(name)=lower($1) THEN 3 WHEN lower(name) LIKE lower($1) || '%' THEN 2 ELSE 1 END DESC, updated_at DESC LIMIT 30`,
+  notes: `SELECT id, title, body, tags, updated_at, 1.0 AS rank FROM notes WHERE (COALESCE(title,'') ILIKE '%' || $1 || '%' OR COALESCE(body,'') ILIKE '%' || $1 || '%' OR EXISTS (SELECT 1 FROM unnest(COALESCE(tags, ARRAY[]::text[])) tag WHERE tag ILIKE '%' || $1 || '%'))  ORDER BY CASE WHEN lower(title)=lower($1) THEN 3 WHEN lower(title) LIKE lower($1) || '%' THEN 2 ELSE 1 END DESC, updated_at DESC LIMIT 30`,
+  transactions: `SELECT id, type, amount, date, vendor, notes, item_id, project_id, 1.0 AS rank FROM transactions WHERE (COALESCE(vendor,'') ILIKE '%' || $1 || '%' OR COALESCE(notes,'') ILIKE '%' || $1 || '%' OR COALESCE(type,'') ILIKE '%' || $1 || '%') AND ($4::boolean OR direction = 'expense') ORDER BY date DESC LIMIT 30`,
+  resources: `SELECT id, name, kind, file_type, original_filename, item_id, project_id, note_id, category, description, tags, updated_at, 1.0 AS rank FROM resources WHERE (COALESCE(name,'') ILIKE '%' || $1 || '%' OR COALESCE(original_filename,'') ILIKE '%' || $1 || '%' OR COALESCE(description,'') ILIKE '%' || $1 || '%' OR COALESCE(category,'') ILIKE '%' || $1 || '%' OR EXISTS (SELECT 1 FROM unnest(COALESCE(tags, ARRAY[]::text[])) tag WHERE tag ILIKE '%' || $1 || '%'))  ORDER BY CASE WHEN lower(name)=lower($1) THEN 3 WHEN lower(name) LIKE lower($1) || '%' THEN 2 ELSE 1 END DESC, updated_at DESC LIMIT 30`,
   users: `SELECT id, username, display_name, role, email, 1.0 AS rank FROM users WHERE username ILIKE '%' || $1 || '%' OR display_name ILIKE '%' || $1 || '%' OR email ILIKE '%' || $1 || '%' ORDER BY CASE WHEN lower(username)=lower($1) OR lower(display_name)=lower($1) THEN 3 WHEN lower(username) LIKE lower($1) || '%' OR lower(display_name) LIKE lower($1) || '%' THEN 2 ELSE 1 END DESC, username ASC LIMIT 30`,
-  tasks: `SELECT t.id, t.project_id, t.title, t.description, t.status, t.priority, p.name AS project_name, 1.0 AS rank FROM project_tasks t JOIN projects p ON p.id=t.project_id WHERE (COALESCE(t.title,'') ILIKE '%' || $1 || '%' OR COALESCE(t.description,'') ILIKE '%' || $1 || '%') AND ($3 = 'admin' OR p.owner_id = $2 OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = t.project_id AND pm.user_id = $2)) ORDER BY CASE WHEN lower(t.title)=lower($1) THEN 3 WHEN lower(t.title) LIKE lower($1) || '%' THEN 2 ELSE 1 END DESC, t.updated_at DESC LIMIT 30`,
-  experiments: `SELECT e.id, e.project_id, e.title, e.status, e.hypothesis, e.procedure, p.name AS project_name, 1.0 AS rank FROM project_experiments e JOIN projects p ON p.id=e.project_id WHERE (COALESCE(e.title,'') ILIKE '%' || $1 || '%' OR COALESCE(e.hypothesis,'') ILIKE '%' || $1 || '%' OR COALESCE(e.procedure,'') ILIKE '%' || $1 || '%') AND ($3 = 'admin' OR p.owner_id = $2 OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = e.project_id AND pm.user_id = $2)) ORDER BY CASE WHEN lower(e.title)=lower($1) THEN 3 WHEN lower(e.title) LIKE lower($1) || '%' THEN 2 ELSE 1 END DESC, e.updated_at DESC LIMIT 30`,
-  blocks: `SELECT b.id, b.project_id, b.title, b.block_type, b.text_content, p.name AS project_name, 1.0 AS rank FROM project_blocks b JOIN projects p ON p.id=b.project_id WHERE (COALESCE(b.title,'') ILIKE '%' || $1 || '%' OR COALESCE(b.text_content,'') ILIKE '%' || $1 || '%') AND ($3 = 'admin' OR p.owner_id = $2 OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = b.project_id AND pm.user_id = $2)) ORDER BY CASE WHEN lower(COALESCE(b.title,''))=lower($1) THEN 3 WHEN lower(COALESCE(b.title,'')) LIKE lower($1) || '%' THEN 2 ELSE 1 END DESC, b.created_at DESC LIMIT 30`,
+  tasks: `SELECT t.id, t.project_id, t.title, t.description, t.status, t.priority, p.name AS project_name, 1.0 AS rank FROM project_tasks t JOIN projects p ON p.id=t.project_id WHERE (COALESCE(t.title,'') ILIKE '%' || $1 || '%' OR COALESCE(t.description,'') ILIKE '%' || $1 || '%')  ORDER BY CASE WHEN lower(t.title)=lower($1) THEN 3 WHEN lower(t.title) LIKE lower($1) || '%' THEN 2 ELSE 1 END DESC, t.updated_at DESC LIMIT 30`,
+  experiments: `SELECT e.id, e.project_id, e.title, e.status, e.hypothesis, e.procedure, p.name AS project_name, 1.0 AS rank FROM project_experiments e JOIN projects p ON p.id=e.project_id WHERE (COALESCE(e.title,'') ILIKE '%' || $1 || '%' OR COALESCE(e.hypothesis,'') ILIKE '%' || $1 || '%' OR COALESCE(e.procedure,'') ILIKE '%' || $1 || '%')  ORDER BY CASE WHEN lower(e.title)=lower($1) THEN 3 WHEN lower(e.title) LIKE lower($1) || '%' THEN 2 ELSE 1 END DESC, e.updated_at DESC LIMIT 30`,
+  blocks: `SELECT b.id, b.project_id, b.title, b.block_type, b.text_content, p.name AS project_name, 1.0 AS rank FROM project_blocks b JOIN projects p ON p.id=b.project_id WHERE (COALESCE(b.title,'') ILIKE '%' || $1 || '%' OR COALESCE(b.text_content,'') ILIKE '%' || $1 || '%')  ORDER BY CASE WHEN lower(COALESCE(b.title,''))=lower($1) THEN 3 WHEN lower(COALESCE(b.title,'')) LIKE lower($1) || '%' THEN 2 ELSE 1 END DESC, b.created_at DESC LIMIT 30`,
 };
 
 const TYPE_PERMISSIONS = Object.freeze({
@@ -32,8 +32,10 @@ const TYPE_PERMISSIONS = Object.freeze({
 
 // Items and users are global tables and their queries only bind $1.
 // Project-scoped types bind query, user id, and role ($1, $2, $3).
-function queryParams(type, q, userId, role) {
-  return type === 'items' || type === 'users' ? [q] : [q, userId, role];
+function queryParams(type, q, userId, role, sensitive) {
+  if (type === 'items' || type === 'users') return [q];
+  if (type === 'transactions') return [q, userId, role, sensitive];
+  return [q];
 }
 
 function normalizeTypes(type) { const requested = type ? (Array.isArray(type) ? type : String(type).split(',')) : Object.keys(TYPE_QUERIES); return [...new Set(requested.filter((value) => Object.hasOwn(TYPE_QUERIES, value)))]; }
@@ -56,12 +58,12 @@ router.get('/', async (req, res) => {
   let types = normalizeTypes(req.query.type);
   try {
     const permissions = await getUserPermissions(req.user.userId, req.user.role);
-    types = types.filter((type) => permissions.has(TYPE_PERMISSIONS[type]));
+    types = types.filter((type) => (permissions.has(TYPE_PERMISSIONS[type]) || LAB_WIDE_READ_PERMISSIONS.has(TYPE_PERMISSIONS[type])));
     if (types.length === 0) return res.status(403).json({ error: { code: 'PERMISSION_DENIED', message: 'No permitted search types are available' } });
 
     // Do not let one broken category make the entire global search fail.
     const settled = await Promise.allSettled(types.map(async (type) => {
-      const result = await pool.query(TYPE_QUERIES[type], queryParams(type, q, req.user.userId, req.user.role));
+      const result = await pool.query(TYPE_QUERIES[type], queryParams(type, q, req.user.userId, req.user.role, canReadSensitiveFinance(permissions)));
       return [type, result.rows.map((row) => decorate(type, row))];
     }));
     const rows = [];
