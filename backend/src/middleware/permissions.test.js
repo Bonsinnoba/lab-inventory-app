@@ -43,3 +43,10 @@ test('standard finance cannot read unexpected sensitive financial columns',()=>{
  assert.deepEqual(projectFinancialSummaryProjection(summary,new Set(['finance.view'])),{project_id:'p1',name:'Project',actual_expense:20});
  assert.equal(projectFinancialSummaryProjection(summary,new Set(['projects.view'])),null);
 });
+
+test('sensitive finance grant alone cannot bypass base finance permission',()=>{
+ const source={id:'p3',name:'Project',budget:500,confidential_bank_account:'private'};
+ const permissions=new Set(['finance.view_sensitive']);
+ assert.deepEqual(projectFinancialProjection(source,permissions),{id:'p3',name:'Project'});
+ assert.equal(projectFinancialSummaryProjection({project_id:'p3',actual_expense:20},permissions),null);
+});
