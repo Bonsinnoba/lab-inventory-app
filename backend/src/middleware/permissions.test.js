@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {LAB_WIDE_READ_PERMISSIONS,rolePermissions,projectFinancialProjection,projectFinancialSummaryProjection,transactionResponseProjection} from './permissions.js';
+import {LAB_WIDE_READ_PERMISSIONS,rolePermissions,projectFinancialProjection,projectFinancialSummaryProjection,transactionResponseProjection,canReadSensitiveFinance} from './permissions.js';
 
 test('ordinary laboratory reads do not include financial or administrative views',()=>{
  for(const permission of ['inventory.view','projects.view','notes.view','resources.view','engineering.view','automation.view'])
@@ -66,4 +66,11 @@ test('transaction mutation echoes fail closed without both financial read grants
   assert.deepEqual(transactionResponseProjection(row,permissions),{id:'t1',direction:'expense',amount:25,project_id:'p1'});
  }
  assert.deepEqual(transactionResponseProjection(row,new Set(['finance.view','finance.view_sensitive'])),row);
+});
+
+test('sensitive finance gate requires both read permissions in every combination',()=>{
+ assert.equal(canReadSensitiveFinance(new Set()),false);
+ assert.equal(canReadSensitiveFinance(new Set(['finance.view'])),false);
+ assert.equal(canReadSensitiveFinance(new Set(['finance.view_sensitive'])),false);
+ assert.equal(canReadSensitiveFinance(new Set(['finance.view','finance.view_sensitive'])),true);
 });
