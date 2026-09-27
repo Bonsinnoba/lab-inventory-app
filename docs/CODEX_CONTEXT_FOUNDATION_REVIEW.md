@@ -33,3 +33,12 @@ Independently inspect the actual code on `main`, challenge assumptions, repair d
 
 ## Additional review: context relationship projection
 Context v2 now derives typed edges from existing project foreign keys and reservation item links in `backend/src/context-relationships.js`. Review the edge vocabulary, source metadata, access inheritance and limit behavior. It is a bounded projection of the context response, NOT a comprehensive persisted knowledge graph; do not infer missing edges. Verify CI includes `src/context-relationships.test.js`. In particular, a relationship may reveal the existence of a project-linked record: confirm per-record ACLs before expanding this projection beyond the currently permission-checked project scope. Assess adding a canonical relation registry, pagination and versioned provenance, then implement real PostgreSQL integration tests. Document every fix and its evidence.
+
+
+## Additional review: project-scoped lexical evidence retrieval (CHANGE-067)
+- New `backend/src/context-evidence.js`: query normalization, bounded limits, source-linked evidence result shaping.
+- `backend/src/routes/context.js`: `GET /api/context/projects/:id/evidence?q=...&limit=...` and shared `searchProjectEvidence` helper. Both notes and resources are filtered by exact `project_id` and project access; route requires `projects.view` AND `notes.view`. Read-only, no embedding store. Results include typed source IDs, update timestamps, short excerpts, lexical retrieval method and truncation flag.
+- `backend/src/routes/assistant.js`: `search_project_evidence` read-only tool reuses the same helper and requires both permissions. Registered in workspace and lab-data tool groups.
+- `backend/src/context-evidence.test.js` and backend CI cover query bounds, access rejection, SQL project scope, result bounds and provenance.
+
+**Codex MUST independently review:** note/resource-specific ACLs beyond project visibility, excerpt disclosure and HTML/plaintext sanitization, whether `notes.view` is sufficient for resources, ILIKE wildcard escaping, matching/ranking quality, query-plan performance on large text, cancellation/timeouts, and multi-query consistency. Verify real PostgreSQL schema columns and migrations; run real DB integration tests with unrelated-project, disabled-user and observer fixtures. Do not claim semantic search or complete source citation coverage. Review retrieval cost, truncation correctness when both sections hit limits, and assistant context-mode tool exposure. Document all fixes and actual test evidence.
