@@ -83,3 +83,7 @@ Owner requests implementation across all five phases before one final manual acc
 - 23f9e88, d8468be: LabCalc-style mini result bar and structured insertion controls.
 - 4a16e1d: wire mini bar, insert controls and local-first inventory E24 suggestions to Engineering Tools.
 - Scope: these files reproduce the supplied bundle's intended UI and behaviors but are not byte-identical imports of all supplied original files; the current electronics panel remains the earlier integrated implementation. Full source-fidelity comparison and desktop build remain pending. GitHub combined commit status returned no status checks for 4a16e1d at time of query; this is not a passing CI result.
+
+### LabCalc visual refinement against collaborator design specification v1.0 (2026-09-27)
+- 3d9ddff: searchable category-based electronics toolbox, active-tool cards, expandable formula/assumption panel, reset, refined responsive spacing and controls.
+- Remaining: actual dual-size interactive mini calculator (current mini remains result-only), docking/resizing/persistence, expanded near-fullscreen shell, live calculation, unit selectors, accessibility/focus testing, 4/5/6-band visualizer, advanced tool breadth, high-fidelity mockups and consolidated desktop build. Do not claim full spec acceptance.
