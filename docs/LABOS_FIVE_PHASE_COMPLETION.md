@@ -77,3 +77,9 @@ Owner requests implementation across all five phases before one final manual acc
 - 2c56f95 and 1ab7046: draggable minimized bar shows latest result; remove unused callback.
 - IMPORTANT: This is a functional integration inspired by the approved bundle, **not yet a verbatim installation of all six collaborator source files**. Full fidelity to the collaborator's MiniResultBar, InsertActions, E-series, inventory suggestions and source math needs a follow-up source import. Do not label approved-design integration complete until that import and visual review are evidenced.
 - Fresh desktop TypeScript/Vite CI and manual acceptance are pending; no passing result has been observed for these commits.
+
+### LabCalc follow-up on main (2026-09-27)
+- 4c3ff3d, e83f067: E-series helper and offline stock-aware resistor matching.
+- 23f9e88, d8468be: LabCalc-style mini result bar and structured insertion controls.
+- 4a16e1d: wire mini bar, insert controls and local-first inventory E24 suggestions to Engineering Tools.
+- Scope: these files reproduce the supplied bundle's intended UI and behaviors but are not byte-identical imports of all supplied original files; the current electronics panel remains the earlier integrated implementation. Full source-fidelity comparison and desktop build remain pending. GitHub combined commit status returned no status checks for 4a16e1d at time of query; this is not a passing CI result.
