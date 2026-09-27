@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {LAB_WIDE_READ_PERMISSIONS,rolePermissions} from './permissions.js';
+import {LAB_WIDE_READ_PERMISSIONS,rolePermissions,projectFinancialProjection} from './permissions.js';
 
 test('ordinary laboratory reads do not include financial or administrative views',()=>{
  for(const permission of ['inventory.view','projects.view','notes.view','resources.view','engineering.view','automation.view'])
@@ -16,4 +16,12 @@ test('lab-wide read access does not grant write or approval permissions',()=>{
 test('financial role baselines remain distinct from ordinary read access',()=>{
  assert.ok(!rolePermissions('viewer').has('finance.view_sensitive'));
  assert.ok(rolePermissions('admin').has('finance.view_sensitive'));
+});
+
+test('project financial projection removes financial fields without mutating source',()=>{
+ const original={id:'p1',name:'Lab project',budget:100,total_spent:20,actual_expense:20,project_income:10,allocated_inventory_value:30,budget_remaining:80,net_spend:10};
+ const ordinary=projectFinancialProjection(original,new Set(['projects.view']));
+ assert.deepEqual(ordinary,{id:'p1',name:'Lab project'});
+ assert.equal(original.budget,100);
+ assert.equal(projectFinancialProjection(original,new Set(['finance.view'])).budget,100);
 });
