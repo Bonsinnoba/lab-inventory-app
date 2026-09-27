@@ -1,17 +1,10 @@
 import { Router } from 'express';
-import { hasPermission, getUserPermissions } from '../middleware/permissions.js';
+import { hasPermission, getUserPermissions, transactionResponseProjection } from '../middleware/permissions.js';
 import { writeAuditLog } from '../middleware/audit.js';
 import { requireProjectEditForTransaction, requireExistingTransactionProjectEdit, requireExistingTransactionProjectDelete } from '../middleware/project-transaction-boundary.js';
 import { pool } from '../db.js';
 
 const router = Router();
-// Write permissions do not imply permission to read sensitive transaction metadata.
-export function transactionResponseProjection(transaction, permissions) {
-  if (permissions.has('finance.view') && permissions.has('finance.view_sensitive')) return {...transaction};
-  const fields = ['id','type','direction','amount','date','vendor','notes','item_id','project_id','logged_by','created_at','updated_at'];
-  return Object.fromEntries(fields.filter(field => Object.hasOwn(transaction,field)).map(field => [field,transaction[field]]));
-}
-
 
 router.get('/', hasPermission('finance.view'), async (req, res) => {
   const permissions = await getUserPermissions(req.user.userId, req.user.role);
