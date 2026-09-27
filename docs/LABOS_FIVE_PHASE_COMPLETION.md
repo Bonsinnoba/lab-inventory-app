@@ -35,3 +35,21 @@ Scope: full UI audit, empty/loading/error states, offline indicators, finance fi
 - Inspected backend/src/schema.sql: base transactions table defines created_at but does not define updated_at. Removed the unverified t.updated_at reference from standard transaction SELECT in commit 011fc09. Full migration inventory still needs confirmation; the query now works without that optional column.
 - Finance GET list and summary now reuse req.permissions from hasPermission middleware rather than performing an independent override read after the middleware active-account check (commit 50929f0). Both grants are still required for sensitive finance.
 - Neither change is verified by fresh CI or real PostgreSQL integration at time of writing. Obtain actual failed-job logs and run security baseline, backend syntax check and PostgreSQL route tests. Do not close Phase 1 prematurely.
+
+### Consolidated Phase 1 audit pass — 2026-09-27
+Implemented on main:
+- d31a202: global search removes project budget from ordinary search results, expands ordinary cross-project search, and limits standard financial search to expenses.
+- 98ff54a: corrects contiguous SQL parameters for sensitive financial search.
+- 0b60ea3: full transaction Excel export now requires both financial read grants.
+- 3674a50: detailed bulk-purchase Excel export now requires both financial read grants.
+- d624972 and e29019f: funding-source and budget-period GET routes now require both financial read grants.
+- 3111086: finance sync pull applies transaction projection and suppresses sensitive deletion tombstones for standard viewers; project sync pull includes all ordinary projects and applies financial projection.
+- 9b50a05: project sync budget mutations require finance.edit, unauthorized owner assignment is rejected, and income sync changes require both financial read grants.
+- 6b929cb: sync mutation responses (including replayed idempotency responses) project finance-sensitive data by caller permissions.
+- 36ec32e and 1cc9578: additional projection and source-invariant regression tests.
+
+Evidence and remaining acceptance gaps:
+- Source inspection confirmed authenticateToken checks current database is_active and role on every request; this is not a substitute for HTTP role-matrix tests.
+- Source-level checks added, but no fresh GitHub Actions run results, local npm installation, or real PostgreSQL integration results were accessible from this session. CI status must remain UNVERIFIED. No independent Codex execution was available; Codex must review this commit set.
+- Review all remaining inventory, operations, context, reports and engineering endpoints for financial side channels, and review offline sync desktop compatibility with newly projected fields. Verify legacy idempotency replay behavior and financial Excel import transactional audit logging.
+- The full five-phase plan remains sequential. Phase 1 is NOT COMPLETE until the above acceptance gaps are closed with evidence.
