@@ -14,8 +14,6 @@ export async function getProjectAccess(projectId, user) {
   const permissions = await getUserPermissions(user.userId, role);
   // Ordinary project reads are laboratory-wide; no projects.view grant is needed.
 
-  if (role === 'admin') return { access: 'admin', memberRole: 'admin' };
-
   const result = await pool.query(`
     SELECT p.owner_id, pm.member_role
     FROM projects p
@@ -24,6 +22,7 @@ export async function getProjectAccess(projectId, user) {
 
   if (!result.rowCount) return { access: 'none', memberRole: null };
   const row = result.rows[0];
+  if (role === 'admin') return { access: 'admin', memberRole: 'admin' };
   if (role === 'viewer') return { access: 'view', memberRole: row.member_role || null };
   if (row.owner_id === user.userId) return { access: permissions.has('projects.edit') ? 'edit' : 'view', memberRole: 'lead' };
   if (row.member_role === 'lead' || row.member_role === 'member') return { access: permissions.has('projects.edit') ? 'edit' : 'view', memberRole: row.member_role };
