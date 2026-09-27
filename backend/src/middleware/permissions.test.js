@@ -50,3 +50,12 @@ test('sensitive finance grant alone cannot bypass base finance permission',()=>{
  assert.deepEqual(projectFinancialProjection(source,permissions),{id:'p3',name:'Project'});
  assert.equal(projectFinancialSummaryProjection({project_id:'p3',actual_expense:20},permissions),null);
 });
+
+test('project write response projection excludes finance and future fields without finance.view',()=>{
+ const databaseRow={id:'p4',name:'Experiment',status:'planning',budget:100,review_status:'draft',future_private_field:'secret'};
+ const ordinary=projectFinancialProjection(databaseRow,new Set(['projects.edit']));
+ assert.deepEqual(ordinary,{id:'p4',name:'Experiment',status:'planning',review_status:'draft'});
+ const standard=projectFinancialProjection(databaseRow,new Set(['projects.edit','finance.view']));
+ assert.equal(standard.budget,100);
+ assert.ok(!Object.hasOwn(standard,'future_private_field'));
+});
