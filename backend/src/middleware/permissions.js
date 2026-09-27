@@ -40,7 +40,7 @@ export const ORDINARY_PROJECT_FIELDS = Object.freeze([
 export const STANDARD_PROJECT_FINANCIAL_FIELDS = Object.freeze(['budget','total_spent','actual_expense','project_income','allocated_inventory_value','budget_remaining','net_spend']);
 
 export function projectFinancialProjection(project, permissions) {
-  const fields = permissions.has('finance.view_sensitive') ? Object.keys(project) :
+  const fields = permissions.has('finance.view') && permissions.has('finance.view_sensitive') ? Object.keys(project) :
     permissions.has('finance.view') ? [...ORDINARY_PROJECT_FIELDS,...STANDARD_PROJECT_FINANCIAL_FIELDS] : ORDINARY_PROJECT_FIELDS;
   return Object.fromEntries(fields.filter(field => Object.hasOwn(project,field)).map(field => [field,project[field]]));
 }
