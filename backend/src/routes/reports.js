@@ -6,9 +6,11 @@ const router = Router();
 
 router.get('/overview', hasPermission('reports.view'), async (req, res) => {
   try {
-    const projectFilter = req.user.role === 'admin' ? '' : 'WHERE p.owner_id=$1 OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id=p.id AND pm.user_id=$1)';
-    const projectValues = req.user.role === 'admin' ? [] : [req.user.userId];
-    const resourceFilter = req.user.role === 'admin' ? '' : 'WHERE r.project_id IS NULL OR r.project_id IN (SELECT p.id FROM projects p LEFT JOIN project_members pm ON pm.project_id=p.id WHERE p.owner_id=$1 OR pm.user_id=$1)';
+    // Ordinary laboratory reports cover every project for active authorized members.
+    // Audit activity remains separately permissioned below.
+    const projectFilter = '';
+    const projectValues = [];
+    const resourceFilter = '';
     const permissions = await getUserPermissions(req.user.userId, req.user.role);
     const canViewAudit = req.user.role === 'admin' && permissions.has('audit.view');
     const [projects, inventory, tasks, experiments, resources, activity] = await Promise.all([
