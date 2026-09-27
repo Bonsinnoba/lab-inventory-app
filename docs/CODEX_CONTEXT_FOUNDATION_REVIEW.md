@@ -42,3 +42,9 @@ Context v2 now derives typed edges from existing project foreign keys and reserv
 - `backend/src/context-evidence.test.js` and backend CI cover query bounds, access rejection, SQL project scope, result bounds and provenance.
 
 **Codex MUST independently review:** note/resource-specific ACLs beyond project visibility, excerpt disclosure and HTML/plaintext sanitization, whether `notes.view` is sufficient for resources, ILIKE wildcard escaping, matching/ranking quality, query-plan performance on large text, cancellation/timeouts, and multi-query consistency. Verify real PostgreSQL schema columns and migrations; run real DB integration tests with unrelated-project, disabled-user and observer fixtures. Do not claim semantic search or complete source citation coverage. Review retrieval cost, truncation correctness when both sections hit limits, and assistant context-mode tool exposure. Document all fixes and actual test evidence.
+
+
+## Follow-up review: evidence relevance and literal matching (2026-09-27)
+- Independently verify CHANGE-068 literal LIKE escaping, SQL ESCAPE syntax and substring snippets on real PostgreSQL, especially percent, underscore, backslash, Unicode and long whitespace. Check snippet offsets when normalization changes text length; if necessary compute excerpts in application code on bounded candidate rows, without logging full documents.
+- Verify no unauthorized note/resource content can leak through assistant evidence tools, snippet fields, error responses or AI tool traces. Benchmark ILIKE query plans and consider full-text indexes; current search remains lexical and project-scoped, not semantic.
+- Add database-backed integration tests, inspect migration ordering, and document every correction on main.
