@@ -27,9 +27,12 @@ export async function assembleProjectContext(projectId,user,db=pool,accessResolv
  const fetched={experiments:experiments.rows,tasks:tasks.rows,inventory:inventory.rows,reservations:reservations.rows,notes:notes.rows,resources:resources.rows};
  const truncated=Object.fromEntries(Object.entries(fetched).map(([key,rows])=>[key,rows.length>limits[key]]));
  const sections=Object.fromEntries(Object.entries(fetched).map(([key,rows])=>[key,rows.slice(0,limits[key])]));
+ const sourceRefs=Object.fromEntries(Object.entries(sections).map(([section,rows])=>[
+  section,rows.map(row=>({source_type:section,source_id:row.id||row.item_id,project_id:projectId}))
+ ]));
  const base={schema_version:2,scope:{type:'project',id:projectId},generated_at:new Date().toISOString(),freshness:'central_live',access:access.access,
   project:project.rows[0],sections,
-  provenance:{authority:'central_postgresql',source:'labos_project_context',consistency:'multi_query_non_atomic',limits,truncated}};
+  provenance:{authority:'central_postgresql',source:'labos_project_context',consistency:'multi_query_non_atomic',limits,truncated,source_refs:sourceRefs}};
  return {...base,relationships:projectContextEdges(base)};
 
 }
