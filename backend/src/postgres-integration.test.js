@@ -24,6 +24,40 @@ test('migrated PostgreSQL schema supports finance and sync queries', async () =>
       for (const column of columns) assert.ok(found.has(column), table+'.'+column);
     }
     await pool.query("SELECT t.id,t.type,t.direction,t.amount,t.date,t.vendor,t.notes,t.item_id,t.project_id,t.logged_by,t.created_at,i.name AS item_name,p.name AS project_name FROM transactions t LEFT JOIN items i ON t.item_id=i.id LEFT JOIN projects p ON t.project_id=p.id WHERE t.direction='expense' LIMIT 1");
+    // Verify rollback using a real application table without persisting test data.
+    const client = await pool.connect();
+    let projectId;
+    try {
+      await client.query('BEGIN');
+      const inserted = await client.query(
+        "INSERT INTO projects(name,status,budget) VALUES ($1,'planning',$2) RETURNING id",
+        ['Phase 2 rollback probe', 12.50]
+      );
+      projectId = inserted.rows[0].id;
+      assert.equal((await client.query('SELECT 1 FROM projects WHERE id=$1',[projectId])).rowCount,1);
+      await client.query('ROLLBACK');
+    } finally {
+      client.release();
+    }
+    assert.equal((await pool.query('SELECT 1 FROM projects WHERE id=$1',[projectId])).rowCount,0,
+      'Rolled-back project must not persist');
+    // Check two independent database sessions respect transaction-scoped locks.
+    const first = await pool.connect();
+    const second = await pool.connect();
+    try {
+      await first.query('BEGIN');
+      await first.query('SELECT pg_advisory_xact_lock(190926, 2)');
+      const blocked = await second.query('SELECT pg_try_advisory_xact_lock(190926, 2) AS acquired');
+      assert.equal(blocked.rows[0].acquired,false,'Concurrent session must not acquire held lock');
+      await first.query('COMMIT');
+      const released = await second.query('SELECT pg_try_advisory_xact_lock(190926, 2) AS acquired');
+      assert.equal(released.rows[0].acquired,true,'Lock must be released after commit');
+      await second.query('SELECT pg_advisory_unlock(190926, 2)');
+    } finally {
+      await first.query('ROLLBACK').catch(()=>{});
+      first.release();
+      second.release();
+    }
   } finally {
     await pool.end();
   }
