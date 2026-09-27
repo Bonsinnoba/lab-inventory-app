@@ -53,3 +53,6 @@ Evidence and remaining acceptance gaps:
 - Source-level checks added, but no fresh GitHub Actions run results, local npm installation, or real PostgreSQL integration results were accessible from this session. CI status must remain UNVERIFIED. No independent Codex execution was available; Codex must review this commit set.
 - Review all remaining inventory, operations, context, reports and engineering endpoints for financial side channels, and review offline sync desktop compatibility with newly projected fields. Verify legacy idempotency replay behavior and financial Excel import transactional audit logging.
 - The full five-phase plan remains sequential. Phase 1 is NOT COMPLETE until the above acceptance gaps are closed with evidence.
+
+### Phase 2 PostgreSQL integration kickoff (2026-09-27)
+Owner confirms previous checks passed. Added opt-in real database integration test (dd14fc4), PostgreSQL 16 CI migration and idempotent replay job (afae8f5), and rollback/concurrent-session checks (6830467). Fresh CI evidence and independent Codex review remain pending. Next: seeded authenticated HTTP role matrix, legacy migration upgrades, and multi-client conflict tests. Phase 2 remains in progress.
