@@ -56,3 +56,10 @@ Evidence and remaining acceptance gaps:
 
 ### Phase 2 PostgreSQL integration kickoff (2026-09-27)
 Owner confirms previous checks passed. Added opt-in real database integration test (dd14fc4), PostgreSQL 16 CI migration and idempotent replay job (afae8f5), and rollback/concurrent-session checks (6830467). Fresh CI evidence and independent Codex review remain pending. Next: seeded authenticated HTTP role matrix, legacy migration upgrades, and multi-client conflict tests. Phase 2 remains in progress.
+
+### Consolidated implementation / deferred owner acceptance (2026-09-27)
+Owner requests implementation across all five phases before one final manual acceptance round. Continue adding automated tests and CI checks during implementation; do not pause for owner-run tests after each phase. This changes the testing schedule, not the evidence standard: unrun tests and independent reviews must remain explicitly pending.
+- Phase 2: 688cc80 adds real PostgreSQL CHECK/FK constraint and savepoint recovery probes.
+- Phase 3: c8c3d90 binds idempotency replays to user, device, entity type and operation, including unique-violation race recovery, and projects replay responses by current permissions.
+- Phase 4: calculator redesign integration is BLOCKED on collaborator-approved code/design handoff; preserve existing calculator in the meantime. Context intelligence can progress independently.
+- Phase 5: prepare release verification and final owner acceptance checklist once implementation is ready. No phase may be represented as tested or released solely because code was committed.
