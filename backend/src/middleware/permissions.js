@@ -30,10 +30,16 @@ export function canReadOrdinaryLabData(permission, permissions) {
   return LAB_WIDE_READ_PERMISSIONS.has(permission) || permissions.has(permission);
 }
 
+// Explicit projection: future database columns are not exposed to ordinary readers
+// unless they have been reviewed and added here.
+export const ORDINARY_PROJECT_FIELDS = Object.freeze([
+  'id','name','status','description','priority','start_date','due_date',
+  'owner_id','review_status','created_at','updated_at'
+]);
+
 export function projectFinancialProjection(project, permissions) {
   if (permissions.has('finance.view')) return {...project};
-  const {budget,total_spent,actual_expense,project_income,allocated_inventory_value,budget_remaining,net_spend,...ordinary} = project;
-  return ordinary;
+  return Object.fromEntries(ORDINARY_PROJECT_FIELDS.filter(field => Object.hasOwn(project, field)).map(field => [field, project[field]]));
 }
 
 export async function getUserPermissions(userId, role) {
