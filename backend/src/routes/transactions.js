@@ -20,7 +20,7 @@ router.get('/', hasPermission('finance.view'), async (req, res) => {
   if (from) { values.push(from); conditions.push(`t.date >= $${values.length}`); }
   if (to) { values.push(to); conditions.push(`t.date <= $${values.length}`); }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-  const columns = sensitive ? 't.*, i.name AS item_name, p.name AS project_name, fs.name AS funding_source_name, bp.label AS budget_period_label' : 't.id,t.type,t.direction,t.amount,t.date,t.vendor,t.notes,t.item_id,t.project_id,t.logged_by,t.created_at,t.updated_at,i.name AS item_name,p.name AS project_name';
+  const columns = sensitive ? 't.*, i.name AS item_name, p.name AS project_name, fs.name AS funding_source_name, bp.label AS budget_period_label' : 't.id,t.type,t.direction,t.amount,t.date,t.vendor,t.notes,t.item_id,t.project_id,t.logged_by,t.created_at,i.name AS item_name,p.name AS project_name';
   const sensitiveJoins = sensitive ? 'LEFT JOIN funding_sources fs ON t.funding_source_id = fs.id LEFT JOIN budget_periods bp ON t.budget_period_id = bp.id' : '';
   try { const result = await pool.query(`SELECT ${columns} FROM transactions t LEFT JOIN items i ON t.item_id = i.id LEFT JOIN projects p ON t.project_id = p.id ${sensitiveJoins} ${where} ORDER BY t.date DESC, t.created_at DESC`, values); res.setHeader('Cache-Control','no-store'); res.json(result.rows); }
   catch (err) { console.error(err); res.status(500).json({ error: err.message || 'Failed to fetch transactions' }); }
