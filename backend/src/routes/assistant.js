@@ -373,14 +373,15 @@ async function getProjectFinancials({ project_id }, user) {
 }
 
 async function getTransactionSummary({ from, to }, user) {
-  await requireAssistantPermission('finance.view', user);
-  const conditions=[]; const values=[];
+  const permissions = await requireAssistantPermission('finance.view', user);
+  const sensitive = permissions.has('finance.view_sensitive');
+  const conditions=sensitive?[]:["direction = 'expense'"]; const values=[];
   if (from) { values.push(from); conditions.push(`date >= $${values.length}`); }
   if (to) { values.push(to); conditions.push(`date <= $${values.length}`); }
   const where=conditions.length?`WHERE ${conditions.join(' AND ')}`:'';
   const rows=(await pool.query(`SELECT direction,SUM(amount)::numeric AS total FROM transactions ${where} GROUP BY direction`,values)).rows;
   const income=Number(rows.find(r=>r.direction==='income')?.total||0); const expense=Number(rows.find(r=>r.direction==='expense')?.total||0);
-  return result({ from: from || null, to: to || null, income, expense, net: income-expense });
+  return result({ from: from || null, to: to || null, income:sensitive?income:null, expense, net:sensitive?income-expense:null });
 }
 
 async function listLocations(user) {
