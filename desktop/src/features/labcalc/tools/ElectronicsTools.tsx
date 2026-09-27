@@ -1,4 +1,5 @@
-import {useState} from 'react';
+import {useEffect,useState} from 'react';
+import {Search,RotateCcw,ChevronDown,Info} from 'lucide-react';
 type Result={formula:string;inputs:Record<string,unknown>;result_numeric:number;result_unit:string;extras?:Record<string,unknown>};
 type Mode='ohm'|'power'|'divider'|'led'|'rc'|'parallel'|'series'|'battery'|'pcb'|'color';
 const MODES:[Mode,string][]=[['ohm',"Ohm's Law"],['power','Power'],['divider','Voltage Divider'],['led','LED Resistor'],['rc','RC Filter / τ'],['parallel','Parallel R'],['series','Series R'],['battery','Battery Life'],['pcb','PCB Trace Width'],['color','Resistor Color Code']];
@@ -7,6 +8,7 @@ const fieldClass='w-full px-2.5 py-2 bg-bg border border-border rounded-sm text-
 function positive(x:number,label:string){if(!Number.isFinite(x)||x<=0)throw Error(label+' must be positive');return x;}
 export default function ElectronicsTools({onResult}:{onResult:(r:Result|null)=>void}){
  const [mode,setMode]=useState<Mode>('ohm'),[v,setV]=useState<Record<string,string>>({}),[error,setError]=useState(''),[bands,setBands]=useState(['brown','black','black','gold']);
+ const [search,setSearch]=useState(''),[showFormula,setShowFormula]=useState(true);
  const set=(k:string,value:string)=>setV(old=>({...old,[k]:value}));
  const field=(k:string,label:string,placeholder='')=><label key={k} className="block"><span className="text-[10px] uppercase tracking-[0.12em] text-text-secondary">{label}</span><input className={fieldClass+' mt-1'} value={v[k]||''} onChange={e=>set(k,e.target.value)} placeholder={placeholder} inputMode={k==='list'?'text':'decimal'}/></label>;
  const run=()=>{setError('');try{
