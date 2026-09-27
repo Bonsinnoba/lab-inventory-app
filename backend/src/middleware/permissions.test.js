@@ -25,3 +25,10 @@ test('project financial projection removes financial fields without mutating sou
  assert.equal(original.budget,100);
  assert.equal(projectFinancialProjection(original,new Set(['finance.view'])).budget,100);
 });
+
+test('future and unknown project columns fail closed for ordinary readers',()=>{
+ const source={id:'p2',name:'Example',description:'ordinary',budget:100,secret_future_financial_column:999,internal_future_column:'private'};
+ const projected=projectFinancialProjection(source,new Set(['projects.view']));
+ assert.deepEqual(projected,{id:'p2',name:'Example',description:'ordinary'});
+ assert.equal(projectFinancialProjection(source,new Set(['finance.view'])).secret_future_financial_column,999);
+});
