@@ -40,14 +40,14 @@ export const ORDINARY_PROJECT_FIELDS = Object.freeze([
 export const STANDARD_PROJECT_FINANCIAL_FIELDS = Object.freeze(['budget','total_spent','actual_expense','project_income','allocated_inventory_value','budget_remaining','net_spend']);
 
 export function projectFinancialProjection(project, permissions) {
-  const fields = permissions.has('finance.view') && permissions.has('finance.view_sensitive') ? Object.keys(project) :
+  const fields = canReadSensitiveFinance(permissions) ? Object.keys(project) :
     permissions.has('finance.view') ? [...ORDINARY_PROJECT_FIELDS,...STANDARD_PROJECT_FINANCIAL_FIELDS] : ORDINARY_PROJECT_FIELDS;
   return Object.fromEntries(fields.filter(field => Object.hasOwn(project,field)).map(field => [field,project[field]]));
 }
 
 export function projectFinancialSummaryProjection(summary, permissions) {
   if (!permissions.has('finance.view')) return null;
-  if (permissions.has('finance.view_sensitive')) return {...summary};
+  if (canReadSensitiveFinance(permissions)) return {...summary};
   const fields = ['project_id','name','budget','actual_expense','project_income','net_spend','allocated_inventory_value','budget_remaining','budget_used_percent'];
   return Object.fromEntries(fields.filter(field => Object.hasOwn(summary,field)).map(field => [field,summary[field]]));
 }
@@ -89,7 +89,12 @@ export { ROLE_BASELINES };
 
 // Explicit safe fields for expense transaction reads and mutation echoes.
 export function transactionResponseProjection(transaction, permissions) {
-  if (permissions.has('finance.view') && permissions.has('finance.view_sensitive')) return {...transaction};
+  if (canReadSensitiveFinance(permissions)) return {...transaction};
   const fields = ['id','type','direction','amount','date','vendor','notes','item_id','project_id','logged_by','created_at','updated_at'];
   return Object.fromEntries(fields.filter(field => Object.hasOwn(transaction,field)).map(field => [field,transaction[field]]));
+}
+
+// Financial detail access always requires both grants; a sensitive-only override is insufficient.
+export function canReadSensitiveFinance(permissions) {
+  return permissions.has('finance.view') && permissions.has('finance.view_sensitive');
 }
