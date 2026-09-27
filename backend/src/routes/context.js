@@ -52,7 +52,7 @@ export async function searchProjectEvidence(projectId,user,query,limit=10,db=poo
  merged.sort((a,b)=>Date.parse(b.updated_at)-Date.parse(a.updated_at));
  return {schema_version:1,scope:{type:'project',id:projectId},query:normalized,generated_at:new Date().toISOString(),retrieval:'lexical_project_scoped',results:merged.slice(0,cap),truncated:notes.rows.length>cap||resources.rows.length>cap||merged.length>cap,provenance:{authority:'central_postgresql',consistency:'multi_query_non_atomic'}};
 }
-router.get('/projects/:id/evidence',hasPermission('projects.view'),hasPermission('notes.view'),async(req,res)=>{
+router.get('/projects/:id/evidence',hasPermission('projects.view'),hasPermission('notes.view'),hasPermission('resources.view'),async(req,res)=>{
  if(!uuid.test(req.params.id))return res.status(400).json({error:{code:'INVALID_PROJECT_ID',message:'Valid project UUID required'}});
  try{
   const result=await searchProjectEvidence(req.params.id,req.user,req.query.q,req.query.limit);
