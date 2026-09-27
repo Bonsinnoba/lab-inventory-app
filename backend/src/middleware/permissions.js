@@ -86,3 +86,10 @@ export function hasPermission(permission) {
 }
 
 export { ROLE_BASELINES };
+
+// Explicit safe fields for expense transaction reads and mutation echoes.
+export function transactionResponseProjection(transaction, permissions) {
+  if (permissions.has('finance.view') && permissions.has('finance.view_sensitive')) return {...transaction};
+  const fields = ['id','type','direction','amount','date','vendor','notes','item_id','project_id','logged_by','created_at','updated_at'];
+  return Object.fromEntries(fields.filter(field => Object.hasOwn(transaction,field)).map(field => [field,transaction[field]]));
+}
