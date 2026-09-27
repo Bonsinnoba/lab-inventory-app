@@ -30,3 +30,8 @@ Scope: full UI audit, empty/loading/error states, offline indicators, finance fi
 3. Add HTTP role-matrix tests for transaction list/summary, budget-period filters, mutation echoes, assistant financial summary, reports overview and disabled accounts.
 4. Audit remaining import/export endpoints and financial side channels; record every route examined and decisions made.
 5. Ask Codex to independently reproduce tests and document all findings before closing Phase 1.
+
+### Phase 1 execution record — 2026-09-27
+- Inspected backend/src/schema.sql: base transactions table defines created_at but does not define updated_at. Removed the unverified t.updated_at reference from standard transaction SELECT in commit 011fc09. Full migration inventory still needs confirmation; the query now works without that optional column.
+- Finance GET list and summary now reuse req.permissions from hasPermission middleware rather than performing an independent override read after the middleware active-account check (commit 50929f0). Both grants are still required for sensitive finance.
+- Neither change is verified by fresh CI or real PostgreSQL integration at time of writing. Obtain actual failed-job logs and run security baseline, backend syntax check and PostgreSQL route tests. Do not close Phase 1 prematurely.
