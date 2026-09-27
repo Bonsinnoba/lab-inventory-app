@@ -104,3 +104,9 @@ Owner requests implementation across all five phases before one final manual acc
 - f5ad8ee: floating panel defaults to 98vh within 8px viewport margins; drag starts from the header only, leaving interactive content scrollable and editable.
 - 59ff6d3: versioned floating size storage v2 so old 400px saved height does not suppress the new default; users can resize and persist their new preferred size.
 - Await owner TypeScript/Vite build and desktop drag/resize/minimize/restore checks; do not mark verified until results arrive.
+
+### App-wide horizontal overflow and Engineering Tools layering (2026-09-27)
+- Owner screenshots show horizontal movement exposing overlapping left navigation and Engineering Tools panel.
+- 5b185a5: constrain app shell to viewport width and clip horizontal overflow in main page scroller while retaining vertical scroll.
+- 6710000: elevate both expanded and floating Engineering Tools above sidebar/navigation stacking layers.
+- Verify on desktop: horizontal trackpad/shift-wheel on dashboard, sidebar and Engineering Tools; ensure sidebar never overlays calculator, page scroll remains usable and no page content is unintentionally clipped. No verified build/visual acceptance yet.
