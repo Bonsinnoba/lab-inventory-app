@@ -40,3 +40,13 @@ test('does not return a missing project',async()=>{
  const db={query:async()=>({rowCount:0,rows:[]})};
  assert.equal(await assembleProjectContext(id,user,db,async()=>({access:'edit'})),null);
 });
+
+test('context provenance includes stable project-scoped source references',async()=>{
+ const {db}=fixture(2);
+ const result=await assembleProjectContext(id,user,db,async()=>({access:'view'}));
+ assert.deepEqual(result.provenance.source_refs.experiments,[
+  {source_type:'experiments',source_id:'0',project_id:id},
+  {source_type:'experiments',source_id:'1',project_id:id}
+ ]);
+ assert.equal(result.provenance.source_refs.inventory.length,2);
+});
