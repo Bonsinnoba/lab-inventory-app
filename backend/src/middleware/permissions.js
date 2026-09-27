@@ -12,6 +12,10 @@ export const PERMISSIONS = Object.freeze([
   'resources.view', 'resources.create', 'resources.edit', 'resources.delete',
 ]);
 
+// Ordinary laboratory reads are available to every authenticated active account.
+// Financial, audit and user-management views remain separately permissioned.
+export const LAB_WIDE_READ_PERMISSIONS = new Set(['inventory.view','projects.view','engineering.view','automation.view','notes.view','resources.view']);
+
 const ROLE_BASELINES = Object.freeze({
   admin: new Set(PERMISSIONS),
   researcher: new Set(['inventory.view', 'inventory.create', 'inventory.edit', 'inventory.adjust_stock', 'projects.view', 'projects.create', 'projects.edit', 'finance.view', 'finance.create_expense', 'reports.view', 'reports.export', 'engineering.view', 'engineering.create', 'engineering.edit', 'engineering.delete', 'automation.view', 'automation.run', 'notes.view', 'notes.create', 'notes.edit', 'notes.delete', 'resources.view', 'resources.create', 'resources.edit', 'resources.delete']),
@@ -40,7 +44,7 @@ export function hasPermission(permission) {
       if (!user.rowCount || !user.rows[0].is_active) return res.status(403).json({ error: { code: 'ACCOUNT_DISABLED', message: 'Account is disabled' } });
       const permissions = await getUserPermissions(req.user.userId, user.rows[0].role);
       if (permission === 'audit.view' && user.rows[0].role !== 'admin') return res.status(403).json({ error: { code: 'ADMIN_ROLE_REQUIRED', message: 'Audit records are restricted to administrators' } });
-      if (!permissions.has(permission)) return res.status(403).json({ error: { code: 'PERMISSION_DENIED', message: `Permission required: ${permission}`, permission } });
+      if (!permissions.has(permission) && !LAB_WIDE_READ_PERMISSIONS.has(permission)) return res.status(403).json({ error: { code: 'PERMISSION_DENIED', message: `Permission required: ${permission}`, permission } });
 
       // Role management is granular, but administrator assignment remains an
       // administrator-only operation. Otherwise a delegated role manager could
