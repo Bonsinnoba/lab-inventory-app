@@ -93,3 +93,8 @@ Owner requests implementation across all five phases before one final manual acc
 - 2a92259: expanded workspace defaults to ~92% width/88% height; floating position persists in localStorage.
 - 5077bce and fbeeae2: selected electronics mode persists; inputs reset when switching modes to avoid cross-mode stale data.
 - Owner test still needed: TypeScript/Vite build, desktop launch, drag/restore and calculator input, notebook/project/BOM permissions, offline/restart behavior. Unimplemented specification details include mini resizing/docking, spring transition, full live calculation/unit selectors and advanced tool breadth. Do not claim full v1 design-spec completion without implementing and testing those.
+
+### Floating LabCalc screenshot remediation (2026-09-27)
+- Screenshot showed the floating scientific calculator clipped at ~400px height and the keypad/footer scrolled below the visible widget.
+- 1fae787 and 5982df8: floating calculator defaults to 90% of viewport height, has independent scrollable content and a bottom-right pointer resize handle (320px minimum width, 240px minimum height), and persists resized dimensions in localStorage. Initial position is clamped against tall viewport size rather than prior 400px size.
+- Desktop build and owner visual/interaction tests are pending; edge docking, keyboard-operated resizing and automatic compact-mode layout remain outside this change.
