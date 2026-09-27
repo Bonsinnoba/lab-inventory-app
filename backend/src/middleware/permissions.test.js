@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {LAB_WIDE_READ_PERMISSIONS,rolePermissions,projectFinancialProjection,projectFinancialSummaryProjection,transactionResponseProjection,canReadSensitiveFinance} from './permissions.js';
@@ -81,4 +82,16 @@ test('standard financial projections never expose sensitive transaction metadata
  assert.deepEqual(standard,{id:'tx',direction:'expense',amount:12});
  assert.deepEqual(transactionResponseProjection(row,new Set(['finance.view_sensitive'])),standard);
  assert.deepEqual(transactionResponseProjection(row,new Set(['finance.view','finance.view_sensitive'])),row);
+});
+
+// Source-level regression checks complement (but do not replace) HTTP and PostgreSQL tests.
+test('financial exports and search retain explicit sensitive-data gates',()=>{
+ const source=(route)=>readFileSync(new URL('../routes/'+route+'.js',import.meta.url),'utf8');
+ const finance=source('excel-finance'),purchases=source('excel-purchases'),search=source('search'),sync=source('sync');
+ assert.match(finance,/router\.get\('\/export',[\s\S]*?canReadSensitiveFinance\(req\.permissions\)/);
+ assert.match(purchases,/router\.get\('\/export',[\s\S]*?canReadSensitiveFinance\(req\.permissions\)/);
+ assert.match(search,/transactions:[\s\S]*?direction = 'expense'/);
+ assert.match(search,/canReadSensitiveFinance\(permissions\)/);
+ assert.match(sync,/transactions:transactions\.rows\.map\(row=>transactionResponseProjection\(row,permissions\)\)/);
+ assert.match(sync,/projects:projects\.rows\.map\(p=>\(\{\.\.\.projectFinancialProjection\(p,permissions\)/);
 });
