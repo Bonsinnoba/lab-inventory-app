@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {LAB_WIDE_READ_PERMISSIONS,rolePermissions,projectFinancialProjection} from './permissions.js';
+import {LAB_WIDE_READ_PERMISSIONS,rolePermissions,projectFinancialProjection,projectFinancialSummaryProjection} from './permissions.js';
 
 test('ordinary laboratory reads do not include financial or administrative views',()=>{
  for(const permission of ['inventory.view','projects.view','notes.view','resources.view','engineering.view','automation.view'])
@@ -31,4 +31,15 @@ test('future and unknown project columns fail closed for ordinary readers',()=>{
  const projected=projectFinancialProjection(source,new Set(['projects.view']));
  assert.deepEqual(projected,{id:'p2',name:'Example',description:'ordinary'});
  assert.equal(projectFinancialProjection(source,new Set(['finance.view'])).secret_future_financial_column,999);
+});
+
+test('standard finance cannot read unexpected sensitive financial columns',()=>{
+ const source={id:'p1',name:'Project',budget:100,confidential_bank_account:'secret'};
+ const standard=projectFinancialProjection(source,new Set(['finance.view']));
+ assert.equal(standard.budget,100);
+ assert.ok(!Object.hasOwn(standard,'confidential_bank_account'));
+ assert.equal(projectFinancialProjection(source,new Set(['finance.view_sensitive'])).confidential_bank_account,'secret');
+ const summary={project_id:'p1',name:'Project',actual_expense:20,private_supplier_details:'secret'};
+ assert.deepEqual(projectFinancialSummaryProjection(summary,new Set(['finance.view'])),{project_id:'p1',name:'Project',actual_expense:20});
+ assert.equal(projectFinancialSummaryProjection(summary,new Set(['projects.view'])),null);
 });
