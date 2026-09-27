@@ -279,7 +279,7 @@ async function searchGlobal({ query, types }, user) {
   const q = query.trim().slice(0, 200);
   const queries = {
     items: `SELECT id,name,type,status,current_quantity,unit,sku,ts_rank_cd(search_vector,plainto_tsquery('english',$1)) AS rank FROM items WHERE search_vector @@ plainto_tsquery('english',$1) ORDER BY rank DESC,name LIMIT 8`,
-    projects: `SELECT id,name,status,budget,created_at,ts_rank_cd(search_vector,plainto_tsquery('english',$1)) AS rank FROM projects WHERE search_vector @@ plainto_tsquery('english',$1) ORDER BY rank DESC,name LIMIT 8`,
+    projects: `SELECT id,name,status,created_at,ts_rank_cd(search_vector,plainto_tsquery('english',$1)) AS rank FROM projects WHERE search_vector @@ plainto_tsquery('english',$1) ORDER BY rank DESC,name LIMIT 8`,
     notes: `SELECT id,title,tags,updated_at,ts_rank_cd(search_vector,plainto_tsquery('english',$1)) AS rank FROM notes WHERE search_vector @@ plainto_tsquery('english',$1) ORDER BY rank DESC,updated_at DESC LIMIT 8`,
     resources: `SELECT id,name,category,description,tags,project_id,item_id,updated_at,ts_rank_cd(search_vector,plainto_tsquery('english',$1)) AS rank FROM resources WHERE search_vector @@ plainto_tsquery('english',$1) ORDER BY rank DESC,updated_at DESC LIMIT 8`,
     transactions: `SELECT id,type,amount,date,vendor,project_id,item_id,ts_rank_cd(search_vector,plainto_tsquery('english',$1)) AS rank FROM transactions WHERE search_vector @@ plainto_tsquery('english',$1) ORDER BY rank DESC,date DESC LIMIT 8`,
@@ -329,13 +329,13 @@ async function listProjects({ status }, user) {
   await requireAssistantPermission('projects.view', user);
   const values = status ? [status] : [];
   const where = status ? 'WHERE status=$1' : '';
-  const rows = await filterProjectRows((await pool.query(`SELECT id,name,status,budget,total_spent,created_at FROM projects ${where} ORDER BY created_at DESC LIMIT 50`, values)).rows, user, 'id');
+  const rows = await filterProjectRows((await pool.query(`SELECT id,name,status,created_at FROM projects ${where} ORDER BY created_at DESC LIMIT 50`, values)).rows, user, 'id');
   return result(rows, rows.map((r) => source('project', r.id, r.name)));
 }
 
 async function getProject({ project_id }, user) {
   await requireProjectVisibility(project_id, user);
-  const r = await pool.query(`SELECT id,name,status,description,budget,total_spent,start_date,due_date,owner_id,created_at,updated_at FROM projects WHERE id=$1`, [project_id]);
+  const r = await pool.query(`SELECT id,name,status,description,start_date,due_date,owner_id,created_at,updated_at FROM projects WHERE id=$1`, [project_id]);
   if (!r.rowCount) throw new Error('Project not found');
   const row = r.rows[0];
   return result(row, [source('project', row.id, row.name)]);
@@ -352,7 +352,7 @@ async function getProjectWorkspace({ project_id }, user) {
     items: permissions.has('inventory.view') ? pool.query(`SELECT pi.item_id,pi.allocated_quantity,pi.notes,i.name,i.type,i.status,i.current_quantity,i.unit FROM project_items pi JOIN items i ON i.id=pi.item_id WHERE pi.project_id=$1 ORDER BY i.name`, [project_id]) : Promise.resolve({ rows: [] }),
     notes: permissions.has('notes.view') ? pool.query(`SELECT id,title,tags,updated_at FROM notes WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 30`, [project_id]) : Promise.resolve({ rows: [] }),
     resources: permissions.has('resources.view') ? pool.query(`SELECT id,name,category,tags,description,updated_at FROM resources WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 30`, [project_id]) : Promise.resolve({ rows: [] }),
-    activity: permissions.has('reports.view') ? pool.query(`SELECT a.action,a.entity_type,a.entity_id,a.metadata,a.created_at,u.username AS actor_username FROM audit_log a LEFT JOIN users u ON u.id=a.actor_user_id WHERE (a.entity_type='project' AND a.entity_id=$1) OR a.metadata->>'project_id'=$1 ORDER BY a.created_at DESC LIMIT 30`, [project_id]) : Promise.resolve({ rows: [] })
+    activity: permissions.has('audit.view') ? pool.query(`SELECT a.action,a.entity_type,a.entity_id,a.metadata,a.created_at,u.username AS actor_username FROM audit_log a LEFT JOIN users u ON u.id=a.actor_user_id WHERE (a.entity_type='project' AND a.entity_id=$1) OR a.metadata->>'project_id'=$1 ORDER BY a.created_at DESC LIMIT 30`, [project_id]) : Promise.resolve({ rows: [] })
   };
   const [members,tasks,experiments,items,notes,resources,activity] = await Promise.all(Object.values(queries));
   const row = { project: project.data, members: members.rows, tasks: tasks.rows, experiments: experiments.rows, items: items.rows, notes: notes.rows, resources: resources.rows, activity: activity.rows };
