@@ -1,4 +1,4 @@
-import {normalizeEvidenceQuery,evidenceLimit,evidenceResult} from '../context-evidence.js';
+import {normalizeEvidenceQuery,evidenceLimit,evidenceResult,escapeLikePattern} from '../context-evidence.js';
 import {projectContextEdges} from '../context-relationships.js';
 import {Router} from 'express';
 import {pool} from '../db.js';
@@ -36,17 +36,17 @@ export async function assembleProjectContext(projectId,user,db=pool,accessResolv
 export async function searchProjectEvidence(projectId,user,query,limit=10,db=pool,accessResolver=getProjectAccess){
  const access=await accessResolver(projectId,user);
  if(access.access==='none')return null;
- const normalized=normalizeEvidenceQuery(query),cap=evidenceLimit(limit);
+ const normalized=normalizeEvidenceQuery(query),cap=evidenceLimit(limit),pattern=escapeLikePattern(normalized);
  // Scope both searches by the project FK; project access alone never expands results to other projects.
  const [notes,resources]=await Promise.all([
   db.query(`SELECT id,title,updated_at,
-    LEFT(REGEXP_REPLACE(COALESCE(body,''),'[[:space:]]+',' ','g'),280) AS excerpt
-    FROM notes WHERE project_id=$1 AND (title ILIKE '%'||$2||'%' OR body ILIKE '%'||$2||'%')
-    ORDER BY CASE WHEN LOWER(title)=LOWER($2) THEN 0 WHEN title ILIKE $2||'%' THEN 1 ELSE 2 END,updated_at DESC,id LIMIT $3`,[projectId,normalized,cap+1]),
+    SUBSTRING(REGEXP_REPLACE(COALESCE(body,''),'[[:space:]]+',' ','g') FROM GREATEST(1,STRPOS(LOWER(COALESCE(body,'')),LOWER($2))-70) FOR 280) AS excerpt
+    FROM notes WHERE project_id=$1 AND (title ILIKE '%'||$3||'%' ESCAPE E'\\\\' OR body ILIKE '%'||$3||'%' ESCAPE E'\\\\')
+    ORDER BY CASE WHEN LOWER(title)=LOWER($2) THEN 0 WHEN title ILIKE $3||'%' ESCAPE E'\\\\' THEN 1 ELSE 2 END,updated_at DESC,id LIMIT $4`,[projectId,normalized,pattern,cap+1]),
   db.query(`SELECT id,name,updated_at,
-    LEFT(REGEXP_REPLACE(COALESCE(description,''),'[[:space:]]+',' ','g'),280) AS excerpt
-    FROM resources WHERE project_id=$1 AND (name ILIKE '%'||$2||'%' OR description ILIKE '%'||$2||'%')
-    ORDER BY CASE WHEN LOWER(name)=LOWER($2) THEN 0 WHEN name ILIKE $2||'%' THEN 1 ELSE 2 END,updated_at DESC,id LIMIT $3`,[projectId,normalized,cap+1])
+    SUBSTRING(REGEXP_REPLACE(COALESCE(description,''),'[[:space:]]+',' ','g') FROM GREATEST(1,STRPOS(LOWER(COALESCE(description,'')),LOWER($2))-70) FOR 280) AS excerpt
+    FROM resources WHERE project_id=$1 AND (name ILIKE '%'||$3||'%' ESCAPE E'\\\\' OR description ILIKE '%'||$3||'%' ESCAPE E'\\\\')
+    ORDER BY CASE WHEN LOWER(name)=LOWER($2) THEN 0 WHEN name ILIKE $3||'%' ESCAPE E'\\\\' THEN 1 ELSE 2 END,updated_at DESC,id LIMIT $4`,[projectId,normalized,pattern,cap+1])
  ]);
  const merged=[...notes.rows.slice(0,cap).map(r=>evidenceResult('note',r)),...resources.rows.slice(0,cap).map(r=>evidenceResult('resource',r))];
  merged.sort((a,b)=>Date.parse(b.updated_at)-Date.parse(a.updated_at));
