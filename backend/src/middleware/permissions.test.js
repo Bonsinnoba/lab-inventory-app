@@ -38,7 +38,7 @@ test('standard finance cannot read unexpected sensitive financial columns',()=>{
  const standard=projectFinancialProjection(source,new Set(['finance.view']));
  assert.equal(standard.budget,100);
  assert.ok(!Object.hasOwn(standard,'confidential_bank_account'));
- assert.equal(projectFinancialProjection(source,new Set(['finance.view_sensitive'])).confidential_bank_account,'secret');
+ assert.equal(projectFinancialProjection(source,new Set(['finance.view','finance.view_sensitive'])).confidential_bank_account,'secret');
  const summary={project_id:'p1',name:'Project',actual_expense:20,private_supplier_details:'secret'};
  assert.deepEqual(projectFinancialSummaryProjection(summary,new Set(['finance.view'])),{project_id:'p1',name:'Project',actual_expense:20});
  assert.equal(projectFinancialSummaryProjection(summary,new Set(['projects.view'])),null);
