@@ -2,8 +2,8 @@ import { pool } from '../db.js';
 import { getUserPermissions, hasPermission } from './permissions.js';
 
 /** Return the project permission for the current user.
- * admin => admin; owner/member lead/member => edit; observer => view; none => none.
- * Global projects.view is enforced here as well so internal consumers cannot bypass it.
+ * Every active user can read ordinary project data. Project membership and
+ * projects.edit still govern modifications; financial access is separate.
  */
 export async function getProjectAccess(projectId, user) {
   if (!user?.userId) return { access: 'none', memberRole: null };
@@ -12,7 +12,7 @@ export async function getProjectAccess(projectId, user) {
   if (!userResult.rowCount || !userResult.rows[0].is_active) return { access: 'none', memberRole: null };
   const role = userResult.rows[0].role;
   const permissions = await getUserPermissions(user.userId, role);
-  if (!permissions.has('projects.view')) return { access: 'none', memberRole: null };
+  // Ordinary project reads are laboratory-wide; no projects.view grant is needed.
 
   if (role === 'admin') return { access: 'admin', memberRole: 'admin' };
 
@@ -24,14 +24,11 @@ export async function getProjectAccess(projectId, user) {
 
   if (!result.rowCount) return { access: 'none', memberRole: null };
   const row = result.rows[0];
-  if (role === 'viewer') {
-    if (row.owner_id === user.userId || row.member_role) return { access: 'view', memberRole: row.member_role || 'observer' };
-    return { access: 'none', memberRole: null };
-  }
-  if (row.owner_id === user.userId) return { access: 'edit', memberRole: 'lead' };
-  if (row.member_role === 'lead' || row.member_role === 'member') return { access: 'edit', memberRole: row.member_role };
+  if (role === 'viewer') return { access: 'view', memberRole: row.member_role || null };
+  if (row.owner_id === user.userId) return { access: permissions.has('projects.edit') ? 'edit' : 'view', memberRole: 'lead' };
+  if (row.member_role === 'lead' || row.member_role === 'member') return { access: permissions.has('projects.edit') ? 'edit' : 'view', memberRole: row.member_role };
   if (row.member_role === 'observer') return { access: 'view', memberRole: 'observer' };
-  return { access: 'none', memberRole: null };
+  return { access: 'view', memberRole: null };
 }
 
 export async function requireProjectAccess(req, res, next) {
