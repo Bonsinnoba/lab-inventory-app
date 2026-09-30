@@ -339,7 +339,7 @@ pub fn unlink_local_project_item(app:AppHandle,project_id:String,item_id:String)
 
 
 #[tauri::command]
-pub fn apply_server_project_pull(app: AppHandle, projects_json: String, deleted_project_ids: Vec<String>, deleted_project_task_ids: Vec<String>, deleted_project_experiment_ids: Vec<String>, deleted_project_bom_ids: Vec<String>, deleted_project_block_ids: Vec<String>, deleted_project_connector_ids: Vec<String>, deleted_project_measurement_ids: Vec<String>, deleted_project_observation_ids: Vec<String>, deleted_project_attachment_ids: Vec<String>, deleted_project_task_experiment_ids: Vec<String>, deleted_project_requirement_ids: Vec<String>) -> Result<(), String> {
+pub fn apply_server_project_pull(app: AppHandle, projects_json: String, deleted_project_ids: Vec<String>, deleted_project_task_ids: Vec<String>, deleted_project_experiment_ids: Vec<String>, deleted_project_bom_ids: Vec<String>, deleted_project_block_ids: Vec<String>, deleted_project_connector_ids: Vec<String>, deleted_project_measurement_ids: Vec<String>, deleted_project_observation_ids: Vec<String>, deleted_project_attachment_ids: Vec<String>, _deleted_project_task_experiment_ids: Vec<String>, deleted_project_requirement_ids: Vec<String>) -> Result<(), String> {
     let incoming: Vec<Value> = serde_json::from_str(&projects_json).map_err(|e| format!("Invalid server project payload: {e}"))?;
     let deleted: std::collections::HashSet<String> = deleted_project_ids.into_iter().collect();
     let mut c = conn(&app)?;
