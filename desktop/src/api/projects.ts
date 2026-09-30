@@ -1,5 +1,7 @@
 import { invoke } from '@tauri-apps/api/tauri';
 import { apiFetch, getApiErrorMessage } from './http';
+import { getTransactions } from './transactions';
+import { getItems } from './items';
 
 function isTauriRuntime(): boolean { return typeof window !== 'undefined' && !!(window as any).__TAURI_IPC__; }
 async function localInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T | null> {
@@ -32,8 +34,6 @@ export async function getProjects(): Promise<Project[]> { const local=await loca
 export async function getProjectFinancialSummary():Promise<ProjectFinancialSummary[]> {
   const local=await localInvoke<Project[]>('list_local_projects');
   if(local!==null){
-    const { getTransactions } = await import('./transactions');
-    const { getItems } = await import('./items');
     const [transactions, inventory] = await Promise.all([getTransactions(), getItems()]);
     return Promise.all(local.map(async (p) => {
       const projectTransactions = transactions.filter((t:any) => t.project_id === p.id);
