@@ -135,7 +135,7 @@ pub fn cache_server_user(
     if central_user_id.trim().is_empty(){return Err("Central user ID is required".into())}
     if username.trim().len()<3||username.trim().len()>64{return Err("Username must be between 3 and 64 characters".into())}
     if password.len()<8||password.len()>128{return Err("Password must be between 8 and 128 characters".into())}
-    let mut c=open_local_connection(&app)?;ensure_auth_schema(&c)?;
+    let c=open_local_connection(&app)?;ensure_auth_schema(&c)?;
     let hash=hash_password(&password)?;
     let permissions_json=serde_json::to_string(&permissions).map_err(|e|format!("Unable to encode permissions: {e}"))?;
     let local_id:Option<String>=c.query_row(
