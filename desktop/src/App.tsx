@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
-import { useState, useEffect } from "react";
+import { lazy, Suspense, useState, useEffect } from "react";
 import { HashRouter, Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
 import Sidebar from "./components/Sidebar";
 import MobileHeader from "./components/MobileHeader";
@@ -14,27 +14,27 @@ import NotebookDock from "./components/NotebookDock";
 import SearchDock from "./components/SearchDock";
 import MusicDock from "./components/MusicDock";
 import MusicMiniPlayer from "./components/MusicMiniPlayer";
-import InventoryPage from "./pages/InventoryPage";
-import SyncConflictsPage from "./pages/SyncConflictsPage";
-import DashboardPage from "./pages/DashboardPage";
-import ItemDetailPage from "./pages/ItemDetailPage";
-import FinancialsPage from "./pages/FinancialsPage";
-import ProjectFinanceView from './pages/ProjectFinanceView';
-import ProjectsPage from "./pages/ProjectsPage";
-import ProjectDetailPage from "./pages/ProjectDetailPage";
-import NotebookPage from "./pages/NotebookPage";
-import ResourcesPage from "./pages/ResourcesPage";
-import SearchPage from "./pages/SearchPage";
-import KnowledgePage from "./pages/KnowledgePage";
-import CollaborationPage from "./pages/CollaborationPage";
-import AssistantPage from "./pages/AssistantPage";
-import UsersPage from "./pages/UsersPage";
-import SettingsPage from "./pages/SettingsPage";
-import EngineeringToolsPage from "./pages/EngineeringToolsPage";
-import ReportsPage from "./pages/ReportsPage";
-import AutomationPage from "./pages/AutomationPage";
-import OperationsPage from "./pages/OperationsPage";
-import DailyUsePanel from "./components/DailyUsePanel";
+const InventoryPage = lazy(() => import("./pages/InventoryPage"));
+const SyncConflictsPage = lazy(() => import("./pages/SyncConflictsPage"));
+const DashboardPage = lazy(() => import("./pages/DashboardPage"));
+const ItemDetailPage = lazy(() => import("./pages/ItemDetailPage"));
+const FinancialsPage = lazy(() => import("./pages/FinancialsPage"));
+const ProjectFinanceView = lazy(() => import("./pages/ProjectFinanceView"));
+const ProjectsPage = lazy(() => import("./pages/ProjectsPage"));
+const ProjectDetailPage = lazy(() => import("./pages/ProjectDetailPage"));
+const NotebookPage = lazy(() => import("./pages/NotebookPage"));
+const ResourcesPage = lazy(() => import("./pages/ResourcesPage"));
+const SearchPage = lazy(() => import("./pages/SearchPage"));
+const KnowledgePage = lazy(() => import("./pages/KnowledgePage"));
+const CollaborationPage = lazy(() => import("./pages/CollaborationPage"));
+const AssistantPage = lazy(() => import("./pages/AssistantPage"));
+const UsersPage = lazy(() => import("./pages/UsersPage"));
+const SettingsPage = lazy(() => import("./pages/SettingsPage"));
+const EngineeringToolsPage = lazy(() => import("./pages/EngineeringToolsPage"));
+const ReportsPage = lazy(() => import("./pages/ReportsPage"));
+const AutomationPage = lazy(() => import("./pages/AutomationPage"));
+const OperationsPage = lazy(() => import("./pages/OperationsPage"));
+const DailyUsePanel = lazy(() => import("./components/DailyUsePanel"));
 import MediaManager from "./components/MediaManager";
 import LoginPage from "./pages/LoginPage";
 import CommandPalette from "./components/CommandPalette";
@@ -323,8 +323,7 @@ function AppContent() {
         </div>
       )}
       {musicDockOpen && musicMinimized && <MusicMiniPlayer onRestore={restoreMusic} onClose={closeMusic} />}
-      <EngineeringToolsPage open={engineeringToolsOpen} minimized={engineeringToolsMinimized} onClose={() => setEngineeringToolsOpen(false)} onMinimize={setEngineeringToolsMinimized} />
-      <MobileNav />
+      {engineeringToolsOpen && <EngineeringToolsPage open minimized={engineeringToolsMinimized} onClose={() => setEngineeringToolsOpen(false)} onMinimize={setEngineeringToolsMinimized} />}\n      <MobileNav />
       {mobileScanOpen && <ScanLookupModal onClose={() => setMobileScanOpen(false)} />}
       {desktopScanOpen && <ScanLookupModal onClose={() => setDesktopScanOpen(false)} />}
       <CommandPalette open={commandPaletteOpen} onClose={() => setCommandPaletteOpen(false)} />
