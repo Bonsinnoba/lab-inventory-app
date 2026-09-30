@@ -54,13 +54,6 @@ pub struct LocalResource {
     pub derived_from_resource_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct ResourceMetadata {
-    pub category: Option<String>,
-    pub description: Option<String>,
-    pub tags: Option<Vec<String>>,
-}
-
 fn ensure_schema(conn: &rusqlite::Connection) -> Result<(), String> {
     conn.execute(
         "INSERT OR IGNORE INTO local_schema_migrations(version) VALUES(?1)",
@@ -190,7 +183,7 @@ fn validate_parent(resources: &[LocalResource], item_id: &Option<String>, projec
 
 #[tauri::command]
 pub fn list_local_resources(app: AppHandle, item_id: Option<String>, project_id: Option<String>, note_id: Option<String>, parent_resource_id: Option<String>) -> Result<Vec<LocalResource>, String> {
-    let mut conn = open_local_connection(&app)?;
+    let conn = open_local_connection(&app)?;
     ensure_schema(&conn)?;
     let mut resources = read_resources(&conn)?;
     resources.retain(|r| {
@@ -264,7 +257,7 @@ pub fn create_local_resource_link(app: AppHandle, url: String, name: Option<Stri
 
 #[tauri::command]
 pub fn queue_local_resource_download(app: AppHandle, resource_id: String, quality: Option<String>) -> Result<serde_json::Value, String> {
-    let mut conn = open_local_connection(&app)?;
+    let conn = open_local_connection(&app)?;
     ensure_schema(&conn)?;
     let (role, permissions, expires): (String, String, Option<String>) = conn.query_row(
         "SELECT u.role,u.permissions_json,u.offline_expires_at FROM local_users u JOIN local_session s ON s.user_id=u.id WHERE s.id=1 AND u.central_user_id IS NOT NULL AND u.is_active=1",
