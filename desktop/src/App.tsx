@@ -259,7 +259,8 @@ function AppContent() {
   };
 
   return (
-    <>
+    <Suspense fallback={<div className="h-full min-h-48 flex items-center justify-center text-sm text-text-secondary" role="status" aria-live="polite">Loading workspace…</div>}>
+      <>
       <div className="app-shell flex h-full w-full min-w-0 min-h-0 overflow-hidden text-text-primary">
         <Sidebar user={user} permissions={permissions} onLogout={handleLogout} />
         <MobileDrawer open={mobileMenuOpen} onClose={() => setMobileMenuOpen(false)} user={user} onLogout={handleLogout} />
@@ -323,11 +324,13 @@ function AppContent() {
         </div>
       )}
       {musicDockOpen && musicMinimized && <MusicMiniPlayer onRestore={restoreMusic} onClose={closeMusic} />}
-      {engineeringToolsOpen && <EngineeringToolsPage open minimized={engineeringToolsMinimized} onClose={() => setEngineeringToolsOpen(false)} onMinimize={setEngineeringToolsMinimized} />}\n      <MobileNav />
+      {engineeringToolsOpen && <EngineeringToolsPage open minimized={engineeringToolsMinimized} onClose={() => setEngineeringToolsOpen(false)} onMinimize={setEngineeringToolsMinimized} />}
+      <MobileNav />
       {mobileScanOpen && <ScanLookupModal onClose={() => setMobileScanOpen(false)} />}
       {desktopScanOpen && <ScanLookupModal onClose={() => setDesktopScanOpen(false)} />}
       <CommandPalette open={commandPaletteOpen} onClose={() => setCommandPaletteOpen(false)} />
-    </>
+      </>
+    </Suspense>
   );
 }
 
