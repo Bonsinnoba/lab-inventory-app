@@ -20,7 +20,7 @@ test('denies unauthorized context before any data query',async()=>{
 });
 test('returns bounded source-labelled sections with exact overflow flags',async()=>{
  const {db,calls}=fixture(61);
- const result=await assembleProjectContext(id,user,db,async()=>({access:'view'}));
+ const result=await assembleProjectContext(id,user,db,async()=>({access:'view'}),async(_type,rows)=>rows);
  assert.equal(result.access,'view');
  assert.equal(result.sections.experiments.length,40);
  assert.equal(result.sections.inventory.length,60);
@@ -32,7 +32,7 @@ test('returns bounded source-labelled sections with exact overflow flags',async(
 });
 test('an exactly full section is not incorrectly labelled truncated',async()=>{
  const {db}=fixture(40);
- const result=await assembleProjectContext(id,user,db,async()=>({access:'edit'}));
+ const result=await assembleProjectContext(id,user,db,async()=>({access:'edit'}),async(_type,rows)=>rows);
  assert.equal(result.provenance.truncated.experiments,false);
  assert.equal(result.provenance.truncated.inventory,false);
 });
@@ -43,7 +43,7 @@ test('does not return a missing project',async()=>{
 
 test('context provenance includes stable project-scoped source references',async()=>{
  const {db}=fixture(2);
- const result=await assembleProjectContext(id,user,db,async()=>({access:'view'}));
+ const result=await assembleProjectContext(id,user,db,async()=>({access:'view'}),async(_type,rows)=>rows);
  assert.deepEqual(result.provenance.source_refs.experiments,[
   {source_type:'experiments',source_id:'0',project_id:id},
   {source_type:'experiments',source_id:'1',project_id:id}

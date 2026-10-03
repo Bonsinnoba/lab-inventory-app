@@ -9,6 +9,11 @@ import maintenanceRouter from './maintenance.js';
 
 const router = Router();
 router.use('/:id/maintenance', maintenanceRouter);
+const ITEM_STATUSES = new Set(['available','in_use','damaged','needs_repair','needs_replacement','low_stock','retired']);
+function validItemIds(value) {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 500 || value.some(id => typeof id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id))) return null;
+  return [...new Set(value)];
+}
 function generateItemSku(name, type) {
   const words = String(name || 'item').toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean);
   const namePart = words.length > 1
@@ -90,6 +95,55 @@ router.post('/:id/movements', hasPermission('inventory.adjust_stock'), async (re
     const updated = await client.query('UPDATE items SET current_quantity=$1,storage_location=$2 WHERE id=$3 RETURNING *', [next,nextStorageLocation,req.params.id]);
     await client.query('COMMIT'); await writeAuditLog({ req, action: 'CREATE', entityType: 'item_movement', entityId: movement.rows[0].id, newValue: movement.rows[0] }); res.status(201).json({ movement: movement.rows[0], item: updated.rows[0] });
   } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(err.status||500).json({ error: { code: err.code||'MOVEMENT_FAILED', message: err.message || 'Failed to record movement', ...(err.details||{}) } }); } finally { client.release(); }
+});
+
+router.post('/bulk-status', hasPermission('inventory.edit'), async (req, res) => {
+  const ids = validItemIds(req.body?.ids);
+  if (!ids || !ITEM_STATUSES.has(req.body?.status)) return res.status(400).json({ error: 'Valid item IDs and status are required' });
+  try {
+    const result = await pool.query('UPDATE items SET status=$1,updated_at=now() WHERE id=ANY($2::uuid[]) RETURNING id', [req.body.status, ids]);
+    await writeAuditLog({ req, action: 'BULK_UPDATE', entityType: 'item', entityId: null, metadata: { ids: result.rows.map(row => row.id), status: req.body.status } });
+    res.json({ updated: result.rowCount });
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to update item statuses' }); }
+});
+
+router.post('/bulk-delete', hasPermission('inventory.delete'), async (req, res) => {
+  const ids = validItemIds(req.body?.ids);
+  if (!ids) return res.status(400).json({ error: 'Valid item IDs are required' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query('DELETE FROM items WHERE id=ANY($1::uuid[]) RETURNING id', [ids]);
+    const deletedIds = result.rows.map(row => row.id);
+    if (deletedIds.length) await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) SELECT 'item',unnest($1::uuid[]) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()", [deletedIds]);
+    await client.query('COMMIT');
+    await writeAuditLog({ req, action: 'BULK_DELETE', entityType: 'item', entityId: null, metadata: { ids: deletedIds } });
+    res.json({ deleted: result.rowCount });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error(err);
+    res.status(500).json({ error: 'Failed to delete items' });
+  } finally { client.release(); }
+});
+
+router.delete('/:id', hasPermission('inventory.delete'), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query('DELETE FROM items WHERE id=$1 RETURNING *', [req.params.id]);
+    if (!result.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Item not found' });
+    }
+    await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) VALUES('item',$1) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()", [req.params.id]);
+    await client.query('COMMIT');
+    await writeAuditLog({ req, action: 'DELETE', entityType: 'item', entityId: req.params.id, oldValue: result.rows[0] });
+    res.status(204).send();
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error(err);
+    res.status(500).json({ error: 'Failed to delete item' });
+  } finally { client.release(); }
 });
 
 export default router;

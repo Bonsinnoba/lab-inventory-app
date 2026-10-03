@@ -2,7 +2,17 @@ import { invoke } from '@tauri-apps/api/tauri';
 import { apiFetch, getApiErrorMessage } from './http';
 
 function isTauriRuntime(): boolean { return typeof window !== 'undefined' && !!(window as any).__TAURI_IPC__; }
-async function localInvoke<T>(command:string,args:Record<string,unknown>={}):Promise<T|null>{if(!isTauriRuntime())return null;return invoke<T>(command,args);}
+async function localInvoke<T>(command:string,args:Record<string,unknown>={}):Promise<T|null>{
+  if(!isTauriRuntime())return null;
+  const result=await invoke<T>(command,args);
+  // Rust unit-returning deletes may serialize as null. They already committed
+  // locally, so null must never trigger a second HTTP delete.
+  if(result===null){
+    if(command.startsWith('delete_'))return undefined as T;
+    throw new Error(`Local ${command} returned no result; server fallback was not attempted.`);
+  }
+  return result;
+}
 
 export type NoteVisibility = 'lab'|'project'|'restricted';
 export interface Note { id:string; title:string; body:string; tags:string[]; item_id?:string; project_id?:string; author_id?:string; visibility?:NoteVisibility; created_at:string; updated_at:string; }

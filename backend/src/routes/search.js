@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
 import { getUserPermissions, LAB_WIDE_READ_PERMISSIONS, canReadSensitiveFinance } from '../middleware/permissions.js';
+import { filterReadableRows } from '../middleware/read-visibility.js';
 
 const router = Router();
 
@@ -64,7 +65,8 @@ router.get('/', async (req, res) => {
     // Do not let one broken category make the entire global search fail.
     const settled = await Promise.allSettled(types.map(async (type) => {
       const result = await pool.query(TYPE_QUERIES[type], queryParams(type, q, req.user.userId, req.user.role, canReadSensitiveFinance(permissions)));
-      return [type, result.rows.map((row) => decorate(type, row))];
+      const visible = await filterReadableRows(type, result.rows, req.user);
+      return [type, visible.map((row) => decorate(type, row))];
     }));
     const rows = [];
     for (let i = 0; i < settled.length; i += 1) {

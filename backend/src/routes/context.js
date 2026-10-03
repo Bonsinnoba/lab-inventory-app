@@ -4,13 +4,14 @@ import {Router} from 'express';
 import {pool} from '../db.js';
 import {getProjectAccess} from '../middleware/project-access.js';
 import {hasPermission} from '../middleware/permissions.js';
+import {filterReadableRows} from '../middleware/read-visibility.js';
 
 const router=Router();
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Context is an explicitly bounded, permission-checked snapshot, not an authorization token.
 // Every section is independently sourced; no AI-generated values are stored here.
-export async function assembleProjectContext(projectId,user,db=pool,accessResolver=getProjectAccess){
+export async function assembleProjectContext(projectId,user,db=pool,accessResolver=getProjectAccess,readFilter=filterReadableRows){
  const access=await accessResolver(projectId,user);
  if(access.access==='none')return null;
  const project=await db.query('SELECT id,name,status,description,priority,start_date,due_date,updated_at FROM projects WHERE id=$1',[projectId]);
@@ -24,7 +25,7 @@ export async function assembleProjectContext(projectId,user,db=pool,accessResolv
   db.query('SELECT id,title,updated_at FROM notes WHERE project_id=$1 ORDER BY updated_at DESC,id LIMIT 41',[projectId]),
   db.query('SELECT id,name,kind,updated_at FROM resources WHERE project_id=$1 ORDER BY updated_at DESC,id LIMIT 41',[projectId])
  ]);
- const fetched={experiments:experiments.rows,tasks:tasks.rows,inventory:inventory.rows,reservations:reservations.rows,notes:notes.rows,resources:resources.rows};
+ const fetched={experiments:experiments.rows,tasks:tasks.rows,inventory:inventory.rows,reservations:reservations.rows,notes:await readFilter('notes',notes.rows,user),resources:await readFilter('resources',resources.rows,user)};
  const truncated=Object.fromEntries(Object.entries(fetched).map(([key,rows])=>[key,rows.length>limits[key]]));
  const sections=Object.fromEntries(Object.entries(fetched).map(([key,rows])=>[key,rows.slice(0,limits[key])]));
  const sourceRefs=Object.fromEntries(Object.entries(sections).map(([section,rows])=>[
@@ -36,7 +37,7 @@ export async function assembleProjectContext(projectId,user,db=pool,accessResolv
  return {...base,relationships:projectContextEdges(base)};
 
 }
-export async function searchProjectEvidence(projectId,user,query,limit=10,db=pool,accessResolver=getProjectAccess){
+export async function searchProjectEvidence(projectId,user,query,limit=10,db=pool,accessResolver=getProjectAccess,readFilter=filterReadableRows){
  const access=await accessResolver(projectId,user);
  if(access.access==='none')return null;
  const normalized=normalizeEvidenceQuery(query),cap=evidenceLimit(limit),pattern=escapeLikePattern(normalized);
@@ -51,6 +52,8 @@ export async function searchProjectEvidence(projectId,user,query,limit=10,db=poo
     FROM resources WHERE project_id=$1 AND (name ILIKE '%'||$3||'%' ESCAPE E'\\\\' OR description ILIKE '%'||$3||'%' ESCAPE E'\\\\')
     ORDER BY CASE WHEN LOWER(name)=LOWER($2) THEN 0 WHEN name ILIKE $3||'%' ESCAPE E'\\\\' THEN 1 ELSE 2 END,updated_at DESC,id LIMIT $4`,[projectId,normalized,pattern,cap+1])
  ]);
+ notes.rows=await readFilter('notes',notes.rows,user);
+ resources.rows=await readFilter('resources',resources.rows,user);
  const merged=[...notes.rows.slice(0,cap).map(r=>evidenceResult('note',r)),...resources.rows.slice(0,cap).map(r=>evidenceResult('resource',r))];
  merged.sort((a,b)=>Date.parse(b.updated_at)-Date.parse(a.updated_at));
  return {schema_version:1,scope:{type:'project',id:projectId},query:normalized,generated_at:new Date().toISOString(),retrieval:'lexical_project_scoped',results:merged.slice(0,cap),truncated:notes.rows.length>cap||resources.rows.length>cap||merged.length>cap,provenance:{authority:'central_postgresql',consistency:'multi_query_non_atomic'}};

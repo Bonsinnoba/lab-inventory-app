@@ -1,7 +1,15 @@
 import { invoke } from '@tauri-apps/api/tauri';
 import { apiFetch } from './http';
 const isTauri=()=>typeof window!=='undefined'&&!!(window as any).__TAURI_IPC__;
-async function local<T>(command:string,args:Record<string,unknown>={}):Promise<T|null>{if(!isTauri())return null;return invoke<T>(command,args);}
+async function local<T>(command:string,args:Record<string,unknown>={}):Promise<T|null>{
+  if(!isTauri())return null;
+  const result=await invoke<T>(command,args);
+  if(result===null){
+    if(command.startsWith('delete_'))return undefined as T;
+    throw new Error(`Local ${command} returned no result; server fallback was not attempted.`);
+  }
+  return result;
+}
 export interface Location{id:string;name:string;type?:string;parent_id?:string|null;item_count?:number;created_at:string;}
 export async function getLocations():Promise<Location[]>{const x=await local<Location[]>('list_local_locations');if(x!==null)return x;const r=await apiFetch('/locations');if(!r.ok)throw new Error('Failed to fetch locations');return r.json();}
 export async function getLocation(id:string):Promise<Location>{const x=await local<Location|null>('get_local_location',{id});if(x!==null){if(!x)throw new Error('Location not found');return x;}const r=await apiFetch(`/locations/${id}`);if(!r.ok)throw new Error('Failed to fetch location');return r.json();}

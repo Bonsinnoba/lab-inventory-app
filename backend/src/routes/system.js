@@ -38,14 +38,15 @@ router.patch('/daily-preferences', async (req, res) => {
 router.get('/export', requireRole('admin'), async (_req, res) => {
   try {
     const tables = [
-      'users','projects','project_members','project_tasks','experiments','items','item_movements','maintenance_records',
+      'users','projects','project_members','project_tasks','project_experiments','items','item_movements','maintenance_records',
       'notes','resources','project_bom_items','lab_findings','lab_results','knowledge_relationships','engineering_calculations',
       'engineering_tests','project_resource_requirements','suppliers','locations','transactions','notifications'
     ];
     const snapshot = { exported_at: new Date().toISOString(), format: 'labos-json-v1', tables: {} };
     for (const table of tables) {
-      try { const result = await pool.query(`SELECT * FROM ${table}`); snapshot.tables[table] = result.rows; }
-      catch { snapshot.tables[table] = []; }
+      const columns = table === 'users' ? 'id,username,role,is_active,created_at' : '*';
+      const result = await pool.query(`SELECT ${columns} FROM ${table}`);
+      snapshot.tables[table] = result.rows;
     }
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="labos-export-${new Date().toISOString().slice(0,10)}.json"`);

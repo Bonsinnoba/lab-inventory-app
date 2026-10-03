@@ -1,6 +1,14 @@
 import { pool } from '../db.js';
 
 export const VISIBILITY_LEVELS = Object.freeze(['lab', 'project', 'restricted']);
+// Expressions are source-controlled SQL, never request input. Bind the current
+// authenticated user alongside each query, including aggregate/export queries.
+export function linkedProjectReadSql(projectIdExpression, userIdParameter, roleParameter) {
+  return `(${projectIdExpression} IS NULL OR EXISTS (
+    SELECT 1 FROM projects scope_project WHERE scope_project.id=${projectIdExpression}
+    AND ${visibilityReadSql({alias:'scope_project',entityType:'project',projectIdExpression:'scope_project.id',userIdParameter,roleParameter})}
+  ))`;
+}
 const ENTITY_TYPES = new Set(['project', 'note', 'resource', 'finding', 'result', 'engineering_calculation', 'engineering_test']);
 
 export function normalizeVisibility(value, fallback = 'lab') {
@@ -18,7 +26,7 @@ export function isVisibility(value) {
 export function visibilityReadSql({ alias, entityType, userIdParameter, roleParameter, projectIdExpression = null }) {
   if (!ENTITY_TYPES.has(entityType)) throw new Error(`Unsupported visibility entity type: ${entityType}`);
   const projectId = projectIdExpression || `${alias}.project_id`;
-  return `(
+  const recordPredicate = `(
     COALESCE(${alias}.visibility, 'lab') = 'lab'
     OR ${roleParameter} = 'admin'
     OR (
@@ -44,6 +52,7 @@ export function visibilityReadSql({ alias, entityType, userIdParameter, rolePara
       )
     )
   )`;
+  return entityType === 'project' ? recordPredicate : `(${recordPredicate} AND ${linkedProjectReadSql(projectId,userIdParameter,roleParameter)})`;
 }
 
 async function hasProjectMembership(projectId, user) {
@@ -79,6 +88,11 @@ async function grantFor(entityType, entityId, userId) {
 export async function canReadEntity({ entityType, entityId, visibility, projectId = null, user }) {
   if (!user?.userId) return false;
   if (user.role === 'admin') return true;
+
+  if (entityType !== 'project' && projectId) {
+    const project=await pool.query('SELECT id,visibility FROM projects WHERE id=$1',[projectId]);
+    if (!project.rowCount || !await canReadEntity({entityType:'project',entityId:projectId,visibility:project.rows[0].visibility,projectId,user})) return false;
+  }
 
   switch (normalizeVisibility(visibility)) {
     case 'lab':

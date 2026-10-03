@@ -11,7 +11,7 @@ router.get('/', hasPermission('finance.view'), async (req, res) => {
   const sensitive = canReadSensitiveFinance(permissions);
   const { type, direction, item_id, project_id, budget_period_id, from, to } = req.query;
   if (budget_period_id && !sensitive) return res.status(403).json({error:{code:'PERMISSION_DENIED',permission:'finance.view_sensitive',message:'Budget-period filtering requires sensitive financial access'}});
-  const conditions = sensitive ? [] : ["t.direction = 'expense'"], values = [];
+  const conditions = [linkedProjectReadSql('t.project_id','$1','$2'), ...(sensitive ? [] : ["t.direction = 'expense'"])], values = [req.user.userId,req.user.role];
   if (type) { values.push(type); conditions.push(`t.type = $${values.length}`); }
   if (direction) { values.push(direction); conditions.push(`t.direction = $${values.length}`); }
   if (item_id) { values.push(item_id); conditions.push(`t.item_id = $${values.length}`); }
@@ -29,10 +29,10 @@ router.get('/', hasPermission('finance.view'), async (req, res) => {
 router.get('/summary', hasPermission('finance.view'), async (req, res) => {
   const permissions = req.permissions;
   const sensitive = canReadSensitiveFinance(permissions);
-  const { from, to, budget_period_id } = req.query; if (budget_period_id && !sensitive) return res.status(403).json({error:{code:'PERMISSION_DENIED',permission:'finance.view_sensitive',message:'Budget-period filtering requires sensitive financial access'}}); const conditions = sensitive ? [] : ["direction = 'expense'"], values = [];
+  const { from, to, budget_period_id } = req.query; if (budget_period_id && !sensitive) return res.status(403).json({error:{code:'PERMISSION_DENIED',permission:'finance.view_sensitive',message:'Budget-period filtering requires sensitive financial access'}}); const conditions = [linkedProjectReadSql('transactions.project_id','$1','$2'), ...(sensitive ? [] : ["direction = 'expense'"])], values = [req.user.userId,req.user.role];
   if (from) { values.push(from); conditions.push(`date >= $${values.length}`); } if (to) { values.push(to); conditions.push(`date <= $${values.length}`); } if (budget_period_id) { values.push(budget_period_id); conditions.push(`budget_period_id = $${values.length}`); }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-  try { const totals = await pool.query(`SELECT direction, SUM(amount)::float AS total FROM transactions ${where} GROUP BY direction`, values); const incomeTotal = totals.rows.find(r => r.direction === 'income')?.total || 0; const expenseTotal = totals.rows.find(r => r.direction === 'expense')?.total || 0; const byCategory = await pool.query(`SELECT direction, type, SUM(amount)::float AS total FROM transactions ${where} GROUP BY direction, type ORDER BY direction, total DESC`, values); const response = { totals: { income: sensitive ? incomeTotal : null, expense: expenseTotal, net: sensitive ? incomeTotal - expenseTotal : null }, by_category: { expense: byCategory.rows.filter(r => r.direction === 'expense').map(r => ({ type: r.type, total: r.total })), income: byCategory.rows.filter(r => r.direction === 'income').map(r => ({ type: r.type, total: r.total })) } }; response.by_month = (await pool.query(`SELECT to_char(date_trunc('month', date), 'YYYY-MM') AS month, direction, type, SUM(amount)::float AS total FROM transactions ${where} GROUP BY 1, direction, type ORDER BY 1 ASC`, values)).rows; if (sensitive && budget_period_id) { const budgetPeriod = await pool.query('SELECT id, label, total_budget, start_date, end_date FROM budget_periods WHERE id = $1', [budget_period_id]); if (budgetPeriod.rowCount) { const period = budgetPeriod.rows[0]; const spent = Number((await pool.query(`SELECT COALESCE(SUM(amount), 0)::float AS total FROM transactions WHERE budget_period_id = $1 AND direction = 'expense'`, [budget_period_id])).rows[0].total || 0); const totalBudget = Number(period.total_budget || 0); response.budget = { period_id: period.id, label: period.label, total_budget: totalBudget, spent, remaining: totalBudget - spent, start_date: period.start_date, end_date: period.end_date }; } } res.json(response); }
+  try { const totals = await pool.query(`SELECT direction, SUM(amount)::float AS total FROM transactions ${where} GROUP BY direction`, values); const incomeTotal = totals.rows.find(r => r.direction === 'income')?.total || 0; const expenseTotal = totals.rows.find(r => r.direction === 'expense')?.total || 0; const byCategory = await pool.query(`SELECT direction, type, SUM(amount)::float AS total FROM transactions ${where} GROUP BY direction, type ORDER BY direction, total DESC`, values); const response = { totals: { income: sensitive ? incomeTotal : null, expense: expenseTotal, net: sensitive ? incomeTotal - expenseTotal : null }, by_category: { expense: byCategory.rows.filter(r => r.direction === 'expense').map(r => ({ type: r.type, total: r.total })), income: byCategory.rows.filter(r => r.direction === 'income').map(r => ({ type: r.type, total: r.total })) } }; response.by_month = (await pool.query(`SELECT to_char(date_trunc('month', date), 'YYYY-MM') AS month, direction, type, SUM(amount)::float AS total FROM transactions ${where} GROUP BY 1, direction, type ORDER BY 1 ASC`, values)).rows; if (sensitive && budget_period_id) { const budgetPeriod = await pool.query('SELECT id, label, total_budget, start_date, end_date FROM budget_periods WHERE id = $1', [budget_period_id]); if (budgetPeriod.rowCount) { const period = budgetPeriod.rows[0]; const spent = Number((await pool.query(`SELECT COALESCE(SUM(amount), 0)::float AS total FROM transactions WHERE budget_period_id = $1 AND direction = 'expense' AND ${linkedProjectReadSql('transactions.project_id','$2','$3')}`, [budget_period_id,req.user.userId,req.user.role])).rows[0].total || 0); const totalBudget = Number(period.total_budget || 0); response.budget = { period_id: period.id, label: period.label, total_budget: totalBudget, spent, remaining: totalBudget - spent, start_date: period.start_date, end_date: period.end_date }; } } res.json(response); }
   catch (err) { console.error(err); res.status(500).json({ error: err.message || 'Failed to compute summary' }); }
 });
 
@@ -55,6 +55,25 @@ router.put('/:id', hasPermission('finance.edit'), requireExistingTransactionProj
   values.push(req.params.id); try { const result = await pool.query(`UPDATE transactions SET ${updates.join(', ')} WHERE id = $${values.length} RETURNING *`, values); await writeAuditLog({ req, action: 'UPDATE', entityType: 'transaction', entityId: req.params.id, oldValue: current.rows[0], newValue: result.rows[0] }); res.json(transactionResponseProjection(result.rows[0],req.permissions)); } catch (err) { console.error(err); res.status(500).json({ error: err.message || 'Failed to update transaction' }); }
 });
 
-router.delete('/:id', hasPermission('finance.delete'), requireExistingTransactionProjectDelete, async (req, res) => { try { const result = await pool.query('DELETE FROM transactions WHERE id = $1 RETURNING *', [req.params.id]); if (!result.rowCount) return res.status(404).json({ error: 'Transaction not found' }); await writeAuditLog({ req, action: 'DELETE', entityType: 'transaction', entityId: req.params.id, oldValue: result.rows[0] }); res.status(204).send(); } catch (err) { console.error(err); res.status(500).json({ error: err.message || 'Failed to delete transaction' }); } });
+router.delete('/:id', hasPermission('finance.delete'), requireExistingTransactionProjectDelete, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query('DELETE FROM transactions WHERE id = $1 RETURNING *', [req.params.id]);
+    if (!result.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+    await client.query("INSERT INTO sync_tombstones(entity_type,entity_id,project_id) VALUES('transaction',$1,$2) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now(),project_id=EXCLUDED.project_id", [req.params.id, result.rows[0].project_id || null]);
+    await client.query('COMMIT');
+    await writeAuditLog({ req, action: 'DELETE', entityType: 'transaction', entityId: req.params.id, oldValue: result.rows[0] });
+    res.status(204).send();
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error(err);
+    res.status(500).json({ error: err.message || 'Failed to delete transaction' });
+  } finally { client.release(); }
+});
 
 export default router;
+import { linkedProjectReadSql } from '../middleware/visibility.js';

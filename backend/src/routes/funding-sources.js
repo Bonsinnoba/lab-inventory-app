@@ -128,16 +128,23 @@ router.put('/:id', hasPermission('finance.edit'), async (req, res) => {
 
 // DELETE /api/funding-sources/:id
 router.delete('/:id', hasPermission('finance.delete'), async (req, res) => {
+  const client = await pool.connect();
   try {
-    const current = await pool.query('SELECT * FROM funding_sources WHERE id = $1', [req.params.id]);
-    if (!current.rowCount) return res.status(404).json({ error: 'Funding source not found' });
-    await pool.query('DELETE FROM funding_sources WHERE id = $1', [req.params.id]);
+    await client.query('BEGIN');
+    const current = await client.query('DELETE FROM funding_sources WHERE id = $1 RETURNING *', [req.params.id]);
+    if (!current.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Funding source not found' });
+    }
+    await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) VALUES('funding_source',$1) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()", [req.params.id]);
+    await client.query('COMMIT');
     await writeAuditLog({ req, action: 'DELETE', entityType: 'funding_source', entityId: req.params.id, oldValue: current.rows[0] });
     res.status(204).send();
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error(err);
     res.status(500).json({ error: err.message || 'Failed to delete funding source' });
-  }
+  } finally { client.release(); }
 });
 
 export default router;

@@ -41,6 +41,11 @@ fn require_owned_change(connection: &Connection, change_id: &str) -> Result<Stri
 
 pub fn new_uuid() -> String { uuid::Uuid::new_v4().to_string() }
 
+pub(crate) fn retain_authorized_snapshot(rows:&mut Vec<Value>,incoming:&[Value],pending:&HashSet<String>){
+    let visible:HashSet<&str>=incoming.iter().filter_map(|row|row["id"].as_str()).collect();
+    rows.retain(|row|row["id"].as_str().map(|id|visible.contains(id)||pending.contains(id)).unwrap_or(false));
+}
+
 pub fn canonical_uuid(value: &str) -> String {
     uuid::Uuid::parse_str(value).map(|id| id.to_string()).unwrap_or_else(|_| value.to_string())
 }
@@ -99,9 +104,9 @@ pub struct LocalDatabaseStatus { pub path: String, pub device_id: String, pub sc
 #[derive(Debug, Deserialize)]
 pub struct LocalSyncWriteInput { pub snapshot_json: String, pub change_id: String, pub entity_type: String, pub entity_id: Option<String>, pub operation: String, pub payload_json: String, pub state_key: Option<String>, pub state_json: Option<String> }
 fn database_path(app: &AppHandle) -> Result<PathBuf, String> { let dir=app_data_dir(&app.config()).ok_or_else(|| "Unable to resolve LabOS app-data directory".to_string())?; fs::create_dir_all(&dir).map_err(|e| format!("Unable to create local data directory: {e}"))?; Ok(dir.join(DB_FILE)) }
-pub fn open_local_connection(app: &AppHandle) -> Result<Connection, String> { let path=database_path(app)?; let connection=Connection::open(&path).map_err(|e| format!("Unable to open local SQLite database: {e}"))?; connection.pragma_update(None,"foreign_keys",true).map_err(|e| format!("Unable to enable SQLite foreign keys: {e}"))?; connection.pragma_update(None,"journal_mode","WAL").map_err(|e| format!("Unable to enable SQLite WAL mode: {e}"))?; connection.pragma_update(None,"synchronous","NORMAL").map_err(|e| format!("Unable to configure SQLite synchronous mode: {e}"))?; Ok(connection) }
+pub fn open_local_connection(app: &AppHandle) -> Result<Connection, String> { let path=database_path(app)?; let connection=Connection::open(&path).map_err(|e| format!("Unable to open local SQLite database: {e}"))?; connection.pragma_update(None,"foreign_keys",true).map_err(|e| format!("Unable to enable SQLite foreign keys: {e}"))?; connection.pragma_update(None,"journal_mode","WAL").map_err(|e| format!("Unable to enable SQLite WAL mode: {e}"))?; connection.pragma_update(None,"synchronous","NORMAL").map_err(|e| format!("Unable to configure SQLite synchronous mode: {e}"))?; crate::local_auth::enforce_offline_lease_bounds(&connection)?; Ok(connection) }
 fn open_connection(app:&AppHandle)->Result<(Connection,PathBuf),String>{let path=database_path(app)?;Ok((open_local_connection(app)?,path))}
-fn ensure_schema(connection:&Connection)->Result<(),String>{connection.execute_batch(r#"
+pub(crate) fn ensure_schema(connection:&Connection)->Result<(),String>{connection.execute_batch(r#"
 CREATE TABLE IF NOT EXISTS local_schema_migrations(version TEXT PRIMARY KEY,applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS device_identity(id INTEGER PRIMARY KEY CHECK(id=1),device_id TEXT NOT NULL UNIQUE,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS sync_state(key TEXT PRIMARY KEY,value TEXT);
@@ -176,11 +181,79 @@ pub fn list_pending_sync_changes(app:AppHandle,limit:Option<i64>,expected_accoun
     rows.map(|r|r.map_err(|e|format!("Unable to decode sync queue row: {e}"))).collect()
 }
 #[tauri::command]
-pub fn list_sync_conflicts(app:AppHandle)->Result<Vec<serde_json::Value>,String>{let(conn,_)=open_connection(&app)?;ensure_schema(&conn)?;let account=active_account(&conn)?;crate::local_auth::require_local_permission(&conn,"inventory.view")?;let sensitive=crate::local_auth::require_local_permission(&conn,"finance.view_sensitive").is_ok();let mut stmt=conn.prepare("SELECT c.id,c.change_id,c.entity_type,c.entity_id,c.operation,c.payload_json,c.error_code,c.error_message,c.created_at FROM sync_conflicts c JOIN sync_outbox o ON o.change_id=c.change_id WHERE c.resolved_at IS NULL AND o.account_id=?1 ORDER BY c.created_at DESC").map_err(|e|format!("Unable to prepare conflict query: {e}"))?;let rows=stmt.query_map([account],|r|{let payload:String=r.get(5)?;Ok(serde_json::json!({"id":r.get::<_,i64>(0)?,"change_id":r.get::<_,String>(1)?,"entity_type":r.get::<_,String>(2)?,"entity_id":r.get::<_,Option<String>>(3)?,"operation":r.get::<_,String>(4)?,"payload":serde_json::from_str::<Value>(&payload).unwrap_or(Value::Null),"error_code":r.get::<_,String>(6)?,"error_message":r.get::<_,String>(7)?,"created_at":r.get::<_,String>(8)?}))}).map_err(|e|format!("Unable to read sync conflicts: {e}"))?;rows.map(|r|r.map_err(|e|format!("Unable to decode sync conflict: {e}"))).filter(|row|sensitive||row.as_ref().map(|v|!["transaction","funding_source","budget_period"].contains(&v["entity_type"].as_str().unwrap_or(""))).unwrap_or(true)).collect()}
+pub fn list_sync_conflicts(app:AppHandle)->Result<Vec<Value>,String>{
+    let conn=open_local_connection(&app)?; ensure_schema(&conn)?;
+    let account=active_account(&conn)?;
+    let mut stmt=conn.prepare("SELECT c.id,c.change_id,o.entity_type,o.entity_id,o.operation,o.payload_json,c.error_code,c.error_message,c.created_at FROM sync_conflicts c JOIN sync_outbox o ON o.change_id=c.change_id WHERE c.resolved_at IS NULL AND o.account_id=?1 ORDER BY c.created_at DESC").map_err(|e|e.to_string())?;
+    let records=stmt.query_map([account],|r|{let raw:String=r.get(5)?;Ok(serde_json::json!({"id":r.get::<_,i64>(0)?,"change_id":r.get::<_,String>(1)?,"entity_type":r.get::<_,String>(2)?,"entity_id":r.get::<_,Option<String>>(3)?,"operation":r.get::<_,String>(4)?,"payload":serde_json::from_str::<Value>(&raw).unwrap_or(Value::Null),"error_code":r.get::<_,String>(6)?,"error_message":r.get::<_,String>(7)?,"created_at":r.get::<_,String>(8)?}))}).map_err(|e|e.to_string())?;
+    records.map(|record|{
+        let mut record=record.map_err(|e|e.to_string())?;
+        let readable=require_conflict_permission(&conn,record["entity_type"].as_str().unwrap_or(""),record["operation"].as_str().unwrap_or(""),&record["payload"],false).is_ok();
+        if !readable {record["payload"]=Value::Null;record["entity_id"]=Value::Null;record["error_message"]=Value::String("Access changed. This account's pending work is preserved; reconnect or discard explicitly.".into());}
+        record["access_restricted"]=Value::Bool(!readable);Ok(record)
+    }).collect()
+}
+
+fn require_conflict_permission(conn:&Connection,entity:&str,operation:&str,payload:&Value,write:bool)->Result<(),String>{
+    let domain=match entity{
+        "item"|"item_movement"|"location"=>"inventory",
+        "note"=>"notes", "resource"=>"resources",
+        "project"|"project_task"|"project_experiment"|"project_bom_item"|"project_item"|"project_block"|"project_connector"|"project_resource_requirement"=>"projects",
+        "finding"|"result"|"knowledge_relationship"=>"notes",
+        "engineering_calculation"|"engineering_test"=>"engineering",
+        "transaction"|"budget_period"|"funding_source"=>"finance",
+        _=>return Err("Unsupported conflict domain; discard or use the domain recovery workflow".into())
+    };
+    crate::local_auth::require_local_permission(conn,&format!("{domain}.view"))?;
+    // Conflict payloads can contain an old income record even after a role downgrade.
+    if domain=="finance" {crate::local_auth::require_local_permission(conn,"finance.view_sensitive")?;}
+    if write {
+        let action=match operation{"delete"|"bulk_delete"|"item_bulk_delete"=>"delete","create"=>"create",_=>"edit"};
+        let permission=if entity=="item_movement" {"inventory.adjust_stock".to_string()}
+            else if entity=="transaction"&&operation=="create" {let record=payload.get("record").unwrap_or(payload);format!("finance.create_{}",if record["direction"]=="income"{"income"}else{"expense"})}
+            else if domain=="finance"&&action=="create" {"finance.edit".to_string()}
+            else {format!("{domain}.{action}")};
+        crate::local_auth::require_local_permission(conn,&permission)?;
+    }
+    Ok(())
+}
 #[tauri::command]
 pub fn record_sync_conflict(app:AppHandle,change_id:String,entity_type:String,entity_id:Option<String>,operation:String,payload_json:String,error_code:String,error_message:String)->Result<(),String>{let mut conn=open_local_connection(&app)?;ensure_schema(&conn)?;serde_json::from_str::<Value>(&payload_json).map_err(|e|format!("Invalid conflict payload: {e}"))?;let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|format!("Unable to begin conflict record: {e}"))?;require_owned_change(&tx,&change_id)?;tx.execute("INSERT INTO sync_conflicts(change_id,entity_type,entity_id,operation,payload_json,error_code,error_message) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(change_id) DO UPDATE SET error_code=excluded.error_code,error_message=excluded.error_message,resolved_at=NULL,resolution=NULL",params![change_id,entity_type,entity_id,operation,payload_json,error_code,error_message]).map_err(|e|format!("Unable to record sync conflict: {e}"))?;tx.commit().map_err(|e|format!("Unable to commit sync conflict: {e}"))?;Ok(())}
 #[tauri::command]
-pub fn resolve_sync_conflict(app:AppHandle,change_id:String,resolution:String)->Result<(),String>{if !["keep_local","accept_server","dismiss"].contains(&resolution.as_str()){return Err("Invalid conflict resolution".into())}let mut conn=open_local_connection(&app)?;ensure_schema(&conn)?;let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|format!("Unable to begin conflict resolution: {e}"))?;require_owned_change(&tx,&change_id)?;crate::local_auth::require_local_permission(&tx,"inventory.view")?;let entity:String=tx.query_row("SELECT entity_type FROM sync_conflicts WHERE change_id=?1 AND resolved_at IS NULL",[&change_id],|r|r.get(0)).map_err(|e|format!("Unable to locate unresolved conflict: {e}"))?;if ["transaction","funding_source","budget_period"].contains(&entity.as_str()){crate::local_auth::require_local_permission(&tx,"finance.view_sensitive")?;}match resolution.as_str(){"keep_local"=>{let payload:String=tx.query_row("SELECT payload_json FROM sync_outbox WHERE change_id=?1",[&change_id],|r|r.get(0)).map_err(|e|format!("Unable to read conflicted change: {e}"))?;let mut value:Value=serde_json::from_str(&payload).map_err(|e|format!("Unable to decode conflicted change: {e}"))?;if let Value::Object(ref mut map)=value{map.insert("conflict_resolution".to_string(),Value::String("keep_local".to_string()));}else{return Err("Conflicted sync payload must be an object".into())}tx.execute("UPDATE sync_outbox SET payload_json=?2,attempt_count=0,last_error=NULL,synced_at=NULL WHERE change_id=?1",params![change_id,value.to_string()]).map_err(|e|format!("Unable to retry local change: {e}"))?;},"accept_server"=>{tx.execute("UPDATE sync_outbox SET synced_at=CURRENT_TIMESTAMP,last_error=NULL WHERE change_id=?1",[&change_id]).map_err(|e|format!("Unable to accept server change: {e}"))?;tx.execute("DELETE FROM sync_state WHERE key=?1",[scoped_state_key(&tx,"inventory_sync_cursor")?]).map_err(|e|format!("Unable to reset inventory sync cursor: {e}"))?;},"dismiss"=>{tx.execute("UPDATE sync_outbox SET synced_at=CURRENT_TIMESTAMP,last_error=NULL WHERE change_id=?1",[&change_id]).map_err(|e|format!("Unable to dismiss local change: {e}"))?;},_=>{}}tx.execute("UPDATE sync_conflicts SET resolved_at=CURRENT_TIMESTAMP,resolution=?2 WHERE change_id=?1",params![change_id,resolution]).map_err(|e|format!("Unable to resolve sync conflict: {e}"))?;tx.commit().map_err(|e|format!("Unable to commit conflict resolution: {e}"))?;Ok(())}
+pub fn resolve_sync_conflict(app:AppHandle,change_id:String,resolution:String)->Result<(),String>{
+    let mut conn=open_local_connection(&app)?;ensure_schema(&conn)?;
+    resolve_conflict(&mut conn,&change_id,&resolution)
+}
+fn resolve_conflict(conn:&mut Connection,change_id:&str,resolution:&str)->Result<(),String>{
+    if !["keep_local","accept_server","dismiss"].contains(&resolution){return Err("Invalid conflict resolution".into())}
+    let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+    require_owned_change(&tx,change_id)?;
+    let (entity,entity_id,operation,payload,code):(String,Option<String>,String,String,String)=tx.query_row(
+        "SELECT o.entity_type,o.entity_id,o.operation,o.payload_json,c.error_code FROM sync_outbox o JOIN sync_conflicts c ON c.change_id=o.change_id WHERE o.change_id=?1 AND c.resolved_at IS NULL",[change_id],
+        |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(|e|e.to_string())?;
+    if resolution=="keep_local" {
+        let mut value:Value=serde_json::from_str(&payload).map_err(|e|e.to_string())?;
+        require_conflict_permission(&tx,&entity,&operation,&value,true)?;
+        if entity=="item"&&code=="SYNC_CONFLICT" {
+            // An explicit overwrite is a NEW intent; never mutate an idempotency key.
+            value.as_object_mut().ok_or("Conflicted payload must be an object")?.insert("conflict_resolution".into(),Value::String("keep_local".into()));
+            let device:String=tx.query_row("SELECT device_id FROM sync_outbox WHERE change_id=?1",[change_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+            tx.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES(?1,?2,?3,?4,?5,?6)",params![new_uuid(),device,entity,entity_id,operation,value.to_string()]).map_err(|e|e.to_string())?;
+            tx.execute("UPDATE sync_outbox SET synced_at=CURRENT_TIMESTAMP,last_error=NULL WHERE change_id=?1",[change_id]).map_err(|e|e.to_string())?;
+        } else {
+            // Uncertain delivery/permission retry must retain exact original intent.
+            tx.execute("UPDATE sync_outbox SET attempt_count=0,last_error=NULL,synced_at=NULL WHERE change_id=?1",[change_id]).map_err(|e|e.to_string())?;
+        }
+    } else {
+        tx.execute("UPDATE sync_outbox SET synced_at=CURRENT_TIMESTAMP,last_error=NULL WHERE change_id=?1",[change_id]).map_err(|e|e.to_string())?;
+        // Inventory is incremental. Other domains use complete authorized snapshots.
+        if entity=="item"||entity=="item_movement" {
+            tx.execute("DELETE FROM sync_state WHERE key=?1",[scoped_state_key(&tx,"inventory_sync_cursor")?]).map_err(|e|e.to_string())?;
+        }
+    }
+    tx.execute("UPDATE sync_conflicts SET resolved_at=CURRENT_TIMESTAMP,resolution=?2 WHERE change_id=?1",params![change_id,resolution]).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())
+}
 #[tauri::command]
 pub fn mark_sync_changes_synced(app:AppHandle,change_ids:Vec<String>)->Result<(),String>{let mut conn=open_local_connection(&app)?;ensure_schema(&conn)?;mark_changes_synced(&mut conn,change_ids)}
 
@@ -193,6 +266,47 @@ pub fn apply_server_inventory_pull(app:AppHandle,items_json:String,deleted_item_
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn complete_snapshot_evicts_old_deletions_but_preserves_pending_intent() {
+        let mut rows:Vec<Value>=(0..1505).map(|i|serde_json::json!({"id":i.to_string()})).collect();
+        let incoming=vec![serde_json::json!({"id":"1504"})];
+        let pending=HashSet::from(["7".to_string()]);
+        retain_authorized_snapshot(&mut rows,&incoming,&pending);
+        assert_eq!(rows,vec![serde_json::json!({"id":"7"}),serde_json::json!({"id":"1504"})]);
+    }
+
+    fn conflict_fixture()->Connection {
+        let c=Connection::open_in_memory().unwrap();ensure_schema(&c).unwrap();
+        c.execute_batch("CREATE TABLE local_users(id TEXT PRIMARY KEY,central_user_id TEXT,is_active INTEGER,offline_expires_at TEXT,permissions_json TEXT); CREATE TABLE local_session(id INTEGER PRIMARY KEY,user_id TEXT); INSERT INTO local_users VALUES('local','account',1,'2099-01-01','[\"notes.view\",\"notes.edit\",\"inventory.view\",\"inventory.edit\"]'); INSERT INTO local_session VALUES(1,'local');").unwrap();
+        c
+    }
+
+    fn add_conflict(c:&Connection,change:&str,entity:&str,code:&str){
+        c.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES(?1,'device',?2,'entity','update','{\"patch\":{\"name\":\"offline\"}}')",params![change,entity]).unwrap();
+        c.execute("INSERT INTO sync_conflicts(change_id,entity_type,entity_id,operation,payload_json,error_code,error_message) VALUES(?1,?2,'entity','update','{}',?3,'test')",params![change,entity,code]).unwrap();
+    }
+
+    #[test]
+    fn conflict_retry_is_immutable_and_overwrite_is_new_intent(){
+        let mut c=conflict_fixture();
+        add_conflict(&c,"retry","note","PERMISSION_DENIED");
+        let original:String=c.query_row("SELECT payload_json FROM sync_outbox WHERE change_id='retry'",[],|r|r.get(0)).unwrap();
+        // Notes recovery does not depend on inventory.view.
+        c.execute("UPDATE local_users SET permissions_json='[\"notes.view\",\"notes.edit\"]'",[]).unwrap();
+        resolve_conflict(&mut c,"retry","keep_local").unwrap();
+        assert_eq!(original,c.query_row::<String,_,_>("SELECT payload_json FROM sync_outbox WHERE change_id='retry'",[],|r|r.get(0)).unwrap());
+        add_conflict(&c,"overwrite","item","SYNC_CONFLICT");
+        assert!(resolve_conflict(&mut c,"overwrite","keep_local").is_err());
+        c.execute("UPDATE local_users SET permissions_json='[\"inventory.view\",\"inventory.edit\"]'",[]).unwrap();
+        resolve_conflict(&mut c,"overwrite","keep_local").unwrap();
+        assert_eq!(original,c.query_row::<String,_,_>("SELECT payload_json FROM sync_outbox WHERE change_id='overwrite'",[],|r|r.get(0)).unwrap());
+        let (new_id,payload,owner):(String,String,String)=c.query_row("SELECT change_id,payload_json,account_id FROM sync_outbox WHERE change_id NOT IN ('overwrite','retry')",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+        assert!(uuid::Uuid::parse_str(&new_id).is_ok());assert_eq!(owner,"account");assert_eq!(serde_json::from_str::<Value>(&payload).unwrap()["conflict_resolution"],"keep_local");
+        add_conflict(&c,"revoked","transaction","PERMISSION_DENIED");
+        assert!(resolve_conflict(&mut c,"revoked","keep_local").is_err());
+        resolve_conflict(&mut c,"revoked","dismiss").unwrap();
+    }
 
     #[test]
     fn outbox_stamps_active_account_and_preserves_legacy_rows() {

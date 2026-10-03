@@ -2,7 +2,15 @@ import { invoke } from '@tauri-apps/api/tauri';
 import { apiFetch } from './http';
 
 const isTauri=()=>typeof window!=='undefined'&&!!(window as any).__TAURI_IPC__;
-async function local<T>(command:string,args:Record<string,unknown>={}):Promise<T|null>{if(!isTauri())return null;return invoke<T>(command,args);}
+async function local<T>(command:string,args:Record<string,unknown>={}):Promise<T|null>{
+  if(!isTauri())return null;
+  const result=await invoke<T>(command,args);
+  if(result===null){
+    if(command.startsWith('delete_'))return undefined as T;
+    throw new Error(`Local ${command} returned no result; server fallback was not attempted.`);
+  }
+  return result;
+}
 
 export interface KnowledgeOverview {
   counts: { notes: number; resources: number };

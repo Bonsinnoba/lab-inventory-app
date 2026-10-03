@@ -64,6 +64,39 @@ fn ensure_auth_schema(c: &rusqlite::Connection) -> Result<(), String> {
     }
     c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_local_users_central_user_id ON local_users(central_user_id) WHERE central_user_id IS NOT NULL", [])
         .map_err(|e| format!("Unable to enforce central account uniqueness: {e}"))?;
+    enforce_offline_lease_bounds(c)
+}
+
+fn offline_lease_modifier(role: &str, permissions: &[String]) -> &'static str {
+    let privileged = role == "admin" || permissions.iter().any(|p| matches!(p.as_str(),
+        "audit.view" | "finance.view_sensitive" | "finance.import" |
+        "users.create" | "users.edit" | "users.manage_permissions" |
+        "users.manage_roles" | "users.reset_password"));
+    if privileged { "+24 hours" } else { "+7 days" }
+}
+
+// Cap leases from the last password-authenticated login. Reading permissions,
+// reopening the app, and upgrading an old cache must never renew credentials.
+pub(crate) fn enforce_offline_lease_bounds(c: &rusqlite::Connection) -> Result<(), String> {
+    let columns: Vec<String> = c.prepare("PRAGMA table_info(local_users)")
+        .map_err(|e| e.to_string())?.query_map([], |row| row.get(1))
+        .map_err(|e| e.to_string())?.collect::<Result<_, _>>().map_err(|e| e.to_string())?;
+    if !["role", "permissions_json", "last_server_auth_at", "offline_expires_at"].iter()
+        .all(|name| columns.iter().any(|column| column == name)) { return Ok(()); }
+    let accounts: Vec<(String, String, String)> = c.prepare("SELECT id,role,permissions_json FROM local_users")
+        .map_err(|e| e.to_string())?.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .map_err(|e| e.to_string())?.collect::<Result<_, _>>().map_err(|e| e.to_string())?;
+    for (id, role, raw) in accounts {
+        let permissions = serde_json::from_str::<Vec<String>>(&raw);
+        let modifier = permissions.as_ref().map(|p| offline_lease_modifier(&role, p)).unwrap_or("+0 seconds");
+        c.execute("UPDATE local_users SET offline_expires_at=CASE
+            WHEN datetime(last_server_auth_at,?2) IS NULL THEN NULL
+            ELSE datetime(last_server_auth_at,?2) END
+            WHERE id=?1 AND offline_expires_at IS NOT NULL AND (
+              datetime(offline_expires_at) IS NULL OR datetime(last_server_auth_at,?2) IS NULL
+              OR datetime(offline_expires_at)>datetime(last_server_auth_at,?2))", params![id, modifier])
+            .map_err(|e| format!("Unable to bound offline authorization: {e}"))?;
+    }
     Ok(())
 }
 
@@ -79,6 +112,7 @@ fn map_user(r:&rusqlite::Row)->rusqlite::Result<LocalUser>{
         offline_expires_at:r.get(7)?,
     })
 }
+
 
 pub fn require_local_permission(c:&rusqlite::Connection,permission:&str)->Result<(),String>{
     let (permissions,expires): (String,Option<String>)=c.query_row(
@@ -115,7 +149,7 @@ pub fn local_auth_status(app:AppHandle)->Result<serde_json::Value,String>{
         [],|r|r.get(0)
     ).map_err(|e|format!("Unable to inspect cached accounts: {e}"))?;
     let user=c.query_row(
-        "SELECT id,central_user_id,username,role,display_name,email,is_active,offline_expires_at FROM local_users WHERE id=(SELECT user_id FROM local_session WHERE id=1)",
+        "SELECT id,central_user_id,username,role,display_name,email,is_active,offline_expires_at FROM local_users WHERE id=(SELECT user_id FROM local_session WHERE id=1) AND central_user_id IS NOT NULL AND is_active=1 AND datetime('now')<datetime(offline_expires_at)",
         [],map_user
     ).optional().map_err(|e|format!("Unable to inspect local session: {e}"))?;
     Ok(serde_json::json!({"bootstrapped":count>0,"authenticated":user.is_some(),"user":user}))
@@ -137,6 +171,7 @@ pub fn cache_server_user(
     if password.len()<8||password.len()>128{return Err("Password must be between 8 and 128 characters".into())}
     let c=open_local_connection(&app)?;ensure_auth_schema(&c)?;
     let hash=hash_password(&password)?;
+    let lease=offline_lease_modifier(&role,&permissions);
     let permissions_json=serde_json::to_string(&permissions).map_err(|e|format!("Unable to encode permissions: {e}"))?;
     let local_id:Option<String>=c.query_row(
         "SELECT id FROM local_users WHERE central_user_id=?1",
@@ -167,13 +202,13 @@ pub fn cache_server_user(
     ).map_err(|e|format!("Unable to inspect cached account row: {e}"))?;
     if exists {
         c.execute(
-            "UPDATE local_users SET central_user_id=?1,username=?2,password_hash=?3,role=?4,display_name=?5,email=?6,is_active=1,permissions_json=?7,last_server_auth_at=CURRENT_TIMESTAMP,offline_expires_at=datetime('now','+7 days') WHERE id=?8",
-            params![central_user_id.trim(),username.trim(),hash,role,display_name,email,permissions_json,local_id]
+            "UPDATE local_users SET central_user_id=?1,username=?2,password_hash=?3,role=?4,display_name=?5,email=?6,is_active=1,permissions_json=?7,last_server_auth_at=CURRENT_TIMESTAMP,offline_expires_at=datetime('now',?8) WHERE id=?9",
+            params![central_user_id.trim(),username.trim(),hash,role,display_name,email,permissions_json,lease,local_id]
         ).map_err(|e|format!("Unable to update cached server account: {e}"))?;
     } else {
         c.execute(
-            "INSERT INTO local_users(id,central_user_id,username,password_hash,role,display_name,email,is_active,permissions_json,last_server_auth_at,offline_expires_at) VALUES(?1,?2,?3,?4,?5,?6,?7,1,?8,CURRENT_TIMESTAMP,datetime('now','+7 days'))",
-            params![local_id,central_user_id.trim(),username.trim(),hash,role,display_name,email,permissions_json]
+            "INSERT INTO local_users(id,central_user_id,username,password_hash,role,display_name,email,is_active,permissions_json,last_server_auth_at,offline_expires_at) VALUES(?1,?2,?3,?4,?5,?6,?7,1,?8,CURRENT_TIMESTAMP,datetime('now',?9))",
+            params![local_id,central_user_id.trim(),username.trim(),hash,role,display_name,email,permissions_json,lease]
         ).map_err(|e|format!("Unable to cache server account: {e}"))?;
     }
     c.execute(
@@ -239,11 +274,11 @@ pub fn cache_server_permissions(app:AppHandle,central_user_id:String,role:String
     let c=open_local_connection(&app)?;ensure_auth_schema(&c)?;
     let permissions_json=serde_json::to_string(&permissions).map_err(|e|format!("Unable to encode permissions: {e}"))?;
     let updated=c.execute(
-        "UPDATE local_users SET role=?1,permissions_json=?2,last_server_auth_at=CURRENT_TIMESTAMP,offline_expires_at=datetime('now','+7 days'),is_active=1 WHERE central_user_id=?3",
+        "UPDATE local_users SET role=?1,permissions_json=?2,is_active=1 WHERE central_user_id=?3",
         params![role,permissions_json,central_user_id.trim()]
     ).map_err(|e|format!("Unable to refresh cached permissions: {e}"))?;
     if updated==0{return Err("Central account is not cached on this installation".into())}
-    Ok(())
+    enforce_offline_lease_bounds(&c)
 }
 
 #[tauri::command]
@@ -276,4 +311,45 @@ pub fn local_change_password(_app:AppHandle,_current_password:String,_new_passwo
 #[tauri::command]
 pub fn local_update_profile(_app:AppHandle,_display_name:Option<String>,_email:Option<String>)->Result<LocalUser,String>{
     Err("Profile changes require an online LabOS connection.".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn privileged_leases_expire_without_losing_pending_work() {
+        let c=rusqlite::Connection::open_in_memory().unwrap();
+        ensure_auth_schema(&c).unwrap();
+        c.execute("INSERT INTO local_users(id,central_user_id,username,password_hash,role,permissions_json,last_server_auth_at,offline_expires_at) VALUES('a','server-a','alice','unused','admin','[\"notes.create\"]',datetime('now','-25 hours'),datetime('now','+6 days'))",[]).unwrap();
+        c.execute("INSERT INTO local_session VALUES(1,'a','token',CURRENT_TIMESTAMP)",[]).unwrap();
+        enforce_offline_lease_bounds(&c).unwrap();
+        assert!(require_local_permission(&c,"notes.create").is_err());
+        let before:String=c.query_row("SELECT offline_expires_at FROM local_users",[],|r|r.get(0)).unwrap();
+        // A role downgrade or repeated startup cannot extend an expired lease.
+        c.execute("UPDATE local_users SET role='member'",[]).unwrap();
+        enforce_offline_lease_bounds(&c).unwrap();
+        let after:String=c.query_row("SELECT offline_expires_at FROM local_users",[],|r|r.get(0)).unwrap();
+        assert_eq!(before,after);
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM local_users",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+    }
+
+    #[test]
+    fn ordinary_and_delegated_privileged_accounts_have_distinct_leases() {
+        assert_eq!(offline_lease_modifier("member",&vec!["notes.create".into()]),"+7 days");
+        assert_eq!(offline_lease_modifier("admin",&vec![]),"+24 hours");
+        assert_eq!(offline_lease_modifier("member",&vec!["users.manage_permissions".into()]),"+24 hours");
+        let c=rusqlite::Connection::open_in_memory().unwrap();
+        ensure_auth_schema(&c).unwrap();
+        c.execute("INSERT INTO local_users(id,central_user_id,username,password_hash,role,permissions_json,last_server_auth_at,offline_expires_at) VALUES('m','server-m','member','unused','member','[\"notes.create\"]',datetime('now','-25 hours'),datetime('now','+6 days'))",[]).unwrap();
+        c.execute("INSERT INTO local_session VALUES(1,'m','token',CURRENT_TIMESTAMP)",[]).unwrap();
+        enforce_offline_lease_bounds(&c).unwrap();
+        assert!(require_local_permission(&c,"notes.create").is_ok());
+        c.execute("UPDATE local_users SET permissions_json='[\"notes.create\",\"users.manage_permissions\"]'",[]).unwrap();
+        enforce_offline_lease_bounds(&c).unwrap();
+        assert!(require_local_permission(&c,"notes.create").is_err());
+        c.execute("UPDATE local_users SET last_server_auth_at=NULL,offline_expires_at='2099-01-01'",[]).unwrap();
+        enforce_offline_lease_bounds(&c).unwrap();
+        assert!(require_local_permission(&c,"notes.create").is_err());
+    }
 }

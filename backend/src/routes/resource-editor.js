@@ -27,6 +27,24 @@ async function getEditableResource(id, user) {
   return { resource: result.rows[0] };
 }
 
+async function insertDerivedResource(resource, user, id, filename, mimeType, size, fileType) {
+  const client=await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result=await client.query(`INSERT INTO resources
+      (id,name,kind,file_type,original_filename,mime_type,size_bytes,storage_path,item_id,project_id,note_id,
+       parent_resource_id,relative_path,category,description,tags,uploaded_by,derived_from_resource_id,visibility)
+      VALUES($1,$2,'file',$3,$2,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
+      [id,filename,fileType,mimeType,size,`${id}/${filename}`,resource.item_id||null,resource.project_id||null,
+       resource.note_id||null,resource.parent_resource_id||null,resource.parent_resource_id?filename:null,
+       resource.category||'general',resource.description||'',resource.tags||[],user.userId,resource.id,resource.visibility||'lab']);
+    if(resource.visibility==='restricted')await client.query("INSERT INTO record_access_grants(entity_type,entity_id,user_id,access_level,created_by) VALUES('resource',$1,$2,'edit',$2)",[id,user.userId]);
+    await client.query('COMMIT');
+    return result.rows[0];
+  } catch(error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
+}
+
 async function duplicateFileResource(resource, user, suffix = 'Edited') {
   const sourcePath = resolveStoragePath(resource.storage_path);
   const id = randomUUID();
@@ -38,18 +56,7 @@ async function duplicateFileResource(resource, user, suffix = 'Edited') {
   await fs.mkdir(destinationDir, { recursive: true });
   await fs.copyFile(sourcePath, destinationPath);
   try {
-    const result = await pool.query(
-      `INSERT INTO resources
-       (id, name, kind, file_type, original_filename, mime_type, size_bytes, storage_path,
-        item_id, project_id, note_id, parent_resource_id, relative_path, category, description, tags,
-        uploaded_by, derived_from_resource_id)
-       VALUES ($1,'file',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
-       RETURNING *`,
-      [id, resource.file_type, newFilename, resource.mime_type, resource.size_bytes, `${id}/${newFilename}`,
-        resource.item_id || null, resource.project_id || null, resource.note_id || null, null, null,
-        resource.category || 'general', resource.description || '', resource.tags || [], user?.userId || null, resource.id]
-    );
-    const created = result.rows[0];
+    const created = await insertDerivedResource(resource,user,id,newFilename,resource.mime_type,resource.size_bytes,resource.file_type);
     await writeAuditLog({ req: { user }, action: 'CREATE', entityType: 'resource', entityId: created.id,
       newValue: { derived_from_resource_id: resource.id, original_filename: resource.original_filename, derived_filename: newFilename } });
     return created;
@@ -117,17 +124,7 @@ router.put('/:id/docx-copy', async (req, res) => {
     await fs.mkdir(destinationDir, { recursive: true });
     await fs.writeFile(resolveStoragePath(`${id}/${newFilename}`), buffer);
     try {
-      const result = await pool.query(
-        `INSERT INTO resources
-         (id, name, kind, file_type, original_filename, mime_type, size_bytes, storage_path,
-          item_id, project_id, note_id, category, description, tags, uploaded_by, derived_from_resource_id)
-         VALUES ($1,'file','document',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-         RETURNING *`,
-        [id, newFilename, newFilename, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', buffer.length,
-          `${id}/${newFilename}`, resource.item_id || null, resource.project_id || null, resource.note_id || null,
-          resource.category || 'general', resource.description || '', resource.tags || [], req.user?.userId || null, resource.id]
-      );
-      const created = result.rows[0];
+      const created = await insertDerivedResource(resource,req.user,id,newFilename,'application/vnd.openxmlformats-officedocument.wordprocessingml.document',buffer.length,'document');
       await writeAuditLog({ req, action: 'CREATE', entityType: 'resource', entityId: created.id, newValue: { derived_from_resource_id: resource.id, docx_edited: true } });
       res.status(201).json(created);
     } catch (err) { await fs.rm(destinationDir, { recursive: true, force: true }).catch(() => {}); throw err; }

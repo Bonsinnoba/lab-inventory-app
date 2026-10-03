@@ -1,11 +1,13 @@
+import { readableNotifications } from '../middleware/notification-visibility.js';
 import { Router } from 'express';
 import { pool } from '../db.js';
 import { hasPermission } from '../middleware/permissions.js';
 import { writeAuditLog } from '../middleware/audit.js';
+import { getProjectAccess } from '../middleware/project-access.js';
 
 const router = Router();
 
-router.get('/activity', hasPermission('reports.view'), async (req, res) => {
+router.get('/activity', hasPermission('audit.view'), async (req, res) => {
   const limit = Math.min(Math.max(Number(req.query.limit) || 40, 1), 100);
   const before = req.query.before || null;
   const values = [limit];
@@ -20,9 +22,8 @@ router.get('/activity', hasPermission('reports.view'), async (req, res) => {
 router.get('/notifications', async (req, res) => {
   const limit = Math.min(Math.max(Number(req.query.limit) || 30, 1), 100);
   try {
-    const result = await pool.query(`SELECT id,type,title,body,entity_type,entity_id,metadata,read_at,created_at FROM notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2`, [req.user.userId, limit]);
-    const unread = await pool.query('SELECT COUNT(*)::int AS count FROM notifications WHERE user_id=$1 AND read_at IS NULL', [req.user.userId]);
-    res.json({ items: result.rows, unread_count: unread.rows[0].count });
+    const visible=await readableNotifications(req.user);
+    res.json({items:visible.slice(0,limit),unread_count:visible.filter(row=>!row.read_at).length});
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to fetch notifications' }); }
 });
 
@@ -41,10 +42,9 @@ router.post('/notifications/read-all', async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Failed to mark notifications read' }); }
 });
 
-async function canAccessProject(projectId, userId, role) {
-  if (role === 'admin') return true;
-  const result = await pool.query(`SELECT 1 FROM projects p LEFT JOIN project_members pm ON pm.project_id=p.id AND pm.user_id=$2 WHERE p.id=$1 AND (p.owner_id=$2 OR pm.user_id=$2)`, [projectId, userId]);
-  return result.rowCount > 0;
+async function canAccessProject(projectId, userId, role, edit=false) {
+  const access=await getProjectAccess(projectId,{userId,role});
+  return edit ? ['edit','admin'].includes(access.access) : access.access!=='none';
 }
 
 router.get('/projects/:projectId/comments', hasPermission('projects.view'), async (req, res) => {
@@ -60,7 +60,7 @@ router.post('/projects/:projectId/comments', hasPermission('projects.edit'), asy
   if (!body) return res.status(400).json({ error: 'body is required' });
   if (body.length > 5000) return res.status(400).json({ error: 'comment is too long' });
   try {
-    if (!(await canAccessProject(req.params.projectId, req.user.userId, req.user.role))) return res.status(403).json({ error: 'Project access required' });
+    if (!(await canAccessProject(req.params.projectId, req.user.userId, req.user.role,true))) return res.status(403).json({ error: 'Project edit access required' });
     const result = await pool.query(`INSERT INTO project_comments(project_id,author_id,body) VALUES($1,$2,$3) RETURNING id,project_id,author_id,body,created_at,updated_at`, [req.params.projectId, req.user.userId, body]);
     await writeAuditLog({ req, action:'CREATE', entityType:'project_comment', entityId:result.rows[0].id, metadata:{ project_id:req.params.projectId } });
     const row = await pool.query(`SELECT c.*,u.username AS author_username FROM project_comments c LEFT JOIN users u ON u.id=c.author_id WHERE c.id=$1`, [result.rows[0].id]);
@@ -72,7 +72,7 @@ router.post('/projects/:projectId/comments', hasPermission('projects.edit'), asy
 
 router.delete('/projects/:projectId/comments/:commentId', hasPermission('projects.edit'), async (req, res) => {
   try {
-    if (!(await canAccessProject(req.params.projectId, req.user.userId, req.user.role))) return res.status(403).json({ error:'Project access required' });
+    if (!(await canAccessProject(req.params.projectId, req.user.userId, req.user.role,true))) return res.status(403).json({ error:'Project edit access required' });
     const current = await pool.query('SELECT author_id FROM project_comments WHERE id=$1 AND project_id=$2', [req.params.commentId, req.params.projectId]);
     if (!current.rowCount) return res.status(404).json({ error:'Comment not found' });
     if (req.user.role !== 'admin' && current.rows[0].author_id !== req.user.userId) return res.status(403).json({ error:'Only the author or an administrator can delete this comment' });

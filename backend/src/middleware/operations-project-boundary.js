@@ -10,12 +10,14 @@ export async function operationsProjectBoundary(req, res, next) {
     if (req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'OPTIONS') {
       let projectId = req.body?.project_id || req.body?.projectId;
 
-      if (!projectId && req.params?.id) {
+      const requirementId=req.params?.id || /^\/requirements\/([0-9a-f-]+)\/?$/i.exec(req.path)?.[1];
+      if (requirementId) {
         const result = await pool.query(
           'SELECT project_id FROM project_resource_requirements WHERE id = $1',
-          [req.params.id]
+          [requirementId]
         );
         projectId = result.rows[0]?.project_id;
+        if(!projectId)return res.status(404).json({error:'Requirement not found'});
       }
 
       if (projectId) {

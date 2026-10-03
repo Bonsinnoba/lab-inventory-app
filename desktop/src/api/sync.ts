@@ -4,10 +4,10 @@ import { getStoredUser, getToken } from './auth';
 
 type PendingChange = { change_id:string; device_id:string; entity_type:string; entity_id?:string|null; operation:string; payload:unknown; created_at:string; attempt_count:number; last_error?:string|null };
 type SyncResult = { change_id:string; status:'synced'|'failed'|'rejected'; result?:unknown; error?:{code?:string;message?:string} };
-type LocationPullResponse = { locations?:unknown[]; deleted_location_ids?:string[] };
-type EngineeringPullResponse = { calculations?:unknown[]; tests?:unknown[]; deleted_calculation_ids?:string[]; deleted_test_ids?:string[] };
+type LocationPullResponse = { snapshot_complete?:boolean; locations?:unknown[]; deleted_location_ids?:string[] };
+type EngineeringPullResponse = { calculations?:unknown[]; tests?:unknown[]; visible_calculation_ids?:string[]; visible_test_ids?:string[]; deleted_calculation_ids?:string[]; deleted_test_ids?:string[] };
 type PullResponse = { items?:unknown[]; deleted_item_ids?:string[]; next_cursor?:string|null; has_more?:boolean };
-type KnowledgePullResponse = { findings?:unknown[]; results?:unknown[]; relationships?:unknown[]; deleted?:{finding?:string[];knowledge_result?:string[];knowledge_relationship?:string[]} };
+type KnowledgePullResponse = { findings?:unknown[]; results?:unknown[]; relationships?:unknown[]; visible_finding_ids?:string[]; visible_result_ids?:string[]; visible_relationship_ids?:string[]; deleted?:{finding?:string[];knowledge_result?:string[];knowledge_relationship?:string[]} };
 type NotesPullResponse = { notes?:unknown[]; visible_note_ids?:string[]; deleted_note_ids?:string[] };
 export type SyncRuntimeState = { status:'offline'|'syncing'|'idle'|'error'; lastSuccessAt:string|null; lastError:string|null };
 
@@ -185,7 +185,7 @@ async function pullServerResources():Promise<boolean>{
 }
 
 
-async function pullServerFinance():Promise<boolean>{if(typeof navigator!=='undefined'&&!navigator.onLine)return false;try{const response=await apiFetch('/sync/finance/pull',{method:'GET',cache:'no-store'});if(!response.ok)return false;const body=await response.json() as any;const d=body.deleted||{};assertSyncSession();await invoke('apply_server_finance_pull',{transactions:Array.isArray(body.transactions)?body.transactions:[],budgetPeriods:Array.isArray(body.budget_periods)?body.budget_periods:[],fundingSources:Array.isArray(body.funding_sources)?body.funding_sources:[],deletedTransactions:Array.isArray(d.transaction)?d.transaction:[],deletedBudgetPeriods:Array.isArray(d.budget_period)?d.budget_period:[],deletedFundingSources:Array.isArray(d.funding_source)?d.funding_source:[],sensitiveAccess:body.sensitive_access===true,expectedAccountId:syncAccountId()});return true}catch(error){publish({status:'error',lastError:error instanceof Error?error.message:String(error)});return false;}}
+async function pullServerFinance():Promise<boolean>{if(typeof navigator!=='undefined'&&!navigator.onLine)return false;try{const response=await apiFetch('/sync/finance/pull',{method:'GET',cache:'no-store'});if(!response.ok)return false;const body=await response.json() as any;const d=body.deleted||{};assertSyncSession();await invoke('apply_server_finance_pull',{transactions:Array.isArray(body.transactions)?body.transactions:[],budgetPeriods:Array.isArray(body.budget_periods)?body.budget_periods:[],fundingSources:Array.isArray(body.funding_sources)?body.funding_sources:[],deletedTransactions:Array.isArray(d.transaction)?d.transaction:[],deletedBudgetPeriods:Array.isArray(d.budget_period)?d.budget_period:[],deletedFundingSources:Array.isArray(d.funding_source)?d.funding_source:[],snapshotComplete:body.snapshot_complete===true,sensitiveAccess:body.sensitive_access===true,expectedAccountId:syncAccountId()});return true}catch(error){publish({status:'error',lastError:error instanceof Error?error.message:String(error)});return false;}}
 
 
 async function pullServerEngineering():Promise<boolean>{
@@ -194,8 +194,10 @@ async function pullServerEngineering():Promise<boolean>{
     const response=await apiFetch('/sync/engineering/pull',{method:'GET',cache:'no-store'});
     if(!response.ok){publish({status:'error',lastError:await getApiErrorMessage(response,'Unable to download engineering changes')});return false;}
     const body=await response.json() as EngineeringPullResponse;
+    if(!Array.isArray(body.visible_calculation_ids)||!Array.isArray(body.visible_test_ids))
+      throw new Error('Engineering pull omitted its visibility snapshot; local cache was not changed.');
     assertSyncSession();
-    await invoke('apply_server_engineering_pull',{calculations:Array.isArray(body.calculations)?body.calculations:[],tests:Array.isArray(body.tests)?body.tests:[],deletedCalculationIds:Array.isArray(body.deleted_calculation_ids)?body.deleted_calculation_ids:[],deletedTestIds:Array.isArray(body.deleted_test_ids)?body.deleted_test_ids:[],expectedAccountId:syncAccountId()});
+    await invoke('apply_server_engineering_pull',{calculations:Array.isArray(body.calculations)?body.calculations:[],tests:Array.isArray(body.tests)?body.tests:[],visibleCalculationIds:body.visible_calculation_ids,visibleTestIds:body.visible_test_ids,deletedCalculationIds:Array.isArray(body.deleted_calculation_ids)?body.deleted_calculation_ids:[],deletedTestIds:Array.isArray(body.deleted_test_ids)?body.deleted_test_ids:[],expectedAccountId:syncAccountId()});
     return true;
   }catch(error){publish({status:'error',lastError:error instanceof Error?error.message:String(error)});return false;}
 }
@@ -206,12 +208,17 @@ async function pullServerKnowledge():Promise<boolean>{
     const response=await apiFetch('/knowledge/sync/pull',{method:'GET',cache:'no-store'});
     if(!response.ok){publish({status:'error',lastError:await getApiErrorMessage(response,'Unable to download knowledge changes')});return false;}
     const body=await response.json() as KnowledgePullResponse;
+    if(!Array.isArray(body.visible_finding_ids)||!Array.isArray(body.visible_result_ids)||!Array.isArray(body.visible_relationship_ids))
+      throw new Error('Knowledge pull omitted its visibility snapshot; local cache was not changed.');
     const deleted=body.deleted||{};
     assertSyncSession();
     await invoke('apply_server_knowledge_pull',{
       findings:Array.isArray(body.findings)?body.findings:[],
       results:Array.isArray(body.results)?body.results:[],
       relationships:Array.isArray(body.relationships)?body.relationships:[],
+      visibleFindingIds:body.visible_finding_ids,
+      visibleResultIds:body.visible_result_ids,
+      visibleRelationshipIds:body.visible_relationship_ids,
       deletedFindingIds:Array.isArray(deleted.finding)?deleted.finding:[],
       deletedResultIds:Array.isArray(deleted.knowledge_result)?deleted.knowledge_result:[],
       deletedRelationshipIds:Array.isArray(deleted.knowledge_relationship)?deleted.knowledge_relationship:[],
@@ -240,7 +247,7 @@ async function pullServerLocations():Promise<boolean>{
     if(!response.ok){publish({status:'error',lastError:await getApiErrorMessage(response,'Unable to download location changes')});return false;}
     const body=await response.json() as LocationPullResponse;
     assertSyncSession();
-    await invoke('apply_server_location_pull',{locationsJson:JSON.stringify(Array.isArray(body.locations)?body.locations:[]),deletedLocationIds:Array.isArray(body.deleted_location_ids)?body.deleted_location_ids:[],expectedAccountId:syncAccountId()});
+    await invoke('apply_server_location_pull',{snapshotComplete:body.snapshot_complete===true,locationsJson:JSON.stringify(Array.isArray(body.locations)?body.locations:[]),deletedLocationIds:Array.isArray(body.deleted_location_ids)?body.deleted_location_ids:[],expectedAccountId:syncAccountId()});
     return true;
   }catch(error){publish({status:'error',lastError:error instanceof Error?error.message:String(error)});return false;}
 }

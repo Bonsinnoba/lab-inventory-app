@@ -118,17 +118,23 @@ router.put('/:id', hasPermission('finance.edit'), async (req, res) => {
 
 // DELETE /api/budget-periods/:id
 router.delete('/:id', hasPermission('finance.delete'), async (req, res) => {
+  const client = await pool.connect();
   try {
-    const result = await pool.query('DELETE FROM budget_periods WHERE id = $1 RETURNING id', [req.params.id]);
+    await client.query('BEGIN');
+    const result = await client.query('DELETE FROM budget_periods WHERE id = $1 RETURNING id', [req.params.id]);
     if (result.rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Budget period not found' });
     }
+    await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) VALUES('budget_period',$1) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()", [req.params.id]);
+    await client.query('COMMIT');
     await writeAuditLog({ req, action: 'DELETE', entityType: 'budget_period', entityId: req.params.id });
     res.status(204).send();
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error(err);
     res.status(500).json({ error: err.message || 'Failed to delete budget period' });
-  }
+  } finally { client.release(); }
 });
 
 export default router;

@@ -84,7 +84,7 @@ pub fn get_local_knowledge_tags(app:AppHandle)->Result<Vec<Value>,String>{let c=
 
 
 #[tauri::command]
-pub fn apply_server_knowledge_pull(app:AppHandle,findings:Vec<Value>,results:Vec<Value>,relationships:Vec<Value>,deleted_finding_ids:Vec<String>,deleted_result_ids:Vec<String>,deleted_relationship_ids:Vec<String>,expected_account_id:String)->Result<(),String>{
+pub fn apply_server_knowledge_pull(app:AppHandle,findings:Vec<Value>,results:Vec<Value>,relationships:Vec<Value>,visible_finding_ids:Vec<String>,visible_result_ids:Vec<String>,visible_relationship_ids:Vec<String>,deleted_finding_ids:Vec<String>,deleted_result_ids:Vec<String>,deleted_relationship_ids:Vec<String>,expected_account_id:String)->Result<(),String>{
  let mut c=conn(&app)?;local_db::require_sync_account(&c,&expected_account_id)?;let mut s=load(&c)?;
  fn pending(c:&Connection,typ:&str,id:&str)->Result<bool,String>{Ok(c.query_row("SELECT 1 FROM active_sync_outbox WHERE synced_at IS NULL AND entity_type=?1 AND entity_id=?2 LIMIT 1",params![typ,id],|r|r.get::<_,i64>(0)).optional().map_err(|e|format!("Unable to inspect pending knowledge change: {e}"))?.is_some())}
  fn merge(c:&Connection,s:&mut Value,key:&str,typ:&str,incoming:Vec<Value>)->Result<(),String>{
@@ -96,12 +96,15 @@ pub fn apply_server_knowledge_pull(app:AppHandle,findings:Vec<Value>,results:Vec
    }
    s[key]=Value::Array(current);Ok(())
  }
- fn remove(c:&Connection,s:&mut Value,key:&str,typ:&str,ids:Vec<String>)->Result<(),String>{
-   let mut current=arr(s,key);
-   current.retain(|v|{let id=v.get("id").and_then(Value::as_str).unwrap_or("");!ids.iter().any(|x|x==id)&&!pending(c,typ,id).unwrap_or(false)});
-   s[key]=Value::Array(current);Ok(())
+ fn remove(c:&Connection,s:&mut Value,key:&str,typ:&str,visible_ids:Vec<String>,deleted_ids:Vec<String>)->Result<(),String>{
+   let current=arr(s,key);
+   let visible:std::collections::HashSet<String>=visible_ids.into_iter().collect();
+   let deleted:std::collections::HashSet<String>=deleted_ids.into_iter().collect();
+   let mut retained=Vec::new();
+   for value in current{let id=value.get("id").and_then(Value::as_str).unwrap_or("");if pending(c,typ,id)?||visible.contains(id)&&!deleted.contains(id){retained.push(value);}}
+   s[key]=Value::Array(retained);Ok(())
  }
  merge(&c,&mut s,"findings","finding",findings)?;merge(&c,&mut s,"results","knowledge_result",results)?;merge(&c,&mut s,"relationships","knowledge_relationship",relationships)?;
- remove(&c,&mut s,"findings","finding",deleted_finding_ids)?;remove(&c,&mut s,"results","knowledge_result",deleted_result_ids)?;remove(&c,&mut s,"relationships","knowledge_relationship",deleted_relationship_ids)?;
+ remove(&c,&mut s,"findings","finding",visible_finding_ids,deleted_finding_ids)?;remove(&c,&mut s,"results","knowledge_result",visible_result_ids,deleted_result_ids)?;remove(&c,&mut s,"relationships","knowledge_relationship",visible_relationship_ids,deleted_relationship_ids)?;
  save_checked(&mut c,&s,None,Some(&expected_account_id))
 }

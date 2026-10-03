@@ -1,3 +1,4 @@
+import { filterReadableRows } from '../middleware/read-visibility.js';
 import { Router } from 'express';
 import { pool } from '../db.js';
 import { hasPermission } from '../middleware/permissions.js';
@@ -10,7 +11,7 @@ async function dueRows(user) {
     pool.query(`SELECT i.id,i.name,i.next_calibration_date FROM items i WHERE i.next_calibration_date IS NOT NULL AND i.next_calibration_date <= current_date + 30 ORDER BY i.next_calibration_date`),
     pool.query(`SELECT t.id,t.project_id,t.title,t.assignee_id,t.due_date,p.name AS project_name FROM project_tasks t JOIN projects p ON p.id=t.project_id WHERE t.due_date IS NOT NULL AND t.due_date <= current_date AND t.status NOT IN ('done','cancelled') AND ($1 = 'admin' OR p.owner_id = $2 OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id=t.project_id AND pm.user_id=$2)) ORDER BY t.due_date`, [user?.role, user?.userId]),
   ]);
-  return { maintenance: maintenance.rows, calibration: calibration.rows, tasks: tasks.rows };
+  return { maintenance: maintenance.rows, calibration: calibration.rows, tasks: await filterReadableRows('tasks',tasks.rows,user) };
 }
 
 router.get('/due', hasPermission('automation.view'), async (req, res) => {

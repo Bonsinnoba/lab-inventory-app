@@ -2,15 +2,16 @@ import { Router } from 'express';
 import { pool } from '../db.js';
 import { getProjectAccess } from '../middleware/project-access.js';
 import { hasPermission } from '../middleware/permissions.js';
+import { readableNotifications } from '../middleware/notification-visibility.js';
+import { visibilityReadSql } from '../middleware/visibility.js';
 
 const router = Router();
 
 async function visibleProjectIds(user) {
   if (user?.role === 'admin') return null;
   const r = await pool.query(
-    `SELECT p.id FROM projects p
-     WHERE p.owner_id=$1 OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id=p.id AND pm.user_id=$1)`,
-    [user.userId]
+    `SELECT p.id FROM projects p WHERE ${visibilityReadSql({alias:'p',entityType:'project',projectIdExpression:'p.id',userIdParameter:'$1',roleParameter:'$2'})}`,
+    [user.userId,user.role]
   );
   return r.rows.map(x => x.id);
 }
@@ -18,19 +19,14 @@ async function visibleProjectIds(user) {
 router.get('/notifications', async (req, res) => {
   const limit = Math.min(Math.max(Number(req.query.limit) || 30, 1), 100);
   try {
-    const r = await pool.query(
-      `SELECT id,type,title,body,entity_type,entity_id,metadata,read_at,created_at
-       FROM notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2`,
-      [req.user.userId, limit]
-    );
-    const unread = await pool.query(`SELECT count(*)::int AS count FROM notifications WHERE user_id=$1 AND read_at IS NULL`, [req.user.userId]);
-    res.json({ items: r.rows, unread: unread.rows[0].count });
+    const visible=await readableNotifications(req.user);
+    res.json({items:visible.slice(0,limit),unread:visible.filter(row=>!row.read_at).length});
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to load notifications' }); }
 });
 
 router.post('/notifications/:id/read', async (req, res) => {
   try {
-    const r = await pool.query(`UPDATE notifications SET read_at=COALESCE(read_at,now()) WHERE id=$1 AND user_id=$2 RETURNING *`, [req.params.id, req.user.userId]);
+    const r = await pool.query(`UPDATE notifications SET read_at=COALESCE(read_at,now()) WHERE id=$1 AND user_id=$2 RETURNING id,read_at`, [req.params.id, req.user.userId]);
     if (!r.rowCount) return res.status(404).json({ error: 'Notification not found' });
     res.json(r.rows[0]);
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to update notification' }); }
@@ -108,8 +104,8 @@ router.get('/project-health/:id', hasPermission('projects.view'), async (req, re
         count(*) FILTER (WHERE due_date < current_date AND status NOT IN ('done','cancelled'))::int AS overdue
         FROM project_tasks WHERE project_id=$1`, [req.params.id]),
       pool.query(`SELECT count(*)::int AS total FROM project_experiments WHERE project_id=$1`, [req.params.id]),
-      pool.query(`SELECT count(*)::int AS total FROM lab_findings WHERE project_id=$1`, [req.params.id]),
-      pool.query(`SELECT count(*)::int AS total FROM lab_results WHERE project_id=$1`, [req.params.id]),
+      pool.query(`SELECT count(*)::int AS total FROM lab_findings f WHERE project_id=$1 AND ${visibilityReadSql({alias:'f',entityType:'finding',userIdParameter:'$2',roleParameter:'$3'})}`, [req.params.id,req.user.userId,req.user.role]),
+      pool.query(`SELECT count(*)::int AS total FROM lab_results r WHERE project_id=$1 AND ${visibilityReadSql({alias:'r',entityType:'result',userIdParameter:'$2',roleParameter:'$3'})}`, [req.params.id,req.user.userId,req.user.role]),
       pool.query(`SELECT count(*)::int AS total FROM project_bom_items WHERE project_id=$1`, [req.params.id]),
       pool.query(`SELECT count(*)::int AS total FROM project_comments WHERE project_id=$1`, [req.params.id])
     ]);

@@ -6,7 +6,12 @@ import { getItems } from './items';
 function isTauriRuntime(): boolean { return typeof window !== 'undefined' && !!(window as any).__TAURI_IPC__; }
 async function localInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T | null> {
   if (!isTauriRuntime()) return null;
-  return invoke<T>(command, args);
+  const result=await invoke<T>(command,args);
+  if(result===null){
+    if(command.startsWith('delete_')||command.startsWith('unlink_'))return undefined as T;
+    throw new Error(`Local ${command} returned no result; server fallback was not attempted.`);
+  }
+  return result;
 }
 
 export interface ProjectFinancialSummary {

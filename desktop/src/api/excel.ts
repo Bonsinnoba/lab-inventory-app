@@ -2,6 +2,7 @@ import { apiFetch, getApiErrorMessage } from './http';
 import { getLocalInventorySnapshot } from './local-inventory';
 import type { Item } from './items';
 import { invoke } from '@tauri-apps/api/tauri';
+import { isTauriRuntime } from '../lib/runtime';
 
 export type InventoryImportPreview = {
   template: string;
@@ -59,6 +60,7 @@ export async function previewInventoryExcel(file: File): Promise<InventoryImport
 export async function importInventoryExcel(file: File): Promise<{ imported: number; created: number; updated: number }> {
   const local = await getLocalInventorySnapshot();
   if (local === null) {
+    if (isTauriRuntime()) throw new Error('Local inventory is unavailable. Reconnect and refresh before importing.');
     const response = await postInventoryFile('/excel/inventory/import', file);
     if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Inventory import failed'));
     return response.json();

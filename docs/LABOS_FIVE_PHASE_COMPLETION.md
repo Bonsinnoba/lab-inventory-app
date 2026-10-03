@@ -1,5 +1,10 @@
 # LabOS — five-phase completion ledger
 
+The historical work and evidence below remain valid. The remaining work is
+now regrouped into exactly three execution phases in
+`docs/audits/THREE_PHASE_REMAINING_WORK_PLAN.md`; use that document for the
+forward schedule and this ledger for prior implementation history.
+
 Status as of 2026-09-27. The calculator redesign is owned by the user's collaborator; do not replace it or implement a competing UI. When delivered, integrate the approved redesign into existing LabOS calculation, persistence, permission, and desktop workflows during Phase 4 (or earlier only if required by a dependency).
 
 ## Working rules

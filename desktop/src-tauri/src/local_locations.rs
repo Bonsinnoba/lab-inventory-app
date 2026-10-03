@@ -40,13 +40,15 @@ pub fn update_local_location(app:AppHandle,id:String,patch:Value)->Result<Value,
 pub fn delete_local_location(app:AppHandle,id:String)->Result<(),String>{let mut c=open(&app)?;let mut v=load(&c)?;let old=v.iter().find(|x|x.get("id").and_then(Value::as_str)==Some(id.as_str())).cloned().ok_or("Location not found")?;if old.get("item_count").and_then(Value::as_i64).unwrap_or(0)>0{return Err("Cannot delete a location containing inventory items".into())}v.retain(|x|x.get("id").and_then(Value::as_str)!=Some(id.as_str()));save(&mut c,&v,Some((id,"delete".into(),json!({"location":old}))))}
 
 #[tauri::command]
-pub fn apply_server_location_pull(app:AppHandle,locations_json:String,deleted_location_ids:Vec<String>,expected_account_id:String)->Result<(),String>{
+pub fn apply_server_location_pull(app:AppHandle,locations_json:String,deleted_location_ids:Vec<String>,snapshot_complete:bool,expected_account_id:String)->Result<(),String>{
+ if !snapshot_complete{return Err("Location server did not provide a complete snapshot".into())}
  let incoming:Vec<Value>=serde_json::from_str(&locations_json).map_err(|e|format!("Invalid server locations payload: {e}"))?;
  let mut conn=open(&app)?; local_db::require_sync_account(&conn,&expected_account_id)?; let mut v=load(&conn)?;
  let mut pending=std::collections::HashSet::new();
  let mut stmt=conn.prepare("SELECT entity_id FROM active_sync_outbox WHERE synced_at IS NULL AND entity_type='location' AND entity_id IS NOT NULL").map_err(|e|e.to_string())?;
  let rows=stmt.query_map([],|r|r.get::<_,String>(0)).map_err(|e|e.to_string())?;
  for row in rows{pending.insert(row.map_err(|e|e.to_string())?);} drop(stmt);
+ local_db::retain_authorized_snapshot(&mut v,&incoming,&pending);
  let deleted:std::collections::HashSet<String>=deleted_location_ids.into_iter().collect();
  v.retain(|x|x.get("id").and_then(Value::as_str).map(|id|!deleted.contains(id)||pending.contains(id)).unwrap_or(true));
  for item in incoming{let Some(id)=item.get("id").and_then(Value::as_str) else{continue};if pending.contains(id){continue;}if let Some(existing)=v.iter_mut().find(|x|x.get("id").and_then(Value::as_str)==Some(id)){*existing=item;}else{v.push(item);}}

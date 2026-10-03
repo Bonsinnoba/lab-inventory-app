@@ -71,16 +71,23 @@ router.put('/:id', hasPermission('inventory.edit'), async (req, res) => {
 });
 
 router.delete('/:id', hasPermission('inventory.delete'), async (req, res) => {
+  const client = await pool.connect();
   try {
-    const before = await pool.query('SELECT * FROM locations WHERE id = $1', [req.params.id]);
-    if (!before.rowCount) return res.status(404).json({ error: 'Location not found' });
-    const result = await pool.query('DELETE FROM locations WHERE id = $1 RETURNING id', [req.params.id]);
+    await client.query('BEGIN');
+    const before = await client.query('DELETE FROM locations WHERE id = $1 RETURNING *', [req.params.id]);
+    if (!before.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Location not found' });
+    }
+    await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) VALUES('location',$1) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()", [req.params.id]);
+    await client.query('COMMIT');
     await writeAuditLog({ req, action: 'DELETE', entityType: 'location', entityId: req.params.id, oldValue: before.rows[0] });
     res.status(204).send();
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error(err);
     res.status(500).json({ error: 'Failed to delete location' });
-  }
+  } finally { client.release(); }
 });
 
 export default router;

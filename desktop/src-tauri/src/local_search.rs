@@ -2,6 +2,7 @@ use rusqlite::{Connection, OptionalExtension};
 use serde_json::{json, Value};
 use tauri::AppHandle;
 use crate::local_db;
+use crate::{local_auth, local_finance, local_projects};
 
 const LOCAL_TYPES: [&str; 8] = ["items","projects","notes","resources","tasks","experiments","findings","transactions"];
 
@@ -40,6 +41,14 @@ fn push_matches(out: &mut Vec<Value>, kind: &str, values: Vec<Value>, q: &str) {
     for value in values { if text_matches(&value, q) { out.push(decorate(kind, &value)); } }
 }
 
+fn project_search_projection(project: &Value) -> Value {
+    let mut visible = serde_json::Map::new();
+    for key in ["id", "name", "status", "description", "priority", "start_date", "due_date", "owner_id", "review_status", "visibility", "created_at", "updated_at"] {
+        if let Some(value) = project.get(key) { visible.insert(key.into(), value.clone()); }
+    }
+    Value::Object(visible)
+}
+
 #[tauri::command]
 pub fn global_local_search(app: AppHandle, query: String, types: Option<Vec<String>>) -> Result<Value, String> {
     let q = query.trim().to_lowercase();
@@ -49,35 +58,36 @@ pub fn global_local_search(app: AppHandle, query: String, types: Option<Vec<Stri
     let requested = types.unwrap_or_else(|| LOCAL_TYPES.iter().map(|v| (*v).to_string()).collect());
     let mut results = Vec::new();
 
-    if requested.iter().any(|t| t == "items") {
+    if requested.iter().any(|t| t == "items") && local_auth::require_local_permission(&conn, "inventory.view").is_ok() {
         if let Some(values) = load_state(&conn, "inventory_snapshot")?.as_array().cloned() { push_matches(&mut results, "items", values, &q); }
     }
-    if requested.iter().any(|t| t == "projects" || t == "tasks" || t == "experiments") {
-        if let Some(projects) = load_state(&conn, "projects_state")?.as_array().cloned() {
-            if requested.iter().any(|t| t == "projects") { push_matches(&mut results, "projects", projects.clone(), &q); }
-            for project in projects {
-                let project_name = project.get("name").and_then(Value::as_str).unwrap_or("Project");
-                for (key, kind) in [("tasks","tasks"),("experiments","experiments")] {
-                    if !requested.iter().any(|t| t == kind) { continue; }
-                    let values = project.get(key).and_then(Value::as_array).cloned().unwrap_or_default().into_iter().map(|mut v| {
-                        if let Value::Object(ref mut o)=v { o.insert("project_name".into(), json!(project_name)); }
-                        v
-                    }).collect();
-                    push_matches(&mut results, kind, values, &q);
-                }
+    if requested.iter().any(|t| t == "projects" || t == "tasks" || t == "experiments") && local_auth::require_local_permission(&conn, "projects.view").is_ok() {
+        let projects = local_projects::list_local_projects(app.clone())?;
+        if requested.iter().any(|t| t == "projects") {
+            push_matches(&mut results, "projects", projects.iter().map(project_search_projection).collect(), &q);
+        }
+        for project in projects {
+            let project_name = project.get("name").and_then(Value::as_str).unwrap_or("Project");
+            for (key, kind) in [("tasks","tasks"),("experiments","experiments")] {
+                if !requested.iter().any(|t| t == kind) { continue; }
+                let values = project.get(key).and_then(Value::as_array).cloned().unwrap_or_default().into_iter().map(|mut v| {
+                    if let Value::Object(ref mut o)=v { o.insert("project_name".into(), json!(project_name)); }
+                    v
+                }).collect();
+                push_matches(&mut results, kind, values, &q);
             }
         }
     }
-    if requested.iter().any(|t| t == "notes") {
+    if requested.iter().any(|t| t == "notes") && local_auth::require_local_permission(&conn, "notes.view").is_ok() {
         if let Some(values) = load_state(&conn, "notes_state")?.as_array().cloned() { push_matches(&mut results, "notes", values, &q); }
     }
-    if requested.iter().any(|t| t == "resources") {
+    if requested.iter().any(|t| t == "resources") && local_auth::require_local_permission(&conn, "resources.view").is_ok() {
         if let Some(values) = load_state(&conn, "resources_state")?.as_array().cloned() { push_matches(&mut results, "resources", values, &q); }
     }
-    if requested.iter().any(|t| t == "transactions") {
-        if let Some(values) = load_state(&conn, "transactions_state")?.as_array().cloned() { push_matches(&mut results, "transactions", values, &q); }
+    if requested.iter().any(|t| t == "transactions") && local_auth::require_local_permission(&conn, "finance.view").is_ok() {
+        push_matches(&mut results, "transactions", local_finance::get_local_transactions(app.clone())?, &q);
     }
-    if requested.iter().any(|t| t == "findings") {
+    if requested.iter().any(|t| t == "findings") && local_auth::require_local_permission(&conn, "projects.view").is_ok() {
         if let Some(state) = load_state(&conn, "knowledge_state")?.as_object().cloned() {
             if let Some(values) = state.get("findings").and_then(Value::as_array).cloned() { push_matches(&mut results, "findings", values, &q); }
         }
@@ -91,4 +101,22 @@ pub fn global_local_search(app: AppHandle, query: String, types: Option<Vec<Stri
         }
     }
     Ok(json!({"query":query.trim(),"counts":counts,"total":results.len(),"all":results}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_search_does_not_match_or_return_financial_or_nested_data() {
+        let projected = project_search_projection(&json!({
+            "id":"project-1","name":"Visible project","budget":9917,
+            "transactions":[{"secret":"private"}],"tasks":[{"title":"private task"}]
+        }));
+        assert_eq!(projected["name"], "Visible project");
+        assert!(projected.get("budget").is_none());
+        assert!(projected.get("transactions").is_none());
+        assert!(!text_matches(&projected, "9917"));
+        assert!(!text_matches(&projected, "private"));
+    }
 }

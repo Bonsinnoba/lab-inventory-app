@@ -8,7 +8,7 @@
     "start": "node src/index.js",
     "migrate": "node src/run-migration.js",
     "check": "node -e \"const {execFileSync}=require('child_process'); const {globSync}=require('fs'); for (const f of globSync('src/**/*.js')) execFileSync(process.execPath,['--check',f],{stdio:'inherit'});\"",
-    "test:security-baseline": "node --test src/middleware/permissions.test.js src/middleware/visibility.test.js src/middleware/resource-visibility.test.js src/middleware/project-visibility.test.js src/routes/context.test.js src/routes/notes-visibility.test.js src/routes/sync-visibility.test.js"
+    "test:security-baseline": "node --test src/middleware/permissions.test.js src/middleware/visibility.test.js src/middleware/resource-visibility.test.js src/middleware/project-visibility.test.js src/routes/context.test.js src/routes/notes-visibility.test.js src/routes/sync-visibility.test.js src/routes/sync-engineering-scope.test.js src/routes/knowledge-visibility.test.js src/routes/engineering-visibility.test.js"
   },
   "dependencies": {
     "@google/genai": "^2.16.0",

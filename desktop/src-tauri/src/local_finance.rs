@@ -15,6 +15,7 @@ fn write(conn:&rusqlite::Connection,key:&str,v:&Vec<Value>)->Result<(),String>{l
 fn queue(conn:&rusqlite::Connection,entity:&str,entity_id:&str,op:&str,payload:&Value)->Result<(),String>{let device:String=conn.query_row("SELECT device_id FROM device_identity WHERE id=1",[],|r|r.get(0)).map_err(|e|e.to_string())?;let cid=id(conn)?;conn.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES(?1,?2,?3,?4,?5,?6)",params![cid,device,entity,entity_id,op,payload.to_string()]).map_err(|e|e.to_string())?;Ok(())}
 fn mutate(app:&AppHandle,key:&str,entity:&str,op:&str,value:Value)->Result<Value,String>{let mut conn=open_local_connection(app)?;let permission=if op=="delete"{"finance.delete"}else if op=="create"&&entity=="transaction"&&value.get("direction").and_then(Value::as_str)==Some("income"){"finance.create_income"}else if op=="create"&&entity=="transaction"{"finance.create_expense"}else{"finance.edit"};
 local_auth::require_local_permission(&conn,permission)?;
+local_auth::require_local_permission(&conn,"finance.view")?;
 if entity!="transaction" || value.get("direction").and_then(Value::as_str)==Some("income"){
     local_auth::require_local_permission(&conn,"finance.view_sensitive")?;
 }let mut rows=read(&conn,key)?;
@@ -42,7 +43,7 @@ fn all(app:&AppHandle,key:&str)->Result<Vec<Value>,String>{
     local_auth::require_local_permission(&c,"finance.view_sensitive")?;
     read(&c,key)
 }
-fn merge(c:&rusqlite::Connection,key:&str,entity:&str,incoming:Vec<Value>,deleted:Vec<String>)->Result<Vec<Value>,String>{let mut rows=read(c,key)?;let pending:std::collections::HashSet<String>={let mut s=c.prepare("SELECT entity_id FROM active_sync_outbox WHERE synced_at IS NULL AND entity_type=?1 AND entity_id IS NOT NULL").map_err(|e|e.to_string())?;let x=s.query_map([entity],|r|r.get(0)).map_err(|e|e.to_string())?.filter_map(Result::ok).collect();x};rows.retain(|v|!deleted.contains(&v.get("id").and_then(Value::as_str).unwrap_or("").to_string())||pending.contains(v.get("id").and_then(Value::as_str).unwrap_or("")));for x in incoming{let xid=x.get("id").and_then(Value::as_str).unwrap_or("");if pending.contains(xid){continue}if let Some(old)=rows.iter_mut().find(|v|v.get("id").and_then(Value::as_str)==Some(xid)){*old=x}else{rows.push(x)}}Ok(rows)}
+fn merge(c:&rusqlite::Connection,key:&str,entity:&str,incoming:Vec<Value>,deleted:Vec<String>)->Result<Vec<Value>,String>{let mut rows=read(c,key)?;let pending:std::collections::HashSet<String>={let mut s=c.prepare("SELECT entity_id FROM active_sync_outbox WHERE synced_at IS NULL AND entity_type=?1 AND entity_id IS NOT NULL").map_err(|e|e.to_string())?;let x=s.query_map([entity],|r|r.get(0)).map_err(|e|e.to_string())?.filter_map(Result::ok).collect();x};local_db::retain_authorized_snapshot(&mut rows,&incoming,&pending);rows.retain(|v|!deleted.contains(&v.get("id").and_then(Value::as_str).unwrap_or("").to_string())||pending.contains(v.get("id").and_then(Value::as_str).unwrap_or("")));for x in incoming{let xid=x.get("id").and_then(Value::as_str).unwrap_or("");if pending.contains(xid){continue}if let Some(old)=rows.iter_mut().find(|v|v.get("id").and_then(Value::as_str)==Some(xid)){*old=x}else{rows.push(x)}}Ok(rows)}
 #[tauri::command] pub fn get_local_transactions(app:AppHandle)->Result<Vec<Value>,String>{all(&app,KEY_TX)}
 #[tauri::command] pub fn create_local_transaction(app:AppHandle,transaction:Value)->Result<Value,String>{mutate(&app,KEY_TX,"transaction","create",transaction)}
 #[tauri::command] pub fn update_local_transaction(app:AppHandle,id:String,transaction:Value)->Result<Value,String>{let mut v=transaction;v.as_object_mut().ok_or("transaction must be object")?.insert("id".into(),json!(id));mutate(&app,KEY_TX,"transaction","update",v)}
@@ -56,7 +57,8 @@ fn merge(c:&rusqlite::Connection,key:&str,entity:&str,incoming:Vec<Value>,delete
 #[tauri::command] pub fn update_local_funding_source(app:AppHandle,id:String,source:Value)->Result<Value,String>{let mut v=source;v.as_object_mut().ok_or("source must be object")?.insert("id".into(),json!(id));mutate(&app,KEY_FS,"funding_source","update",v)}
 #[tauri::command] pub fn delete_local_funding_source(app:AppHandle,id:String)->Result<Value,String>{mutate(&app,KEY_FS,"funding_source","delete",json!({"id":id}))}
 #[tauri::command]
-pub fn apply_server_finance_pull(app:AppHandle,transactions:Vec<Value>,budget_periods:Vec<Value>,funding_sources:Vec<Value>,deleted_transactions:Vec<String>,deleted_budget_periods:Vec<String>,deleted_funding_sources:Vec<String>,sensitive_access:bool,expected_account_id:String)->Result<(),String>{
+pub fn apply_server_finance_pull(app:AppHandle,transactions:Vec<Value>,budget_periods:Vec<Value>,funding_sources:Vec<Value>,deleted_transactions:Vec<String>,deleted_budget_periods:Vec<String>,deleted_funding_sources:Vec<String>,sensitive_access:bool,snapshot_complete:bool,expected_account_id:String)->Result<(),String>{
+    if !snapshot_complete{return Err("Finance server did not provide a complete authorized snapshot".into())}
     let mut c=open_local_connection(&app)?;
     let tx=c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
     local_db::require_sync_account(&tx,&expected_account_id)?;

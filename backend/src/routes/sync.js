@@ -7,6 +7,7 @@ import { writeAuditLog } from '../middleware/audit.js';
 import { getResourceAccess, requireResourceEditor, validateResourceParent } from '../middleware/resource-access.js';
 import { effectiveProjectAccess, getProjectAccess } from '../middleware/project-access.js';
 import { canEditRestrictedEntity, isVisibility, visibilityReadSql } from '../middleware/visibility.js';
+import { canReadRelationshipEndpoint, canReadKnowledgeRelationship } from '../middleware/knowledge-relationship-access.js';
 const router=Router();
 function generateItemSku(name, type) {
   const namePart = String(name || 'item').toUpperCase().replace(/[^A-Z0-9]+/g, '').slice(0, 8) || 'ITEM';
@@ -34,8 +35,8 @@ const PROJECT_ENTITY_CONFIG = {
   project_resource_requirement: { table: 'project_resource_requirements', fields: ['project_id','name','requirement_type','quantity','unit','required_by','preferred_item_id','notes','status','created_by'] }
 };
 const ENGINEERING_CONFIG={
-  engineering_calculation:{table:'engineering_calculations',fields:['project_id','experiment_id','title','category','formula','inputs','result_numeric','result_text','result_unit','created_by'],permission:{create:'engineering.create',update:'engineering.edit',delete:'engineering.delete'}},
-  engineering_test:{table:'engineering_tests',fields:['project_id','title','test_type','description','status','inputs','results','conclusion','performed_by'],permission:{create:'engineering.create',update:'engineering.edit',delete:'engineering.delete'}}
+  engineering_calculation:{table:'engineering_calculations',fields:['project_id','experiment_id','title','category','formula','inputs','result_numeric','result_text','result_unit','visibility','created_by'],permission:{create:'engineering.create',update:'engineering.edit',delete:'engineering.delete'}},
+  engineering_test:{table:'engineering_tests',fields:['project_id','title','test_type','description','status','inputs','results','conclusion','visibility','performed_by'],permission:{create:'engineering.create',update:'engineering.edit',delete:'engineering.delete'}}
 };
 function projectEntityType(value){return Object.prototype.hasOwnProperty.call(PROJECT_ENTITY_CONFIG,value);}
 function engineeringEntityType(value){return Object.prototype.hasOwnProperty.call(ENGINEERING_CONFIG,value);}
@@ -243,9 +244,9 @@ async function applyResourceEntity(client,change,user){
    const access=await requireResourceEditor(record.parent_resource_id,{userId:user.userId,role:user.role});
    if(!access.ok)fail(access.status,access.error.code,access.error.message);
   }
-  if(record.kind==='link'&&record.url){ await lockResourceLink(client,record); const duplicate=await client.query("SELECT * FROM resources WHERE kind='link' AND lower(btrim(url))=lower($1) AND item_id IS NOT DISTINCT FROM $2 AND project_id IS NOT DISTINCT FROM $3 AND note_id IS NOT DISTINCT FROM $4 AND parent_resource_id IS NOT DISTINCT FROM $5 ORDER BY (local_media_path IS NOT NULL) DESC, created_at ASC LIMIT 1",[String(record.url).trim().replace(/\/+$/,''),record.item_id||null,record.project_id||null,record.note_id||null,record.parent_resource_id||null]); if(duplicate.rowCount)return duplicate.rows[0]; }
   const existing=await client.query('SELECT * FROM resources WHERE id=$1',[entityId]);
-  if(existing.rowCount)return existing.rows[0];
+  if(existing.rowCount)fail(409,'RESOURCE_ALREADY_EXISTS',`Resource ${entityId} already exists`);
+  if(record.kind==='link'&&record.url){ await lockResourceLink(client,record); const duplicate=await client.query("SELECT * FROM resources WHERE kind='link' AND lower(btrim(url))=lower($1) AND item_id IS NOT DISTINCT FROM $2 AND project_id IS NOT DISTINCT FROM $3 AND note_id IS NOT DISTINCT FROM $4 AND parent_resource_id IS NOT DISTINCT FROM $5 ORDER BY (local_media_path IS NOT NULL) DESC, created_at ASC LIMIT 1",[String(record.url).trim().replace(/\/+$/,''),record.item_id||null,record.project_id||null,record.note_id||null,record.parent_resource_id||null]); if(duplicate.rowCount)return duplicate.rows[0]; }
   const values=[entityId],columns=['id'];
   for(const field of RESOURCE_FIELDS){
    if(field==='file_type'&&record.kind==='folder'&&!record.file_type){columns.push(field);values.push('schematic_folder');continue;}
@@ -307,7 +308,7 @@ async function applyResourceDownloadJobEntity(client,change,user){
  const inserted=await client.query("INSERT INTO resource_download_jobs(id,resource_id,requested_by,status,quality,scheduled_for,priority,max_attempts) VALUES($1,$2,$3,'queued',$4,NULL,0,$5) RETURNING *",[jobId,resourceId,user.userId,quality,maxAttempts]);
  return inserted.rows[0];
 }
-const FINANCE_CONFIG={transaction:{table:'transactions',permission:{create:'finance.create_expense',update:'finance.edit',delete:'finance.delete'}},budget_period:{table:'budget_periods',permission:{create:'finance.edit',update:'finance.edit',delete:'finance.delete'}},funding_source:{table:'funding_sources',permission:{create:'finance.edit',update:'finance.edit',delete:'finance.delete'}}};async function applyFinanceEntity(client,change,user){const cfg=FINANCE_CONFIG[change.entity_type],required=cfg?.permission?.[change.operation];if(required){const permissions=await getUserPermissions(user.userId,user.role);if(!permissions.has(required))fail(403,'PERMISSION_DENIED',`Permission required: ${required}`);}const payload=object(change.payload,'Finance sync payload'),record=payload.transaction||payload.budget_period||payload.funding_source||payload.record||payload,entityId=id(record.id||payload.id||change.entity_id,'Finance ID');const existing=await client.query(`SELECT * FROM ${cfg.table} WHERE id=$1`,[entityId]);if(change.operation==='create'){if(existing.rowCount)return existing.rows[0];}else if(!existing.rowCount&&change.operation==='delete')return{id:entityId,deleted:true,already_deleted:true};else if(!existing.rowCount)fail(409,'FINANCE_NOT_FOUND',`Finance record ${entityId} does not exist`);if(cfg.table==='transactions'){
+const FINANCE_CONFIG={transaction:{table:'transactions',permission:{create:'finance.create_expense',update:'finance.edit',delete:'finance.delete'}},budget_period:{table:'budget_periods',permission:{create:'finance.edit',update:'finance.edit',delete:'finance.delete'}},funding_source:{table:'funding_sources',permission:{create:'finance.edit',update:'finance.edit',delete:'finance.delete'}}};async function applyFinanceEntity(client,change,user){const cfg=FINANCE_CONFIG[change.entity_type],required=change.entity_type==='transaction'&&change.operation==='create'?null:cfg?.permission?.[change.operation];if(required){const permissions=await getUserPermissions(user.userId,user.role);if(!permissions.has(required))fail(403,'PERMISSION_DENIED',`Permission required: ${required}`);}const payload=object(change.payload,'Finance sync payload'),record=payload.transaction||payload.budget_period||payload.funding_source||payload.record||payload,entityId=id(record.id||payload.id||change.entity_id,'Finance ID');const existing=await client.query(`SELECT * FROM ${cfg.table} WHERE id=$1`,[entityId]);if(change.operation==='create'){if(existing.rowCount)fail(409,'FINANCE_ALREADY_EXISTS',`Finance record ${entityId} already exists`);}else if(!existing.rowCount&&change.operation==='delete')return{id:entityId,deleted:true,already_deleted:true};else if(!existing.rowCount)fail(409,'FINANCE_NOT_FOUND',`Finance record ${entityId} does not exist`);if(cfg.table==='transactions'){
   const permissions=await getUserPermissions(user.userId,user.role);
   const previous=existing.rows[0]||null;
   const nextDirection=change.operation==='create'?record.direction:(record.direction??previous?.direction);
@@ -327,8 +328,8 @@ const FINANCE_CONFIG={transaction:{table:'transactions',permission:{create:'fina
 }else if(!((await getUserPermissions(user.userId,user.role)).has('finance.view_sensitive'))){
   fail(403,'PERMISSION_DENIED','Sensitive finance access required for funding and budget changes');
 }
-if(change.operation==='delete'){const projectId=record.project_id||existing.rows[0]?.project_id||null;await client.query(`DELETE FROM ${cfg.table} WHERE id=$1`,[entityId]);await client.query("INSERT INTO sync_tombstones(entity_type,entity_id,project_id) VALUES($1,$2,$3) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now(),project_id=EXCLUDED.project_id",[change.entity_type,entityId,projectId]);return{id:entityId,deleted:true};}const allowed=cfg.table==='transactions'?['type','direction','amount','date','vendor','notes','item_id','project_id','funding_source_id','budget_period_id']:cfg.table==='budget_periods'?['label','total_budget','start_date','end_date','notes']:['name','source_type','contact_info','notes'];const fields=allowed.filter(k=>Object.prototype.hasOwnProperty.call(record,k));if(change.operation==='create'&&cfg.table==='transactions'&&!fields.includes('direction'))fail(400,'INVALID_TRANSACTION','direction is required');if(change.operation==='create'){const cols=['id',...fields],vals=[entityId,...fields.map(k=>record[k]??null)];return(await client.query(`INSERT INTO ${cfg.table} (${cols.join(',')}) VALUES (${vals.map((_,i)=>i+1).join(',')}) RETURNING *`,vals)).rows[0];}if(!fields.length)return existing.rows[0];const sets=fields.map((field,i)=>field+'=$'+(i+1)),vals=fields.map(k=>record[k]??null);vals.push(entityId);return(await client.query(`UPDATE ${cfg.table} SET ${sets.join(',')} WHERE id=$${vals.length} RETURNING *`,vals)).rows[0];}
-async function applyMovement(client,change,userId){const payload=object(change.payload,'Movement payload');const itemId=id(payload.item_id||change.entity_id,'Movement item ID');const movementId=id(payload.id,'Movement ID');const type=String(payload.movement_type||'');const quantity=number(payload.quantity,'Movement quantity');if(!MOVEMENT_TYPES.has(type))fail(400,'INVALID_MOVEMENT_TYPE','Invalid movement type');if(quantity<=0)fail(400,'INVALID_QUANTITY','Quantity must be greater than zero');const existing=await client.query('SELECT * FROM item_movements WHERE id=$1',[movementId]);if(existing.rowCount)return{movement:existing.rows[0],item:(await client.query('SELECT * FROM items WHERE id=$1',[itemId])).rows[0]};const itemResult=await client.query('SELECT * FROM items WHERE id=$1 FOR UPDATE',[itemId]);if(!itemResult.rowCount)fail(409,'ITEM_NOT_FOUND',`Item ${itemId} does not exist on the server`);const item=itemResult.rows[0];let next=number(item.current_quantity,'Current quantity');if(INCOMING.has(type))next+=quantity;else if(OUTGOING.has(type))next-=quantity;else if(type==='adjust')next=quantity;if(next<0)fail(409,'INSUFFICIENT_STOCK','Movement would make stock negative');await assertReservationStockFloor(client,itemId,next);const destinationStorage=type==='transfer'?(payload.to_storage_location?String(payload.to_storage_location).trim():null):(item.storage_location??null);const destinationLocation=type==='transfer'?(payload.to_location_id||item.location_id||null):(payload.to_location_id||null);if(type==='transfer'&&!destinationStorage&&!destinationLocation)fail(400,'TRANSFER_LOCATION_REQUIRED','A destination location is required for transfers');const movement=(await client.query(`INSERT INTO item_movements (id,item_id,movement_type,quantity,quantity_before,quantity_after,from_location_id,to_location_id,from_storage_location,to_storage_location,project_id,reason,reference,performed_by,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,COALESCE($15,now())) RETURNING *`,[movementId,itemId,type,quantity,Number(item.current_quantity),next,item.location_id||null,destinationLocation,item.storage_location||null,destinationStorage,payload.project_id||null,payload.reason||null,payload.reference||null,userId,payload.created_at||null])).rows[0];const updated=(await client.query('UPDATE items SET current_quantity=$1,storage_location=$2,location_id=COALESCE($3,location_id),updated_at=now() WHERE id=$4 RETURNING *',[next,destinationStorage,destinationLocation,itemId])).rows[0];return{movement,item:updated};}
+if(change.operation==='delete'){const projectId=record.project_id||existing.rows[0]?.project_id||null;await client.query(`DELETE FROM ${cfg.table} WHERE id=$1`,[entityId]);await client.query("INSERT INTO sync_tombstones(entity_type,entity_id,project_id) VALUES($1,$2,$3) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now(),project_id=EXCLUDED.project_id",[change.entity_type,entityId,projectId]);return{id:entityId,deleted:true};}const allowed=cfg.table==='transactions'?['type','direction','amount','date','vendor','notes','item_id','project_id','funding_source_id','budget_period_id']:cfg.table==='budget_periods'?['label','total_budget','start_date','end_date','notes']:['name','source_type','contact_info','notes'];const fields=allowed.filter(k=>Object.prototype.hasOwnProperty.call(record,k));if(change.operation==='create'&&cfg.table==='transactions'&&!fields.includes('direction'))fail(400,'INVALID_TRANSACTION','direction is required');if(change.operation==='create'){const cols=['id',...fields],vals=[entityId,...fields.map(k=>record[k]??null)];if(cfg.table==='transactions'){cols.push('logged_by');vals.push(user.userId);}return(await client.query(`INSERT INTO ${cfg.table} (${cols.join(',')}) VALUES (${vals.map((_,i)=>'$'+(i+1)).join(',')}) RETURNING *`,vals)).rows[0];}if(!fields.length)return existing.rows[0];const sets=fields.map((field,i)=>field+'=$'+(i+1)),vals=fields.map(k=>record[k]??null);vals.push(entityId);return(await client.query(`UPDATE ${cfg.table} SET ${sets.join(',')} WHERE id=$${vals.length} RETURNING *`,vals)).rows[0];}
+async function applyMovement(client,change,userId){const payload=object(change.payload,'Movement payload');const itemId=id(payload.item_id||change.entity_id,'Movement item ID');const movementId=id(payload.id,'Movement ID');const type=String(payload.movement_type||'');const quantity=number(payload.quantity,'Movement quantity');if(!MOVEMENT_TYPES.has(type))fail(400,'INVALID_MOVEMENT_TYPE','Invalid movement type');if(quantity<=0)fail(400,'INVALID_QUANTITY','Quantity must be greater than zero');const existing=await client.query('SELECT * FROM item_movements WHERE id=$1',[movementId]);if(existing.rowCount)fail(409,'MOVEMENT_ALREADY_EXISTS',`Movement ${movementId} already exists`);const itemResult=await client.query('SELECT * FROM items WHERE id=$1 FOR UPDATE',[itemId]);if(!itemResult.rowCount)fail(409,'ITEM_NOT_FOUND',`Item ${itemId} does not exist on the server`);const item=itemResult.rows[0];let next=number(item.current_quantity,'Current quantity');if(INCOMING.has(type))next+=quantity;else if(OUTGOING.has(type))next-=quantity;else if(type==='adjust')next=quantity;if(next<0)fail(409,'INSUFFICIENT_STOCK','Movement would make stock negative');await assertReservationStockFloor(client,itemId,next);const destinationStorage=type==='transfer'?(payload.to_storage_location?String(payload.to_storage_location).trim():null):(item.storage_location??null);const destinationLocation=type==='transfer'?(payload.to_location_id||item.location_id||null):(payload.to_location_id||null);if(type==='transfer'&&!destinationStorage&&!destinationLocation)fail(400,'TRANSFER_LOCATION_REQUIRED','A destination location is required for transfers');const movement=(await client.query(`INSERT INTO item_movements (id,item_id,movement_type,quantity,quantity_before,quantity_after,from_location_id,to_location_id,from_storage_location,to_storage_location,project_id,reason,reference,performed_by,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,COALESCE($15,now())) RETURNING *`,[movementId,itemId,type,quantity,Number(item.current_quantity),next,item.location_id||null,destinationLocation,item.storage_location||null,destinationStorage,payload.project_id||null,payload.reason||null,payload.reference||null,userId,payload.created_at||null])).rows[0];const updated=(await client.query('UPDATE items SET current_quantity=$1,storage_location=$2,location_id=COALESCE($3,location_id),updated_at=now() WHERE id=$4 RETURNING *',[next,destinationStorage,destinationLocation,itemId])).rows[0];return{movement,item:updated};}
 const LOCATION_FIELDS=['name','parent_id','created_at'];
 async function applyLocationEntity(client,change,{userId,role}){ const permissions=await getUserPermissions(userId,role);
  const needed=change.operation==='create'?'inventory.create':change.operation==='update'?'inventory.edit':'inventory.delete';
@@ -372,27 +373,31 @@ async function applyEngineeringEntity(client,change,user){
  const payload=object(change.payload,'Engineering sync payload');
  const record=object(payload.record||payload.calculation||payload.test||payload,'Engineering record');
  const entityId=id(record.id||payload.id||change.entity_id,'Engineering entity ID');
- const projectId=record.project_id||null;
- if(projectId){
-  const access=await client.query("SELECT 1 FROM projects p WHERE p.id=$1 AND (p.owner_id=$2 OR $3='admin' OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id=p.id AND pm.user_id=$2 AND pm.member_role IN ('lead','member')))",[projectId,user.userId,user.role]);
-  if(!access.rowCount)fail(403,'PROJECT_ACCESS_DENIED','You do not have access to this project');
- }
  const table=cfg.table;
+ const existing=await client.query('SELECT * FROM '+table+' WHERE id=$1 FOR UPDATE',[entityId]);
  if(change.operation==='create'){
+  if(record.project_id&&!(await canEditProject(client,record.project_id,user)))fail(403,'PROJECT_ACCESS_DENIED','You do not have edit access to this project');
+  const visibility=record.visibility??'lab';
+  if(!isVisibility(visibility)||visibility==='project'&&!record.project_id)fail(400,'INVALID_ENGINEERING_VISIBILITY','Invalid engineering visibility or missing project');
   if(!String(record.title||'').trim())fail(400,'INVALID_ENGINEERING_RECORD','title is required');
-  const existing=await client.query('SELECT * FROM '+table+' WHERE id=$1',[entityId]);
-  if(existing.rowCount)return existing.rows[0];
-  const fields=cfg.fields.filter(f=>Object.prototype.hasOwnProperty.call(record,f));
+  if(existing.rowCount)fail(409,'ENGINEERING_ID_COLLISION','Engineering entity ID already exists');
+  const fields=cfg.fields.filter(f=>!['created_by','performed_by'].includes(f)&&Object.prototype.hasOwnProperty.call(record,f));
   const cols=['id',...fields],vals=[entityId,...fields.map(f=>record[f]??null)];
   if(!fields.includes('created_by')&&table==='engineering_calculations'){cols.push('created_by');vals.push(user.userId);}
   if(!fields.includes('performed_by')&&table==='engineering_tests'){cols.push('performed_by');vals.push(user.userId);}
   const result=await client.query('INSERT INTO '+table+' ('+cols.join(',')+') VALUES ('+vals.map((_,i)=>'$'+(i+1)).join(',')+') RETURNING *',vals);
+  if(visibility==='restricted')await client.query("INSERT INTO record_access_grants(entity_type,entity_id,user_id,access_level,created_by) VALUES($1,$2,$3,'edit',$3) ON CONFLICT(entity_type,entity_id,user_id) DO UPDATE SET access_level='edit'",[change.entity_type,entityId,user.userId]);
   return result.rows[0];
  }
- const existing=await client.query('SELECT * FROM '+table+' WHERE id=$1',[entityId]);
+ if(existing.rowCount){
+  const current=existing.rows[0];
+  if(current.project_id&&!(await canEditProject(client,current.project_id,user)))fail(403,'PROJECT_ACCESS_DENIED','You do not have edit access to this project');
+  if(current.visibility==='restricted'&&!(await canEditRestrictedEntity({entityType:change.entity_type,entityId,user})))fail(403,'RECORD_ACCESS_DENIED','You do not have edit access to this engineering record');
+ }
  if(change.operation==='update'){
   if(!existing.rowCount)fail(404,'ENGINEERING_NOT_FOUND','Engineering record not found');
-  const fields=cfg.fields.filter(f=>Object.prototype.hasOwnProperty.call(record,f));
+  if(record.visibility!==undefined&&record.visibility!==existing.rows[0].visibility)fail(400,'VISIBILITY_CHANGE_UNSUPPORTED','Engineering visibility changes require grant administration');
+  const fields=cfg.fields.filter(f=>!['project_id','visibility','created_by','performed_by'].includes(f)&&Object.prototype.hasOwnProperty.call(record,f));
   if(!fields.length)return existing.rows[0];
   const vals=fields.map(f=>record[f]??null);
   vals.push(entityId);
@@ -401,7 +406,7 @@ async function applyEngineeringEntity(client,change,user){
  }
  if(change.operation==='delete'){
   if(!existing.rowCount)return {deleted:entityId};
-  const projectId=existing.rows[0]?.project_id||null;
+  const projectId=existing.rows[0].project_id||null;
   await client.query('DELETE FROM '+table+' WHERE id=$1',[entityId]);
   await client.query("INSERT INTO sync_tombstones(entity_type,entity_id,project_id) VALUES($1,$2,$3) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now(),project_id=EXCLUDED.project_id",[change.entity_type,entityId,projectId]);
   return {deleted:entityId};
@@ -414,7 +419,7 @@ router.get('/notes/pull',async(req,res,next)=>{
   try{
     const permissions=await getUserPermissions(req.user.userId,req.user.role);if(!permissions.has('notes.view'))return res.status(403).json({error:{code:'PERMISSION_DENIED',message:'Permission required: notes.view'}});
     const notes=await pool.query(`SELECT n.* FROM notes n WHERE ${visibilityReadSql({alias:'n',entityType:'note',userIdParameter:'$1',roleParameter:'$2'})} ORDER BY n.updated_at DESC`,[req.user.userId,req.user.role]);
-    const tomb=await pool.query("SELECT entity_id FROM sync_tombstones WHERE entity_type='note' AND ($1='admin' OR project_id IS NULL OR project_id IN (SELECT p.id FROM projects p LEFT JOIN project_members pm ON pm.project_id=p.id WHERE p.owner_id=$2 OR pm.user_id=$2)) ORDER BY deleted_at DESC LIMIT 1000",[req.user.role,req.user.userId]);
+    const tomb=await pool.query("SELECT entity_id FROM sync_tombstones WHERE entity_type='note' AND $1='admin' ORDER BY deleted_at DESC LIMIT 1000",[req.user.role]);
     res.setHeader('Cache-Control','no-store');res.json({notes:notes.rows,visible_note_ids:notes.rows.map(row=>row.id),deleted_note_ids:tomb.rows.map(r=>r.entity_id)});
   }catch(e){next(e);}
 });
@@ -425,7 +430,7 @@ router.get('/locations/pull',async(req,res,next)=>{
   if(!permissions.has('inventory.view'))return res.status(403).json({error:{code:'PERMISSION_DENIED',message:'Permission required: inventory.view'}});
   const result=await pool.query('SELECT l.*,COUNT(i.id)::int AS item_count FROM locations l LEFT JOIN items i ON i.location_id=l.id GROUP BY l.id ORDER BY l.created_at DESC,l.name ASC');
   const tomb=await pool.query("SELECT entity_id FROM sync_tombstones WHERE entity_type='location' ORDER BY deleted_at DESC LIMIT 1000");
-  res.setHeader('Cache-Control','no-store');res.json({locations:result.rows,deleted_location_ids:tomb.rows.map(r=>r.entity_id)});
+  res.setHeader('Cache-Control','no-store');res.json({snapshot_complete:true,locations:result.rows,deleted_location_ids:tomb.rows.map(r=>r.entity_id)});
  }catch(e){next(e);}
 });
 
@@ -434,7 +439,7 @@ router.get('/finance/pull',async(req,res,next)=>{
     const permissions=await getUserPermissions(req.user.userId,req.user.role);
     if(!permissions.has('finance.view'))return res.status(403).json({error:{code:'PERMISSION_DENIED',message:'Permission required: finance.view'}});
     const sensitive=canReadSensitiveFinance(permissions);
-    const transactions=await pool.query(sensitive?'SELECT * FROM transactions ORDER BY created_at DESC':"SELECT * FROM transactions WHERE direction = 'expense' ORDER BY created_at DESC");
+    const transactions=await pool.query(`SELECT * FROM transactions WHERE ${linkedProjectReadSql('transactions.project_id','$1','$2')} ${sensitive?'':"AND direction = 'expense'"} ORDER BY created_at DESC`,[req.user.userId,req.user.role]);
     const [budget_periods,funding_sources]=sensitive?await Promise.all([
       pool.query('SELECT * FROM budget_periods ORDER BY start_date DESC NULLS LAST,created_at DESC'),
       pool.query('SELECT * FROM funding_sources ORDER BY created_at DESC')
@@ -443,7 +448,7 @@ router.get('/finance/pull',async(req,res,next)=>{
     const deleted={transaction:[],budget_period:[],funding_source:[]};
     for(const r of tomb.rows)if(deleted[r.entity_type]&&sensitive)deleted[r.entity_type].push(r.entity_id);
     res.setHeader('Cache-Control','no-store');
-    res.json({sensitive_access:sensitive,transactions:transactions.rows.map(row=>transactionResponseProjection(row,permissions)),budget_periods:budget_periods.rows,funding_sources:funding_sources.rows,deleted,deleted_transactions:deleted.transaction,deleted_budget_period:deleted.budget_period,deleted_budget_periods:deleted.budget_period,deleted_funding_sources:deleted.funding_source});
+    res.json({snapshot_complete:true,sensitive_access:sensitive,transactions:transactions.rows.map(row=>transactionResponseProjection(row,permissions)),budget_periods:budget_periods.rows,funding_sources:funding_sources.rows,deleted,deleted_transactions:deleted.transaction,deleted_budget_period:deleted.budget_period,deleted_budget_periods:deleted.budget_period,deleted_funding_sources:deleted.funding_source});
   }catch(e){next(e);}
 });
 router.get('/resources/pull',async(req,res,next)=>{
@@ -472,16 +477,16 @@ router.get('/engineering/pull',async(req,res,next)=>{
   const permissions=await getUserPermissions(req.user.userId,req.user.role);
   if(!permissions.has('engineering.view'))return res.status(403).json({error:{code:'PERMISSION_DENIED',message:'Permission required: engineering.view'}});
   const [calculations,tests,tomb]=await Promise.all([
-   pool.query('SELECT * FROM engineering_calculations ORDER BY updated_at DESC,created_at DESC'),
-   pool.query('SELECT * FROM engineering_tests ORDER BY updated_at DESC,created_at DESC'),
-   pool.query("SELECT entity_type,entity_id FROM sync_tombstones WHERE entity_type IN ('engineering_calculation','engineering_test') AND (project_id IS NULL OR $1='admin' OR project_id IN (SELECT p.id FROM projects p LEFT JOIN project_members pm ON pm.project_id=p.id WHERE p.owner_id=$2 OR pm.user_id=$2)) ORDER BY deleted_at DESC LIMIT 1000",[req.user.role,req.user.userId])
+   pool.query(`SELECT c.* FROM engineering_calculations c WHERE ${visibilityReadSql({alias:'c',entityType:'engineering_calculation',userIdParameter:'$1',roleParameter:'$2'})} ORDER BY c.updated_at DESC,c.created_at DESC`,[req.user.userId,req.user.role]),
+   pool.query(`SELECT t.* FROM engineering_tests t WHERE ${visibilityReadSql({alias:'t',entityType:'engineering_test',userIdParameter:'$1',roleParameter:'$2'})} ORDER BY t.updated_at DESC,t.created_at DESC`,[req.user.userId,req.user.role]),
+   pool.query("SELECT entity_type,entity_id FROM sync_tombstones WHERE entity_type IN ('engineering_calculation','engineering_test') AND $1='admin' ORDER BY deleted_at DESC LIMIT 1000",[req.user.role])
   ]);
-  const visibleProject=async(row)=>{if(!row.project_id||req.user.role==='admin')return true;const x=await pool.query('SELECT 1 FROM projects p WHERE p.id=$1 AND (p.owner_id=$2 OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id=p.id AND pm.user_id=$2))',[row.project_id,req.user.userId]);return x.rowCount>0;};
+  const visibleProject=async(row)=>!row.project_id||(await getProjectAccess(row.project_id,req.user)).access!=='none';
   const calc=[];for(const row of calculations.rows)if(await visibleProject(row))calc.push(row);
   const tst=[];for(const row of tests.rows)if(await visibleProject(row))tst.push(row);
   const deleted_calculation_ids=tomb.rows.filter(r=>r.entity_type==='engineering_calculation').map(r=>r.entity_id);
   const deleted_test_ids=tomb.rows.filter(r=>r.entity_type==='engineering_test').map(r=>r.entity_id);
-  res.setHeader('Cache-Control','no-store');res.json({calculations:calc,tests:tst,deleted_calculation_ids,deleted_test_ids});
+  res.setHeader('Cache-Control','no-store');res.json({calculations:calc,tests:tst,visible_calculation_ids:calc.map(row=>row.id),visible_test_ids:tst.map(row=>row.id),deleted_calculation_ids,deleted_test_ids});
  }catch(e){next(e);}
 });
 router.get('/projects/pull',async(req,res,next)=>{
@@ -523,13 +528,13 @@ router.get('/projects/pull',async(req,res,next)=>{
 });
 router.get('/pull',async(req,res,next)=>{try{const raw=typeof req.query.since==='string'?req.query.since.trim():'';let cursor=null;if(raw){cursor=decodePullCursor(raw);if(!cursor){const legacy=new Date(raw);if(Number.isNaN(legacy.getTime()))return res.status(400).json({error:{code:'INVALID_SYNC_CURSOR',message:'since must be a valid inventory sync cursor'}});cursor={at:legacy.toISOString(),type:'',id:''};}}const limit=Math.min(500,Math.max(1,Number(req.query.limit||500)));const values=cursor?[cursor.at,cursor.type,cursor.id,limit+1]:[limit+1];const where=cursor?`WHERE event_at > $1 OR (event_at = $1 AND (event_type > $2 OR (event_type = $2 AND event_id > $3)))`:'';const result=await pool.query(`SELECT event_type,event_id,event_at,item,deleted FROM (SELECT 'item'::text AS event_type,id::text AS event_id,updated_at AS event_at,to_jsonb(items) AS item,false AS deleted FROM items UNION ALL SELECT 'delete'::text AS event_type,entity_id::text AS event_id,deleted_at AS event_at,NULL::jsonb AS item,true AS deleted FROM sync_tombstones WHERE entity_type='item') events ${where} ORDER BY event_at ASC,event_type ASC,event_id ASC LIMIT $${values.length}`,values);const rows=result.rows;const hasMore=rows.length>limit;const page=hasMore?rows.slice(0,limit):rows;const last=page[page.length-1];const nextCursor=last?encodePullCursor(last.event_at,last.event_type,last.event_id):(cursor?raw:null);res.setHeader('Cache-Control','no-store');res.json({items:page.filter(row=>!row.deleted).map(row=>row.item),deleted_item_ids:page.filter(row=>row.deleted).map(row=>row.event_id),next_cursor:nextCursor,has_more:hasMore});}catch(error){next(error);}});
 function syncResponseProjection(entityType, value, permissions) {
-  if(!value || typeof value!=='object' || Array.isArray(value)) return value;
-  if(entityType==='project') return projectFinancialProjection(value,permissions);
-  if(entityType==='transaction') return transactionResponseProjection(value,permissions);
-  if((entityType==='funding_source'||entityType==='budget_period')&&!canReadSensitiveFinance(permissions)) return {id:value.id,deleted:value.deleted,already_deleted:value.already_deleted};
-  return value;
+  // A replay may occur after record access has been revoked. The desktop uses
+  // status/change_id only and pulls current authorized rows separately; never
+  // echo a stored response_json snapshot back to the caller.
+  void entityType; void value; void permissions;
+  return { acknowledged: true };
 }
-router.post('/push',async(req,res,next)=>{const body=object(req.body,'Sync request');const deviceId=typeof body.device_id==='string'&&body.device_id.trim()?body.device_id.trim():null;const changes=Array.isArray(body.changes)?body.changes:null;if(!deviceId)return res.status(400).json({error:{code:'DEVICE_ID_REQUIRED',message:'device_id is required'}});if(!changes)return res.status(400).json({error:{code:'CHANGES_REQUIRED',message:'changes must be an array'}});if(changes.length>100)return res.status(413).json({error:{code:'SYNC_BATCH_TOO_LARGE',message:'A maximum of 100 changes can be synchronized per request'}});try{const permissions=await getUserPermissions(req.user.userId,req.user.role);const results=[];for(const raw of changes){const change=object(raw,'Sync change');if(typeof change.change_id!=='string'||!change.change_id.trim()){results.push({change_id:null,status:'rejected',error:{code:'CHANGE_ID_REQUIRED',message:'change_id is required'}});continue;}const entityType=String(change.entity_type||''),operation=String(change.operation||'');const required=entityType==='note'?(operation==='create'?'notes.create':operation==='delete'?'notes.delete':'notes.edit'):knowledgeEntityType(entityType)?'projects.edit':entityType==='project_item'?'projects.edit':engineeringEntityType(entityType)?(operation==='create'?'engineering.create':operation==='delete'?'engineering.delete':'engineering.edit'):entityType==='item_movement'?'inventory.adjust_stock':entityType==='resource_download_job'?'resources.edit':entityType==='resource'?(operation==='create'?'resources.create':operation==='delete'?'resources.delete':'resources.edit'):entityType==='location'?(operation==='create'?'inventory.create':operation==='delete'?'inventory.delete':'inventory.edit'):projectEntityType(entityType)?(operation==='create'?'projects.create':operation==='delete'?'projects.delete':'projects.edit'):FINANCE_CONFIG[entityType]?(operation==='create'?(entityType==='transaction'?'finance.create_expense':'finance.edit'):operation==='delete'?'finance.delete':'finance.edit'):operation==='bulk_delete'?'inventory.delete':operation==='bulk_status'?'inventory.edit':'inventory.edit';if(!permissions.has(required)){results.push({change_id:change.change_id,status:'rejected',error:{code:'PERMISSION_DENIED',message:`Permission required: ${required}`}});continue;}change.__role=req.user.role;const client=await pool.connect();try{await client.query('BEGIN');const prior=await client.query('SELECT payload_json,response_json,user_id,device_id,entity_type,operation FROM sync_idempotency WHERE change_id=$1 FOR UPDATE',[change.change_id]);if(prior.rowCount){if(String(prior.rows[0].user_id)!==String(req.user.userId)||prior.rows[0].device_id!==deviceId||prior.rows[0].entity_type!==entityType||prior.rows[0].operation!==operation){await client.query('ROLLBACK');results.push({change_id:change.change_id,status:'rejected',error:{code:'IDEMPOTENCY_OWNERSHIP_MISMATCH',message:'change_id belongs to a different user, device or operation'}});continue;}const same=(await client.query('SELECT $1::jsonb = $2::jsonb AS same',[prior.rows[0].payload_json,change.payload])).rows[0].same;if(!same){await client.query('ROLLBACK');results.push({change_id:change.change_id,status:'rejected',error:{code:'IDEMPOTENCY_PAYLOAD_MISMATCH',message:'change_id was already used with a different payload'}});continue;}await client.query('COMMIT');results.push({change_id:change.change_id,status:'synced',result:syncResponseProjection(entityType,prior.rows[0].response_json,permissions)});continue;}const result=await applyChange(client,change,req.user.userId);await client.query('INSERT INTO sync_idempotency(change_id,device_id,user_id,entity_type,entity_id,operation,payload_json,response_json,response_status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,200)',[change.change_id,deviceId,req.user.userId,entityType,change.entity_id||null,operation,change.payload,result]);await client.query('COMMIT');
+router.post('/push',async(req,res,next)=>{const body=object(req.body,'Sync request');const deviceId=typeof body.device_id==='string'&&body.device_id.trim()?body.device_id.trim():null;const changes=Array.isArray(body.changes)?body.changes:null;if(!deviceId)return res.status(400).json({error:{code:'DEVICE_ID_REQUIRED',message:'device_id is required'}});if(!changes)return res.status(400).json({error:{code:'CHANGES_REQUIRED',message:'changes must be an array'}});if(changes.length>100)return res.status(413).json({error:{code:'SYNC_BATCH_TOO_LARGE',message:'A maximum of 100 changes can be synchronized per request'}});try{const permissions=await getUserPermissions(req.user.userId,req.user.role);const results=[];for(const raw of changes){const change=object(raw,'Sync change');if(typeof change.change_id!=='string'||!change.change_id.trim()){results.push({change_id:null,status:'rejected',error:{code:'CHANGE_ID_REQUIRED',message:'change_id is required'}});continue;}const entityType=String(change.entity_type||''),operation=String(change.operation||'');const required=entityType==='note'?(operation==='create'?'notes.create':operation==='delete'?'notes.delete':'notes.edit'):knowledgeEntityType(entityType)?'projects.edit':entityType==='project_item'?'projects.edit':engineeringEntityType(entityType)?(operation==='create'?'engineering.create':operation==='delete'?'engineering.delete':'engineering.edit'):entityType==='item_movement'?'inventory.adjust_stock':entityType==='resource_download_job'?'resources.edit':entityType==='resource'?(operation==='create'?'resources.create':operation==='delete'?'resources.delete':'resources.edit'):entityType==='location'?(operation==='create'?'inventory.create':operation==='delete'?'inventory.delete':'inventory.edit'):projectEntityType(entityType)?(operation==='create'?'projects.create':operation==='delete'?'projects.delete':'projects.edit'):FINANCE_CONFIG[entityType]?(operation==='create'?(entityType==='transaction'?(change.payload?.transaction?.direction||change.payload?.record?.direction||change.payload?.direction)==='income'?'finance.create_income':'finance.create_expense':'finance.edit'):operation==='delete'?'finance.delete':'finance.edit'):operation==='bulk_delete'?'inventory.delete':operation==='bulk_status'?'inventory.edit':'inventory.edit';if(!permissions.has(required)){results.push({change_id:change.change_id,status:'rejected',error:{code:'PERMISSION_DENIED',message:`Permission required: ${required}`}});continue;}change.__role=req.user.role;const client=await pool.connect();try{await client.query('BEGIN');const prior=await client.query('SELECT payload_json,response_json,user_id,device_id,entity_type,operation FROM sync_idempotency WHERE change_id=$1 FOR UPDATE',[change.change_id]);if(prior.rowCount){if(String(prior.rows[0].user_id)!==String(req.user.userId)||prior.rows[0].device_id!==deviceId||prior.rows[0].entity_type!==entityType||prior.rows[0].operation!==operation){await client.query('ROLLBACK');results.push({change_id:change.change_id,status:'rejected',error:{code:'IDEMPOTENCY_OWNERSHIP_MISMATCH',message:'change_id belongs to a different user, device or operation'}});continue;}const same=(await client.query('SELECT $1::jsonb = $2::jsonb AS same',[prior.rows[0].payload_json,change.payload])).rows[0].same;if(!same){await client.query('ROLLBACK');results.push({change_id:change.change_id,status:'rejected',error:{code:'IDEMPOTENCY_PAYLOAD_MISMATCH',message:'change_id was already used with a different payload'}});continue;}await client.query('COMMIT');results.push({change_id:change.change_id,status:'synced',result:syncResponseProjection(entityType,prior.rows[0].response_json,permissions)});continue;}const result=await applyChange(client,change,req.user.userId);await client.query('INSERT INTO sync_idempotency(change_id,device_id,user_id,entity_type,entity_id,operation,payload_json,response_json,response_status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,200)',[change.change_id,deviceId,req.user.userId,entityType,change.entity_id||null,operation,change.payload,result]);await client.query('COMMIT');
       await writeAuditLog({req,actorUserId:req.user.userId,action:`sync:${operation}`,entityType,entityId:typeof change.entity_id==='string'&&/^[0-9a-f-]{32,36}$/i.test(change.entity_id)?change.entity_id:null,newValue:result,deviceId,metadata:{sync_mode:'online',authorization:'server',sync_entity_id:change.entity_id||null}});
       results.push({change_id:change.change_id,status:'synced',result:syncResponseProjection(entityType,result,permissions)});}catch(error){await client.query('ROLLBACK').catch(()=>{});if(error?.code==='23505'){const prior=await pool.query('SELECT payload_json,response_json,user_id,device_id,entity_type,operation FROM sync_idempotency WHERE change_id=$1',[change.change_id]);if(prior.rowCount){if(String(prior.rows[0].user_id)!==String(req.user.userId)||prior.rows[0].device_id!==deviceId||prior.rows[0].entity_type!==entityType||prior.rows[0].operation!==operation){results.push({change_id:change.change_id,status:'rejected',error:{code:'IDEMPOTENCY_OWNERSHIP_MISMATCH',message:'change_id belongs to a different user, device or operation'}});continue;}const same=(await pool.query('SELECT $1::jsonb = $2::jsonb AS same',[prior.rows[0].payload_json,change.payload])).rows[0].same;if(same){results.push({change_id:change.change_id,status:'synced',result:syncResponseProjection(entityType,prior.rows[0].response_json,permissions)});continue;}}}const status=Number(error?.status)>=400&&Number(error?.status)<500?'rejected':'failed';results.push({change_id:change.change_id,status,error:{code:error?.code||'SYNC_APPLY_FAILED',message:error?.message||'Unable to apply sync change'}});}finally{client.release();}}res.json({device_id:deviceId,accepted:results.filter(r=>r.status==='synced').length,results});}catch(error){next(error);}});
 
@@ -618,8 +623,8 @@ async function applyNoteEntity(client,change,user){
 }
 
 const KNOWLEDGE_CONFIG={
-  finding:{table:'lab_findings',fields:['project_id','experiment_id','title','body','status','confidence','tags']},
-  knowledge_result:{table:'lab_results',fields:['project_id','experiment_id','finding_id','title','summary','value_numeric','value_text','unit']},
+  finding:{table:'lab_findings',fields:['project_id','experiment_id','title','body','status','confidence','tags','visibility']},
+  knowledge_result:{table:'lab_results',fields:['project_id','experiment_id','finding_id','title','summary','value_numeric','value_text','unit','visibility']},
   knowledge_relationship:{table:'knowledge_relationships',fields:['project_id','source_type','source_id','target_type','target_id','relationship']}
 };
 function knowledgeEntityType(value){return Object.prototype.hasOwnProperty.call(KNOWLEDGE_CONFIG,value);}
@@ -630,30 +635,40 @@ async function applyKnowledgeEntity(client,change,user){
   const payload=object(change.payload,'Knowledge sync payload');
   const record=payload.record||payload.finding||payload.result||payload.relationship||payload;
   const entityId=id(record.id||payload.id||change.entity_id,'Knowledge entity ID');
-  const projectId=record.project_id||null;
-  if(projectId&&!(await canEditProject(client,projectId,user)))fail(403,'PROJECT_ACCESS_DENIED','You do not have edit access to this project');
-
   const existing=await client.query('SELECT * FROM '+cfg.table+' WHERE id=$1 FOR UPDATE',[entityId]);
 
   if(change.operation==='create'){
-    if(existing.rowCount)return existing.rows[0];
+    if(record.project_id&&!(await canEditProject(client,record.project_id,user)))fail(403,'PROJECT_ACCESS_DENIED','You do not have edit access to this project');
+    if(existing.rowCount)fail(409,'KNOWLEDGE_ID_COLLISION','Knowledge entity ID already exists');
     if(change.entity_type==='knowledge_relationship'){
+      if(!(await canReadRelationshipEndpoint(record.source_type,record.source_id,user,client))||
+         !(await canReadRelationshipEndpoint(record.target_type,record.target_id,user,client)))
+        fail(403,'RELATIONSHIP_ENDPOINT_DENIED','Relationship endpoint access denied');
       const values=[entityId],columns=['id'];
       for(const field of cfg.fields)if(Object.prototype.hasOwnProperty.call(record,field)){columns.push(field);values.push(record[field]??null);}
       columns.push('created_by');values.push(user.userId);
       const placeholders=values.map((_,i)=>'$'+(i+1)).join(',');
       return(await client.query('INSERT INTO '+cfg.table+' ('+columns.join(',')+') VALUES ('+placeholders+') RETURNING *',values)).rows[0];
     }
+    const visibility=record.visibility??'lab';
+    if(!isVisibility(visibility)||visibility==='project'&&!record.project_id)fail(400,'INVALID_KNOWLEDGE_VISIBILITY','Invalid knowledge visibility or missing project');
     if(!String(record.title||'').trim())fail(400,'INVALID_KNOWLEDGE_RECORD','title is required');
     const values=[entityId],columns=['id'];
     for(const field of cfg.fields)if(Object.prototype.hasOwnProperty.call(record,field)){columns.push(field);values.push(field==='title'?String(record[field]??'').trim():record[field]??null);}
     columns.push('created_by','updated_by');values.push(user.userId,user.userId);
     const placeholders=values.map((_,i)=>'$'+(i+1)).join(',');
-    return(await client.query('INSERT INTO '+cfg.table+' ('+columns.join(',')+') VALUES ('+placeholders+') RETURNING *',values)).rows[0];
+    const created=(await client.query('INSERT INTO '+cfg.table+' ('+columns.join(',')+') VALUES ('+placeholders+') RETURNING *',values)).rows[0];
+    if(visibility==='restricted')await client.query("INSERT INTO record_access_grants(entity_type,entity_id,user_id,access_level,created_by) VALUES($1,$2,$3,'edit',$3) ON CONFLICT(entity_type,entity_id,user_id) DO UPDATE SET access_level='edit'",[change.entity_type==='finding'?'finding':'result',entityId,user.userId]);
+    return created;
   }
 
   if(!existing.rowCount&&change.operation==='delete')return{deleted:true,id:entityId,already_deleted:true};
   if(!existing.rowCount)fail(409,'KNOWLEDGE_ENTITY_NOT_FOUND',change.entity_type+' '+entityId+' does not exist on the server');
+  const current=existing.rows[0];
+  if(current.project_id&&!(await canEditProject(client,current.project_id,user)))fail(403,'PROJECT_ACCESS_DENIED','You do not have edit access to this project');
+  if(change.entity_type==='knowledge_relationship'&&!(await canReadKnowledgeRelationship(current,user,client)))fail(403,'RELATIONSHIP_ENDPOINT_DENIED','Relationship endpoint access denied');
+  const visibilityEntity={finding:'finding',knowledge_result:'result'}[change.entity_type];
+  if(visibilityEntity&&current.visibility==='restricted'&&!(await canEditRestrictedEntity({entityType:visibilityEntity,entityId,user})))fail(403,'RECORD_ACCESS_DENIED','You do not have edit access to this knowledge record');
 
   if(change.operation==='delete'){
     await client.query('DELETE FROM '+cfg.table+' WHERE id=$1',[entityId]);
@@ -662,10 +677,11 @@ async function applyKnowledgeEntity(client,change,user){
   }
 
   if(change.entity_type==='knowledge_relationship')fail(400,'UNSUPPORTED_KNOWLEDGE_OPERATION','Knowledge relationships support create and delete only');
+  if(record.visibility!==undefined&&record.visibility!==current.visibility)fail(400,'VISIBILITY_CHANGE_UNSUPPORTED','Knowledge visibility changes require grant administration');
 
   const updates=[],values=[];
   for(const field of cfg.fields){
-    if(['project_id'].includes(field))continue;
+    if(['project_id','visibility'].includes(field))continue;
     if(Object.prototype.hasOwnProperty.call(record,field)){
       values.push(field==='title'?String(record[field]??'').trim():record[field]??null);
       updates.push(field+'=$'+values.length);
@@ -681,3 +697,4 @@ async function applyKnowledgeEntity(client,change,user){
 async function applyChange(client,change,userId){if(change.entity_type==='resource_download_job')return applyResourceDownloadJobEntity(client,change,{userId,role:change.__role});if(change.entity_type==='note')return applyNoteEntity(client,change,{userId,role:change.__role});if(change.entity_type==='project_item')return applyProjectItemEntity(client,change,{userId,role:change.__role});if(change.entity_type==='project_task_experiment')return applyProjectTaskExperimentEntity(client,change,{userId,role:change.__role});if(knowledgeEntityType(change.entity_type))return applyKnowledgeEntity(client,change,{userId,role:change.__role});if(change.entity_type==='location')return applyLocationEntity(client,change,{userId,role:change.__role});if(engineeringEntityType(change.entity_type))return applyEngineeringEntity(client,change,{userId,role:change.__role});if(projectEntityType(change.entity_type))return applyProjectEntity(client,change,{userId,role:change.__role});if(change.entity_type==='resource')return applyResourceEntity(client,change,{userId,role:change.__role});if(FINANCE_CONFIG[change.entity_type])return applyFinanceEntity(client,change,{userId,role:change.__role});if(change.operation==='bulk_status'){const p=object(change.payload,'Bulk status payload');const ids=Array.isArray(p.ids)?p.ids:[];if(!ids.length||typeof p.status!=='string')fail(400,'INVALID_BULK_STATUS','ids and status are required');return{updated:Number((await client.query('UPDATE items SET status=$1,updated_at=now() WHERE id=ANY($2::uuid[])',[p.status,ids])).rowCount)};}if(change.operation==='bulk_delete'){const p=object(change.payload,'Bulk delete payload');const ids=Array.isArray(p.ids)?p.ids:[];if(!ids.length)return{deleted:0};const result=await client.query('DELETE FROM items WHERE id=ANY($1::uuid[]) RETURNING id', [ids]);for(const row of result.rows)await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) VALUES('item',$1) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()",[row.id]);return{deleted:Number(result.rowCount)};}if(change.entity_type==='item')return applyItem(client,change);if(change.entity_type==='item_movement'&&change.operation==='create')return applyMovement(client,change,userId);fail(400,'UNSUPPORTED_SYNC_CHANGE',`Unsupported sync change: ${change.entity_type}/${change.operation}`);}
 
 export default router;
+import { linkedProjectReadSql } from '../middleware/visibility.js';

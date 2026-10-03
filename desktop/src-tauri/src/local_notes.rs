@@ -7,6 +7,10 @@ use crate::local_auth;
 const STATE_KEY: &str = "notes_state";
 const SCHEMA_VERSION: &str = "005_local_notes";
 
+#[cfg(test)]
+#[path = "local_notes_live_test.rs"]
+mod live_test;
+
 fn conn(app: &AppHandle) -> Result<Connection, String> { local_db::open_local_connection(app) }
 
 fn ensure(conn: &Connection) -> Result<(), String> {
@@ -84,8 +88,11 @@ pub fn get_local_note_tags(app:AppHandle)->Result<Vec<String>,String>{
 pub fn get_local_note(app:AppHandle,note_id:String)->Result<Option<Value>,String>{let c=conn(&app)?;Ok(load(&c)?.into_iter().find(|n|n.get("id").and_then(Value::as_str)==Some(note_id.as_str())))}
 
 #[tauri::command]
-pub fn create_local_note(app:AppHandle,mut note:Value)->Result<Value,String>{
-    let mut c=conn(&app)?;let mut notes=load(&c)?;
+pub fn create_local_note(app:AppHandle,note:Value)->Result<Value,String>{
+    create_note(&mut conn(&app)?,note)
+}
+fn create_note(c:&mut Connection,mut note:Value)->Result<Value,String>{
+    let mut notes=load(c)?;
     if note.get("title").and_then(Value::as_str).map(|s|s.trim().is_empty()).unwrap_or(true){return Err("title is required".into());}
     let visibility=note.get("visibility").and_then(Value::as_str).unwrap_or("lab").to_string();
     if !valid_visibility(&visibility){return Err("visibility must be lab, project, or restricted".into());}
@@ -95,7 +102,7 @@ pub fn create_local_note(app:AppHandle,mut note:Value)->Result<Value,String>{
     note["visibility"]=json!(visibility);
     note["created_at"]=json!(&ts);note["updated_at"]=json!(&ts);note["revisions"]=json!([]);
     notes.push(note.clone());
-    save(&mut c,&notes,vec![(id(),"note".into(),nid,"create".into(),note.clone())])?;Ok(note)
+    save(c,&notes,vec![(id(),"note".into(),nid,"create".into(),note.clone())])?;Ok(note)
 }
 
 #[tauri::command]
@@ -132,9 +139,12 @@ pub fn restore_local_note_revision(app:AppHandle,note_id:String,revision_id:Stri
 
 #[tauri::command]
 pub fn apply_server_notes_pull(app:AppHandle,notes:Vec<Value>,visible_note_ids:Vec<String>,deleted_note_ids:Vec<String>,expected_account_id:String)->Result<(),String>{
- let mut c=conn(&app)?;local_db::require_sync_account(&c,&expected_account_id)?;let mut current=load(&c)?;
+ apply_notes_pull(&mut conn(&app)?,notes,visible_note_ids,deleted_note_ids,&expected_account_id)
+}
+fn apply_notes_pull(c:&mut Connection,notes:Vec<Value>,visible_note_ids:Vec<String>,deleted_note_ids:Vec<String>,expected_account_id:&str)->Result<(),String>{
+ local_db::require_sync_account(c,expected_account_id)?;let mut current=load(c)?;
  fn pending(c:&Connection,id:&str)->Result<bool,String>{Ok(c.query_row("SELECT 1 FROM active_sync_outbox WHERE synced_at IS NULL AND entity_type='note' AND entity_id=?1 LIMIT 1",[id],|r|r.get::<_,i64>(0)).optional().map_err(|e|format!("Unable to inspect pending note change: {e}"))?.is_some())}
  for note in notes{if let Some(id)=note.get("id").and_then(Value::as_str){if pending(&c,id)?{continue;}if let Some(existing)=current.iter_mut().find(|n|n.get("id").and_then(Value::as_str)==Some(id)){let revisions=existing.get("revisions").cloned().unwrap_or_else(||json!([]));*existing=note;if existing.get("revisions").and_then(Value::as_array).map(|a|a.is_empty()).unwrap_or(true){existing["revisions"]=revisions;}}else{current.push(note);}}}
  current.retain(|n|{let id=n.get("id").and_then(Value::as_str).unwrap_or("");if pending(&c,id).unwrap_or(false){return true;}visible_note_ids.iter().any(|x|x==id)&&!deleted_note_ids.iter().any(|x|x==id)});
- save_checked(&mut c,&current,Vec::new(),Some(&expected_account_id))
+ save_checked(c,&current,Vec::new(),Some(expected_account_id))
 }

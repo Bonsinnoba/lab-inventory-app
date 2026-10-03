@@ -22,7 +22,7 @@ test('denies inaccessible project before any evidence query',async()=>{
 test('scopes both evidence queries to project and caps returned results',async()=>{
  const calls=[];
  const db={query:async(sql,params)=>{calls.push({sql,params});return {rows:Array.from({length:3},(_,i)=>({id:String(i),title:'Note '+i,name:'Resource '+i,updated_at:'2026-01-01',excerpt:'match'}))};}};
- const result=await searchProjectEvidence(id,{userId:'u'},'drift',2,db,async()=>({access:'view'}));
+ const result=await searchProjectEvidence(id,{userId:'u'},'drift',2,db,async()=>({access:'view'}),async(_type,rows)=>rows);
  assert.equal(calls.length,2);
  assert.ok(calls.every(c=>c.sql.includes('project_id=$1')&&c.params[0]===id&&c.params[2]==='drift'&&c.params[3]===3));
  assert.equal(result.results.length,2);assert.equal(result.truncated,true);
@@ -42,7 +42,7 @@ test('excerpts center on the matching passage instead of unrelated document intr
 test('SQL searches literal pattern within project boundary and returns bounded snippets',async()=>{
  const calls=[];
  const db={query:async(sql,params)=>{calls.push({sql,params});return {rows:[]};}};
- await searchProjectEvidence(id,{userId:'u'},'10%_ drift',3,db,async()=>({access:'view'}));
+ await searchProjectEvidence(id,{userId:'u'},'10%_ drift',3,db,async()=>({access:'view'}),async(_type,rows)=>rows);
  assert.equal(calls.length,2);
  assert.ok(calls.every(c=>c.params[2]===String.raw`10\%\_ drift`&&c.params[3]===4));
  assert.ok(calls.every(c=>c.sql.includes('ESCAPE')&&c.sql.includes('FOR 280')));

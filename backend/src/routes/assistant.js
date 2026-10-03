@@ -4,6 +4,7 @@ import { pool } from '../db.js';
 import { config } from '../config.js';
 import { writeAuditLog } from '../middleware/audit.js';
 import { getProjectAccess } from '../middleware/project-access.js';
+import { filterReadableRows } from '../middleware/read-visibility.js';
 import {assembleProjectContext,searchProjectEvidence} from './context.js';
 import { getUserPermissions, LAB_WIDE_READ_PERMISSIONS, projectFinancialProjection, projectFinancialSummaryProjection, canReadSensitiveFinance } from '../middleware/permissions.js';
 
@@ -167,7 +168,7 @@ const TOOL_PERMISSIONS = Object.freeze({
   get_location: 'inventory.view',
   search_knowledge: null,
   list_notes: 'notes.view',
-  list_recent_activity: 'reports.view'
+  list_recent_activity: 'audit.view'
 });
 
 async function assistantPermissions(user) {
@@ -291,9 +292,7 @@ async function searchGlobal({ query, types }, user) {
   const pairs = await Promise.all(authorized.map(async (type) => [type, (await pool.query(queries[type], [q])).rows]));
   for (const pair of pairs) {
     const [type, rows] = pair;
-    if (['projects','tasks','experiments','blocks'].includes(type)) pair[1] = await filterProjectRows(rows, user);
-    if (type === 'resources') pair[1] = await filterProjectRows(rows, user);
-    if (type === 'transactions') pair[1] = await filterProjectRows(rows, user);
+    pair[1] = await filterReadableRows(type, rows, user);
   }
   const sources = [];
   const grouped = Object.fromEntries(pairs.map(([type, rows]) => [type, rows.map((row) => {
@@ -319,7 +318,7 @@ async function searchItems({ query, status }, user) {
 
 async function getItem({ item_id }, user) {
   await requireAssistantPermission('inventory.view', user);
-  const r = await pool.query(`SELECT i.id,i.name,i.type,i.status,i.current_quantity,i.unit,i.sku,i.description,i.location_id,l.name AS location_name FROM items i LEFT JOIN locations l ON l.id=i.location_id WHERE i.id=$1`, [item_id]);
+  const r = await pool.query(`SELECT i.id,i.name,i.type,i.status,i.current_quantity,i.unit,i.sku,i.condition_notes,i.location_id,l.name AS location_name FROM items i LEFT JOIN locations l ON l.id=i.location_id WHERE i.id=$1`, [item_id]);
   if (!r.rowCount) throw new Error('Item not found');
   const row = r.rows[0];
   return result(row, [source('item', row.id, row.name)]);
@@ -356,6 +355,9 @@ async function getProjectWorkspace({ project_id }, user) {
     activity: permissions.has('audit.view') ? pool.query(`SELECT a.action,a.entity_type,a.entity_id,a.metadata,a.created_at,u.username AS actor_username FROM audit_log a LEFT JOIN users u ON u.id=a.actor_user_id WHERE (a.entity_type='project' AND a.entity_id=$1) OR a.metadata->>'project_id'=$1 ORDER BY a.created_at DESC LIMIT 30`, [project_id]) : Promise.resolve({ rows: [] })
   };
   const [members,tasks,experiments,items,notes,resources,activity] = await Promise.all(Object.values(queries));
+  notes.rows=await filterReadableRows('notes',notes.rows,user);
+  resources.rows=await filterReadableRows('resources',resources.rows,user);
+  if(user.role!=='admin')activity.rows=[];
   const row = { project: project.data, members: members.rows, tasks: tasks.rows, experiments: experiments.rows, items: items.rows, notes: notes.rows, resources: resources.rows, activity: activity.rows };
   const sources = [source('project', project_id, project.data.name), ...notes.rows.map(r=>source('note',r.id,r.title)), ...resources.rows.map(r=>source('resource',r.id,r.name)), ...items.rows.map(r=>source('item',r.item_id,r.name))];
   return result(row, sources.slice(0, 50));
@@ -375,7 +377,7 @@ async function getProjectFinancials({ project_id }, user) {
 async function getTransactionSummary({ from, to }, user) {
   const permissions = await requireAssistantPermission('finance.view', user);
   const sensitive = canReadSensitiveFinance(permissions);
-  const conditions=sensitive?[]:["direction = 'expense'"]; const values=[];
+  const conditions=[linkedProjectReadSql('transactions.project_id','$1','$2'),...(sensitive?[]:["direction = 'expense'"])]; const values=[user.userId,user.role];
   if (from) { values.push(from); conditions.push(`date >= $${values.length}`); }
   if (to) { values.push(to); conditions.push(`date <= $${values.length}`); }
   const where=conditions.length?`WHERE ${conditions.join(' AND ')}`:'';
@@ -386,13 +388,13 @@ async function getTransactionSummary({ from, to }, user) {
 
 async function listLocations(user) {
   await requireAssistantPermission('inventory.view', user);
-  const rows=(await pool.query(`SELECT id,name,type,created_at FROM locations ORDER BY name`)).rows;
+  const rows=(await pool.query(`SELECT id,name,parent_id,created_at FROM locations ORDER BY name`)).rows;
   return result(rows, rows.map(r=>source('location',r.id,r.name)));
 }
 
 async function getLocation({ location_id }, user) {
   await requireAssistantPermission('inventory.view', user);
-  const r=await pool.query(`SELECT id,name,type,description,created_at FROM locations WHERE id=$1`,[location_id]);
+  const r=await pool.query(`SELECT id,name,parent_id,created_at FROM locations WHERE id=$1`,[location_id]);
   if(!r.rowCount) throw new Error('Location not found');
   return result(r.rows[0],[source('location',r.rows[0].id,r.rows[0].name)]);
 }
@@ -413,8 +415,8 @@ async function searchKnowledge({ query, category, project_id }, user) {
     canNotes ? pool.query(`SELECT id,title,tags,project_id,updated_at FROM notes WHERE (title ILIKE $1 OR body ILIKE $1 OR EXISTS (SELECT 1 FROM unnest(tags) tag WHERE tag ILIKE $1)) ${project_id?'AND project_id=$2':''} ORDER BY updated_at DESC LIMIT 15`,notesValues) : Promise.resolve({rows:[]}),
     canResources ? pool.query(`SELECT id,name,category,description,tags,project_id,item_id,updated_at FROM resources WHERE (name ILIKE $1 OR description ILIKE $1 OR EXISTS (SELECT 1 FROM unnest(tags) tag WHERE tag ILIKE $1)) ${projectClause} ${categoryClause} ORDER BY updated_at DESC LIMIT 15`,resourcesValues) : Promise.resolve({rows:[]})
   ]);
-  const visibleNotes = canNotes ? await filterProjectRows(notes.rows, user) : [];
-  const visibleResources = canResources ? await filterProjectRows(resources.rows, user) : [];
+  const visibleNotes = canNotes ? await filterReadableRows('notes',notes.rows, user) : [];
+  const visibleResources = canResources ? await filterReadableRows('resources',resources.rows, user) : [];
   const sources=[...visibleNotes.map(r=>source('note',r.id,r.title)),...visibleResources.map(r=>source('resource',r.id,r.name))];
   return result({ notes: visibleNotes, resources: visibleResources }, sources);
 }
@@ -426,17 +428,20 @@ async function listNotes({ item_id, project_id }, user) {
   if(project_id){ values.push(project_id); conditions.push(`project_id=$${values.length}`); }
   const where=conditions.length?`WHERE ${conditions.join(' AND ')}`:'';
   const rows=await filterProjectRows((await pool.query(`SELECT id,title,body,tags,item_id,project_id,created_at,updated_at FROM notes ${where} ORDER BY updated_at DESC LIMIT 30`,values)).rows, user);
-  return result(rows,rows.map(r=>source('note',r.id,r.title)));
+  const visible=await filterReadableRows('notes',rows,user);
+  return result(visible,visible.map(r=>source('note',r.id,r.title)));
 }
 
 async function listRecentActivity({ limit }, user) {
-  await requireAssistantPermission('reports.view', user);
+  await requireAssistantPermission('audit.view', user);
+  if(user.role!=='admin')throw new Error('Audit records require an administrator');
   const safeLimit=Math.min(Math.max(Number(limit)||20,1),50);
   const rows=(await pool.query(`SELECT a.id,a.action,a.entity_type,a.entity_id,a.metadata,a.created_at,u.username AS actor_username FROM audit_log a LEFT JOIN users u ON u.id=a.actor_user_id ORDER BY a.created_at DESC LIMIT $1`,[safeLimit])).rows;
   return result(rows);
 }
 
 const toolImplementations={search_project_evidence:async({project_id,query,limit},user)=>{await requireAssistantPermission('projects.view',user);await requireAssistantPermission('notes.view',user);await requireAssistantPermission('resources.view',user);const result=await searchProjectEvidence(project_id,user,query,limit);if(!result)throw new Error('Project not found or access denied');return result;},get_project_context:async({project_id},user)=>{await requireAssistantPermission('projects.view',user);if(!/^[0-9a-f-]{36}$/i.test(String(project_id||'')))throw new Error('Valid project UUID required');const snapshot=await assembleProjectContext(project_id,user);if(!snapshot)throw new Error('Project not found or access denied');return snapshot;},search_global:searchGlobal,search_items:searchItems,get_item:getItem,list_projects:listProjects,get_project:getProject,get_project_workspace:getProjectWorkspace,get_project_financials:getProjectFinancials,get_transaction_summary:getTransactionSummary,list_locations:listLocations,get_location:getLocation,search_knowledge:searchKnowledge,list_notes:listNotes,list_recent_activity:listRecentActivity};
+export { toolImplementations };
 
 async function createRun(userId, conversationId) {
   const r=await pool.query(`INSERT INTO ai_runs(user_id,conversation_id,model,status) VALUES($1,$2,$3,'running') RETURNING id`,[userId,conversationId,MODEL_NAME]);
@@ -625,3 +630,4 @@ router.get('/runs',async(req,res)=>{
 });
 
 export default router;
+import { linkedProjectReadSql } from '../middleware/visibility.js';
