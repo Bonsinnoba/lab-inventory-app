@@ -65,6 +65,7 @@ function AppContent() {
   const [mobileScanOpen, setMobileScanOpen] = useState(false);
   const [desktopScanOpen, setDesktopScanOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [globalSearchModalOpen, setGlobalSearchModalOpen] = useState(false);
   const [engineeringToolsOpen, setEngineeringToolsOpen] = useState(false);
   const [engineeringToolsMinimized, setEngineeringToolsMinimized] = useState(false);
   const [autoPauseMusic, setAutoPauseMusic] = useState(true);
@@ -265,7 +266,7 @@ function AppContent() {
         <Sidebar user={user} permissions={permissions} onLogout={handleLogout} />
         <MobileDrawer open={mobileMenuOpen} onClose={() => setMobileMenuOpen(false)} user={user} onLogout={handleLogout} />
         <div className="flex-1 flex flex-col min-w-0 min-h-0">
-          <TopBar title={getPageTitle()} onOpenCommandPalette={() => setCommandPaletteOpen(true)} onScan={() => setDesktopScanOpen(true)} />
+          <TopBar title={getPageTitle()} onOpenCommandPalette={() => setCommandPaletteOpen(true)} onOpenSearchModal={() => setGlobalSearchModalOpen(true)} onScan={() => setDesktopScanOpen(true)} />
           <MobileHeader title={getPageTitle()} onMenu={() => setMobileMenuOpen(true)} onScan={() => setMobileScanOpen(true)} />
           <main className="app-main min-w-0 min-h-0 flex-1 overflow-y-auto overflow-x-hidden pb-safe">
             <div key={location.pathname} className="animate-fade-in h-full">
@@ -328,7 +329,26 @@ function AppContent() {
       <MobileNav />
       {mobileScanOpen && <ScanLookupModal onClose={() => setMobileScanOpen(false)} />}
       {desktopScanOpen && <ScanLookupModal onClose={() => setDesktopScanOpen(false)} />}
-      <CommandPalette open={commandPaletteOpen} onClose={() => setCommandPaletteOpen(false)} />
+      {globalSearchModalOpen && (
+        <div
+          className="fixed inset-0 z-[100] flex items-start justify-center bg-black/60 p-4 pt-[8vh] backdrop-blur-sm sm:p-6 sm:pt-[8vh]"
+          onMouseDown={(event) => { if (event.target === event.currentTarget) setGlobalSearchModalOpen(false); }}
+          role="presentation"
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-label="Search laboratory"
+            className="flex h-[min(78vh,760px)] w-full max-w-3xl min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-2xl"
+          >
+            <SearchDock
+              onClose={() => setGlobalSearchModalOpen(false)}
+              onOpenFull={() => { setGlobalSearchModalOpen(false); navigate('/search'); }}
+            />
+          </section>
+        </div>
+      )}
+            <CommandPalette open={commandPaletteOpen} onClose={() => setCommandPaletteOpen(false)} />
       </>
     </Suspense>
   );
