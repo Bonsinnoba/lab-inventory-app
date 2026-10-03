@@ -1,4 +1,5 @@
 import { Search, Command, ScanLine } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import NotificationCenter from './NotificationCenter';
 import SyncStatus from './SyncStatus';
 
@@ -29,9 +30,8 @@ export default function TopBar({ title, onOpenCommandPalette, onScan }: TopBarPr
         <SyncStatus />
         <NotificationCenter />
 
-        <button
-          type="button"
-          onClick={() => { window.location.hash = '#/search'; }}
+        <Link
+          to="/search"
           className="topbar-search hidden md:flex items-center gap-2 px-3 py-1.5 rounded-sm text-text-secondary hover:text-text-primary hover:bg-surface-raised transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
           title="Open full search"
           aria-label="Open full search"
@@ -41,7 +41,7 @@ export default function TopBar({ title, onOpenCommandPalette, onScan }: TopBarPr
           <span className="font-mono text-[10px] border border-border rounded px-1.5 py-0.5 flex items-center gap-1" aria-hidden="true">
             <Command size={10} />K
           </span>
-        </button>
+        </Link>
 
         <button
           type="button"
