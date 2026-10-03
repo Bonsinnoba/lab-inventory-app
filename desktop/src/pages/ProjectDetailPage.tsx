@@ -48,7 +48,7 @@ export default function ProjectDetailPage() {
     {id:'activity',label:'Activity',path:`/projects/${projectId}/activity`},{id:'canvas',label:'Canvas',path:`/projects/${projectId}/canvas`}
   ];
   const canEdit = workspace.data?.permissions?.can_edit === true;
-  return <DeletePromptContext.Provider value={requestDelete}><div className="flex flex-col h-full">
+  return <DeletePromptContext.Provider value={requestDelete}><div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
     <div className={`project-header flex items-center gap-3 px-4 md:px-6 flex-shrink-0 ${isCanvas?'pt-3 pb-2':'pt-4 pb-3'}`}>
       <button onClick={()=>navigate('/projects')} className="p-2 hover:bg-surface-raised rounded-sm border border-transparent hover:border-border"><ArrowLeft size={18}/></button>
       <div className="min-w-0 flex-1"><div className="page-kicker">PROJECT WORKSPACE</div><div className="flex items-center gap-2 mt-1"><h2 className={`${isCanvas?'text-base':'text-xl md:text-2xl'} font-ui font-semibold truncate`}>{project.name}</h2><span className="text-[10px] font-mono uppercase tracking-wider px-2 py-1 rounded-full bg-accent/10 text-accent">{String(project.status).replace('_',' ')}</span></div>{project.description&&<p className="text-xs text-text-secondary truncate hidden md:block mt-1">{project.description}</p>}</div>
