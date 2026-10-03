@@ -120,7 +120,7 @@ export default function ProjectCanvas({ projectId }: ProjectCanvasProps) {
   const geometryFor = useCallback((block: CanvasBlock) => liveGeometry[block.id] ?? block, [liveGeometry]);
   const blockById = useCallback((id: string) => canvas?.blocks.find((b) => b.id === id), [canvas]);
   const selectedBlock = canvas?.blocks.find((b) => b.id === selectedBlockId) ?? null;
-  const canEdit = canvas?.permissions?.can_edit !== false;
+  const canEdit = canvas?.permissions?.can_edit === true;
   const filteredBlocks = useMemo(() => {
     const q = canvasSearch.trim().toLowerCase();
     if (!canvas?.blocks || !q) return canvas?.blocks || [];

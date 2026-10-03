@@ -16,7 +16,7 @@ export async function getDailyUsePreferences(): Promise<DailyUsePreferences> {
 
 export async function updateDailyUsePreferences(p: Partial<DailyUsePreferences>): Promise<DailyUsePreferences> {
   if (isTauriRuntime()) {
-    try { return await invoke<DailyUsePreferences>('update_local_daily_use_preferences', { preferences: p }); } catch { /* use central fallback for older runtimes */ }
+    return invoke<DailyUsePreferences>('update_local_daily_use_preferences', { preferences: p });
   }
   const r = await apiFetch('/system/daily-preferences',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});
   if (!r.ok) throw new Error(await getApiErrorMessage(r,'Failed to save daily-use preferences'));

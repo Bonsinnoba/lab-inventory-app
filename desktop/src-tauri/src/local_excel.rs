@@ -30,7 +30,7 @@ pub fn import_local_inventory_rows(app: AppHandle, rows_json: String) -> Result<
     }
     let tx = conn.transaction().map_err(|e| format!("Unable to begin inventory import transaction: {e}"))?;
     let snapshot_text: String = tx
-        .query_row("SELECT value FROM sync_state WHERE key='inventory_snapshot'", [], |r| r.get(0))
+        .query_row("SELECT value FROM sync_state WHERE key=?1", [local_db::scoped_state_key(&tx,"inventory_snapshot")?], |r| r.get(0))
         .map_err(|_| "A local inventory snapshot is required before importing Excel data".to_string())?;
     let mut snapshot: Vec<Value> = serde_json::from_str(&snapshot_text)
         .map_err(|e| format!("Unable to decode local inventory snapshot: {e}"))?;
@@ -89,8 +89,8 @@ pub fn import_local_inventory_rows(app: AppHandle, rows_json: String) -> Result<
     let snapshot_json = serde_json::to_string(&snapshot)
         .map_err(|e| format!("Unable to encode inventory snapshot: {e}"))?;
     tx.execute(
-        "INSERT INTO sync_state(key,value) VALUES ('inventory_snapshot',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        [&snapshot_json],
+        "INSERT INTO sync_state(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![local_db::scoped_state_key(&tx,"inventory_snapshot")?,snapshot_json],
     ).map_err(|e| format!("Unable to save imported inventory snapshot: {e}"))?;
     tx.commit().map_err(|e| format!("Unable to commit inventory import: {e}"))?;
 

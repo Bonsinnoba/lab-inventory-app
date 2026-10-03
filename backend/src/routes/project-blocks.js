@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
 import { requireProjectAccess, requireProjectEditor } from '../middleware/project-access.js';
-import { validateCanvasResource } from '../middleware/resource-access.js';
+import { getResourceAccess, validateCanvasResource } from '../middleware/resource-access.js';
 import { writeAuditLog } from '../middleware/audit.js';
 
 const router = Router();
@@ -23,9 +23,14 @@ router.get('/:projectId/canvas', requireProjectAccess, async (req, res) => {
       [req.params.projectId]
     );
 
+    const blocks=[];
+    for(const block of blocksResult.rows){
+      if(!block.resource_id || (await getResourceAccess(block.resource_id,req.user)).access!=='none')blocks.push(block);
+    }
+    const visibleBlockIds=new Set(blocks.map(block=>block.id));
     res.json({
-      blocks: blocksResult.rows,
-      connectors: connectorsResult.rows,
+      blocks,
+      connectors: connectorsResult.rows.filter(connector=>visibleBlockIds.has(connector.source_block_id)&&visibleBlockIds.has(connector.target_block_id)),
       permissions: {
         access: req.projectAccess,
         member_role: req.projectMemberRole,

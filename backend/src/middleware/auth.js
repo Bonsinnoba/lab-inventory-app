@@ -2,6 +2,7 @@ import jwt from 'jsonwebtoken';
 import { config } from '../config.js';
 import { pool } from '../db.js';
 import { getUserPermissions } from './permissions.js';
+import { getProjectAccess } from './project-access.js';
 
 export async function authenticateToken(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -69,19 +70,9 @@ export function requireRole(...allowedRoles) {
         }
 
         const projectId = req.params.projectId || req.params.id;
-        const project = await pool.query(`
-          SELECT p.owner_id, pm.member_role
-          FROM projects p
-          LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $2
-          WHERE p.id = $1`, [projectId, req.user.userId]);
-        if (!project.rowCount) return res.status(404).json({ error: { code: 'PROJECT_NOT_FOUND', message: 'Project not found' } });
-
-        const row = project.rows[0];
-        const canManageProject = req.user.role === 'admin' ||
-          row.owner_id === req.user.userId ||
-          row.member_role === 'lead' ||
-          row.member_role === 'member';
-        if (!canManageProject) {
+        const access = await getProjectAccess(projectId, req.user);
+        if (access.access === 'none') return res.status(404).json({ error: { code: 'PROJECT_NOT_FOUND', message: 'Project not found' } });
+        if (access.access !== 'admin' && access.access !== 'edit') {
           return res.status(403).json({ error: { code: 'PROJECT_EDITOR_REQUIRED', message: 'You must be a project editor to manage members' } });
         }
 

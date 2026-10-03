@@ -4,7 +4,8 @@ import { apiFetch, getApiErrorMessage } from './http';
 function isTauriRuntime(): boolean { return typeof window !== 'undefined' && !!(window as any).__TAURI_IPC__; }
 async function localInvoke<T>(command:string,args:Record<string,unknown>={}):Promise<T|null>{if(!isTauriRuntime())return null;return invoke<T>(command,args);}
 
-export interface Note { id:string; title:string; body:string; tags:string[]; item_id?:string; project_id?:string; author_id?:string; created_at:string; updated_at:string; }
+export type NoteVisibility = 'lab'|'project'|'restricted';
+export interface Note { id:string; title:string; body:string; tags:string[]; item_id?:string; project_id?:string; author_id?:string; visibility?:NoteVisibility; created_at:string; updated_at:string; }
 export async function getNotes(filters?:{item_id?:string;project_id?:string;tag?:string;search?:string;}):Promise<Note[]>{
   const local=await localInvoke<Note[]>('list_local_notes',{filters:filters??{}});
   if(local!==null)return local;

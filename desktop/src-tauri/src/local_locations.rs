@@ -5,22 +5,25 @@ use crate::local_db;
 use crate::local_auth;
 const KEY:&str="locations_state"; const VERSION:&str="007_local_locations";
 fn open(a:&AppHandle)->Result<Connection,String>{local_db::open_local_connection(a)}
-fn ensure(c:&Connection)->Result<(),String>{c.execute("INSERT OR IGNORE INTO local_schema_migrations(version) VALUES(?1)",[VERSION]).map_err(|e|e.to_string())?;c.execute("INSERT OR IGNORE INTO sync_state(key,value) VALUES(?1,?2)",params![KEY,"[]"]).map_err(|e|e.to_string())?;Ok(())}
+fn ensure(c:&Connection)->Result<(),String>{c.execute("INSERT OR IGNORE INTO local_schema_migrations(version) VALUES(?1)",[VERSION]).map_err(|e|e.to_string())?;c.execute("INSERT OR IGNORE INTO sync_state(key,value) VALUES(?1,?2)",params![local_db::scoped_state_key(c,KEY)?,"[]"]).map_err(|e|e.to_string())?;Ok(())}
 fn inventory_counts(c:&Connection)->Result<std::collections::HashMap<String,i64>,String>{
- let raw:Option<String>=c.query_row("SELECT value FROM sync_state WHERE key='inventory_snapshot'",[],|r|r.get(0)).optional().map_err(|e|e.to_string())?;let mut counts=std::collections::HashMap::new();if let Some(raw)=raw{if let Ok(items)=serde_json::from_str::<Vec<Value>>(&raw){for item in items{if let Some(id)=item.get("location_id").and_then(Value::as_str){*counts.entry(id.to_string()).or_insert(0)+=1;}}}}Ok(counts)
+ let raw:Option<String>=c.query_row("SELECT value FROM sync_state WHERE key=?1",[local_db::scoped_state_key(c,"inventory_snapshot")?],|r|r.get(0)).optional().map_err(|e|e.to_string())?;let mut counts=std::collections::HashMap::new();if let Some(raw)=raw{if let Ok(items)=serde_json::from_str::<Vec<Value>>(&raw){for item in items{if let Some(id)=item.get("location_id").and_then(Value::as_str){*counts.entry(id.to_string()).or_insert(0)+=1;}}}}Ok(counts)
 }
-fn load(c:&Connection)->Result<Vec<Value>,String>{ensure(c)?;let x:Option<String>=c.query_row("SELECT value FROM sync_state WHERE key=?1",[KEY],|r|r.get(0)).optional().map_err(|e|e.to_string())?;Ok(x.map(|s|serde_json::from_str(&s).unwrap_or_default()).unwrap_or_default())}
+fn load(c:&Connection)->Result<Vec<Value>,String>{ensure(c)?;let x:Option<String>=c.query_row("SELECT value FROM sync_state WHERE key=?1",[local_db::scoped_state_key(c,KEY)?],|r|r.get(0)).optional().map_err(|e|e.to_string())?;Ok(x.map(|s|serde_json::from_str(&s).unwrap_or_default()).unwrap_or_default())}
 fn id()->String{local_db::new_uuid()}
 fn save(c:&mut Connection,v:&[Value],change:Option<(String,String,Value)>)->Result<(),String>{
+    save_checked(c,v,change,None)
+}
+fn save_checked(c:&mut Connection,v:&[Value],change:Option<(String,String,Value)>,expected_account_id:Option<&str>)->Result<(),String>{
     if let Some((_,ref op,_))=change{
         let permission=match op.as_str(){"create"=>"inventory.create","delete"=>"inventory.delete",_=>"inventory.edit"};
         local_auth::require_local_permission(c,permission)?;
-    }let tx=c.transaction().map_err(|e|e.to_string())?;tx.execute("INSERT INTO sync_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![KEY,serde_json::to_string(v).map_err(|e|e.to_string())?]).map_err(|e|e.to_string())?;if let Some((entity_id,op,payload))=change{let d:String=tx.query_row("SELECT device_id FROM device_identity WHERE id=1",[],|r|r.get(0)).map_err(|e|e.to_string())?;tx.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES(?1,?2,'location',?3,?4,?5)",params![id(),d,entity_id,op,payload.to_string()]).map_err(|e|e.to_string())?;}tx.commit().map_err(|e|e.to_string())}
+    }let tx=c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e|e.to_string())?;if let Some(account)=expected_account_id{local_db::require_sync_account(&tx,account)?;}tx.execute("INSERT INTO sync_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![local_db::scoped_state_key(&tx,KEY)?,serde_json::to_string(v).map_err(|e|e.to_string())?]).map_err(|e|e.to_string())?;if let Some((entity_id,op,payload))=change{let d:String=tx.query_row("SELECT device_id FROM device_identity WHERE id=1",[],|r|r.get(0)).map_err(|e|e.to_string())?;tx.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES(?1,?2,'location',?3,?4,?5)",params![id(),d,entity_id,op,payload.to_string()]).map_err(|e|e.to_string())?;}tx.commit().map_err(|e|e.to_string())}
 #[tauri::command]
 pub fn list_local_locations(app:AppHandle)->Result<Vec<Value>,String>{
  let c=open(&app)?; let mut v=load(&c)?;
  let mut counts=std::collections::HashMap::<String,i64>::new();
- if let Some(raw)=c.query_row("SELECT value FROM sync_state WHERE key='inventory_snapshot'",[],|r|r.get::<_,String>(0)).optional().map_err(|e|e.to_string())?{
+ if let Some(raw)=c.query_row("SELECT value FROM sync_state WHERE key=?1",[local_db::scoped_state_key(&c,"inventory_snapshot")?],|r|r.get::<_,String>(0)).optional().map_err(|e|e.to_string())?{
   if let Ok(items)=serde_json::from_str::<Vec<Value>>(&raw){for item in items{if let Some(id)=item.get("location_id").and_then(Value::as_str){*counts.entry(id.to_string()).or_insert(0)+=1;}}}
  }
  for item in &mut v{if let Some(id)=item.get("id").and_then(Value::as_str){item["item_count"]=json!(*counts.get(id).unwrap_or(&0));}}
@@ -37,15 +40,15 @@ pub fn update_local_location(app:AppHandle,id:String,patch:Value)->Result<Value,
 pub fn delete_local_location(app:AppHandle,id:String)->Result<(),String>{let mut c=open(&app)?;let mut v=load(&c)?;let old=v.iter().find(|x|x.get("id").and_then(Value::as_str)==Some(id.as_str())).cloned().ok_or("Location not found")?;if old.get("item_count").and_then(Value::as_i64).unwrap_or(0)>0{return Err("Cannot delete a location containing inventory items".into())}v.retain(|x|x.get("id").and_then(Value::as_str)!=Some(id.as_str()));save(&mut c,&v,Some((id,"delete".into(),json!({"location":old}))))}
 
 #[tauri::command]
-pub fn apply_server_location_pull(app:AppHandle,locations_json:String,deleted_location_ids:Vec<String>)->Result<(),String>{
+pub fn apply_server_location_pull(app:AppHandle,locations_json:String,deleted_location_ids:Vec<String>,expected_account_id:String)->Result<(),String>{
  let incoming:Vec<Value>=serde_json::from_str(&locations_json).map_err(|e|format!("Invalid server locations payload: {e}"))?;
- let mut conn=open(&app)?; let mut v=load(&conn)?;
+ let mut conn=open(&app)?; local_db::require_sync_account(&conn,&expected_account_id)?; let mut v=load(&conn)?;
  let mut pending=std::collections::HashSet::new();
- let mut stmt=conn.prepare("SELECT entity_id FROM sync_outbox WHERE synced_at IS NULL AND entity_type='location' AND entity_id IS NOT NULL").map_err(|e|e.to_string())?;
+ let mut stmt=conn.prepare("SELECT entity_id FROM active_sync_outbox WHERE synced_at IS NULL AND entity_type='location' AND entity_id IS NOT NULL").map_err(|e|e.to_string())?;
  let rows=stmt.query_map([],|r|r.get::<_,String>(0)).map_err(|e|e.to_string())?;
  for row in rows{pending.insert(row.map_err(|e|e.to_string())?);} drop(stmt);
  let deleted:std::collections::HashSet<String>=deleted_location_ids.into_iter().collect();
  v.retain(|x|x.get("id").and_then(Value::as_str).map(|id|!deleted.contains(id)||pending.contains(id)).unwrap_or(true));
  for item in incoming{let Some(id)=item.get("id").and_then(Value::as_str) else{continue};if pending.contains(id){continue;}if let Some(existing)=v.iter_mut().find(|x|x.get("id").and_then(Value::as_str)==Some(id)){*existing=item;}else{v.push(item);}}
- save(&mut conn,&v,None)?; Ok(())
+ save_checked(&mut conn,&v,None,Some(&expected_account_id))?; Ok(())
 }

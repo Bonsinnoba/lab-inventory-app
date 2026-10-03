@@ -7,6 +7,18 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const MIGRATIONS_DIR = path.join(__dirname, 'migrations');
 
+// These migrations were named by feature rather than dependency order. Keep
+// their existing filenames (and schema_migrations versions) for installations
+// that have already applied them, but run them in dependency order on a fresh DB.
+const RESERVATION_MIGRATION_ORDER = [
+  '20260926_project_planning_status.sql',
+  '20260926_project_review.sql',
+  '20260926_project_reservations.sql',
+  '20260926_reservation_fulfillment.sql',
+  '20260926_partial_reservation_fulfillment.sql',
+  '20260926_fulfillment_idempotency.sql',
+];
+
 async function ensureMigrationTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -83,7 +95,14 @@ async function runAllMigrations() {
   await ensureBaseSchema();
   const state = await pool.query('SELECT COUNT(*)::int AS count FROM schema_migrations');
   const legacyAdoption = state.rows[0].count === 0;
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
+  const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort((a, b) => {
+    if (a.startsWith('20260926_') && b.startsWith('20260926_')) {
+      const aOrder = RESERVATION_MIGRATION_ORDER.indexOf(a);
+      const bOrder = RESERVATION_MIGRATION_ORDER.indexOf(b);
+      if (aOrder !== -1 && bOrder !== -1) return aOrder - bOrder;
+    }
+    return a.localeCompare(b);
+  });
   for (const file of files) await runMigration(file, legacyAdoption);
 }
 

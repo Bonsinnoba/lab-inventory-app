@@ -10,14 +10,17 @@ const SCHEMA_VERSION: &str = "006_local_knowledge";
 fn conn(app:&AppHandle)->Result<Connection,String>{local_db::open_local_connection(app)}
 fn ensure(c:&Connection)->Result<(),String>{
  c.execute("INSERT OR IGNORE INTO local_schema_migrations(version) VALUES (?1)",[SCHEMA_VERSION]).map_err(|e|format!("Unable to record knowledge schema: {e}"))?;
- c.execute("INSERT OR IGNORE INTO sync_state(key,value) VALUES (?1,?2)",params![STATE_KEY,r#"{"findings":[],"results":[],"relationships":[]}"#]).map_err(|e|format!("Unable to initialize local knowledge: {e}"))?; Ok(())
+ c.execute("INSERT OR IGNORE INTO sync_state(key,value) VALUES (?1,?2)",params![local_db::scoped_state_key(c,STATE_KEY)?,r#"{"findings":[],"results":[],"relationships":[]}"#]).map_err(|e|format!("Unable to initialize local knowledge: {e}"))?; Ok(())
 }
-fn load(c:&Connection)->Result<Value,String>{ensure(c)?;let raw:Option<String>=c.query_row("SELECT value FROM sync_state WHERE key=?1",[STATE_KEY],|r|r.get(0)).optional().map_err(|e|format!("Unable to read local knowledge: {e}"))?;match raw{Some(v)=>serde_json::from_str(&v).map_err(|e|format!("Invalid local knowledge state: {e}")),None=>Ok(json!({"findings":[],"results":[],"relationships":[]}))}}
+fn load(c:&Connection)->Result<Value,String>{ensure(c)?;let raw:Option<String>=c.query_row("SELECT value FROM sync_state WHERE key=?1",[local_db::scoped_state_key(c,STATE_KEY)?],|r|r.get(0)).optional().map_err(|e|format!("Unable to read local knowledge: {e}"))?;match raw{Some(v)=>serde_json::from_str(&v).map_err(|e|format!("Invalid local knowledge state: {e}")),None=>Ok(json!({"findings":[],"results":[],"relationships":[]}))}}
 fn save(c:&mut Connection,state:&Value,change:Option<(String,String,String,Value)>)->Result<(),String>{
+ save_checked(c,state,change,None)
+}
+fn save_checked(c:&mut Connection,state:&Value,change:Option<(String,String,String,Value)>,expected_account_id:Option<&str>)->Result<(),String>{
     if change.is_some(){
         local_auth::require_local_permission(c,"projects.edit")?;
     }
- let tx=c.transaction().map_err(|e|format!("Unable to begin knowledge transaction: {e}"))?;tx.execute("INSERT INTO sync_state(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![STATE_KEY,state.to_string()]).map_err(|e|format!("Unable to save local knowledge: {e}"))?;
+ let tx=c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e|format!("Unable to begin knowledge transaction: {e}"))?;if let Some(account)=expected_account_id{local_db::require_sync_account(&tx,account)?;}tx.execute("INSERT INTO sync_state(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![local_db::scoped_state_key(&tx,STATE_KEY)?,state.to_string()]).map_err(|e|format!("Unable to save local knowledge: {e}"))?;
  if let Some((typ,id,op,payload))=change{let device:String=tx.query_row("SELECT device_id FROM device_identity WHERE id=1",[],|r|r.get(0)).map_err(|e|format!("Unable to read device identity: {e}"))?;tx.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES (?1,?2,?3,?4,?5,?6)",params![idgen(),device,typ,id,op,payload.to_string()]).map_err(|e|format!("Unable to queue knowledge change: {e}"))?;}
  tx.commit().map_err(|e|format!("Unable to commit knowledge change: {e}"))
 }
@@ -73,17 +76,17 @@ pub fn create_local_knowledge_relationship(app:AppHandle,mut data:Value)->Result
 #[tauri::command]
 pub fn delete_local_knowledge_relationship(app:AppHandle,id:String)->Result<(),String>{delete_entity(app,"relationships","knowledge_relationship".to_string(),id)}
 #[tauri::command]
-pub fn search_local_knowledge(app:AppHandle,q:String)->Result<Value,String>{let c=conn(&app)?;let s=load(&c)?;let findings=query(arr(&s,"findings"),&q);let results=query(arr(&s,"results"),&q);let notes:Vec<Value>=serde_json::from_str(&c.query_row("SELECT value FROM sync_state WHERE key='notes_state'",[],|r|r.get::<_,String>(0)).optional().map_err(|e|e.to_string())?.unwrap_or_else(||"[]".to_string())).unwrap_or_else(|_|Vec::new());Ok(json!({"findings":findings,"results":results,"notes":query(notes,&q)}))}
+pub fn search_local_knowledge(app:AppHandle,q:String)->Result<Value,String>{let c=conn(&app)?;let s=load(&c)?;let findings=query(arr(&s,"findings"),&q);let results=query(arr(&s,"results"),&q);let notes:Vec<Value>=serde_json::from_str(&c.query_row("SELECT value FROM sync_state WHERE key=?1",[local_db::scoped_state_key(&c,"notes_state")?],|r|r.get::<_,String>(0)).optional().map_err(|e|e.to_string())?.unwrap_or_else(||"[]".to_string())).unwrap_or_else(|_|Vec::new());Ok(json!({"findings":findings,"results":results,"notes":query(notes,&q)}))}
 #[tauri::command]
-pub fn get_local_knowledge_overview(app:AppHandle)->Result<Value,String>{let c=conn(&app)?;let s=load(&c)?;let findings=arr(&s,"findings");let results=arr(&s,"results");let notes_raw: String=c.query_row("SELECT value FROM sync_state WHERE key='notes_state'",[],|r|r.get::<_,String>(0)).optional().map_err(|e|e.to_string())?.unwrap_or_else(||"[]".to_string());let notes_state:Value=serde_json::from_str(&notes_raw).unwrap_or(json!([]));let notes=notes_state.as_array().cloned().unwrap_or_default();let resources_raw: String=c.query_row("SELECT value FROM sync_state WHERE key='resources_state'",[],|r|r.get::<_,String>(0)).optional().map_err(|e|e.to_string())?.unwrap_or_else(||"[]".to_string());let resources_state:Value=serde_json::from_str(&resources_raw).unwrap_or(json!([]));let resources=resources_state.as_array().cloned().unwrap_or_default();Ok(json!({"counts":{"notes":notes.len(),"resources":resources.len()},"categories":[],"recent_notes":notes.iter().rev().take(5).cloned().collect::<Vec<_>>(),"recent_resources":resources.iter().rev().take(5).cloned().collect::<Vec<_>>(),"findings":findings.len(),"results":results.len()}))}
+pub fn get_local_knowledge_overview(app:AppHandle)->Result<Value,String>{let c=conn(&app)?;let s=load(&c)?;let findings=arr(&s,"findings");let results=arr(&s,"results");let notes_raw: String=c.query_row("SELECT value FROM sync_state WHERE key=?1",[local_db::scoped_state_key(&c,"notes_state")?],|r|r.get::<_,String>(0)).optional().map_err(|e|e.to_string())?.unwrap_or_else(||"[]".to_string());let notes_state:Value=serde_json::from_str(&notes_raw).unwrap_or(json!([]));let notes=notes_state.as_array().cloned().unwrap_or_default();let resources_raw: String=c.query_row("SELECT value FROM sync_state WHERE key=?1",[local_db::scoped_state_key(&c,"resources_state")?],|r|r.get::<_,String>(0)).optional().map_err(|e|e.to_string())?.unwrap_or_else(||"[]".to_string());let resources_state:Value=serde_json::from_str(&resources_raw).unwrap_or(json!([]));let resources=resources_state.as_array().cloned().unwrap_or_default();Ok(json!({"counts":{"notes":notes.len(),"resources":resources.len()},"categories":[],"recent_notes":notes.iter().rev().take(5).cloned().collect::<Vec<_>>(),"recent_resources":resources.iter().rev().take(5).cloned().collect::<Vec<_>>(),"findings":findings.len(),"results":results.len()}))}
 #[tauri::command]
 pub fn get_local_knowledge_tags(app:AppHandle)->Result<Vec<Value>,String>{let c=conn(&app)?;let s=load(&c)?;let mut tags=std::collections::BTreeMap::<String,(i64,i64)>::new();for v in arr(&s,"findings"){if let Some(a)=v.get("tags").and_then(Value::as_array){for t in a.iter().filter_map(Value::as_str){tags.entry(t.into()).or_insert((0,0)).0+=1;}}}for v in arr(&s,"results"){if let Some(a)=v.get("tags").and_then(Value::as_array){for t in a.iter().filter_map(Value::as_str){tags.entry(t.into()).or_insert((0,0)).1+=1;}}}Ok(tags.into_iter().map(|(tag,(note_count,result_count))|json!({"tag":tag,"note_count":note_count,"resource_count":result_count})).collect())}
 
 
 #[tauri::command]
-pub fn apply_server_knowledge_pull(app:AppHandle,findings:Vec<Value>,results:Vec<Value>,relationships:Vec<Value>,deleted_finding_ids:Vec<String>,deleted_result_ids:Vec<String>,deleted_relationship_ids:Vec<String>)->Result<(),String>{
- let mut c=conn(&app)?;let mut s=load(&c)?;
- fn pending(c:&Connection,typ:&str,id:&str)->Result<bool,String>{Ok(c.query_row("SELECT 1 FROM sync_outbox WHERE synced_at IS NULL AND entity_type=?1 AND entity_id=?2 LIMIT 1",params![typ,id],|r|r.get::<_,i64>(0)).optional().map_err(|e|format!("Unable to inspect pending knowledge change: {e}"))?.is_some())}
+pub fn apply_server_knowledge_pull(app:AppHandle,findings:Vec<Value>,results:Vec<Value>,relationships:Vec<Value>,deleted_finding_ids:Vec<String>,deleted_result_ids:Vec<String>,deleted_relationship_ids:Vec<String>,expected_account_id:String)->Result<(),String>{
+ let mut c=conn(&app)?;local_db::require_sync_account(&c,&expected_account_id)?;let mut s=load(&c)?;
+ fn pending(c:&Connection,typ:&str,id:&str)->Result<bool,String>{Ok(c.query_row("SELECT 1 FROM active_sync_outbox WHERE synced_at IS NULL AND entity_type=?1 AND entity_id=?2 LIMIT 1",params![typ,id],|r|r.get::<_,i64>(0)).optional().map_err(|e|format!("Unable to inspect pending knowledge change: {e}"))?.is_some())}
  fn merge(c:&Connection,s:&mut Value,key:&str,typ:&str,incoming:Vec<Value>)->Result<(),String>{
    let mut current=arr(s,key);
    for value in incoming{
@@ -100,5 +103,5 @@ pub fn apply_server_knowledge_pull(app:AppHandle,findings:Vec<Value>,results:Vec
  }
  merge(&c,&mut s,"findings","finding",findings)?;merge(&c,&mut s,"results","knowledge_result",results)?;merge(&c,&mut s,"relationships","knowledge_relationship",relationships)?;
  remove(&c,&mut s,"findings","finding",deleted_finding_ids)?;remove(&c,&mut s,"results","knowledge_result",deleted_result_ids)?;remove(&c,&mut s,"relationships","knowledge_relationship",deleted_relationship_ids)?;
- save(&mut c,&s,None)
+ save_checked(&mut c,&s,None,Some(&expected_account_id))
 }

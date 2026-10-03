@@ -184,6 +184,16 @@ export function getToken(): string | null {
   return localStorage.getItem('auth_token');
 }
 
+export type AccountSession = { accountId: string; token: string };
+export function captureAccountSession(): AccountSession | null {
+  const accountId = getStoredUser()?.id;
+  const token = getToken();
+  return accountId && token ? { accountId, token } : null;
+}
+export function isAccountSessionCurrent(session: AccountSession | null): session is AccountSession {
+  return !!session && getToken() === session.token && getStoredUser()?.id === session.accountId;
+}
+
 export function removeToken(): void {
   localStorage.removeItem('auth_token');
 }

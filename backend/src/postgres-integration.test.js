@@ -10,7 +10,10 @@ test('migrated PostgreSQL schema supports finance and sync queries', async () =>
   try {
     const tables = {
       users: ['id','role','is_active'],
-      projects: ['id','name','budget','owner_id','updated_at'],
+      projects: ['id','name','budget','owner_id','updated_at','visibility'],
+      notes: ['id','title','project_id','author_id','visibility'],
+      resources: ['id','name','project_id','visibility'],
+      record_access_grants: ['entity_type','entity_id','user_id','access_level','created_by'],
       transactions: ['id','direction','amount','budget_period_id','funding_source_id','created_at'],
       sync_idempotency: ['change_id','payload_json','response_json'],
       sync_tombstones: ['entity_type','entity_id','deleted_at']

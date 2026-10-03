@@ -1,9 +1,9 @@
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
 use tauri::AppHandle;
-use crate::local_db::open_local_connection;
+use crate::local_db::{open_local_connection, scoped_state_key, require_sync_account};
 use crate::local_auth;
 
 const STATE_KEY: &str = "resources_state";
@@ -43,6 +43,8 @@ pub struct LocalResource {
     pub item_id: Option<String>,
     pub project_id: Option<String>,
     pub note_id: Option<String>,
+    #[serde(default)]
+    pub visibility: Option<String>,
     pub item_name: Option<String>,
     pub project_name: Option<String>,
     pub note_title: Option<String>,
@@ -61,7 +63,7 @@ fn ensure_schema(conn: &rusqlite::Connection) -> Result<(), String> {
     ).map_err(|e| format!("Unable to record local resources schema: {e}"))?;
     conn.execute(
         "INSERT OR IGNORE INTO sync_state(key,value) VALUES(?1,?2)",
-        params![STATE_KEY, "[]"],
+        params![scoped_state_key(conn, STATE_KEY)?, "[]"],
     ).map_err(|e| format!("Unable to initialize local resources state: {e}"))?;
     Ok(())
 }
@@ -69,7 +71,7 @@ fn ensure_schema(conn: &rusqlite::Connection) -> Result<(), String> {
 fn read_resources(conn: &rusqlite::Connection) -> Result<Vec<LocalResource>, String> {
     let raw: String = conn.query_row(
         "SELECT value FROM sync_state WHERE key=?1",
-        [STATE_KEY],
+        [scoped_state_key(conn, STATE_KEY)?],
         |r| r.get(0),
     ).optional().map_err(|e| format!("Unable to read local resources: {e}"))?
       .unwrap_or_else(|| "[]".to_string());
@@ -80,7 +82,7 @@ fn write_resources(conn: &rusqlite::Connection, resources: &[LocalResource]) -> 
     let raw = serde_json::to_string(resources).map_err(|e| format!("Unable to encode local resources: {e}"))?;
     conn.execute(
         "INSERT INTO sync_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        params![STATE_KEY, raw],
+        params![scoped_state_key(conn, STATE_KEY)?, raw],
     ).map_err(|e| format!("Unable to save local resources: {e}"))?;
     Ok(())
 }
@@ -207,13 +209,15 @@ pub fn get_local_resource(app: AppHandle, id: String) -> Result<LocalResource, S
 }
 
 #[tauri::command]
-pub fn cache_local_resources(app: AppHandle, resources_json: String) -> Result<usize, String> {
+pub fn cache_local_resources(app: AppHandle, resources_json: String, expected_account_id: String) -> Result<usize, String> {
     let incoming: Vec<LocalResource> = serde_json::from_str(&resources_json).map_err(|e| format!("Invalid resources cache: {e}"))?;
-    let conn = open_local_connection(&app)?;
+    let mut conn = open_local_connection(&app)?;
     ensure_schema(&conn)?;
-    let mut current = read_resources(&conn)?;
+    let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|format!("Unable to begin resource cache update: {e}"))?;
+    require_sync_account(&tx,&expected_account_id)?;
+    let mut current = read_resources(&tx)?;
     let pending: HashSet<String> = {
-        let mut stmt = conn.prepare("SELECT entity_id FROM sync_outbox WHERE synced_at IS NULL AND entity_type='resource' AND entity_id IS NOT NULL")
+        let mut stmt = tx.prepare("SELECT entity_id FROM active_sync_outbox WHERE synced_at IS NULL AND entity_type='resource' AND entity_id IS NOT NULL")
             .map_err(|e| format!("Unable to inspect pending resource changes: {e}"))?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))
             .map_err(|e| format!("Unable to inspect pending resource changes: {e}"))?;
@@ -223,7 +227,8 @@ pub fn cache_local_resources(app: AppHandle, resources_json: String) -> Result<u
         if pending.contains(&canonical_resource_id(&incoming_resource.id)) { continue; }
         merge_server_resource(&mut current, incoming_resource);
     }
-    write_resources(&conn, &current)?;
+    write_resources(&tx, &current)?;
+    tx.commit().map_err(|e|format!("Unable to commit resource cache update: {e}"))?;
     Ok(current.len())
 }
 
@@ -248,7 +253,7 @@ pub fn create_local_resource_link(app: AppHandle, url: String, name: Option<Stri
     let youtube=if url.contains("youtube.com")||url.contains("youtu.be"){youtube_id(&url)}else{None};
     let file_type=if youtube.is_some(){"youtube"}else{"other"};
     let thumbnail_url=youtube.as_ref().map(|id|format!("https://img.youtube.com/vi/{id}/hqdefault.jpg"));
-    let resource=LocalResource{id:id.clone(),name:name.filter(|n|!n.trim().is_empty()).unwrap_or_else(||url.clone()),kind:"link".into(),file_type:file_type.into(),original_filename:None,mime_type:None,size_bytes:None,url:Some(url),thumbnail_url,local_media_path:None,local_media_filename:None,local_media_mime_type:None,local_media_size_bytes:None,local_media_downloaded_at:None,parent_resource_id,relative_path:None,item_id,project_id,note_id,item_name:None,project_name:None,note_title:None,category:Some(category),description:Some(description),tags,updated_at:timestamp.clone(),created_at:timestamp,derived_from_resource_id:None};
+    let resource=LocalResource{id:id.clone(),name:name.filter(|n|!n.trim().is_empty()).unwrap_or_else(||url.clone()),kind:"link".into(),file_type:file_type.into(),original_filename:None,mime_type:None,size_bytes:None,url:Some(url),thumbnail_url,local_media_path:None,local_media_filename:None,local_media_mime_type:None,local_media_size_bytes:None,local_media_downloaded_at:None,parent_resource_id,relative_path:None,item_id,project_id,note_id,visibility:Some("lab".into()),item_name:None,project_name:None,note_title:None,category:Some(category),description:Some(description),tags,updated_at:timestamp.clone(),created_at:timestamp,derived_from_resource_id:None};
     resources.push(resource.clone());
     save_with_change(&mut conn, &resources, &id, "create", &serde_json::json!({"resource": resource}))?;
     Ok(resource)
@@ -289,7 +294,7 @@ pub fn create_local_resource_folder(app: AppHandle, name: String, item_id: Optio
     let mut conn=open_local_connection(&app)?; ensure_schema(&conn)?;
     let mut resources=read_resources(&conn)?; validate_parent(&resources,&item_id,&project_id,&note_id,&parent_resource_id)?;
     let (category,description,tags)=metadata(category,description,tags); let id=new_id(&conn)?; let timestamp=now(&conn)?;
-    let resource=LocalResource{id:id.clone(),name:name.trim().to_string(),kind:"folder".into(),file_type:"schematic_folder".into(),original_filename:None,mime_type:None,size_bytes:None,url:None,thumbnail_url:None,local_media_path:None,local_media_filename:None,local_media_mime_type:None,local_media_size_bytes:None,local_media_downloaded_at:None,parent_resource_id,relative_path:None,item_id,project_id,note_id,item_name:None,project_name:None,note_title:None,category:Some(category),description:Some(description),tags,updated_at:timestamp.clone(),created_at:timestamp,derived_from_resource_id:None};
+    let resource=LocalResource{id:id.clone(),name:name.trim().to_string(),kind:"folder".into(),file_type:"schematic_folder".into(),original_filename:None,mime_type:None,size_bytes:None,url:None,thumbnail_url:None,local_media_path:None,local_media_filename:None,local_media_mime_type:None,local_media_size_bytes:None,local_media_downloaded_at:None,parent_resource_id,relative_path:None,item_id,project_id,note_id,visibility:Some("lab".into()),item_name:None,project_name:None,note_title:None,category:Some(category),description:Some(description),tags,updated_at:timestamp.clone(),created_at:timestamp,derived_from_resource_id:None};
     resources.push(resource.clone()); save_with_change(&mut conn, &resources, &id, "create", &serde_json::json!({"resource": resource}))?; Ok(resource)
 }
 
@@ -314,27 +319,32 @@ pub fn delete_local_resource(app: AppHandle, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn apply_server_resource_pull(app: AppHandle, resources_json: String, deleted_resource_ids: Vec<String>) -> Result<(), String> {
+pub fn apply_server_resource_pull(app: AppHandle, resources_json: String, visible_resource_ids: Vec<String>, deleted_resource_ids: Vec<String>, expected_account_id: String) -> Result<(), String> {
     let incoming: Vec<LocalResource> = serde_json::from_str(&resources_json)
         .map_err(|e| format!("Invalid server resources payload: {e}"))?;
     let mut conn = open_local_connection(&app)?;
     ensure_schema(&conn)?;
-    let tx = conn.transaction().map_err(|e| format!("Unable to begin server resource merge: {e}"))?;
-    let raw: String = tx.query_row("SELECT value FROM sync_state WHERE key=?1", [STATE_KEY], |r| r.get(0))
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e| format!("Unable to begin server resource merge: {e}"))?;
+    require_sync_account(&tx, &expected_account_id)?;
+    let raw: String = tx.query_row("SELECT value FROM sync_state WHERE key=?1", [scoped_state_key(&tx, STATE_KEY)?], |r| r.get(0))
         .optional().map_err(|e| format!("Unable to read local resources: {e}"))?
         .unwrap_or_else(|| "[]".to_string());
     let mut current: Vec<LocalResource> = serde_json::from_str(&raw)
         .map_err(|e| format!("Invalid local resources state: {e}"))?;
     let mut pending = HashSet::new();
     {
-        let mut stmt = tx.prepare("SELECT entity_id FROM sync_outbox WHERE synced_at IS NULL AND entity_type='resource' AND entity_id IS NOT NULL")
+        let mut stmt = tx.prepare("SELECT entity_id FROM active_sync_outbox WHERE synced_at IS NULL AND entity_type='resource' AND entity_id IS NOT NULL")
             .map_err(|e| format!("Unable to inspect pending resource changes: {e}"))?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))
             .map_err(|e| format!("Unable to inspect pending resource changes: {e}"))?;
         for row in rows { pending.insert(canonical_resource_id(&row.map_err(|e| format!("Unable to read pending resource id: {e}"))?)); }
     }
     let deleted: HashSet<String> = deleted_resource_ids.into_iter().collect();
-    current.retain(|r| !deleted.iter().any(|id| canonical_resource_id(id) == canonical_resource_id(&r.id)) || pending.contains(&canonical_resource_id(&r.id)));
+    let visible: HashSet<String> = visible_resource_ids.into_iter().map(|id| canonical_resource_id(&id)).collect();
+    current.retain(|r| {
+        let id = canonical_resource_id(&r.id);
+        pending.contains(&id) || (visible.contains(&id) && !deleted.iter().any(|deleted_id| canonical_resource_id(deleted_id) == id))
+    });
     for incoming_resource in incoming {
         if pending.contains(&canonical_resource_id(&incoming_resource.id)) { continue; }
         merge_server_resource(&mut current, incoming_resource);
@@ -368,7 +378,7 @@ mod tests {
             local_media_mime_type: None, local_media_size_bytes: None,
             local_media_downloaded_at: None, parent_resource_id: parent_resource_id.map(str::to_string),
             relative_path: None, item_id: item_id.map(str::to_string), project_id: None,
-            note_id: None, item_name: None, project_name: None, note_title: None,
+            note_id: None, visibility: None, item_name: None, project_name: None, note_title: None,
             category: Some("general".into()), description: Some(String::new()), tags: vec![],
             updated_at: "2026-09-20T00:00:00Z".into(), created_at: "2026-09-20T00:00:00Z".into(),
             derived_from_resource_id: None,

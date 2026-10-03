@@ -19,13 +19,14 @@ export interface Project {
   budget?: string | number; total_spent?: string | number;
   description?: string; priority?: 'low'|'normal'|'high'|'critical';
   start_date?: string | null; due_date?: string | null; owner_id?: string | null;
-  created_at: string; updated_at: string; transactions?: any[];
+  visibility?: 'lab'|'project'|'restricted'; members?: ProjectMember[]; created_at: string; updated_at: string; transactions?: any[];
 }
+export interface ProjectAccessGrant { entity_type:'project'; entity_id:string; user_id:string; access_level:'view'|'edit'; created_at:string; created_by:string; username?:string; }
 export interface ProjectMember { project_id:string; user_id:string; member_role:'lead'|'member'|'observer'; joined_at:string; username:string; role:string; }
 export interface ProjectTask { id:string; project_id:string; title:string; description:string; status:'todo'|'in_progress'|'blocked'|'done'|'cancelled'; priority:'low'|'normal'|'high'|'critical'; assignee_id?:string|null; assignee_username?:string|null; due_date?:string|null; completed_at?:string|null; created_at:string; updated_at:string; }
 export interface ProjectExperiment { id:string; project_id:string; title:string; status:'planned'|'running'|'completed'|'failed'|'cancelled'; hypothesis:string; procedure:string; observations:string; result:string; conclusion:string; performed_by?:string|null; performer_username?:string|null; started_at?:string|null; completed_at?:string|null; created_at:string; updated_at:string; }
 export interface ProjectItem { project_id:string; item_id:string; allocated_quantity:string|number; notes:string; name:string; type:string; item_status:string; current_quantity:string|number; unit?:string|null; sku?:string|null; location_name?:string|null; }
-export interface ProjectWorkspace { members:ProjectMember[]; tasks:ProjectTask[]; experiments:ProjectExperiment[]; items:ProjectItem[]; notes:any[]; resources:any[]; activity:any[]; requirements?:ResourceRequirement[]; permissions?:{access:'admin'|'edit'|'view'; member_role:string; can_edit:boolean}; }
+export interface ProjectWorkspace { members:ProjectMember[]; tasks:ProjectTask[]; experiments:ProjectExperiment[]; items:ProjectItem[]; notes:any[]; resources:any[]; activity:any[]; requirements?:ResourceRequirement[]; permissions?:{access:'admin'|'edit'|'view'; member_role:string|null; can_edit:boolean; user_id?:string}; }
 export interface UserCandidate { id:string; username:string; role:string; }
 export interface ResourceRequirement { id:string; project_id:string; project_name?:string; name:string; requirement_type:string; quantity:number|string; unit?:string|null; required_by?:string|null; status:string; preferred_item_id?:string|null; preferred_item_name?:string|null; preferred_quantity?:number|string|null; notes?:string; }
 export interface ProjectBomItem { id:string; project_id:string; name:string; part_number?:string|null; required_quantity:number|string; unit?:string|null; preferred_item_id?:string|null; alternative_item_id?:string|null; notes:string; preferred_item_name?:string|null; preferred_item_quantity?:number|string|null; alternative_item_name?:string|null; alternative_item_quantity?:number|string|null; }
@@ -57,6 +58,10 @@ export async function getProject(id:string):Promise<Project>{const local=await l
 export async function createProject(project:Partial<Project>):Promise<Project>{const local=await localInvoke<Project>('create_local_project',{project});if(local!==null)return local;const r=await apiFetch('/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(project)});if(!r.ok)throw await apiError(r,'Failed to create project');return r.json();}
 async function apiError(r: Response, fallback: string): Promise<Error> { const p=await r.json().catch(()=>null) as any; const m=typeof p?.error==='string'?p.error:typeof p?.message==='string'?p.message:typeof p?.error?.message==='string'?p.error.message:fallback; return new Error(m); }
 export async function updateProject(id:string,project:Partial<Project>):Promise<Project>{const local=await localInvoke<Project>('update_local_project',{projectId:id,patch:project});if(local!==null)return local;const r=await apiFetch(`/projects/${id}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(project)});if(!r.ok)throw await apiError(r,'Failed to update project');const data=await r.json();if(!data?.id)throw new Error('Project update returned no project record');return data;}
+export async function updateProjectVisibility(id:string,visibility:NonNullable<Project['visibility']>):Promise<Project>{const r=await apiFetch(`/projects/${id}/visibility`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({visibility})});if(!r.ok)throw await apiError(r,'Failed to update project visibility');return r.json();}
+export async function getProjectAccessGrants(id:string):Promise<ProjectAccessGrant[]>{const r=await apiFetch(`/projects/${id}/access-grants`);if(!r.ok)throw await apiError(r,'Failed to fetch project access grants');return r.json();}
+export async function setProjectAccessGrant(id:string,userId:string,access_level:'view'|'edit'):Promise<ProjectAccessGrant>{const r=await apiFetch(`/projects/${id}/access-grants/${userId}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({access_level})});if(!r.ok)throw await apiError(r,'Failed to save project access grant');return r.json();}
+export async function removeProjectAccessGrant(id:string,userId:string):Promise<void>{const r=await apiFetch(`/projects/${id}/access-grants/${userId}`,{method:'DELETE'});if(!r.ok)throw await apiError(r,'Failed to remove project access grant');}
 export async function deleteProject(id:string):Promise<void>{const local=await localInvoke<void>('delete_local_project',{projectId:id});if(local!==null)return;const r=await apiFetch(`/projects/${id}`,{method:'DELETE'});if(!r.ok)throw await apiError(r,'Failed to delete project');}
 export async function getProjectWorkspace(id:string):Promise<ProjectWorkspace>{const local=await localInvoke<ProjectWorkspace>('list_local_project_workspace',{projectId:id});if(local!==null)return local;const r=await apiFetch(`/projects/${id}/workspace`);if(!r.ok)throw await apiError(r,'Failed to fetch project workspace');return r.json();}
 export async function getProjectMemberCandidates(id:string):Promise<UserCandidate[]>{const r=await apiFetch(`/projects/${id}/member-candidates`);if(!r.ok)throw await apiError(r,'Failed to fetch users');return r.json();}
@@ -81,18 +86,21 @@ export async function getProjectRequirements(id?:string):Promise<ResourceRequire
 export async function createProjectRequirement(id:string,data:Partial<ResourceRequirement>):Promise<ResourceRequirement>{
   const local=await localInvoke<ResourceRequirement>('create_local_resource_requirement',{projectId:id,record:data});
   if(local!==null)return local;
+  if(isTauriRuntime())throw new Error('Local project requirements are unavailable. Refresh the project before making changes.');
   const r=await apiFetch('/operations/requirements',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...data,project_id:id})});
   if(!r.ok)throw await apiError(r,'Failed to create resource requirement'); return r.json();
 }
 export async function updateProjectRequirement(id:string,requirementId:string,data:Partial<ResourceRequirement>):Promise<ResourceRequirement>{
   const local=await localInvoke<ResourceRequirement>('update_local_resource_requirement',{projectId:id,recordId:requirementId,patch:data});
   if(local!==null)return local;
+  if(isTauriRuntime())throw new Error('Local project requirements are unavailable. Refresh the project before making changes.');
   const r=await apiFetch(`/operations/requirements/${requirementId}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
   if(!r.ok)throw await apiError(r,'Failed to update resource requirement'); return r.json();
 }
 export async function deleteProjectRequirement(id:string,requirementId:string):Promise<void>{
   const local=await localInvoke<void>('delete_local_resource_requirement',{projectId:id,recordId:requirementId});
   if(local!==null)return;
+  if(isTauriRuntime())throw new Error('Local project requirements are unavailable. Refresh the project before making changes.');
   const r=await apiFetch(`/operations/requirements/${requirementId}`,{method:'DELETE'});
   if(!r.ok)throw await apiError(r,'Failed to delete resource requirement');
 }

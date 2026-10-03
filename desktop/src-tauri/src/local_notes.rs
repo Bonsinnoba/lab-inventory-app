@@ -12,26 +12,31 @@ fn conn(app: &AppHandle) -> Result<Connection, String> { local_db::open_local_co
 fn ensure(conn: &Connection) -> Result<(), String> {
     conn.execute("INSERT OR IGNORE INTO local_schema_migrations(version) VALUES (?1)", [SCHEMA_VERSION])
         .map_err(|e| format!("Unable to record local notes schema: {e}"))?;
-    conn.execute("INSERT OR IGNORE INTO sync_state(key,value) VALUES (?1,?2)", params![STATE_KEY, "[]"])
+    conn.execute("INSERT OR IGNORE INTO sync_state(key,value) VALUES (?1,?2)", params![local_db::scoped_state_key(conn, STATE_KEY)?, "[]"])
         .map_err(|e| format!("Unable to initialize local notes state: {e}"))?;
     Ok(())
 }
 
 fn load(conn: &Connection) -> Result<Vec<Value>, String> {
     ensure(conn)?;
-    let raw: Option<String> = conn.query_row("SELECT value FROM sync_state WHERE key=?1", [STATE_KEY], |r| r.get(0))
+    let raw: Option<String> = conn.query_row("SELECT value FROM sync_state WHERE key=?1", [local_db::scoped_state_key(conn, STATE_KEY)?], |r| r.get(0))
         .optional().map_err(|e| format!("Unable to read local notes: {e}"))?;
     match raw { Some(v) => serde_json::from_str(&v).map_err(|e| format!("Invalid local notes state: {e}")), None => Ok(Vec::new()) }
 }
 
 fn save(conn: &mut Connection, notes: &[Value], changes: Vec<(String,String,String,String,Value)>) -> Result<(),String> {
+    save_checked(conn, notes, changes, None)
+}
+
+fn save_checked(conn: &mut Connection, notes: &[Value], changes: Vec<(String,String,String,String,Value)>, expected_account_id: Option<&str>) -> Result<(),String> {
     for (_,_,_,operation,_) in &changes {
         let permission=match operation.as_str(){"create"=>"notes.create","delete"=>"notes.delete",_=>"notes.edit"};
         local_auth::require_local_permission(conn,permission)?;
     }
-    let tx=conn.transaction().map_err(|e|format!("Unable to begin local note transaction: {e}"))?;
+    let tx=conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e|format!("Unable to begin local note transaction: {e}"))?;
+    if let Some(account)=expected_account_id { local_db::require_sync_account(&tx,account)?; }
     let raw=serde_json::to_string(notes).map_err(|e|format!("Unable to encode local notes: {e}"))?;
-    tx.execute("INSERT INTO sync_state(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![STATE_KEY,raw])
+    tx.execute("INSERT INTO sync_state(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![local_db::scoped_state_key(&tx, STATE_KEY)?,raw])
         .map_err(|e|format!("Unable to save local notes: {e}"))?;
     let device:String=tx.query_row("SELECT device_id FROM device_identity WHERE id=1",[],|r|r.get(0))
         .map_err(|e|format!("Unable to read device identity: {e}"))?;
@@ -45,6 +50,7 @@ fn save(conn: &mut Connection, notes: &[Value], changes: Vec<(String,String,Stri
 
 fn id()->String { local_db::new_uuid() }
 fn now(conn:&Connection)->Result<String,String>{conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')",[],|r|r.get(0)).map_err(|e|format!("Unable to create timestamp: {e}"))}
+fn valid_visibility(value:&str)->bool{matches!(value,"lab"|"project"|"restricted")}
 
 #[tauri::command]
 pub fn list_local_notes(app:AppHandle,filters:Option<Value>)->Result<Vec<Value>,String>{
@@ -81,8 +87,12 @@ pub fn get_local_note(app:AppHandle,note_id:String)->Result<Option<Value>,String
 pub fn create_local_note(app:AppHandle,mut note:Value)->Result<Value,String>{
     let mut c=conn(&app)?;let mut notes=load(&c)?;
     if note.get("title").and_then(Value::as_str).map(|s|s.trim().is_empty()).unwrap_or(true){return Err("title is required".into());}
+    let visibility=note.get("visibility").and_then(Value::as_str).unwrap_or("lab").to_string();
+    if !valid_visibility(&visibility){return Err("visibility must be lab, project, or restricted".into());}
+    if visibility=="project"&&note.get("project_id").and_then(Value::as_str).map(|s|s.trim().is_empty()).unwrap_or(true){return Err("project visibility requires project_id".into());}
     let nid=id();let ts=now(&c)?;note["id"]=json!(&nid);note["title"]=json!(note.get("title").and_then(Value::as_str).unwrap_or("").trim());
     note["body"]=note.get("body").cloned().unwrap_or(json!(""));note["tags"]=note.get("tags").cloned().unwrap_or(json!([]));
+    note["visibility"]=json!(visibility);
     note["created_at"]=json!(&ts);note["updated_at"]=json!(&ts);note["revisions"]=json!([]);
     notes.push(note.clone());
     save(&mut c,&notes,vec![(id(),"note".into(),nid,"create".into(),note.clone())])?;Ok(note)
@@ -93,6 +103,9 @@ pub fn update_local_note(app:AppHandle,note_id:String,patch:Value)->Result<Value
     let mut c=conn(&app)?;let mut notes=load(&c)?;let n=notes.iter_mut().find(|n|n.get("id").and_then(Value::as_str)==Some(note_id.as_str())).ok_or("Note not found")?;
     let before=n.clone();if let Some(obj)=patch.as_object(){for(k,v)in obj{if !matches!(k.as_str(),"id"|"created_at"|"revisions"){n[k]=v.clone();}}}
     if n.get("title").and_then(Value::as_str).map(|s|s.trim().is_empty()).unwrap_or(true){return Err("title cannot be empty".into());}
+    let visibility=n.get("visibility").and_then(Value::as_str).unwrap_or("lab");
+    if !valid_visibility(visibility){return Err("visibility must be lab, project, or restricted".into());}
+    if visibility=="project"&&n.get("project_id").and_then(Value::as_str).map(|s|s.trim().is_empty()).unwrap_or(true){return Err("project visibility requires project_id".into());}
     let ts=now(&c)?;n["updated_at"]=json!(&ts);
     let rev=json!({"id":id(),"note_id":note_id,"title":before.get("title").cloned().unwrap_or(json!("")),"body":before.get("body").cloned().unwrap_or(json!("")),"tags":before.get("tags").cloned().unwrap_or(json!([])),"edited_by":null,"editor":null,"created_at":ts});
     let mut revisions=n.get("revisions").and_then(Value::as_array).cloned().unwrap_or_default();revisions.push(rev);n["revisions"]=Value::Array(revisions);
@@ -118,10 +131,10 @@ pub fn restore_local_note_revision(app:AppHandle,note_id:String,revision_id:Stri
 
 
 #[tauri::command]
-pub fn apply_server_notes_pull(app:AppHandle,notes:Vec<Value>,deleted_note_ids:Vec<String>)->Result<(),String>{
- let mut c=conn(&app)?;let mut current=load(&c)?;
- fn pending(c:&Connection,id:&str)->Result<bool,String>{Ok(c.query_row("SELECT 1 FROM sync_outbox WHERE synced_at IS NULL AND entity_type='note' AND entity_id=?1 LIMIT 1",[id],|r|r.get::<_,i64>(0)).optional().map_err(|e|format!("Unable to inspect pending note change: {e}"))?.is_some())}
+pub fn apply_server_notes_pull(app:AppHandle,notes:Vec<Value>,visible_note_ids:Vec<String>,deleted_note_ids:Vec<String>,expected_account_id:String)->Result<(),String>{
+ let mut c=conn(&app)?;local_db::require_sync_account(&c,&expected_account_id)?;let mut current=load(&c)?;
+ fn pending(c:&Connection,id:&str)->Result<bool,String>{Ok(c.query_row("SELECT 1 FROM active_sync_outbox WHERE synced_at IS NULL AND entity_type='note' AND entity_id=?1 LIMIT 1",[id],|r|r.get::<_,i64>(0)).optional().map_err(|e|format!("Unable to inspect pending note change: {e}"))?.is_some())}
  for note in notes{if let Some(id)=note.get("id").and_then(Value::as_str){if pending(&c,id)?{continue;}if let Some(existing)=current.iter_mut().find(|n|n.get("id").and_then(Value::as_str)==Some(id)){let revisions=existing.get("revisions").cloned().unwrap_or_else(||json!([]));*existing=note;if existing.get("revisions").and_then(Value::as_array).map(|a|a.is_empty()).unwrap_or(true){existing["revisions"]=revisions;}}else{current.push(note);}}}
- current.retain(|n|{let id=n.get("id").and_then(Value::as_str).unwrap_or("");!deleted_note_ids.iter().any(|x|x==id)&&!pending(&c,id).unwrap_or(false)});
- save(&mut c,&current,Vec::new())
+ current.retain(|n|{let id=n.get("id").and_then(Value::as_str).unwrap_or("");if pending(&c,id).unwrap_or(false){return true;}visible_note_ids.iter().any(|x|x==id)&&!deleted_note_ids.iter().any(|x|x==id)});
+ save_checked(&mut c,&current,Vec::new(),Some(&expected_account_id))
 }

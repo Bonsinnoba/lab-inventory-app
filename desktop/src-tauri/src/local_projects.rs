@@ -1,5 +1,6 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use tauri::AppHandle;
 use crate::local_db;
 use crate::local_auth;
@@ -14,15 +15,55 @@ fn ensure(conn: &Connection) -> Result<(), String> {
         .map_err(|e| format!("Unable to record local projects schema: {e}"))?;
     conn.execute(
         "INSERT OR IGNORE INTO sync_state(key,value) VALUES (?1,?2)",
-        params![STATE_KEY, "[]"],
+        params![local_db::scoped_state_key(conn, STATE_KEY)?, "[]"],
     ).map_err(|e| format!("Unable to initialize local projects state: {e}"))?;
     Ok(())
 }
 
-fn load(conn: &Connection) -> Result<Vec<Value>, String> {
+fn current_principal(conn: &Connection) -> Result<(String, String), String> {
+    conn.query_row(
+        "SELECT u.central_user_id,u.role FROM local_users u JOIN local_session s ON s.user_id=u.id WHERE s.id=1 AND u.central_user_id IS NOT NULL AND u.is_active=1 AND u.offline_expires_at IS NOT NULL AND datetime('now') < datetime(u.offline_expires_at)",
+        [], |r| Ok((r.get(0)?, r.get(1)?)),
+    ).optional().map_err(|e| format!("Unable to read local project account: {e}"))?
+        .ok_or_else(|| "Sign in to view local projects".into())
+}
+
+fn readable_for_user(project: &Value, user_id: &str) -> bool {
+    project.pointer("/permissions/user_id").and_then(Value::as_str) == Some(user_id)
+        || matches!(project.get("visibility").and_then(Value::as_str), None | Some("lab"))
+}
+
+fn access_for_user(project: &Value, user_id: &str) -> Value {
+    if project.pointer("/permissions/user_id").and_then(Value::as_str) == Some(user_id) {
+        if let Some(access) = project.get("permissions") { return access.clone(); }
+    }
+    json!({"access":"view","member_role":null,"can_edit":false,"user_id":user_id})
+}
+
+fn current_project_access(conn: &Connection, project: &Value) -> Result<Value, String> {
+    let (user_id, _) = current_principal(conn)?;
+    let mut access = access_for_user(project, &user_id);
+    if local_auth::require_local_permission(conn, "projects.edit").is_err() {
+        access["access"] = json!("view");
+        access["can_edit"] = json!(false);
+    }
+    Ok(access)
+}
+
+fn require_local_project_editor(project: &Value, user_id: &str) -> Result<(), String> {
+    let access = access_for_user(project, user_id);
+    if access.get("can_edit").and_then(Value::as_bool) == Some(true)
+        && matches!(access.get("access").and_then(Value::as_str), Some("edit" | "admin")) {
+        Ok(())
+    } else {
+        Err("This project is read-only for your current account. Sync to refresh project access.".into())
+    }
+}
+
+fn load_all(conn: &Connection) -> Result<Vec<Value>, String> {
     ensure(conn)?;
     let raw: Option<String> = conn.query_row(
-        "SELECT value FROM sync_state WHERE key=?1", [STATE_KEY], |r| r.get(0)
+        "SELECT value FROM sync_state WHERE key=?1", [local_db::scoped_state_key(conn, STATE_KEY)?], |r| r.get(0)
     ).optional().map_err(|e| format!("Unable to read local projects: {e}"))?;
     match raw {
         Some(v) => serde_json::from_str(&v).map_err(|e| format!("Invalid local projects state: {e}")),
@@ -30,7 +71,17 @@ fn load(conn: &Connection) -> Result<Vec<Value>, String> {
     }
 }
 
+fn load(conn: &Connection) -> Result<Vec<Value>, String> {
+    let (user_id, _) = current_principal(conn)?;
+    Ok(load_all(conn)?.into_iter().filter(|p| readable_for_user(p, &user_id)).collect())
+}
+
 fn save(conn: &mut Connection, projects: &[Value], changes: Vec<(String, String, String, String, Value)>) -> Result<(), String> {
+    save_checked(conn, projects, changes, None)
+}
+
+fn save_checked(conn: &mut Connection, projects: &[Value], changes: Vec<(String, String, String, String, Value)>, expected_account_id: Option<&str>) -> Result<(), String> {
+    let (user_id, _) = current_principal(conn)?;
     for (_, entity_type, _, operation, _) in &changes {
         let permission = if entity_type == "project" {
             match operation.as_str() {
@@ -43,11 +94,30 @@ fn save(conn: &mut Connection, projects: &[Value], changes: Vec<(String, String,
         };
         local_auth::require_local_permission(conn, permission)?;
     }
-    let tx = conn.transaction().map_err(|e| format!("Unable to begin local project transaction: {e}"))?;
-    let raw = serde_json::to_string(projects).map_err(|e| format!("Unable to encode local projects: {e}"))?;
+    for (_, entity_type, entity_id, operation, payload) in &changes {
+        if entity_type == "project" && operation == "create" { continue; }
+        let project_id = if entity_type == "project" { Some(entity_id.as_str()) } else {
+            payload.get("project_id").or_else(|| payload.pointer("/record/project_id"))
+                .or_else(|| payload.pointer("/before/project_id"))
+                .and_then(Value::as_str)
+        }.ok_or("Project reference is required for local changes")?;
+        let project = projects.iter().find(|p| p.get("id").and_then(Value::as_str) == Some(project_id))
+            .or_else(|| payload.get("project").filter(|p| p.get("id").and_then(Value::as_str) == Some(project_id)))
+            .ok_or("Project not found")?;
+        require_local_project_editor(project, &user_id)?;
+    }
+    let incoming_ids: HashSet<&str> = projects.iter().filter_map(|p| p.get("id").and_then(Value::as_str)).collect();
+    let mut combined: Vec<Value> = load_all(conn)?.into_iter().filter(|p| {
+        !readable_for_user(p, &user_id) &&
+            !p.get("id").and_then(Value::as_str).map(|id| incoming_ids.contains(id)).unwrap_or(false)
+    }).collect();
+    combined.extend_from_slice(projects);
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| format!("Unable to begin local project transaction: {e}"))?;
+    local_db::require_sync_account(&tx, expected_account_id.unwrap_or(&user_id))?;
+    let raw = serde_json::to_string(&combined).map_err(|e| format!("Unable to encode local projects: {e}"))?;
     tx.execute(
         "INSERT INTO sync_state(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        params![STATE_KEY, raw],
+        params![local_db::scoped_state_key(&tx, STATE_KEY)?, raw],
     ).map_err(|e| format!("Unable to save local projects: {e}"))?;
     let device: String = tx.query_row("SELECT device_id FROM device_identity WHERE id=1", [], |r| r.get(0))
         .map_err(|e| format!("Unable to read device identity: {e}"))?;
@@ -80,6 +150,7 @@ pub fn get_local_project(app: AppHandle, project_id: String) -> Result<Option<Va
 #[tauri::command]
 pub fn create_local_project(app: AppHandle, mut project: Value) -> Result<Value, String> {
     let mut c = conn(&app)?; let mut projects = load(&c)?;
+    let (user_id, role) = current_principal(&c)?;
     let project_id = id(); let timestamp = now(&c)?;
     if project.get("name").and_then(Value::as_str).map(|s| s.trim().is_empty()).unwrap_or(true) {
         return Err("name is required".into());
@@ -88,8 +159,15 @@ pub fn create_local_project(app: AppHandle, mut project: Value) -> Result<Value,
     project["id"] = json!(project_id);
     project["status"] = project.get("status").cloned().unwrap_or(json!("planning"));
     project["priority"] = project.get("priority").cloned().unwrap_or(json!("normal"));
+    let visibility = project.get("visibility").and_then(Value::as_str).unwrap_or("lab");
+    if !matches!(visibility, "lab" | "project" | "restricted") { return Err("visibility must be lab, project, or restricted".into()); }
+    project["visibility"] = json!(visibility);
     project["description"] = project.get("description").cloned().unwrap_or(json!(""));
-    project["owner_id"] = Value::Null;
+    project["owner_id"] = json!(&user_id);
+    project["members"] = json!([]);
+    let can_edit = local_auth::require_local_permission(&c, "projects.edit").is_ok();
+    let access = if role == "admin" { "admin" } else if can_edit { "edit" } else { "view" };
+    project["permissions"] = json!({"access":access,"member_role":"lead","can_edit":can_edit,"user_id":user_id});
     project["created_at"] = json!(&timestamp);
     project["updated_at"] = json!(&timestamp);
     project["tasks"] = json!([]);
@@ -113,7 +191,10 @@ pub fn update_local_project(app: AppHandle, project_id: String, patch: Value) ->
     let old = p.clone();
     if patch.get("status").and_then(Value::as_str) == Some("active") && old.get("status").and_then(Value::as_str) != Some("active") { return Err("Activation requires online admin approval. Sync your planning changes and ask an admin to activate this project.".into()); }
     if let Some(obj) = patch.as_object() {
-        for (k,v) in obj { if !matches!(k.as_str(), "id"|"created_at"|"tasks"|"experiments"|"items"|"bom") { p[k] = v.clone(); } }
+        for (k,v) in obj { if !matches!(k.as_str(), "id"|"created_at"|"tasks"|"experiments"|"items"|"bom"|"members"|"permissions"|"owner_id") { p[k] = v.clone(); } }
+    }
+    if let Some(visibility) = p.get("visibility").and_then(Value::as_str) {
+        if !matches!(visibility, "lab" | "project" | "restricted") { return Err("visibility must be lab, project, or restricted".into()); }
     }
     if p.get("name").and_then(Value::as_str).map(|s| s.trim().is_empty()).unwrap_or(true) { return Err("name cannot be empty".into()); }
     p["updated_at"] = json!(now(&c)?);
@@ -152,7 +233,7 @@ fn nested_update(app: AppHandle, project_id:String, key:&str, record_id:String, 
     let r=list.iter_mut().find(|r|r.get("id").and_then(Value::as_str)==Some(record_id.as_str())).ok_or("Record not found")?;
     if let Some(obj)=patch.as_object(){for(k,v)in obj{if k!="id"&&k!="project_id"&&k!="created_at"{r[k]=v.clone();}}}
     r["updated_at"]=json!(now(&c)?); let updated=r.clone(); p[key]=Value::Array(list); p["updated_at"]=json!(now(&c)?);
-    save(&mut c,&projects,vec![(id(),entity_type.into(),record_id,"update".into(),updated.clone())])?;Ok(updated)
+    save(&mut c,&projects,vec![(id(),entity_type.into(),record_id,"update".into(),json!({"project_id":project_id,"record":updated}))])?;Ok(updated)
 }
 
 fn nested_delete(app:AppHandle,project_id:String,key:&str,record_id:String,entity_type:&str)->Result<(),String>{
@@ -160,7 +241,7 @@ fn nested_delete(app:AppHandle,project_id:String,key:&str,record_id:String,entit
     let p=projects.iter_mut().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
     let mut list=nested_get(p,key);let before=list.iter().find(|r|r.get("id").and_then(Value::as_str)==Some(record_id.as_str())).cloned().ok_or("Record not found")?;
     list.retain(|r|r.get("id").and_then(Value::as_str)!=Some(record_id.as_str()));p[key]=Value::Array(list);p["updated_at"]=json!(now(&c)?);
-    save(&mut c,&projects,vec![(id(),entity_type.into(),record_id,"delete".into(),json!({"record":before}))])
+    save(&mut c,&projects,vec![(id(),entity_type.into(),record_id,"delete".into(),json!({"project_id":project_id,"record":before}))])
 }
 
 #[tauri::command]
@@ -214,7 +295,8 @@ pub fn delete_local_project_attachment(app:AppHandle,project_id:String,attachmen
 #[tauri::command]
 pub fn list_local_project_workspace(app:AppHandle,project_id:String)->Result<Value,String>{
     let c=conn(&app)?;let p=load(&c)?.into_iter().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
-    Ok(json!({"members":[],"tasks":nested_get(&p,"tasks"),"experiments":nested_get(&p,"experiments"),"items":nested_get(&p,"items"),"notes":[],"resources":[],"activity":[],"blocks":nested_get(&p,"blocks"),"connectors":nested_get(&p,"connectors"),"task_experiments":nested_get(&p,"task_experiments"),"attachments":nested_get(&p,"attachments"),"requirements":nested_get(&p,"requirements"),"permissions":{"access":"admin","member_role":"lead","can_edit":true}}))
+    let permissions=current_project_access(&c,&p)?;
+    Ok(json!({"members":nested_get(&p,"members"),"tasks":nested_get(&p,"tasks"),"experiments":nested_get(&p,"experiments"),"items":nested_get(&p,"items"),"notes":[],"resources":[],"activity":[],"blocks":nested_get(&p,"blocks"),"connectors":nested_get(&p,"connectors"),"task_experiments":nested_get(&p,"task_experiments"),"attachments":nested_get(&p,"attachments"),"requirements":nested_get(&p,"requirements"),"permissions":permissions}))
 }
 
 #[tauri::command]
@@ -241,7 +323,8 @@ pub fn delete_local_project_bom(app:AppHandle,project_id:String,record_id:String
 #[tauri::command]
 pub fn get_local_project_canvas(app:AppHandle,project_id:String)->Result<Value,String>{
     let c=conn(&app)?;let p=load(&c)?.into_iter().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
-    Ok(json!({"blocks":nested_get(&p,"blocks"),"connectors":nested_get(&p,"connectors"),"permissions":{"access":"admin","member_role":"lead","can_edit":true}}))
+    let permissions=current_project_access(&c,&p)?;
+    Ok(json!({"blocks":nested_get(&p,"blocks"),"connectors":nested_get(&p,"connectors"),"permissions":permissions}))
 }
 #[tauri::command]
 pub fn create_local_project_block(app:AppHandle,project_id:String,mut record:Value)->Result<Value,String>{
@@ -339,19 +422,21 @@ pub fn unlink_local_project_item(app:AppHandle,project_id:String,item_id:String)
 
 
 #[tauri::command]
-pub fn apply_server_project_pull(app: AppHandle, projects_json: String, deleted_project_ids: Vec<String>, deleted_project_task_ids: Vec<String>, deleted_project_experiment_ids: Vec<String>, deleted_project_bom_ids: Vec<String>, deleted_project_block_ids: Vec<String>, deleted_project_connector_ids: Vec<String>, deleted_project_measurement_ids: Vec<String>, deleted_project_observation_ids: Vec<String>, deleted_project_attachment_ids: Vec<String>, _deleted_project_task_experiment_ids: Vec<String>, deleted_project_requirement_ids: Vec<String>) -> Result<(), String> {
+pub fn apply_server_project_pull(app: AppHandle, projects_json: String, visible_project_ids: Vec<String>, deleted_project_ids: Vec<String>, deleted_project_task_ids: Vec<String>, deleted_project_experiment_ids: Vec<String>, deleted_project_bom_ids: Vec<String>, deleted_project_block_ids: Vec<String>, deleted_project_connector_ids: Vec<String>, deleted_project_measurement_ids: Vec<String>, deleted_project_observation_ids: Vec<String>, deleted_project_attachment_ids: Vec<String>, _deleted_project_task_experiment_ids: Vec<String>, deleted_project_requirement_ids: Vec<String>, expected_account_id: String) -> Result<(), String> {
     let incoming: Vec<Value> = serde_json::from_str(&projects_json).map_err(|e| format!("Invalid server project payload: {e}"))?;
+    let visible: std::collections::HashSet<String> = visible_project_ids.into_iter().collect();
     let deleted: std::collections::HashSet<String> = deleted_project_ids.into_iter().collect();
     let mut c = conn(&app)?;
+    local_db::require_sync_account(&c, &expected_account_id)?;
     let mut projects = load(&c)?;
     let pending: std::collections::HashSet<String> = {
-        let mut stmt = c.prepare("SELECT DISTINCT entity_type || ':' || entity_id FROM sync_outbox WHERE synced_at IS NULL AND entity_id IS NOT NULL AND entity_type IN ('project','project_task','project_experiment','project_bom','project_block','project_connector','project_work_attachment','project_task_experiment','project_resource_requirement','project_item')").map_err(|e| format!("Unable to inspect pending project changes: {e}"))?;
+        let mut stmt = c.prepare("SELECT DISTINCT entity_type || ':' || entity_id FROM active_sync_outbox WHERE synced_at IS NULL AND entity_id IS NOT NULL AND entity_type IN ('project','project_task','project_experiment','project_bom','project_block','project_connector','project_work_attachment','project_task_experiment','project_resource_requirement','project_item')").map_err(|e| format!("Unable to inspect pending project changes: {e}"))?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| format!("Unable to inspect pending project changes: {e}"))?;
         rows.filter_map(|r| r.ok()).collect()
     };
     projects.retain(|p| {
         let id = p.get("id").and_then(Value::as_str).unwrap_or_default();
-        !deleted.contains(id) || pending.contains(&format!("project:{id}"))
+        (!deleted.contains(id) && visible.contains(id)) || pending.contains(&format!("project:{id}"))
     });
     for mut project in incoming {
         let Some(project_id) = project.get("id").and_then(Value::as_str).map(ToOwned::to_owned) else { continue; };
@@ -425,11 +510,11 @@ pub fn apply_server_project_pull(app: AppHandle, projects_json: String, deleted_
             projects.push(project);
         }
     }
-    save(&mut c, &projects, Vec::new())
+    save_checked(&mut c, &projects, Vec::new(), Some(&expected_account_id))
 }
 
 fn nested_create_nested(app:AppHandle,project_id:String,parent_key:&str,key:&str,parent_id:String,mut record:Value,entity_type:&str)->Result<Value,String>{let mut c=conn(&app)?;let mut projects=load(&c)?;let p=projects.iter_mut().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;let mut parents=nested_get(p,parent_key);let parent=parents.iter_mut().find(|x|x.get("id").and_then(Value::as_str)==Some(parent_id.as_str())).ok_or("Parent record not found")?;let rid=id();let ts=now(&c)?;record["id"]=json!(&rid);record["project_id"]=json!(&project_id);record["created_at"]=json!(&ts);record["updated_at"]=json!(&ts);let mut rows=nested_get(parent,key);rows.push(record.clone());parent[key]=Value::Array(rows);p[parent_key]=Value::Array(parents);p["updated_at"]=json!(&ts);save(&mut c,&projects,vec![(id(),entity_type.into(),rid,"create".into(),record.clone())])?;Ok(record)}
-fn nested_delete_nested(app:AppHandle,project_id:String,parent_key:&str,key:&str,parent_id:String,record_id:String,entity_type:&str)->Result<(),String>{let mut c=conn(&app)?;let mut projects=load(&c)?;let p=projects.iter_mut().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;let mut parents=nested_get(p,parent_key);let parent=parents.iter_mut().find(|x|x.get("id").and_then(Value::as_str)==Some(parent_id.as_str())).ok_or("Parent record not found")?;let mut rows=nested_get(parent,key);let before=rows.iter().find(|x|x.get("id").and_then(Value::as_str)==Some(record_id.as_str())).cloned().ok_or("Record not found")?;rows.retain(|x|x.get("id").and_then(Value::as_str)!=Some(record_id.as_str()));parent[key]=Value::Array(rows);p[parent_key]=Value::Array(parents);p["updated_at"]=json!(now(&c)?);save(&mut c,&projects,vec![(id(),entity_type.into(),record_id,"delete".into(),json!({"record":before}))])}
+fn nested_delete_nested(app:AppHandle,project_id:String,parent_key:&str,key:&str,parent_id:String,record_id:String,entity_type:&str)->Result<(),String>{let mut c=conn(&app)?;let mut projects=load(&c)?;let p=projects.iter_mut().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;let mut parents=nested_get(p,parent_key);let parent=parents.iter_mut().find(|x|x.get("id").and_then(Value::as_str)==Some(parent_id.as_str())).ok_or("Parent record not found")?;let mut rows=nested_get(parent,key);let before=rows.iter().find(|x|x.get("id").and_then(Value::as_str)==Some(record_id.as_str())).cloned().ok_or("Record not found")?;rows.retain(|x|x.get("id").and_then(Value::as_str)!=Some(record_id.as_str()));parent[key]=Value::Array(rows);p[parent_key]=Value::Array(parents);p["updated_at"]=json!(now(&c)?);save(&mut c,&projects,vec![(id(),entity_type.into(),record_id,"delete".into(),json!({"project_id":project_id,"record":before}))])}
 
 #[tauri::command]
 pub fn create_local_project_experiment_measurement(app:AppHandle,project_id:String,experiment_id:String,record:Value)->Result<Value,String>{let mut r=record;r["experiment_id"]=json!(experiment_id);nested_create_nested(app,project_id,"experiments","measurements",experiment_id,r,"project_experiment_measurement")}
@@ -439,3 +524,27 @@ pub fn delete_local_project_experiment_measurement(app:AppHandle,project_id:Stri
 pub fn create_local_project_experiment_observation(app:AppHandle,project_id:String,experiment_id:String,record:Value)->Result<Value,String>{let mut r=record;r["experiment_id"]=json!(experiment_id);nested_create_nested(app,project_id,"experiments","observations",experiment_id,r,"project_experiment_observation")}
 #[tauri::command]
 pub fn delete_local_project_experiment_observation(app:AppHandle,project_id:String,experiment_id:String,record_id:String)->Result<(),String>{nested_delete_nested(app,project_id,"experiments","observations",experiment_id,record_id,"project_experiment_observation")}
+
+#[cfg(test)]
+mod access_tests {
+    use super::{access_for_user, readable_for_user, require_local_project_editor};
+    use serde_json::json;
+
+    #[test]
+    fn cached_editor_access_is_bound_to_the_account() {
+        let project = json!({"visibility":"restricted","permissions":{"user_id":"alice","access":"edit","can_edit":true}});
+        assert!(readable_for_user(&project, "alice"));
+        assert!(!readable_for_user(&project, "bob"));
+        assert!(require_local_project_editor(&project, "alice").is_ok());
+        assert!(require_local_project_editor(&project, "bob").is_err());
+    }
+
+    #[test]
+    fn older_and_foreign_public_cache_entries_are_read_only() {
+        let project = json!({"visibility":"lab","permissions":{"user_id":"alice","access":"edit","can_edit":true}});
+        assert!(readable_for_user(&project, "bob"));
+        assert_eq!(access_for_user(&project, "bob")["can_edit"], false);
+        assert!(require_local_project_editor(&project, "bob").is_err());
+        assert!(require_local_project_editor(&json!({"visibility":"lab"}), "alice").is_err());
+    }
+}

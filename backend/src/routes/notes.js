@@ -3,6 +3,7 @@ import { pool } from '../db.js';
 import { getProjectAccess } from '../middleware/project-access.js';
 import { hasPermission } from '../middleware/permissions.js';
 import { writeAuditLog } from '../middleware/audit.js';
+import { canEditRestrictedEntity, canManageEntityGrants, canReadEntity, isVisibility, visibilityReadSql } from '../middleware/visibility.js';
 
 const router = Router();
 
@@ -14,63 +15,143 @@ async function canAccessProject(projectId, user, requireEdit = false) {
   return { ok: true, access: access.access };
 }
 
+async function canEditNote(note, user) {
+  if (note.visibility === 'restricted' && !(await canEditRestrictedEntity({ entityType: 'note', entityId: note.id, user }))) {
+    return { ok: false, status: 403, error: { code: 'RESTRICTED_RECORD_EDIT_REQUIRED', message: 'You do not have edit access to this restricted note' } };
+  }
+  return canAccessProject(note.project_id, user, true);
+}
+
 router.get('/', hasPermission('notes.view'), async (req, res) => {
   const { item_id, project_id, tag, search } = req.query; const conditions = []; const values = [];
   if (item_id) { values.push(item_id); conditions.push(`n.item_id = $${values.length}`); }
   if (project_id) { values.push(project_id); conditions.push(`n.project_id = $${values.length}`); }
   if (tag) { values.push(tag); conditions.push(`$${values.length} = ANY(n.tags)`); }
   if (search) { values.push(search); conditions.push(`n.search_vector @@ plainto_tsquery('english', $${values.length})`); }
-  const idIndex = values.length + 1; values.push(req.user.userId); const roleIndex = values.length + 1; values.push(req.user.role);
-  conditions.push(`(n.project_id IS NULL OR $${roleIndex} = 'admin' OR n.project_id IN (SELECT p.id FROM projects p LEFT JOIN project_members pm ON pm.project_id=p.id WHERE p.owner_id=$${idIndex} OR pm.user_id=$${idIndex}))`);
+  const userIdParameter = `$${values.length + 1}`; values.push(req.user.userId); const roleParameter = `$${values.length + 1}`; values.push(req.user.role);
+  conditions.push(visibilityReadSql({ alias: 'n', entityType: 'note', userIdParameter, roleParameter }));
   try { const result = await pool.query(`SELECT n.* FROM notes n WHERE ${conditions.join(' AND ')} ORDER BY n.updated_at DESC`, values); res.json(result.rows); }
   catch (err) { console.error(err); res.status(500).json({ error: err.message || 'Failed to fetch notes' }); }
 });
 
 router.get('/tags/all', hasPermission('notes.view'), async (req, res) => {
-  try { const result = await pool.query(`SELECT DISTINCT unnest(n.tags) AS tag FROM notes n WHERE n.tags IS NOT NULL AND array_length(n.tags, 1) > 0 AND (n.project_id IS NULL OR $2 = 'admin' OR n.project_id IN (SELECT p.id FROM projects p LEFT JOIN project_members pm ON pm.project_id=p.id WHERE p.owner_id=$1 OR pm.user_id=$1)) ORDER BY tag ASC`, [req.user.userId, req.user.role]); res.json(result.rows.map(row => row.tag)); }
+  try { const result = await pool.query(`SELECT DISTINCT unnest(n.tags) AS tag FROM notes n WHERE n.tags IS NOT NULL AND array_length(n.tags, 1) > 0 AND ${visibilityReadSql({ alias: 'n', entityType: 'note', userIdParameter: '$1', roleParameter: '$2' })} ORDER BY tag ASC`, [req.user.userId, req.user.role]); res.json(result.rows.map(row => row.tag)); }
   catch (err) { console.error(err); res.status(500).json({ error: err.message || 'Failed to fetch tags' }); }
 });
 
 router.get('/:id', hasPermission('notes.view'), async (req, res) => {
-  try { const result = await pool.query(`SELECT n.* FROM notes n WHERE n.id = $1 AND (n.project_id IS NULL OR $3 = 'admin' OR n.project_id IN (SELECT p.id FROM projects p LEFT JOIN project_members pm ON pm.project_id=p.id WHERE p.owner_id=$2 OR pm.user_id=$2))`, [req.params.id, req.user.userId, req.user.role]); if (!result.rowCount) return res.status(404).json({ error: 'Note not found' }); res.json(result.rows[0]); }
+  try { const result = await pool.query(`SELECT n.* FROM notes n WHERE n.id = $1 AND ${visibilityReadSql({ alias: 'n', entityType: 'note', userIdParameter: '$2', roleParameter: '$3' })}`, [req.params.id, req.user.userId, req.user.role]); if (!result.rowCount) return res.status(404).json({ error: 'Note not found' }); res.json(result.rows[0]); }
   catch (err) { console.error(err); res.status(500).json({ error: err.message || 'Failed to fetch note' }); }
 });
 
 router.post('/', hasPermission('notes.create'), async (req, res) => {
-  const { title, body, tags, item_id, project_id } = req.body; if (!title?.trim()) return res.status(400).json({ error: 'title is required' });
+  const { title, body, tags, item_id, project_id, visibility = 'lab' } = req.body; if (!title?.trim()) return res.status(400).json({ error: 'title is required' });
+  if (!isVisibility(visibility)) return res.status(400).json({ error: 'visibility must be lab, project, or restricted' });
+  if (visibility === 'project' && !project_id) return res.status(400).json({ error: 'project visibility requires project_id' });
   const access = await canAccessProject(project_id, req.user, true); if (!access.ok) return res.status(access.status).json({ error: access.error }); const tagsValue = Array.isArray(tags) ? tags : [];
-  try { const result = await pool.query(`INSERT INTO notes (title, body, tags, item_id, project_id, author_id) VALUES ($1, COALESCE($2, ''), $3, $4, $5, $6) RETURNING *`, [title.trim(), body ?? null, tagsValue, item_id ?? null, project_id ?? null, req.user.userId]); await writeAuditLog({ req, action: 'CREATE', entityType: 'note', entityId: result.rows[0].id, newValue: result.rows[0] }); res.status(201).json(result.rows[0]); }
-  catch (err) { console.error(err); res.status(500).json({ error: err.message || 'Failed to create note' }); }
+  const client = await pool.connect();
+  try { await client.query('BEGIN'); const result = await client.query(`INSERT INTO notes (title, body, tags, item_id, project_id, author_id, visibility) VALUES ($1, COALESCE($2, ''), $3, $4, $5, $6, $7) RETURNING *`, [title.trim(), body ?? null, tagsValue, item_id ?? null, project_id ?? null, req.user.userId, visibility]);
+    if (visibility === 'restricted') await client.query(`INSERT INTO record_access_grants(entity_type,entity_id,user_id,access_level,created_by) VALUES('note',$1,$2,'edit',$2) ON CONFLICT(entity_type,entity_id,user_id) DO UPDATE SET access_level='edit'`, [result.rows[0].id, req.user.userId]);
+    await client.query('COMMIT'); await writeAuditLog({ req, action: 'CREATE', entityType: 'note', entityId: result.rows[0].id, newValue: result.rows[0] }); res.status(201).json(result.rows[0]); }
+  catch (err) { await client.query('ROLLBACK').catch(() => {}); console.error(err); res.status(500).json({ error: err.message || 'Failed to create note' }); } finally { client.release(); }
 });
 
 router.put('/:id', hasPermission('notes.edit'), async (req, res) => {
-  const fields = ['title', 'body', 'tags', 'item_id', 'project_id']; const updates = []; const values = [];
-  for (const field of fields) { if (field in req.body) { if (field === 'title' && !String(req.body[field] ?? '').trim()) return res.status(400).json({ error: 'title cannot be empty' }); if (field === 'tags' && !Array.isArray(req.body[field])) return res.status(400).json({ error: 'tags must be an array' }); values.push(field === 'title' ? String(req.body[field]).trim() : req.body[field]); updates.push(`${field} = $${values.length}`); } }
+  const fields = ['title', 'body', 'tags', 'item_id', 'project_id', 'visibility']; const updates = []; const values = [];
+  for (const field of fields) { if (field in req.body) { if (field === 'title' && !String(req.body[field] ?? '').trim()) return res.status(400).json({ error: 'title cannot be empty' }); if (field === 'tags' && !Array.isArray(req.body[field])) return res.status(400).json({ error: 'tags must be an array' }); if (field === 'visibility' && !isVisibility(req.body[field])) return res.status(400).json({ error: 'visibility must be lab, project, or restricted' }); values.push(field === 'title' ? String(req.body[field]).trim() : req.body[field]); updates.push(`${field} = $${values.length}`); } }
   if (!updates.length) return res.status(400).json({ error: 'No valid fields to update' }); const client = await pool.connect();
   try { await client.query('BEGIN'); const current = await client.query('SELECT * FROM notes WHERE id=$1 FOR UPDATE', [req.params.id]); if (!current.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Note not found' }); }
-    const existingAccess = await canAccessProject(current.rows[0].project_id, req.user, true); if (!existingAccess.ok) { await client.query('ROLLBACK'); return res.status(existingAccess.status).json({ error: existingAccess.error }); }
+    const existingAccess = await canEditNote(current.rows[0], req.user); if (!existingAccess.ok) { await client.query('ROLLBACK'); return res.status(existingAccess.status).json({ error: existingAccess.error }); }
     const destinationProject = Object.prototype.hasOwnProperty.call(req.body, 'project_id') ? req.body.project_id : current.rows[0].project_id; const destinationAccess = await canAccessProject(destinationProject, req.user, true); if (!destinationAccess.ok) { await client.query('ROLLBACK'); return res.status(destinationAccess.status).json({ error: destinationAccess.error }); }
+    const nextVisibility = Object.prototype.hasOwnProperty.call(req.body, 'visibility') ? req.body.visibility : current.rows[0].visibility;
+    if (nextVisibility === 'project' && !destinationProject) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'project visibility requires project_id' }); }
     await client.query('INSERT INTO note_revisions (note_id, title, body, tags, edited_by) VALUES ($1,$2,$3,$4,$5)', [req.params.id, current.rows[0].title, current.rows[0].body, current.rows[0].tags || [], req.user.userId]); values.push(req.params.id);
-    const result = await client.query(`UPDATE notes SET ${updates.join(', ')}, updated_at=now() WHERE id=$${values.length} RETURNING *`, values); await client.query('COMMIT'); await writeAuditLog({ req, action: 'UPDATE', entityType: 'note', entityId: req.params.id, oldValue: current.rows[0], newValue: result.rows[0] }); res.json(result.rows[0]);
+    const result = await client.query(`UPDATE notes SET ${updates.join(', ')}, updated_at=now() WHERE id=$${values.length} RETURNING *`, values);
+    if (current.rows[0].visibility !== nextVisibility && nextVisibility === 'restricted') await client.query(`INSERT INTO record_access_grants(entity_type,entity_id,user_id,access_level,created_by) VALUES('note',$1,$2,'edit',$2) ON CONFLICT(entity_type,entity_id,user_id) DO UPDATE SET access_level='edit'`, [req.params.id, req.user.userId]);
+    if (current.rows[0].visibility === 'restricted' && nextVisibility !== 'restricted') await client.query(`DELETE FROM record_access_grants WHERE entity_type='note' AND entity_id=$1`, [req.params.id]);
+    await client.query('COMMIT'); await writeAuditLog({ req, action: 'UPDATE', entityType: 'note', entityId: req.params.id, oldValue: current.rows[0], newValue: result.rows[0] }); res.json(result.rows[0]);
   } catch (err) { await client.query('ROLLBACK').catch(() => {}); console.error(err); res.status(500).json({ error: err.message || 'Failed to update note' }); } finally { client.release(); }
 });
 
 router.get('/:id/revisions', hasPermission('notes.view'), async (req, res) => {
-  try { const note = await pool.query('SELECT project_id FROM notes WHERE id=$1', [req.params.id]); if (!note.rowCount) return res.status(404).json({ error: 'Note not found' }); const access = await canAccessProject(note.rows[0].project_id, req.user, false); if (!access.ok) return res.status(access.status).json({ error: access.error }); const result = await pool.query(`SELECT r.id, r.title, r.body, r.tags, r.edited_by, r.created_at, u.username AS editor FROM note_revisions r LEFT JOIN users u ON u.id = r.edited_by WHERE r.note_id=$1 ORDER BY r.created_at DESC`, [req.params.id]); res.json(result.rows); }
+  try { const note = await pool.query('SELECT id, project_id, visibility FROM notes WHERE id=$1', [req.params.id]); if (!note.rowCount) return res.status(404).json({ error: 'Note not found' }); if (!await canReadEntity({ entityType: 'note', entityId: note.rows[0].id, visibility: note.rows[0].visibility, projectId: note.rows[0].project_id, user: req.user })) return res.status(404).json({ error: 'Note not found' }); const result = await pool.query(`SELECT r.id, r.title, r.body, r.tags, r.edited_by, r.created_at, u.username AS editor FROM note_revisions r LEFT JOIN users u ON u.id = r.edited_by WHERE r.note_id=$1 ORDER BY r.created_at DESC`, [req.params.id]); res.json(result.rows); }
   catch (err) { console.error(err); res.status(500).json({ error: 'Failed to fetch note revisions' }); }
 });
 
 router.post('/:id/revisions/:revisionId/restore', hasPermission('notes.edit'), async (req, res) => {
   const client = await pool.connect(); try { await client.query('BEGIN'); const current = await client.query('SELECT * FROM notes WHERE id=$1 FOR UPDATE', [req.params.id]); if (!current.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Note not found' }); }
-    const access = await canAccessProject(current.rows[0].project_id, req.user, true); if (!access.ok) { await client.query('ROLLBACK'); return res.status(access.status).json({ error: access.error }); }
+    const access = await canEditNote(current.rows[0], req.user); if (!access.ok) { await client.query('ROLLBACK'); return res.status(access.status).json({ error: access.error }); }
     const revision = await client.query('SELECT title, body, tags FROM note_revisions WHERE id=$1 AND note_id=$2', [req.params.revisionId, req.params.id]); if (!revision.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Revision not found' }); }
     await client.query('INSERT INTO note_revisions(note_id,title,body,tags,edited_by) VALUES($1,$2,$3,$4,$5)', [req.params.id, current.rows[0].title, current.rows[0].body, current.rows[0].tags || [], req.user.userId]); const result = await client.query('UPDATE notes SET title=$1, body=$2, tags=$3, updated_at=now() WHERE id=$4 RETURNING *', [revision.rows[0].title, revision.rows[0].body, revision.rows[0].tags || [], req.params.id]); await client.query('COMMIT'); await writeAuditLog({ req, action: 'UPDATE', entityType: 'note', entityId: req.params.id, newValue: result.rows[0], metadata: { restored_revision_id: req.params.revisionId } }); res.json(result.rows[0]);
   } catch (err) { await client.query('ROLLBACK').catch(() => {}); console.error(err); res.status(500).json({ error: 'Failed to restore note revision' }); } finally { client.release(); }
 });
 
+async function requireNoteGrantManager(noteId, user) {
+  const note = await pool.query('SELECT id, project_id, visibility FROM notes WHERE id=$1', [noteId]);
+  if (!note.rowCount) return { ok: false, status: 404, error: 'Note not found' };
+  if (note.rows[0].visibility !== 'restricted') return { ok: false, status: 409, error: 'Access grants apply only to restricted notes' };
+  if (!await canManageEntityGrants({ projectId: note.rows[0].project_id, user })) return { ok: false, status: 403, error: 'Only an administrator or project lead can manage other users’ grants' };
+  return { ok: true, note: note.rows[0] };
+}
+
+router.get('/:id/access-grants', hasPermission('notes.edit'), async (req, res) => {
+  try {
+    const access = await requireNoteGrantManager(req.params.id, req.user);
+    if (!access.ok) return res.status(access.status).json({ error: access.error });
+    const result = await pool.query(`SELECT g.user_id,g.access_level,g.created_at,g.created_by,u.username
+      FROM record_access_grants g JOIN users u ON u.id=g.user_id
+      WHERE g.entity_type='note' AND g.entity_id=$1 ORDER BY u.username`, [req.params.id]);
+    res.json(result.rows);
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to load note access grants' }); }
+});
+
+router.put('/:id/access-grants/:userId', hasPermission('notes.edit'), async (req, res) => {
+  const accessLevel = req.body?.access_level;
+  if (!['view', 'edit'].includes(accessLevel)) return res.status(400).json({ error: 'access_level must be view or edit' });
+  try {
+    const access = await requireNoteGrantManager(req.params.id, req.user);
+    if (!access.ok) return res.status(access.status).json({ error: access.error });
+    const target = await pool.query('SELECT id FROM users WHERE id=$1 AND is_active=TRUE', [req.params.userId]);
+    if (!target.rowCount) return res.status(400).json({ error: 'userId must reference an active user' });
+    const result = await pool.query(`INSERT INTO record_access_grants(entity_type,entity_id,user_id,access_level,created_by)
+      VALUES('note',$1,$2,$3,$4)
+      ON CONFLICT(entity_type,entity_id,user_id)
+      DO UPDATE SET access_level=EXCLUDED.access_level,created_by=EXCLUDED.created_by
+      RETURNING entity_type,entity_id,user_id,access_level,created_at,created_by`, [req.params.id, req.params.userId, accessLevel, req.user.userId]);
+    await writeAuditLog({ req, action: 'UPDATE', entityType: 'note_access_grant', entityId: req.params.id, newValue: result.rows[0], metadata: { note_id: req.params.id, project_id: access.note.project_id } });
+    res.json(result.rows[0]);
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to save note access grant' }); }
+});
+
+router.delete('/:id/access-grants/:userId', hasPermission('notes.edit'), async (req, res) => {
+  try {
+    const access = await requireNoteGrantManager(req.params.id, req.user);
+    if (!access.ok) return res.status(access.status).json({ error: access.error });
+    const removed = await pool.query(`DELETE FROM record_access_grants
+      WHERE entity_type='note' AND entity_id=$1 AND user_id=$2
+      RETURNING user_id,access_level`, [req.params.id, req.params.userId]);
+    if (!removed.rowCount) return res.status(404).json({ error: 'Access grant not found' });
+    await writeAuditLog({ req, action: 'DELETE', entityType: 'note_access_grant', entityId: req.params.id, oldValue: removed.rows[0], metadata: { note_id: req.params.id, project_id: access.note.project_id } });
+    res.status(204).send();
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to delete note access grant' }); }
+});
+
 router.delete('/:id', hasPermission('notes.delete'), async (req, res) => {
-  try { const current = await pool.query('SELECT * FROM notes WHERE id=$1', [req.params.id]); if (!current.rowCount) return res.status(404).json({ error: 'Note not found' }); const access = await canAccessProject(current.rows[0].project_id, req.user, true); if (!access.ok) return res.status(access.status).json({ error: access.error }); const result = await pool.query('DELETE FROM notes WHERE id=$1 RETURNING id', [req.params.id]); await pool.query("INSERT INTO sync_tombstones(entity_type,entity_id,project_id) VALUES('note',$1,$2) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now(),project_id=EXCLUDED.project_id", [req.params.id, current.rows[0].project_id]); await writeAuditLog({ req, action: 'DELETE', entityType: 'note', entityId: req.params.id, oldValue: current.rows[0] }); res.status(204).send(); }
-  catch (err) { console.error(err); res.status(500).json({ error: err.message || 'Failed to delete note' }); }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const current = await client.query('SELECT * FROM notes WHERE id=$1 FOR UPDATE', [req.params.id]);
+    if (!current.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Note not found' }); }
+    const access = await canEditNote(current.rows[0], req.user);
+    if (!access.ok) { await client.query('ROLLBACK'); return res.status(access.status).json({ error: access.error }); }
+    await client.query("DELETE FROM record_access_grants WHERE entity_type='note' AND entity_id=$1", [req.params.id]);
+    await client.query('DELETE FROM notes WHERE id=$1', [req.params.id]);
+    await client.query("INSERT INTO sync_tombstones(entity_type,entity_id,project_id) VALUES('note',$1,$2) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now(),project_id=EXCLUDED.project_id", [req.params.id, current.rows[0].project_id]);
+    await client.query('COMMIT');
+    await writeAuditLog({ req, action: 'DELETE', entityType: 'note', entityId: req.params.id, oldValue: current.rows[0] });
+    res.status(204).send();
+  } catch (err) { await client.query('ROLLBACK').catch(() => {}); console.error(err); res.status(500).json({ error: err.message || 'Failed to delete note' }); }
+  finally { client.release(); }
 });
 
 export default router;

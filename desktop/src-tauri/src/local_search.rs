@@ -6,7 +6,7 @@ use crate::local_db;
 const LOCAL_TYPES: [&str; 8] = ["items","projects","notes","resources","tasks","experiments","findings","transactions"];
 
 fn load_state(conn: &Connection, key: &str) -> Result<Value, String> {
-    let raw: Option<String> = conn.query_row("SELECT value FROM sync_state WHERE key=?1", [key], |r| r.get(0))
+    let raw: Option<String> = conn.query_row("SELECT value FROM sync_state WHERE key=?1", [local_db::scoped_state_key(conn,key)?], |r| r.get(0))
         .optional().map_err(|e| format!("Unable to read local search state: {e}"))?;
     Ok(raw.map(|v| serde_json::from_str(&v).unwrap_or(Value::Null)).unwrap_or(Value::Null))
 }

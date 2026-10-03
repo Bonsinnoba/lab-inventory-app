@@ -1,5 +1,6 @@
 import { pool } from '../db.js';
 import { getProjectAccess } from './project-access.js';
+import { canEditRestrictedEntity, canReadEntity, normalizeVisibility } from './visibility.js';
 
 /**
  * Resolve the authorization context of a resource.
@@ -22,8 +23,8 @@ export async function getResourceContext(resourceId) {
       JOIN resource_chain child ON child.parent_resource_id = parent.id
     )
     SELECT rc.id, rc.parent_resource_id, rc.project_id, rc.item_id, rc.note_id,
-           rc.uploaded_by, rc.kind, rc.name, rc.depth,
-           n.project_id AS note_project_id
+           rc.uploaded_by, rc.kind, rc.name, rc.visibility, rc.depth,
+           n.project_id AS note_project_id, n.visibility AS note_visibility
     FROM resource_chain rc
     LEFT JOIN notes n ON n.id = rc.note_id
     ORDER BY rc.depth ASC`,
@@ -52,15 +53,38 @@ export async function getResourceContext(resourceId) {
 
   return {
     resource: rows[0],
+    resources: rows,
     projectId: projectIds.values().next().value || null,
     invalid: false,
   };
+}
+
+async function canReadResourceContext(context, user) {
+  if (!user?.userId) return false;
+  for (const row of context.resources) {
+    if (!(await canReadEntity({ entityType: 'resource', entityId: row.id, visibility: row.visibility, projectId: context.projectId, user }))) return false;
+    if (row.note_id && !(await canReadEntity({ entityType: 'note', entityId: row.note_id, visibility: row.note_visibility, projectId: row.note_project_id, user }))) return false;
+  }
+  return true;
+}
+
+async function hasRestrictedEditAccess(context, user) {
+  if (user?.role === 'admin') return true;
+  for (const row of context.resources) {
+    if (normalizeVisibility(row.visibility) === 'restricted' && !(await canEditRestrictedEntity({ entityType: 'resource', entityId: row.id, user }))) return false;
+    if (row.note_id && normalizeVisibility(row.note_visibility) === 'restricted' && !(await canEditRestrictedEntity({ entityType: 'note', entityId: row.note_id, user }))) return false;
+  }
+  return true;
 }
 
 export async function getResourceAccess(resourceId, user) {
   const context = await getResourceContext(resourceId);
   if (!context) return { access: 'none', context: null };
   if (context.invalid) return { access: 'none', context };
+
+  // Every ancestor is authoritative. A lab-visible child never weakens a
+  // restricted folder or Note that contains it.
+  if (!(await canReadResourceContext(context, user))) return { access: 'none', memberRole: null, context };
 
   if (context.projectId) {
     const projectAccess = await getProjectAccess(context.projectId, user);
@@ -89,7 +113,7 @@ export async function requireResourceEditor(resourceId, user) {
   if (result.context?.invalid) {
     return { ok: false, status: 409, error: { code: 'RESOURCE_CONTEXT_INVALID', message: 'Resource has conflicting project ownership' }, ...result };
   }
-  if (result.access === 'edit' || result.access === 'admin') {
+  if ((result.access === 'edit' || result.access === 'admin') && await hasRestrictedEditAccess(result.context, user)) {
     return { ok: true, ...result };
   }
   if (result.access === 'shared') {
@@ -97,7 +121,7 @@ export async function requireResourceEditor(resourceId, user) {
     // by every authenticated account. Admins and the original uploader may
     // manage an unattached/shared resource.
     const ownerId = result.context?.resource?.uploaded_by;
-    if (user?.role === 'admin' || (ownerId && ownerId === user?.userId)) {
+    if ((user?.role === 'admin' || (ownerId && ownerId === user?.userId)) && await hasRestrictedEditAccess(result.context, user)) {
       return { ok: true, ...result };
     }
     return { ok: false, status: 403, error: { code: 'RESOURCE_EDIT_REQUIRED', message: 'You do not have permission to modify this shared resource' }, ...result };
@@ -139,13 +163,16 @@ export async function validateResourceParent({ itemId, projectId, noteId, parent
   }
 
   if (noteId) {
-    const note = await pool.query('SELECT id, project_id FROM notes WHERE id = $1', [noteId]);
+    const note = await pool.query('SELECT id, project_id, visibility FROM notes WHERE id = $1', [noteId]);
     if (!note.rowCount) return { ok: false, status: 404, error: { code: 'NOTE_NOT_FOUND', message: 'Note not found' } };
-    if (note.rows[0].project_id) {
-      const access = await getProjectAccess(note.rows[0].project_id, user);
+    const noteRow = note.rows[0];
+    if (!(await canReadEntity({ entityType: 'note', entityId: noteRow.id, visibility: noteRow.visibility, projectId: noteRow.project_id, user }))) return { ok: false, status: 404, error: { code: 'NOTE_NOT_FOUND', message: 'Note not found' } };
+    if (requireEdit && normalizeVisibility(noteRow.visibility) === 'restricted' && !(await canEditRestrictedEntity({ entityType: 'note', entityId: noteRow.id, user }))) return { ok: false, status: 403, error: { code: 'RESTRICTED_RECORD_EDIT_REQUIRED', message: 'You do not have edit access to this restricted note' } };
+    if (noteRow.project_id) {
+      const access = await getProjectAccess(noteRow.project_id, user);
       if (access.access === 'none') return { ok: false, status: 403, error: { code: 'PROJECT_ACCESS_REQUIRED', message: 'You do not have access to the note project' } };
       if (requireEdit && access.access === 'view') return { ok: false, status: 403, error: { code: 'PROJECT_READ_ONLY', message: 'You have read-only access to the note project' } };
-      return { ok: true, context: { projectId: note.rows[0].project_id } };
+      return { ok: true, context: { projectId: noteRow.project_id } };
     }
     if (user?.userId) return { ok: true, context: { projectId: null } };
     return { ok: false, status: 403, error: { code: 'RESOURCE_ACCESS_REQUIRED', message: 'Authentication required' } };

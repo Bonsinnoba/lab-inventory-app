@@ -1,5 +1,15 @@
 import { pool } from '../db.js';
 import { getUserPermissions, hasPermission } from './permissions.js';
+import { canReadEntity } from './visibility.js';
+
+export function effectiveProjectAccess({ ownerId, memberRole, visibility, grantLevel, userId, role, canEdit }) {
+  if (role === 'admin') return { access: 'admin', memberRole: 'admin' };
+  const membership = ownerId === userId ? 'lead' : memberRole || null;
+  const editor = role !== 'viewer' && canEdit &&
+    (ownerId === userId || memberRole === 'lead' || memberRole === 'member') &&
+    (visibility !== 'restricted' || grantLevel === 'edit');
+  return { access: editor ? 'edit' : 'view', memberRole: membership };
+}
 
 /** Return the project permission for the current user.
  * Every active user can read ordinary project data. Project membership and
@@ -15,19 +25,28 @@ export async function getProjectAccess(projectId, user) {
   // Ordinary project reads are laboratory-wide; no projects.view grant is needed.
 
   const result = await pool.query(`
-    SELECT p.owner_id, pm.member_role
+    SELECT p.owner_id, p.visibility, pm.member_role, g.access_level AS grant_level
     FROM projects p
     LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $2
+    LEFT JOIN record_access_grants g ON g.entity_type = 'project' AND g.entity_id = p.id AND g.user_id = $2
     WHERE p.id = $1`, [projectId, user.userId]);
 
   if (!result.rowCount) return { access: 'none', memberRole: null };
   const row = result.rows[0];
   if (role === 'admin') return { access: 'admin', memberRole: 'admin' };
-  if (role === 'viewer') return { access: 'view', memberRole: row.member_role || null };
-  if (row.owner_id === user.userId) return { access: permissions.has('projects.edit') ? 'edit' : 'view', memberRole: 'lead' };
-  if (row.member_role === 'lead' || row.member_role === 'member') return { access: permissions.has('projects.edit') ? 'edit' : 'view', memberRole: row.member_role };
-  if (row.member_role === 'observer') return { access: 'view', memberRole: 'observer' };
-  return { access: 'view', memberRole: null };
+  const readable = await canReadEntity({
+    entityType: 'project',
+    entityId: projectId,
+    visibility: row.visibility,
+    projectId,
+    user: { ...user, role },
+  });
+  if (!readable) return { access: 'none', memberRole: null };
+  return effectiveProjectAccess({
+    ownerId: row.owner_id, memberRole: row.member_role, visibility: row.visibility,
+    grantLevel: row.grant_level, userId: user.userId, role,
+    canEdit: permissions.has('projects.edit'),
+  });
 }
 
 export async function requireProjectAccess(req, res, next) {

@@ -1,6 +1,6 @@
 import { API_BASE } from '../lib/config';
 import { apiFetch, apiUrl, getApiErrorMessage } from './http';
-import { getToken } from './auth';
+import { getToken, captureAccountSession, isAccountSessionCurrent, type AccountSession } from './auth';
 import { invoke } from '@tauri-apps/api/tauri';
 import { getDownloadJobs, getLocalMediaUrl } from './mediaDownloads';
 import { isTauriRuntime } from '../lib/runtime';
@@ -11,11 +11,13 @@ export interface Resource {
   original_filename?: string; mime_type?: string; size_bytes?: number; url?: string; thumbnail_url?: string;
   local_media_path?: string; local_media_filename?: string; local_media_mime_type?: string; local_media_size_bytes?: number; local_media_downloaded_at?: string;
   parent_resource_id?: string; relative_path?: string; item_id?: string; project_id?: string; note_id?: string;
+  visibility?: 'lab' | 'project' | 'restricted';
   item_name?: string; project_name?: string; note_title?: string; category?: string; description?: string;
   tags?: string[]; updated_at?: string; created_at: string; derived_from_resource_id?: string;
 }
 
 export interface ResourceManifest { folder: string; files: Array<{ id: string; relative_path: string; original_filename: string; size_bytes: number; mime_type: string; }>; }
+export interface ResourceAccessGrant { user_id:string; username?:string; access_level:'view'|'edit'; created_at?:string; created_by?:string|null; }
 
 const localMediaResourceIds = new Set<string>();
 export function isLocalResourceRuntime() { return isTauriRuntime(); }
@@ -23,8 +25,9 @@ async function localInvoke<T>(command: string, args?: Record<string, unknown>): 
   if (!isTauriRuntime()) throw new Error('Local LabOS runtime is unavailable');
   return invoke<T>(command, args);
 }
-async function cacheLocalResources(resources: Resource[]) {
-  try { await localInvoke('cache_local_resources', { resourcesJson: JSON.stringify(resources) }); } catch {}
+async function cacheLocalResources(resources: Resource[], session: AccountSession | null) {
+  if (!isAccountSessionCurrent(session)) return;
+  try { await localInvoke('cache_local_resources', { resourcesJson: JSON.stringify(resources), expectedAccountId: session.accountId }); } catch {}
 }
 
 
@@ -51,10 +54,11 @@ export async function getResource(id: string): Promise<Resource> {
       return (await enrichWithDownloadedMedia([local]))[0];
     } catch {}
   }
+  const session = captureAccountSession();
   const response = await apiFetch(`/resources/${id}`);
   if (!response.ok) throw new Error('Failed to fetch resource');
   const resource = await response.json();
-  await cacheLocalResources([resource]);
+  await cacheLocalResources([resource], session);
   return (await enrichWithDownloadedMedia([resource]))[0];
 }
 export async function getAllResources(): Promise<Resource[]> {
@@ -64,10 +68,11 @@ export async function getAllResources(): Promise<Resource[]> {
       return enrichWithDownloadedMedia(local);
     } catch {}
   }
+  const session = captureAccountSession();
   const response = await apiFetch('/resources');
   if (!response.ok) throw new Error('Failed to fetch resources');
   const resources = await response.json();
-  await cacheLocalResources(resources);
+  await cacheLocalResources(resources, session);
   return enrichWithDownloadedMedia(resources);
 }
 export async function getResources(filters: { item_id?: string; project_id?: string; note_id?: string; parent_resource_id?: string }): Promise<Resource[]> {
@@ -78,8 +83,9 @@ export async function getResources(filters: { item_id?: string; project_id?: str
     } catch {}
   }
   const params = new URLSearchParams(); if (filters.item_id) params.append('item_id', filters.item_id); if (filters.project_id) params.append('project_id', filters.project_id); if (filters.note_id) params.append('note_id', filters.note_id); if (filters.parent_resource_id) params.append('parent_resource_id', filters.parent_resource_id);
+  const session = captureAccountSession();
   const response = await apiFetch(`/resources?${params}`); if (!response.ok) throw new Error('Failed to fetch resources');
-  const resources = await response.json(); await cacheLocalResources(resources); return enrichWithDownloadedMedia(resources);
+  const resources = await response.json(); await cacheLocalResources(resources, session); return enrichWithDownloadedMedia(resources);
 }
 export async function getResourceManifest(id: string): Promise<ResourceManifest> { const response = await apiFetch(`/resources/${id}/manifest`); if (!response.ok) throw new Error('Failed to fetch resource manifest'); return response.json(); }
 export function getResourceDownloadUrl(id: string, forceDownload = false): string { if (!forceDownload && localMediaResourceIds.has(id)) return getLocalMediaUrl(id); const token = getToken(); const params = new URLSearchParams(); if (forceDownload) params.set('download', 'true'); if (token) params.set('access_token', token); const query = params.toString(); return apiUrl(`/resources/${id}/download${query ? `?${query}` : ''}`); }
@@ -95,7 +101,8 @@ export async function uploadFile(file: File, parent: { item_id?: string; project
   if (typeof navigator !== 'undefined' && !navigator.onLine) throw new Error('File uploads require a connection to the central LabOS backend. Add a link instead, or reconnect and try again.');
   const formData = new FormData(); formData.append('file', file); if (name) formData.append('name', name); if (parent.item_id) formData.append('item_id', parent.item_id); if (parent.project_id) formData.append('project_id', parent.project_id); if (parent.note_id) formData.append('note_id', parent.note_id);
   if (metadata?.category) formData.append('category', metadata.category); if (metadata?.description) formData.append('description', metadata.description); if (metadata?.tags) formData.append('tags', JSON.stringify(metadata.tags));
-  return new Promise((resolve, reject) => { const xhr = new XMLHttpRequest(); xhr.timeout = 120000; xhr.upload.addEventListener('progress', e => { if (e.lengthComputable && onProgress) onProgress((e.loaded / e.total) * 100); }); xhr.addEventListener('load', async () => { if (xhr.status === 201) { try { const resource = JSON.parse(xhr.responseText) as Resource; await cacheLocalResources([resource]); resolve(resource); } catch (e) { reject(e instanceof Error ? e : new Error('Failed to cache uploaded resource')); } } else reject(new Error('Failed to upload file')); }); xhr.addEventListener('error', () => reject(new Error('Upload failed — could not reach the server. Is the backend running?'))); xhr.addEventListener('timeout', () => reject(new Error('Upload timed out after 2 minutes — check the backend server console for an error.'))); xhr.addEventListener('abort', () => reject(new Error('Upload was cancelled'))); xhr.open('POST', `${API_BASE}/resources`); const token = getToken(); if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`); xhr.send(formData); });
+  const session=captureAccountSession();
+  return new Promise((resolve, reject) => { const xhr = new XMLHttpRequest(); xhr.timeout = 120000; xhr.upload.addEventListener('progress', e => { if (e.lengthComputable && onProgress) onProgress((e.loaded / e.total) * 100); }); xhr.addEventListener('load', async () => { if (xhr.status === 201) { try { const resource = JSON.parse(xhr.responseText) as Resource; await cacheLocalResources([resource],session); resolve(resource); } catch (e) { reject(e instanceof Error ? e : new Error('Failed to cache uploaded resource')); } } else reject(new Error('Failed to upload file')); }); xhr.addEventListener('error', () => reject(new Error('Upload failed — could not reach the server. Is the backend running?'))); xhr.addEventListener('timeout', () => reject(new Error('Upload timed out after 2 minutes — check the backend server console for an error.'))); xhr.addEventListener('abort', () => reject(new Error('Upload was cancelled'))); xhr.open('POST', `${API_BASE}/resources`); const token = getToken(); if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`); xhr.send(formData); });
 }
 export async function createFolder(name: string, parent: { item_id?: string; project_id?: string; note_id?: string; parent_resource_id?: string }): Promise<Resource> {
   if (isTauriRuntime()) {
@@ -118,10 +125,11 @@ export async function attachExistingResource(id: string, destination: {item_id?:
   // Reassignment is server-backed until the desktop outbox supports attachment moves.
   if (isTauriRuntime() && typeof navigator !== 'undefined' && !navigator.onLine)
     throw new Error('Reconnect to change resource attachments.');
+  const session=captureAccountSession();
   const response=await apiFetch(`/resources/${encodeURIComponent(id)}/attachment`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(destination)});
   if(!response.ok)throw new Error(await getApiErrorMessage(response,'Unable to attach resource'));
   const resource:Resource=await response.json();
-  await cacheLocalResources([resource]);
+  await cacheLocalResources([resource],session);
   return resource;
 }
 export async function updateResourceMetadata(id: string, metadata: { category?: string; description?: string; tags?: string[] }): Promise<Resource> {
@@ -131,6 +139,25 @@ export async function updateResourceMetadata(id: string, metadata: { category?: 
   const response = await apiFetch(`/resources/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(metadata) });
   if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to update resource metadata'));
   return response.json();
+}
+export async function updateResourceVisibility(id:string,visibility:NonNullable<Resource['visibility']>):Promise<Resource>{
+  const response=await apiFetch(`/resources/${encodeURIComponent(id)}/visibility`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({visibility})});
+  if(!response.ok)throw new Error(await getApiErrorMessage(response,'Failed to update resource visibility'));
+  return response.json();
+}
+export async function getResourceAccessGrants(id:string):Promise<ResourceAccessGrant[]>{
+  const response=await apiFetch(`/resources/${encodeURIComponent(id)}/access-grants`);
+  if(!response.ok)throw new Error(await getApiErrorMessage(response,'Failed to load resource access grants'));
+  return response.json();
+}
+export async function setResourceAccessGrant(id:string,userId:string,access_level:ResourceAccessGrant['access_level']):Promise<ResourceAccessGrant>{
+  const response=await apiFetch(`/resources/${encodeURIComponent(id)}/access-grants/${encodeURIComponent(userId)}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({access_level})});
+  if(!response.ok)throw new Error(await getApiErrorMessage(response,'Failed to save resource access grant'));
+  return response.json();
+}
+export async function removeResourceAccessGrant(id:string,userId:string):Promise<void>{
+  const response=await apiFetch(`/resources/${encodeURIComponent(id)}/access-grants/${encodeURIComponent(userId)}`,{method:'DELETE'});
+  if(!response.ok)throw new Error(await getApiErrorMessage(response,'Failed to remove resource access grant'));
 }
 export async function deleteResource(id: string): Promise<void> {
   if (isTauriRuntime()) { await localInvoke('delete_local_resource', { id }); return; }

@@ -47,7 +47,7 @@ export default function ProjectDetailPage() {
     {id:'knowledge',label:'Knowledge',path:`/projects/${projectId}/knowledge`},{id:'team',label:'Team',path:`/projects/${projectId}/team`},
     {id:'activity',label:'Activity',path:`/projects/${projectId}/activity`},{id:'canvas',label:'Canvas',path:`/projects/${projectId}/canvas`}
   ];
-  const canEdit = workspace.data?.permissions?.can_edit !== false;
+  const canEdit = workspace.data?.permissions?.can_edit === true;
   return <DeletePromptContext.Provider value={requestDelete}><div className="flex flex-col h-full">
     <div className={`project-header flex items-center gap-3 px-4 md:px-6 flex-shrink-0 ${isCanvas?'pt-3 pb-2':'pt-4 pb-3'}`}>
       <button onClick={()=>navigate('/projects')} className="p-2 hover:bg-surface-raised rounded-sm border border-transparent hover:border-border"><ArrowLeft size={18}/></button>

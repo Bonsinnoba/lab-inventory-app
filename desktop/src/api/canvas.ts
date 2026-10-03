@@ -2,6 +2,7 @@ import { apiFetch } from './http';
 import { invoke } from '@tauri-apps/api/tauri';
 const isTauri=()=>typeof window!=='undefined'&&Boolean((window as any).__TAURI_IPC__);
 async function local<T>(command:string,args:Record<string,unknown>={}):Promise<T|null>{if(!isTauri())return null;return invoke<T>(command,args);}
+function requireLocalCanvasWrite(): never { throw new Error('Local canvas is unavailable. Refresh the project before changing its canvas.'); }
 
 export interface CanvasBlock {
   id: string;
@@ -32,7 +33,7 @@ export interface CanvasConnector {
 export interface CanvasData {
   blocks: CanvasBlock[];
   connectors: CanvasConnector[];
-  permissions?: { access: 'admin' | 'edit' | 'view'; member_role: string; can_edit: boolean };
+  permissions?: { access: 'admin' | 'edit' | 'view'; member_role: string | null; can_edit: boolean; user_id?: string };
 }
 
 // Every function below reads the backend's actual error message out of the
@@ -63,6 +64,7 @@ export async function createBlock(
 ): Promise<CanvasBlock> {
   const localBlock=await local<CanvasBlock>('create_local_project_block',{projectId,record:block});
   if(localBlock!==null)return localBlock;
+  if(isTauri())requireLocalCanvasWrite();
   const response = await apiFetch(`/projects/${projectId}/blocks`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -78,6 +80,7 @@ export async function updateBlock(
 ): Promise<CanvasBlock> {
   const localBlock=await local<CanvasBlock>('update_local_project_block',{projectId:block.project_id,recordId:blockId,patch:block});
   if(localBlock!==null)return localBlock;
+  if(isTauri())requireLocalCanvasWrite();
   const response = await apiFetch(`/blocks/${blockId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -89,6 +92,7 @@ export async function updateBlock(
 
 export async function deleteBlock(blockId: string, projectId?: string): Promise<void> {
   if(projectId){const localResult=await local<void>('delete_local_project_block',{projectId,recordId:blockId});if(localResult!==null)return;}
+  if(isTauri())requireLocalCanvasWrite();
   const response = await apiFetch(`/blocks/${blockId}`, { method: 'DELETE' });
   if (!response.ok) throw new Error(await extractError(response, 'Failed to delete block'));
 }
@@ -99,6 +103,7 @@ export async function createConnector(
 ): Promise<CanvasConnector> {
   const localConnector=await local<CanvasConnector>('create_local_project_connector',{projectId,record:connector});
   if(localConnector!==null)return localConnector;
+  if(isTauri())requireLocalCanvasWrite();
   const response = await apiFetch(`/projects/${projectId}/connectors`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -110,6 +115,7 @@ export async function createConnector(
 
 export async function deleteConnector(connectorId: string, projectId?: string): Promise<void> {
   if(projectId){const localResult=await local<void>('delete_local_project_connector',{projectId,recordId:connectorId});if(localResult!==null)return;}
+  if(isTauri())requireLocalCanvasWrite();
   const response = await apiFetch(`/connectors/${connectorId}`, { method: 'DELETE' });
   if (!response.ok) throw new Error(await extractError(response, 'Failed to delete connector'));
 }

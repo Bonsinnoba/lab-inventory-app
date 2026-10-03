@@ -27,6 +27,11 @@ test('project financial projection removes financial fields without mutating sou
  assert.equal(projectFinancialProjection(original,new Set(['finance.view'])).budget,100);
 });
 
+test('project projection retains visibility for ordinary readers and sync clients',()=>{
+ const project={id:'p1',name:'Scoped project',visibility:'restricted',budget:100};
+ assert.deepEqual(projectFinancialProjection(project,new Set(['projects.view'])),{id:'p1',name:'Scoped project',visibility:'restricted'});
+});
+
 test('future and unknown project columns fail closed for ordinary readers',()=>{
  const source={id:'p2',name:'Example',description:'ordinary',budget:100,secret_future_financial_column:999,internal_future_column:'private'};
  const projected=projectFinancialProjection(source,new Set(['projects.view']));
@@ -93,5 +98,5 @@ test('financial exports and search retain explicit sensitive-data gates',()=>{
  assert.match(search,/transactions:[\s\S]*?direction = 'expense'/);
  assert.match(search,/canReadSensitiveFinance\(permissions\)/);
  assert.match(sync,/transactions:transactions\.rows\.map\(row=>transactionResponseProjection\(row,permissions\)\)/);
- assert.match(sync,/projects:projects\.rows\.map\(p=>\(\{\.\.\.projectFinancialProjection\(p,permissions\)/);
+ assert.match(sync,/projects:projects\.rows\.map\(p=>\{[^\n]+projectFinancialProjection\(p,permissions\)/);
 });

@@ -5,8 +5,10 @@ import { pool } from '../db.js';
 import { writeAuditLog } from '../middleware/audit.js';
 import { getUserPermissions } from '../middleware/permissions.js';
 import { hasPermission } from '../middleware/permissions.js';
+import maintenanceRouter from './maintenance.js';
 
 const router = Router();
+router.use('/:id/maintenance', maintenanceRouter);
 function generateItemSku(name, type) {
   const words = String(name || 'item').toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean);
   const namePart = words.length > 1

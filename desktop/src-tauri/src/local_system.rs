@@ -2,14 +2,14 @@ use rusqlite::OptionalExtension;
 use serde_json::json;
 use tauri::AppHandle;
 
-use crate::local_db::open_local_connection;
+use crate::local_db::{open_local_connection, scoped_state_key};
 
 const KEY: &str = "daily_use_preferences";
 
 fn read_preferences(app: &AppHandle) -> Result<serde_json::Value, String> {
     let conn = open_local_connection(app)?;
     let raw: Option<String> = conn
-        .query_row("SELECT value FROM sync_state WHERE key=?1", [KEY], |row| row.get(0))
+        .query_row("SELECT value FROM sync_state WHERE key=?1", [scoped_state_key(&conn, KEY)?], |row| row.get(0))
         .optional()
         .map_err(|e| e.to_string())?;
     Ok(raw
@@ -29,7 +29,7 @@ fn write_preferences(app: &AppHandle, value: &serde_json::Value) -> Result<serde
     conn.execute(
         "INSERT INTO sync_state(key,value) VALUES(?1,?2)
          ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        [KEY, &serde_json::to_string(value).map_err(|e| e.to_string())?],
+        [scoped_state_key(&conn, KEY)?, serde_json::to_string(value).map_err(|e| e.to_string())?],
     )
     .map_err(|e| e.to_string())?;
     Ok(value.clone())

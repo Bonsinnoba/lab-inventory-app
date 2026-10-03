@@ -11,10 +11,10 @@ const SCHEMA_VERSION: &str = "001_local_engineering";
 fn conn(app:&AppHandle)->Result<Connection,String>{local_db::open_local_connection(app)}
 fn ensure(c:&Connection)->Result<(),String>{
  c.execute("INSERT OR IGNORE INTO local_schema_migrations(version) VALUES (?1)",[SCHEMA_VERSION]).map_err(|e|format!("Unable to record local engineering schema: {e}"))?;
- for key in [CALC_KEY,TEST_KEY] { c.execute("INSERT OR IGNORE INTO sync_state(key,value) VALUES (?1,'[]')",[key]).map_err(|e|format!("Unable to initialize local engineering state: {e}"))?; }
+ for key in [CALC_KEY,TEST_KEY] { c.execute("INSERT OR IGNORE INTO sync_state(key,value) VALUES (?1,'[]')",[local_db::scoped_state_key(c,key)?]).map_err(|e|format!("Unable to initialize local engineering state: {e}"))?; }
  Ok(())
 }
-fn load(c:&Connection,key:&str)->Result<Vec<Value>,String>{ensure(c)?;let raw:Option<String>=c.query_row("SELECT value FROM sync_state WHERE key=?1",[key],|r|r.get(0)).optional().map_err(|e|format!("Unable to read engineering state: {e}"))?;Ok(raw.map(|v|serde_json::from_str(&v).unwrap_or_default()).unwrap_or_default())}
+fn load(c:&Connection,key:&str)->Result<Vec<Value>,String>{ensure(c)?;let raw:Option<String>=c.query_row("SELECT value FROM sync_state WHERE key=?1",[local_db::scoped_state_key(c,key)?],|r|r.get(0)).optional().map_err(|e|format!("Unable to read engineering state: {e}"))?;Ok(raw.map(|v|serde_json::from_str(&v).unwrap_or_default()).unwrap_or_default())}
 fn now(c:&Connection)->Result<String,String>{c.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')",[],|r|r.get(0)).map_err(|e|format!("Unable to create timestamp: {e}"))}
 fn id()->String{uuid::Uuid::new_v4().to_string()}
 fn save(c:&mut Connection,key:&str,rows:&[Value],change:Option<(&str,&str,&str,&Value)>)->Result<(),String>{
@@ -23,7 +23,7 @@ fn save(c:&mut Connection,key:&str,rows:&[Value],change:Option<(&str,&str,&str,&
         local_auth::require_local_permission(c,permission)?;
     }
  let tx=c.transaction().map_err(|e|format!("Unable to begin engineering transaction: {e}"))?;
- tx.execute("INSERT INTO sync_state(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,serde_json::to_string(rows).map_err(|e|e.to_string())?]).map_err(|e|format!("Unable to save engineering state: {e}"))?;
+ tx.execute("INSERT INTO sync_state(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![local_db::scoped_state_key(&tx,key)?,serde_json::to_string(rows).map_err(|e|e.to_string())?]).map_err(|e|format!("Unable to save engineering state: {e}"))?;
  if let Some((entity_type,entity_id,operation,payload))=change {let device:String=tx.query_row("SELECT device_id FROM device_identity WHERE id=1",[],|r|r.get(0)).map_err(|e|e.to_string())?;tx.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES (?1,?2,?3,?4,?5,?6)",params![id(),device,entity_type,entity_id,operation,payload.to_string()]).map_err(|e|format!("Unable to queue engineering change: {e}"))?;}
  tx.commit().map_err(|e|format!("Unable to commit engineering change: {e}"))
 }
@@ -64,10 +64,10 @@ pub fn update_local_engineering_test(app:AppHandle,id:String,patch:Value)->Resul
 #[tauri::command]
 pub fn delete_local_engineering_test(app:AppHandle,id:String)->Result<(),String>{let mut c=conn(&app)?;let mut rows=load(&c,TEST_KEY)?;let before=rows.iter().find(|r|r.get("id").and_then(Value::as_str)==Some(id.as_str())).cloned().ok_or("Engineering test not found")?;rows.retain(|r|r.get("id").and_then(Value::as_str)!=Some(id.as_str()));save(&mut c,TEST_KEY,&rows,Some(("engineering_test",&id,"delete",&json!({"record":before}))))}
 #[tauri::command]
-pub fn apply_server_engineering_pull(app:AppHandle,calculations:Vec<Value>,tests:Vec<Value>,deleted_calculation_ids:Vec<String>,deleted_test_ids:Vec<String>)->Result<(),String>{
- let mut c=conn(&app)?;let mut calc=load(&c,CALC_KEY)?;let mut test=load(&c,TEST_KEY)?;
- let pending:std::collections::HashSet<String>={let mut s=std::collections::HashSet::new();let mut st=c.prepare("SELECT entity_type,entity_id FROM sync_outbox WHERE synced_at IS NULL AND entity_type IN ('engineering_calculation','engineering_test')").map_err(|e|e.to_string())?;let it=st.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).map_err(|e|e.to_string())?;for x in it.flatten(){s.insert(format!("{}:{}",x.0,x.1));}s};
+pub fn apply_server_engineering_pull(app:AppHandle,calculations:Vec<Value>,tests:Vec<Value>,deleted_calculation_ids:Vec<String>,deleted_test_ids:Vec<String>,expected_account_id:String)->Result<(),String>{
+ let mut c=conn(&app)?;local_db::require_sync_account(&c,&expected_account_id)?;let mut calc=load(&c,CALC_KEY)?;let mut test=load(&c,TEST_KEY)?;
+ let pending:std::collections::HashSet<String>={let mut s=std::collections::HashSet::new();let mut st=c.prepare("SELECT entity_type,entity_id FROM active_sync_outbox WHERE synced_at IS NULL AND entity_type IN ('engineering_calculation','engineering_test')").map_err(|e|e.to_string())?;let it=st.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).map_err(|e|e.to_string())?;for x in it.flatten(){s.insert(format!("{}:{}",x.0,x.1));}s};
  let merge=|rows:&mut Vec<Value>,incoming:Vec<Value>,deleted:&Vec<String>,typ:&str|{for item in incoming{let rid=item.get("id").and_then(Value::as_str).unwrap_or_default().to_string();if rid.is_empty()||pending.contains(&format!("{}:{}",typ,rid)){continue;}rows.retain(|r|r.get("id").and_then(Value::as_str)!=Some(rid.as_str()));rows.push(item);}rows.retain(|r|{let rid=r.get("id").and_then(Value::as_str).unwrap_or_default();!deleted.iter().any(|d|d==rid)||pending.contains(&format!("{}:{}",typ,rid))});};
  merge(&mut calc,calculations,&deleted_calculation_ids,"engineering_calculation");merge(&mut test,tests,&deleted_test_ids,"engineering_test");
- let tx=c.transaction().map_err(|e|e.to_string())?;tx.execute("INSERT INTO sync_state(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![CALC_KEY,serde_json::to_string(&calc).map_err(|e|e.to_string())?]).map_err(|e|e.to_string())?;tx.execute("INSERT INTO sync_state(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![TEST_KEY,serde_json::to_string(&test).map_err(|e|e.to_string())?]).map_err(|e|e.to_string())?;tx.commit().map_err(|e|e.to_string())
+ let tx=c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e|e.to_string())?;local_db::require_sync_account(&tx,&expected_account_id)?;tx.execute("INSERT INTO sync_state(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![local_db::scoped_state_key(&tx,CALC_KEY)?,serde_json::to_string(&calc).map_err(|e|e.to_string())?]).map_err(|e|e.to_string())?;tx.execute("INSERT INTO sync_state(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![local_db::scoped_state_key(&tx,TEST_KEY)?,serde_json::to_string(&test).map_err(|e|e.to_string())?]).map_err(|e|e.to_string())?;tx.commit().map_err(|e|e.to_string())
 }

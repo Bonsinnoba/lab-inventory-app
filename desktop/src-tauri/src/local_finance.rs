@@ -10,9 +10,9 @@ const KEY_BP:&str="finance_budget_periods_state";
 const KEY_FS:&str="finance_funding_sources_state";
 
 fn id(_: &rusqlite::Connection)->Result<String,String>{Ok(local_db::new_uuid())}
-fn read(conn:&rusqlite::Connection,key:&str)->Result<Vec<Value>,String>{let raw:Option<String>=conn.query_row("SELECT value FROM sync_state WHERE key=?1",[key],|r|r.get(0)).optional().map_err(|e|e.to_string())?;Ok(raw.and_then(|s|serde_json::from_str(&s).ok()).unwrap_or_default())}
-fn write(conn:&rusqlite::Connection,key:&str,v:&Vec<Value>)->Result<(),String>{let raw=serde_json::to_string(v).map_err(|e|e.to_string())?;conn.execute("INSERT INTO sync_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[key,&raw]).map_err(|e|e.to_string())?;Ok(())}
-fn queue(conn:&mut rusqlite::Connection,entity:&str,entity_id:&str,op:&str,payload:&Value)->Result<(),String>{let tx=conn.transaction().map_err(|e|e.to_string())?;let device:String=tx.query_row("SELECT device_id FROM device_identity WHERE id=1",[],|r|r.get(0)).map_err(|e|e.to_string())?;let cid=id(&tx)?;tx.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES(?1,?2,?3,?4,?5,?6)",params![cid,device,entity,entity_id,op,payload.to_string()]).map_err(|e|e.to_string())?;tx.commit().map_err(|e|e.to_string())}
+fn read(conn:&rusqlite::Connection,key:&str)->Result<Vec<Value>,String>{let raw:Option<String>=conn.query_row("SELECT value FROM sync_state WHERE key=?1",[local_db::scoped_state_key(conn,key)?],|r|r.get(0)).optional().map_err(|e|e.to_string())?;Ok(raw.and_then(|s|serde_json::from_str(&s).ok()).unwrap_or_default())}
+fn write(conn:&rusqlite::Connection,key:&str,v:&Vec<Value>)->Result<(),String>{let raw=serde_json::to_string(v).map_err(|e|e.to_string())?;conn.execute("INSERT INTO sync_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![local_db::scoped_state_key(conn,key)?,raw]).map_err(|e|e.to_string())?;Ok(())}
+fn queue(conn:&rusqlite::Connection,entity:&str,entity_id:&str,op:&str,payload:&Value)->Result<(),String>{let device:String=conn.query_row("SELECT device_id FROM device_identity WHERE id=1",[],|r|r.get(0)).map_err(|e|e.to_string())?;let cid=id(conn)?;conn.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES(?1,?2,?3,?4,?5,?6)",params![cid,device,entity,entity_id,op,payload.to_string()]).map_err(|e|e.to_string())?;Ok(())}
 fn mutate(app:&AppHandle,key:&str,entity:&str,op:&str,value:Value)->Result<Value,String>{let mut conn=open_local_connection(app)?;let permission=if op=="delete"{"finance.delete"}else if op=="create"&&entity=="transaction"&&value.get("direction").and_then(Value::as_str)==Some("income"){"finance.create_income"}else if op=="create"&&entity=="transaction"{"finance.create_expense"}else{"finance.edit"};
 local_auth::require_local_permission(&conn,permission)?;
 if entity!="transaction" || value.get("direction").and_then(Value::as_str)==Some("income"){
@@ -25,7 +25,7 @@ if entity=="transaction" {
         local_auth::require_local_permission(&conn,"finance.view_sensitive")?;
     }
 }
-let entity_id=value.get("id").and_then(Value::as_str).ok_or("id is required")?.to_string();if op=="delete"{rows.retain(|v|v.get("id").and_then(Value::as_str)!=Some(&entity_id));}else if let Some(old)=rows.iter_mut().find(|v|v.get("id").and_then(Value::as_str)==Some(&entity_id)){*old=value.clone();}else{rows.push(value.clone());}write(&conn,key,&rows)?;queue(&mut conn,entity,&entity_id,op,&value)?;Ok(value)}
+let entity_id=value.get("id").and_then(Value::as_str).ok_or("id is required")?.to_string();if op=="delete"{rows.retain(|v|v.get("id").and_then(Value::as_str)!=Some(&entity_id));}else if let Some(old)=rows.iter_mut().find(|v|v.get("id").and_then(Value::as_str)==Some(&entity_id)){*old=value.clone();}else{rows.push(value.clone());}let tx=conn.transaction().map_err(|e|e.to_string())?;write(&tx,key,&rows)?;queue(&tx,entity,&entity_id,op,&value)?;tx.commit().map_err(|e|e.to_string())?;Ok(value)}
 fn all(app:&AppHandle,key:&str)->Result<Vec<Value>,String>{
     let c=open_local_connection(app)?;
     local_auth::require_local_permission(&c,"finance.view")?;
@@ -42,7 +42,7 @@ fn all(app:&AppHandle,key:&str)->Result<Vec<Value>,String>{
     local_auth::require_local_permission(&c,"finance.view_sensitive")?;
     read(&c,key)
 }
-fn merge(app:&AppHandle,key:&str,entity:&str,incoming:Vec<Value>,deleted:Vec<String>)->Result<(),String>{let c=open_local_connection(app)?;let mut rows=read(&c,key)?;let pending:std::collections::HashSet<String>={let mut s=c.prepare("SELECT entity_id FROM sync_outbox WHERE synced_at IS NULL AND entity_type=?1 AND entity_id IS NOT NULL").map_err(|e|e.to_string())?;let x=s.query_map([entity],|r|r.get(0)).map_err(|e|e.to_string())?.filter_map(Result::ok).collect();x};rows.retain(|v|!deleted.contains(&v.get("id").and_then(Value::as_str).unwrap_or("").to_string())||pending.contains(v.get("id").and_then(Value::as_str).unwrap_or("")));for x in incoming{let xid=x.get("id").and_then(Value::as_str).unwrap_or("");if pending.contains(xid){continue}if let Some(old)=rows.iter_mut().find(|v|v.get("id").and_then(Value::as_str)==Some(xid)){*old=x}else{rows.push(x)}}write(&c,key,&rows)}
+fn merge(c:&rusqlite::Connection,key:&str,entity:&str,incoming:Vec<Value>,deleted:Vec<String>)->Result<Vec<Value>,String>{let mut rows=read(c,key)?;let pending:std::collections::HashSet<String>={let mut s=c.prepare("SELECT entity_id FROM active_sync_outbox WHERE synced_at IS NULL AND entity_type=?1 AND entity_id IS NOT NULL").map_err(|e|e.to_string())?;let x=s.query_map([entity],|r|r.get(0)).map_err(|e|e.to_string())?.filter_map(Result::ok).collect();x};rows.retain(|v|!deleted.contains(&v.get("id").and_then(Value::as_str).unwrap_or("").to_string())||pending.contains(v.get("id").and_then(Value::as_str).unwrap_or("")));for x in incoming{let xid=x.get("id").and_then(Value::as_str).unwrap_or("");if pending.contains(xid){continue}if let Some(old)=rows.iter_mut().find(|v|v.get("id").and_then(Value::as_str)==Some(xid)){*old=x}else{rows.push(x)}}Ok(rows)}
 #[tauri::command] pub fn get_local_transactions(app:AppHandle)->Result<Vec<Value>,String>{all(&app,KEY_TX)}
 #[tauri::command] pub fn create_local_transaction(app:AppHandle,transaction:Value)->Result<Value,String>{mutate(&app,KEY_TX,"transaction","create",transaction)}
 #[tauri::command] pub fn update_local_transaction(app:AppHandle,id:String,transaction:Value)->Result<Value,String>{let mut v=transaction;v.as_object_mut().ok_or("transaction must be object")?.insert("id".into(),json!(id));mutate(&app,KEY_TX,"transaction","update",v)}
@@ -56,17 +56,18 @@ fn merge(app:&AppHandle,key:&str,entity:&str,incoming:Vec<Value>,deleted:Vec<Str
 #[tauri::command] pub fn update_local_funding_source(app:AppHandle,id:String,source:Value)->Result<Value,String>{let mut v=source;v.as_object_mut().ok_or("source must be object")?.insert("id".into(),json!(id));mutate(&app,KEY_FS,"funding_source","update",v)}
 #[tauri::command] pub fn delete_local_funding_source(app:AppHandle,id:String)->Result<Value,String>{mutate(&app,KEY_FS,"funding_source","delete",json!({"id":id}))}
 #[tauri::command]
-pub fn apply_server_finance_pull(app:AppHandle,transactions:Vec<Value>,budget_periods:Vec<Value>,funding_sources:Vec<Value>,deleted_transactions:Vec<String>,deleted_budget_periods:Vec<String>,deleted_funding_sources:Vec<String>,sensitive_access:bool)->Result<(),String>{
+pub fn apply_server_finance_pull(app:AppHandle,transactions:Vec<Value>,budget_periods:Vec<Value>,funding_sources:Vec<Value>,deleted_transactions:Vec<String>,deleted_budget_periods:Vec<String>,deleted_funding_sources:Vec<String>,sensitive_access:bool,expected_account_id:String)->Result<(),String>{
     let mut c=open_local_connection(&app)?;
-    local_auth::require_local_permission(&c,"finance.view")?;
+    let tx=c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+    local_db::require_sync_account(&tx,&expected_account_id)?;
+    local_auth::require_local_permission(&tx,"finance.view")?;
     if sensitive_access {
-        local_auth::require_local_permission(&c,"finance.view_sensitive")?;
+        local_auth::require_local_permission(&tx,"finance.view_sensitive")?;
     }else{
         // Refuse a destructive reconciliation while unsent finance edits remain.
         // They must be resolved explicitly rather than silently discarded.
-        let pending:i64=c.query_row("SELECT COUNT(*) FROM sync_outbox WHERE synced_at IS NULL AND entity_type IN ('transaction','budget_period','funding_source')",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+        let pending:i64=tx.query_row("SELECT COUNT(*) FROM active_sync_outbox WHERE synced_at IS NULL AND entity_type IN ('transaction','budget_period','funding_source')",[],|r|r.get(0)).map_err(|e|e.to_string())?;
         if pending>0{return Err("Cannot purge restricted finance cache while finance changes are pending sync. Resolve pending changes first.".into())}
-        let tx=c.transaction().map_err(|e|e.to_string())?;
         let cleaned:Vec<Value>=transactions.into_iter().filter_map(|mut row|{
             if row.get("direction").and_then(Value::as_str)!=Some("expense"){return None}
             if let Some(obj)=row.as_object_mut(){
@@ -80,8 +81,11 @@ pub fn apply_server_finance_pull(app:AppHandle,transactions:Vec<Value>,budget_pe
         tx.commit().map_err(|e|e.to_string())?;
         return Ok(())
     }
-    drop(c);
-    merge(&app,KEY_TX,"transaction",transactions,deleted_transactions)?;
-    merge(&app,KEY_BP,"budget_period",budget_periods,deleted_budget_periods)?;
-    merge(&app,KEY_FS,"funding_source",funding_sources,deleted_funding_sources)
+    let merged_transactions=merge(&tx,KEY_TX,"transaction",transactions,deleted_transactions)?;
+    let merged_periods=merge(&tx,KEY_BP,"budget_period",budget_periods,deleted_budget_periods)?;
+    let merged_sources=merge(&tx,KEY_FS,"funding_source",funding_sources,deleted_funding_sources)?;
+    write(&tx,KEY_TX,&merged_transactions)?;
+    write(&tx,KEY_BP,&merged_periods)?;
+    write(&tx,KEY_FS,&merged_sources)?;
+    tx.commit().map_err(|e|e.to_string())
 }

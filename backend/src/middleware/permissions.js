@@ -34,7 +34,7 @@ export function canReadOrdinaryLabData(permission, permissions) {
 // unless they have been reviewed and added here.
 export const ORDINARY_PROJECT_FIELDS = Object.freeze([
   'id','name','status','description','priority','start_date','due_date',
-  'owner_id','review_status','created_at','updated_at'
+  'owner_id','review_status','visibility','created_at','updated_at'
 ]);
 
 export const STANDARD_PROJECT_FINANCIAL_FIELDS = Object.freeze(['budget','total_spent','actual_expense','project_income','allocated_inventory_value','budget_remaining','net_spend']);

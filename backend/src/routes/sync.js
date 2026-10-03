@@ -5,7 +5,8 @@ import { pool } from '../db.js';
 import { getUserPermissions, canReadSensitiveFinance, projectFinancialProjection, transactionResponseProjection } from '../middleware/permissions.js';
 import { writeAuditLog } from '../middleware/audit.js';
 import { getResourceAccess, requireResourceEditor, validateResourceParent } from '../middleware/resource-access.js';
-import { getProjectAccess } from '../middleware/project-access.js';
+import { effectiveProjectAccess, getProjectAccess } from '../middleware/project-access.js';
+import { canEditRestrictedEntity, isVisibility, visibilityReadSql } from '../middleware/visibility.js';
 const router=Router();
 function generateItemSku(name, type) {
   const namePart = String(name || 'item').toUpperCase().replace(/[^A-Z0-9]+/g, '').slice(0, 8) || 'ITEM';
@@ -20,7 +21,7 @@ function encodePullCursor(eventAt,eventType,eventId){const raw=JSON.stringify({a
 function decodePullCursor(value){if(!value)return null;try{const padded=value.replace(/-/g,'+').replace(/_/g,'/').padEnd(Math.ceil(value.length/4)*4,'=');const parsed=JSON.parse(Buffer.from(padded,'base64').toString('utf8'));if(!parsed||typeof parsed.at!=='string'||!parsed.type||typeof parsed.id!=='string')return null;const at=new Date(parsed.at);if(Number.isNaN(at.getTime()))return null;if(parsed.type!=='item'&&parsed.type!=='delete')return null;return{at:at.toISOString(),type:parsed.type,id:parsed.id};}catch{return null;}}
 
 const PROJECT_ENTITY_CONFIG = {
-  project: { table: 'projects', fields: ['name','status','budget','description','priority','start_date','due_date','owner_id'] },
+  project: { table: 'projects', fields: ['name','status','budget','description','priority','start_date','due_date','owner_id','visibility'] },
   project_task: { table: 'project_tasks', fields: ['project_id','title','description','status','priority','assignee_id','due_date','completed_at','created_by'] },
   project_experiment: { table: 'project_experiments', fields: ['project_id','title','status','hypothesis','procedure','observations','result','conclusion','performed_by'] },
   project_bom: { table: 'project_bom_items', fields: ['project_id','name','part_number','required_quantity','unit','preferred_item_id','alternative_item_id','notes','created_by'] },
@@ -41,7 +42,8 @@ function engineeringEntityType(value){return Object.prototype.hasOwnProperty.cal
 async function canEditProject(client,projectId,user){
   if(!projectId)return false;
   if(user?.role==='admin')return true;
-  const result=await client.query('SELECT 1 FROM projects p WHERE p.id=$1 AND (p.owner_id=$2 OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id=p.id AND pm.user_id=$2 AND pm.member_role IN (\'lead\',\'member\')))',[projectId,user?.userId]);
+  if(user?.role==='viewer')return false;
+  const result=await client.query("SELECT 1 FROM projects p WHERE p.id=$1 AND (p.owner_id=$2 OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id=p.id AND pm.user_id=$2 AND pm.member_role IN ('lead','member'))) AND (p.visibility<>'restricted' OR EXISTS (SELECT 1 FROM record_access_grants g WHERE g.entity_type='project' AND g.entity_id=p.id AND g.user_id=$2 AND g.access_level='edit'))",[projectId,user?.userId]);
   return result.rowCount>0;
 }
 function validateProjectRecord(entityType,record){
@@ -49,6 +51,7 @@ function validateProjectRecord(entityType,record){
     if(!String(record.name||'').trim())fail(400,'INVALID_PROJECT','Project name is required');
     if(!['planning','active','completed','on_hold','cancelled'].includes(record.status||'planning'))fail(400,'INVALID_PROJECT','Invalid project status');
     if(!['low','normal','high','critical'].includes(record.priority||'normal'))fail(400,'INVALID_PROJECT','Invalid project priority');
+    if(Object.hasOwn(record,'visibility')&&!isVisibility(record.visibility))fail(400,'INVALID_PROJECT_VISIBILITY','visibility must be lab, project, or restricted');
   }
   if(entityType==='project_task'){
     if(!String(record.title||'').trim())fail(400,'INVALID_PROJECT_TASK','Task title is required');
@@ -184,7 +187,10 @@ async function applyProjectEntity(client,change,user){
       if(checks.rowCount!==2||checks.rows.some(row=>row.project_id!==projectId))fail(400,'INVALID_PROJECT_CONNECTOR','Connector blocks must belong to this project');
     }
     const placeholders=values.map((_,i)=>'$'+(i+1)).join(',');
-    return(await client.query('INSERT INTO '+cfg.table+' ('+columns.join(',')+') VALUES ('+placeholders+') RETURNING *',values)).rows[0];
+    const created=(await client.query('INSERT INTO '+cfg.table+' ('+columns.join(',')+') VALUES ('+placeholders+') RETURNING *',values)).rows[0];
+    if(entityType==='project'&&created.owner_id)await client.query("INSERT INTO project_members(project_id,user_id,member_role) VALUES($1,$2,'lead') ON CONFLICT(project_id,user_id) DO NOTHING",[entityId,created.owner_id]);
+    if(entityType==='project'&&created.visibility==='restricted')await client.query("INSERT INTO record_access_grants(entity_type,entity_id,user_id,access_level,created_by) VALUES('project',$1,$2,'edit',$2) ON CONFLICT(entity_type,entity_id,user_id) DO UPDATE SET access_level='edit'",[entityId,user.userId]);
+    return created;
   }
   if(change.operation==='update'){
     const updates=[],values=[];
@@ -194,9 +200,13 @@ async function applyProjectEntity(client,change,user){
     }
     if(!updates.length)return existing;
     updates.push('updated_at=now()');values.push(entityId);
-    return(await client.query('UPDATE '+cfg.table+' SET '+updates.join(',')+' WHERE id=$'+values.length+' RETURNING *',values)).rows[0];
+    const updated=(await client.query('UPDATE '+cfg.table+' SET '+updates.join(',')+' WHERE id=$'+values.length+' RETURNING *',values)).rows[0];
+    if(entityType==='project'&&existing.visibility!==updated.visibility&&updated.visibility==='restricted')await client.query("INSERT INTO record_access_grants(entity_type,entity_id,user_id,access_level,created_by) VALUES('project',$1,$2,'edit',$2) ON CONFLICT(entity_type,entity_id,user_id) DO UPDATE SET access_level='edit'",[entityId,user.userId]);
+    if(entityType==='project'&&existing.visibility==='restricted'&&updated.visibility!=='restricted')await client.query("DELETE FROM record_access_grants WHERE entity_type='project' AND entity_id=$1",[entityId]);
+    return updated;
   }
   if(change.operation==='delete'){
+    if(entityType==='project')await client.query("DELETE FROM record_access_grants WHERE entity_type='project' AND entity_id=$1",[entityId]);
     const result=await client.query('DELETE FROM '+cfg.table+' WHERE id=$1 RETURNING id',[entityId]);
     if(result.rowCount)await client.query("INSERT INTO sync_tombstones(entity_type,entity_id,project_id) VALUES($1,$2,$3) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now(),project_id=EXCLUDED.project_id",[entityType,entityId,projectId]);
     return{deleted:Boolean(result.rowCount),id:entityId};
@@ -205,7 +215,7 @@ async function applyProjectEntity(client,change,user){
 }
 
 async function applyItem(client,change){const payload=object(change.payload,'Item payload'),itemId=id(payload.id||change.entity_id,'Item ID');if(change.operation==='create'){const values=[itemId],columns=['id'];for(const field of ITEM_FIELDS)if(Object.prototype.hasOwnProperty.call(payload,field)){columns.push(field);const value=field==='sku' ? (typeof payload[field]==='string'&&payload[field].trim() ? payload[field].trim() : generateItemSku(payload.name,payload.type)) : payload[field];values.push(value??null);}if((await client.query('SELECT id FROM items WHERE id=$1',[itemId])).rowCount)fail(409,'ITEM_ALREADY_EXISTS',`Item ${itemId} already exists`);return(await client.query(`INSERT INTO items (${columns.join(',')}) VALUES (${values.map((_,i)=>`$${i+1}`).join(',')}) RETURNING *`,values)).rows[0];}if(change.operation==='update'){const patch=object(payload.patch||payload.item||payload,'Item update'),updates=[],values=[];const before=await client.query('SELECT * FROM items WHERE id=$1 FOR UPDATE',[itemId]);if(!before.rowCount)fail(409,'ITEM_NOT_FOUND',`Item ${itemId} does not exist on the server`);const base=payload.base_updated_at;if(base&&!payload.conflict_resolution){const serverAt=new Date(before.rows[0].updated_at),baseAt=new Date(base);if(Number.isNaN(baseAt.getTime())||Number.isNaN(serverAt.getTime())||serverAt.getTime()!==baseAt.getTime())fail(409,'SYNC_CONFLICT',`Item ${itemId} changed on the server after this offline edit`);}if(payload.conflict_resolution&&payload.conflict_resolution!=='keep_local')fail(400,'INVALID_CONFLICT_RESOLUTION','Unsupported conflict resolution');for(const field of ITEM_FIELDS)if(field!=='id'&&field!=='created_at'&&field!=='updated_at'&&Object.prototype.hasOwnProperty.call(patch,field)){values.push(patch[field]??null);updates.push(`${field}=$${values.length}`);}if(!updates.length)return before.rows[0];if(Object.prototype.hasOwnProperty.call(patch,'current_quantity'))await assertReservationStockFloor(client,itemId,Number(patch.current_quantity));updates.push('updated_at=now()');values.push(itemId);return(await client.query(`UPDATE items SET ${updates.join(',')} WHERE id=$${values.length} RETURNING *`,values)).rows[0];}if(change.operation==='delete'){const result=await client.query('DELETE FROM items WHERE id=$1 RETURNING id',[itemId]);if(result.rowCount)await client.query("INSERT INTO sync_tombstones(entity_type,entity_id) VALUES('item',$1) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now()",[itemId]);return{deleted:Boolean(result.rowCount),id:itemId};}fail(400,'UNSUPPORTED_ITEM_OPERATION',`Unsupported item operation: ${change.operation}`);}
-const RESOURCE_FIELDS=['name','kind','file_type','original_filename','mime_type','size_bytes','parent_resource_id','relative_path','url','thumbnail_url','item_id','project_id','note_id','category','description','tags'];
+const RESOURCE_FIELDS=['name','kind','file_type','original_filename','mime_type','size_bytes','parent_resource_id','relative_path','url','thumbnail_url','item_id','project_id','note_id','category','description','tags','visibility'];
 async function applyResourceEntity(client,change,user){
  const payload=object(change.payload,'Resource sync payload'),record=payload.resource||payload.record||payload,entityId=id(record.id||payload.id||change.entity_id,'Resource ID');
  if(change.operation==='create'){
@@ -213,6 +223,8 @@ async function applyResourceEntity(client,change,user){
   if(!permissions.has('resources.create'))fail(403,'PERMISSION_DENIED','Permission required: resources.create');
   if(!['link','folder'].includes(String(record.kind||'')))fail(400,'UNSUPPORTED_RESOURCE_CREATE','Only link and folder resources can be created through offline sync');
   if(!String(record.name||'').trim())fail(400,'INVALID_RESOURCE','Resource name is required');
+  const visibility=record.visibility??'lab';
+  if(!isVisibility(visibility))fail(400,'INVALID_RESOURCE_VISIBILITY','visibility must be lab, project, or restricted');
   const parents=[record.item_id,record.project_id,record.note_id].filter(Boolean);
   if(parents.length>1)fail(400,'INVALID_RESOURCE_PARENT','A resource can be attached to at most one parent context');
   if(record.project_id){
@@ -244,7 +256,9 @@ async function applyResourceEntity(client,change,user){
   }
   columns.push('uploaded_by');values.push(user.userId);
   const placeholders=values.map((_,i)=>'$'+(i+1)).join(',');
-  return (await client.query('INSERT INTO resources ('+columns.join(',')+') VALUES ('+placeholders+') RETURNING *',values)).rows[0];
+  const created=(await client.query('INSERT INTO resources ('+columns.join(',')+') VALUES ('+placeholders+') RETURNING *',values)).rows[0];
+  if(visibility==='restricted')await client.query("INSERT INTO record_access_grants(entity_type,entity_id,user_id,access_level,created_by) VALUES('resource',$1,$2,'edit',$2) ON CONFLICT(entity_type,entity_id,user_id) DO UPDATE SET access_level='edit'",[entityId,user.userId]);
+  return created;
  }
  const existing=await client.query('SELECT * FROM resources WHERE id=$1 FOR UPDATE',[entityId]);
  if(!existing.rowCount&&change.operation==='delete')return{id:entityId,deleted:true,already_deleted:true};
@@ -253,13 +267,18 @@ async function applyResourceEntity(client,change,user){
  if(!access.ok)fail(access.status,access.error.code,access.error.message);
  if(change.operation==='update'){
   const updates=[],values=[];
-  for(const field of ['category','description','tags'])if(Object.prototype.hasOwnProperty.call(record,field)){values.push(record[field]??null);updates.push(field+'=$'+values.length);}
+  if(Object.prototype.hasOwnProperty.call(record,'visibility')&&!isVisibility(record.visibility))fail(400,'INVALID_RESOURCE_VISIBILITY','visibility must be lab, project, or restricted');
+  for(const field of ['category','description','tags','visibility'])if(Object.prototype.hasOwnProperty.call(record,field)){values.push(record[field]??null);updates.push(field+'=$'+values.length);}
   if(!updates.length)return existing.rows[0];
   values.push(entityId);
-  return (await client.query('UPDATE resources SET '+updates.join(',')+' WHERE id=$'+values.length+' RETURNING *',values)).rows[0];
+  const updated=(await client.query('UPDATE resources SET '+updates.join(',')+' WHERE id=$'+values.length+' RETURNING *',values)).rows[0];
+  if(existing.rows[0].visibility!==updated.visibility&&updated.visibility==='restricted')await client.query("INSERT INTO record_access_grants(entity_type,entity_id,user_id,access_level,created_by) VALUES('resource',$1,$2,'edit',$2) ON CONFLICT(entity_type,entity_id,user_id) DO UPDATE SET access_level='edit'",[entityId,user.userId]);
+  if(existing.rows[0].visibility==='restricted'&&updated.visibility!=='restricted')await client.query("DELETE FROM record_access_grants WHERE entity_type='resource' AND entity_id=$1",[entityId]);
+  return updated;
  }
  if(change.operation==='delete'){
   const projectId=existing.rows[0]?.project_id||null,itemId=existing.rows[0]?.item_id||null,noteId=existing.rows[0]?.note_id||null;
+  await client.query("DELETE FROM record_access_grants WHERE entity_type='resource' AND entity_id=$1",[entityId]);
   await client.query('DELETE FROM resources WHERE id=$1',[entityId]);
   await client.query("INSERT INTO sync_tombstones(entity_type,entity_id,project_id,item_id,note_id) VALUES('resource',$1,$2,$3,$4) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now(),project_id=EXCLUDED.project_id,item_id=EXCLUDED.item_id,note_id=EXCLUDED.note_id",[entityId,projectId,itemId,noteId]);
   return{id:entityId,deleted:true};
@@ -394,11 +413,9 @@ async function applyEngineeringEntity(client,change,user){
 router.get('/notes/pull',async(req,res,next)=>{
   try{
     const permissions=await getUserPermissions(req.user.userId,req.user.role);if(!permissions.has('notes.view'))return res.status(403).json({error:{code:'PERMISSION_DENIED',message:'Permission required: notes.view'}});
-    const values=req.user.role==='admin'?[]:[req.user.userId];
-    const visibility=req.user.role==='admin'?'':'WHERE (n.project_id IS NULL OR n.project_id IN (SELECT p.id FROM projects p LEFT JOIN project_members pm ON pm.project_id=p.id WHERE p.owner_id=$1 OR pm.user_id=$1))';
-    const notes=await pool.query(`SELECT n.* FROM notes n ${visibility} ORDER BY n.updated_at DESC`,values);
+    const notes=await pool.query(`SELECT n.* FROM notes n WHERE ${visibilityReadSql({alias:'n',entityType:'note',userIdParameter:'$1',roleParameter:'$2'})} ORDER BY n.updated_at DESC`,[req.user.userId,req.user.role]);
     const tomb=await pool.query("SELECT entity_id FROM sync_tombstones WHERE entity_type='note' AND ($1='admin' OR project_id IS NULL OR project_id IN (SELECT p.id FROM projects p LEFT JOIN project_members pm ON pm.project_id=p.id WHERE p.owner_id=$2 OR pm.user_id=$2)) ORDER BY deleted_at DESC LIMIT 1000",[req.user.role,req.user.userId]);
-    res.setHeader('Cache-Control','no-store');res.json({notes:notes.rows,deleted_note_ids:tomb.rows.map(r=>r.entity_id)});
+    res.setHeader('Cache-Control','no-store');res.json({notes:notes.rows,visible_note_ids:notes.rows.map(row=>row.id),deleted_note_ids:tomb.rows.map(r=>r.entity_id)});
   }catch(e){next(e);}
 });
 
@@ -433,7 +450,7 @@ router.get('/resources/pull',async(req,res,next)=>{
   try{
     const permissions=await getUserPermissions(req.user.userId,req.user.role);
     if(!permissions.has('resources.view'))return res.status(403).json({error:{code:'PERMISSION_DENIED',message:'Permission required: resources.view'}});
-    const result=await pool.query('SELECT r.id,r.name,r.kind,r.file_type,r.original_filename,r.mime_type,r.size_bytes,r.parent_resource_id,r.relative_path,r.url,r.thumbnail_url,r.category,r.description,r.tags,r.updated_at,r.created_at,r.item_id,r.project_id,r.note_id FROM resources r ORDER BY r.updated_at DESC');
+    const result=await pool.query('SELECT r.id,r.name,r.kind,r.file_type,r.original_filename,r.mime_type,r.size_bytes,r.parent_resource_id,r.relative_path,r.url,r.thumbnail_url,r.category,r.description,r.tags,r.visibility,r.updated_at,r.created_at,r.item_id,r.project_id,r.note_id FROM resources r ORDER BY r.updated_at DESC');
     const visible=[];
     for(const row of result.rows){const access=await getResourceAccess(row.id,req.user);if(access.access!=='none'&&!access.context?.invalid)visible.push(row);}
     const deletedRows=await pool.query("SELECT entity_id,project_id,item_id,note_id FROM sync_tombstones WHERE entity_type='resource' ORDER BY deleted_at DESC LIMIT 500");
@@ -446,7 +463,7 @@ router.get('/resources/pull',async(req,res,next)=>{
       deleted.push(row.entity_id);
     }
     res.setHeader('Cache-Control','no-store');
-    res.json({resources:visible,deleted_resource_ids:deleted});
+    res.json({resources:visible,visible_resource_ids:visible.map(row=>row.id),deleted_resource_ids:deleted});
   }catch(error){next(error);}
 });
 
@@ -471,12 +488,10 @@ router.get('/projects/pull',async(req,res,next)=>{
   try{
     const permissions=await getUserPermissions(req.user.userId,req.user.role);
     if(!permissions.has('projects.view'))return res.status(403).json({error:{code:'PERMISSION_DENIED',message:'Permission required: projects.view'}});
-    const values=[];
-    const visibility='';
-    const projects=await pool.query(`SELECT p.* FROM projects p ${visibility} ORDER BY p.updated_at DESC`,values);
+    const projects=await pool.query(`SELECT p.* FROM projects p WHERE ${visibilityReadSql({alias:'p',entityType:'project',userIdParameter:'$1',roleParameter:'$2',projectIdExpression:'p.id'})} ORDER BY p.updated_at DESC`,[req.user.userId,req.user.role]);
     const ids=projects.rows.map(p=>p.id);
-    const deletedRows=await pool.query("SELECT entity_type,entity_id FROM sync_tombstones WHERE entity_type IN ('project','project_task','project_experiment','project_bom','project_block','project_connector','project_experiment_measurement','project_experiment_observation','project_task_experiment','project_work_attachment','project_resource_requirement') AND (project_id=ANY($1::uuid[]) OR (project_id IS NULL AND entity_type='project')) ORDER BY deleted_at DESC LIMIT 2500",[ids]); const deletedByType={project:[],project_task:[],project_experiment:[],project_bom:[],project_block:[],project_connector:[],project_experiment_measurement:[],project_experiment_observation:[],project_task_experiment:[],project_work_attachment:[],project_resource_requirement:[]}; for(const row of deletedRows.rows)if(deletedByType[row.entity_type])deletedByType[row.entity_type].push(row.entity_id); if(!ids.length)return res.json({projects:[],deleted_project_ids:deletedByType.project,deleted_project_entities:deletedByType});
-    const [tasks,experiments,bom,items,blocks,connectors,measurements,observations,taskExperiments,attachments,requirements]=await Promise.all([
+    const deletedRows=await pool.query("SELECT entity_type,entity_id FROM sync_tombstones WHERE entity_type IN ('project','project_task','project_experiment','project_bom','project_block','project_connector','project_experiment_measurement','project_experiment_observation','project_task_experiment','project_work_attachment','project_resource_requirement') AND (project_id=ANY($1::uuid[]) OR (project_id IS NULL AND entity_type='project')) ORDER BY deleted_at DESC LIMIT 2500",[ids]); const deletedByType={project:[],project_task:[],project_experiment:[],project_bom:[],project_block:[],project_connector:[],project_experiment_measurement:[],project_experiment_observation:[],project_task_experiment:[],project_work_attachment:[],project_resource_requirement:[]}; for(const row of deletedRows.rows)if(deletedByType[row.entity_type])deletedByType[row.entity_type].push(row.entity_id); if(!ids.length)return res.json({projects:[],visible_project_ids:[],deleted_project_ids:deletedByType.project,deleted_project_entities:deletedByType});
+    const [tasks,experiments,bom,items,blocks,connectors,measurements,observations,taskExperiments,attachments,requirements,members,grants]=await Promise.all([
       pool.query('SELECT * FROM project_tasks WHERE project_id=ANY($1::uuid[]) ORDER BY created_at',[ids]),
       pool.query('SELECT * FROM project_experiments WHERE project_id=ANY($1::uuid[]) ORDER BY updated_at DESC',[ids]),
       pool.query('SELECT * FROM project_bom_items WHERE project_id=ANY($1::uuid[]) ORDER BY created_at',[ids]),
@@ -487,14 +502,23 @@ router.get('/projects/pull',async(req,res,next)=>{
       pool.query('SELECT o.* FROM project_experiment_observations o JOIN project_experiments e ON e.id=o.experiment_id WHERE e.project_id=ANY($1::uuid[]) ORDER BY o.created_at',[ids]),
       pool.query('SELECT te.* FROM project_task_experiments te WHERE te.project_id=ANY($1::uuid[]) ORDER BY te.created_at',[ids]),
       pool.query('SELECT a.* FROM project_work_attachments a LEFT JOIN project_tasks t ON t.id=a.task_id LEFT JOIN project_experiments e ON e.id=a.experiment_id WHERE COALESCE(t.project_id,e.project_id)=ANY($1::uuid[]) ORDER BY a.created_at',[ids]),
-      pool.query('SELECT * FROM project_resource_requirements WHERE project_id=ANY($1::uuid[]) ORDER BY required_by NULLS LAST,created_at',[ids])
+      pool.query('SELECT * FROM project_resource_requirements WHERE project_id=ANY($1::uuid[]) ORDER BY required_by NULLS LAST,created_at',[ids]),
+      pool.query("SELECT pm.project_id,pm.user_id,pm.member_role,pm.joined_at,u.username,u.role FROM project_members pm JOIN users u ON u.id=pm.user_id WHERE pm.project_id=ANY($1::uuid[]) ORDER BY CASE pm.member_role WHEN 'lead' THEN 0 WHEN 'member' THEN 1 ELSE 2 END,u.username",[ids]),
+      pool.query("SELECT entity_id,access_level FROM record_access_grants WHERE entity_type='project' AND entity_id=ANY($1::uuid[]) AND user_id=$2",[ids,req.user.userId])
     ]);
+    const resourceAccess=new Map();
+    for(const resourceId of new Set([...blocks.rows,...attachments.rows].map(row=>row.resource_id).filter(Boolean))){resourceAccess.set(resourceId,(await getResourceAccess(resourceId,req.user)).access!=='none');}
+    const visibleBlocks=blocks.rows.filter(row=>!row.resource_id||resourceAccess.get(row.resource_id));
+    const visibleBlockIds=new Set(visibleBlocks.map(row=>row.id));
+    const visibleConnectors=connectors.rows.filter(row=>visibleBlockIds.has(row.source_block_id)&&visibleBlockIds.has(row.target_block_id));
+    const visibleAttachments=attachments.rows.filter(row=>resourceAccess.get(row.resource_id));
     const by=(rows,key)=>{const m=new Map();for(const row of rows){const id=row[key];if(!m.has(id))m.set(id,[]);m.get(id).push(row);}return m;};
-    const taskMap=by(tasks.rows,'project_id'),taskExperimentMap=by(taskExperiments.rows,'task_id'),taskExperimentProjectMap=by(taskExperiments.rows,'project_id'),experimentMap=by(experiments.rows,'project_id'),bomMap=by(bom.rows,'project_id'),itemMap=by(items.rows,'project_id'),blockMap=by(blocks.rows,'project_id'),connectorMap=by(connectors.rows,'project_id'),measurementMap=by(measurements.rows,'experiment_id'),observationMap=by(observations.rows,'experiment_id'),attachmentTaskMap=by(attachments.rows,'task_id'),attachmentExperimentMap=by(attachments.rows,'experiment_id'),requirementMap=by(requirements.rows,'project_id');
+    const taskMap=by(tasks.rows,'project_id'),taskExperimentMap=by(taskExperiments.rows,'task_id'),taskExperimentProjectMap=by(taskExperiments.rows,'project_id'),experimentMap=by(experiments.rows,'project_id'),bomMap=by(bom.rows,'project_id'),itemMap=by(items.rows,'project_id'),blockMap=by(visibleBlocks,'project_id'),connectorMap=by(visibleConnectors,'project_id'),measurementMap=by(measurements.rows,'experiment_id'),observationMap=by(observations.rows,'experiment_id'),attachmentTaskMap=by(visibleAttachments,'task_id'),attachmentExperimentMap=by(visibleAttachments,'experiment_id'),requirementMap=by(requirements.rows,'project_id'),memberMap=by(members.rows,'project_id');
+    const grantMap=new Map(grants.rows.map(row=>[row.entity_id,row.access_level]));
     for(const e of experiments.rows){e.measurements=measurementMap.get(e.id)||[];e.observations=observationMap.get(e.id)||[];e.attachments=attachmentExperimentMap.get(e.id)||[];}
     for(const t of tasks.rows){t.attachments=attachmentTaskMap.get(t.id)||[];t.experiments=taskExperimentMap.get(t.id)||[];}
     res.setHeader('Cache-Control','no-store');
-    res.json({projects:projects.rows.map(p=>({...projectFinancialProjection(p,permissions),tasks:taskMap.get(p.id)||[],experiments:experimentMap.get(p.id)||[],bom:bomMap.get(p.id)||[],items:itemMap.get(p.id)||[],blocks:blockMap.get(p.id)||[],connectors:connectorMap.get(p.id)||[],requirements:requirementMap.get(p.id)||[],task_experiments:taskExperimentProjectMap.get(p.id)||[]})),deleted_project_ids:deletedByType.project,deleted_project_entities:deletedByType});
+    res.json({projects:projects.rows.map(p=>{const members=memberMap.get(p.id)||[];const memberRole=members.find(member=>member.user_id===req.user.userId)?.member_role||null;const access=effectiveProjectAccess({ownerId:p.owner_id,memberRole,visibility:p.visibility,grantLevel:grantMap.get(p.id)||null,userId:req.user.userId,role:req.user.role,canEdit:permissions.has('projects.edit')});return {...projectFinancialProjection(p,permissions),members,permissions:{access:access.access,member_role:access.memberRole,can_edit:access.access==='edit'||access.access==='admin',user_id:req.user.userId},tasks:taskMap.get(p.id)||[],experiments:experimentMap.get(p.id)||[],bom:bomMap.get(p.id)||[],items:itemMap.get(p.id)||[],blocks:blockMap.get(p.id)||[],connectors:connectorMap.get(p.id)||[],requirements:requirementMap.get(p.id)||[],task_experiments:taskExperimentProjectMap.get(p.id)||[]};}),visible_project_ids:ids,deleted_project_ids:deletedByType.project,deleted_project_entities:deletedByType});
   }catch(error){next(error);}
 });
 router.get('/pull',async(req,res,next)=>{try{const raw=typeof req.query.since==='string'?req.query.since.trim():'';let cursor=null;if(raw){cursor=decodePullCursor(raw);if(!cursor){const legacy=new Date(raw);if(Number.isNaN(legacy.getTime()))return res.status(400).json({error:{code:'INVALID_SYNC_CURSOR',message:'since must be a valid inventory sync cursor'}});cursor={at:legacy.toISOString(),type:'',id:''};}}const limit=Math.min(500,Math.max(1,Number(req.query.limit||500)));const values=cursor?[cursor.at,cursor.type,cursor.id,limit+1]:[limit+1];const where=cursor?`WHERE event_at > $1 OR (event_at = $1 AND (event_type > $2 OR (event_type = $2 AND event_id > $3)))`:'';const result=await pool.query(`SELECT event_type,event_id,event_at,item,deleted FROM (SELECT 'item'::text AS event_type,id::text AS event_id,updated_at AS event_at,to_jsonb(items) AS item,false AS deleted FROM items UNION ALL SELECT 'delete'::text AS event_type,entity_id::text AS event_id,deleted_at AS event_at,NULL::jsonb AS item,true AS deleted FROM sync_tombstones WHERE entity_type='item') events ${where} ORDER BY event_at ASC,event_type ASC,event_id ASC LIMIT $${values.length}`,values);const rows=result.rows;const hasMore=rows.length>limit;const page=hasMore?rows.slice(0,limit):rows;const last=page[page.length-1];const nextCursor=last?encodePullCursor(last.event_at,last.event_type,last.event_id):(cursor?raw:null);res.setHeader('Cache-Control','no-store');res.json({items:page.filter(row=>!row.deleted).map(row=>row.item),deleted_item_ids:page.filter(row=>row.deleted).map(row=>row.event_id),next_cursor:nextCursor,has_more:hasMore});}catch(error){next(error);}});
@@ -509,7 +533,14 @@ router.post('/push',async(req,res,next)=>{const body=object(req.body,'Sync reque
       await writeAuditLog({req,actorUserId:req.user.userId,action:`sync:${operation}`,entityType,entityId:typeof change.entity_id==='string'&&/^[0-9a-f-]{32,36}$/i.test(change.entity_id)?change.entity_id:null,newValue:result,deviceId,metadata:{sync_mode:'online',authorization:'server',sync_entity_id:change.entity_id||null}});
       results.push({change_id:change.change_id,status:'synced',result:syncResponseProjection(entityType,result,permissions)});}catch(error){await client.query('ROLLBACK').catch(()=>{});if(error?.code==='23505'){const prior=await pool.query('SELECT payload_json,response_json,user_id,device_id,entity_type,operation FROM sync_idempotency WHERE change_id=$1',[change.change_id]);if(prior.rowCount){if(String(prior.rows[0].user_id)!==String(req.user.userId)||prior.rows[0].device_id!==deviceId||prior.rows[0].entity_type!==entityType||prior.rows[0].operation!==operation){results.push({change_id:change.change_id,status:'rejected',error:{code:'IDEMPOTENCY_OWNERSHIP_MISMATCH',message:'change_id belongs to a different user, device or operation'}});continue;}const same=(await pool.query('SELECT $1::jsonb = $2::jsonb AS same',[prior.rows[0].payload_json,change.payload])).rows[0].same;if(same){results.push({change_id:change.change_id,status:'synced',result:syncResponseProjection(entityType,prior.rows[0].response_json,permissions)});continue;}}}const status=Number(error?.status)>=400&&Number(error?.status)<500?'rejected':'failed';results.push({change_id:change.change_id,status,error:{code:error?.code||'SYNC_APPLY_FAILED',message:error?.message||'Unable to apply sync change'}});}finally{client.release();}}res.json({device_id:deviceId,accepted:results.filter(r=>r.status==='synced').length,results});}catch(error){next(error);}});
 
-const NOTE_FIELDS=['title','body','tags','item_id','project_id'];
+const NOTE_FIELDS=['title','body','tags','item_id','project_id','visibility'];
+
+async function canEditSyncedNote(note,user){
+  if(note.visibility==='restricted'&&!(await canEditRestrictedEntity({entityType:'note',entityId:note.id,user})))return false;
+  if(!note.project_id)return true;
+  const access=await getProjectAccess(note.project_id,user);
+  return access.access==='edit'||access.access==='admin';
+}
 
 async function applyNoteEntity(client,change,user){
   const payload=object(change.payload,'Note sync payload');
@@ -518,13 +549,21 @@ async function applyNoteEntity(client,change,user){
   const required=change.operation==='create'?'notes.create':change.operation==='delete'?'notes.delete':'notes.edit';
   const permissions=await getUserPermissions(user.userId,user.role);
   if(!permissions.has(required))fail(403,'PERMISSION_DENIED',`Permission required: ${required}`);
-  const access=await getProjectAccess(record.project_id||null,user);
-  if(access.access==='none'||access.access==='view'&&record.project_id)fail(403,'PROJECT_ACCESS_DENIED','You do not have edit access to this project');
   const existing=await client.query('SELECT * FROM notes WHERE id=$1 FOR UPDATE',[entityId]);
 
   if(change.operation==='create'){
-    if(existing.rowCount)return existing.rows[0];
+    if(existing.rowCount){
+      if(!(await canEditSyncedNote(existing.rows[0],user)))fail(403,'NOTE_EDIT_DENIED','You do not have edit access to this note');
+      return existing.rows[0];
+    }
     if(!String(record.title||'').trim())fail(400,'INVALID_NOTE','Note title is required');
+    const visibility=record.visibility??'lab';
+    if(!isVisibility(visibility))fail(400,'INVALID_NOTE_VISIBILITY','visibility must be lab, project, or restricted');
+    if(visibility==='project'&&!record.project_id)fail(400,'INVALID_NOTE_VISIBILITY','project visibility requires project_id');
+    if(record.project_id){
+      const access=await getProjectAccess(record.project_id,user);
+      if(access.access!=='edit'&&access.access!=='admin')fail(403,'PROJECT_ACCESS_DENIED','You do not have edit access to this project');
+    }
     const values=[entityId],columns=['id'];
     for(const field of NOTE_FIELDS){
       if(Object.prototype.hasOwnProperty.call(record,field)){
@@ -535,23 +574,31 @@ async function applyNoteEntity(client,change,user){
     columns.push('author_id');
     values.push(user.userId);
     const placeholders=values.map((_,i)=>'$'+(i+1)).join(',');
-    return(await client.query('INSERT INTO notes ('+columns.join(',')+') VALUES ('+placeholders+') RETURNING *',values)).rows[0];
+    const created=(await client.query('INSERT INTO notes ('+columns.join(',')+') VALUES ('+placeholders+') RETURNING *',values)).rows[0];
+    if(visibility==='restricted')await client.query("INSERT INTO record_access_grants(entity_type,entity_id,user_id,access_level,created_by) VALUES('note',$1,$2,'edit',$2) ON CONFLICT(entity_type,entity_id,user_id) DO UPDATE SET access_level='edit'",[entityId,user.userId]);
+    return created;
   }
 
   if(!existing.rowCount&&change.operation==='delete')return{deleted:true,id:entityId,already_deleted:true};
   if(!existing.rowCount)fail(409,'NOTE_NOT_FOUND',`Note ${entityId} does not exist on the server`);
   if(change.operation==='delete'){
+    if(!(await canEditSyncedNote(existing.rows[0],user)))fail(403,'NOTE_EDIT_DENIED','You do not have edit access to this note');
+    await client.query("DELETE FROM record_access_grants WHERE entity_type='note' AND entity_id=$1",[entityId]);
     await client.query('DELETE FROM notes WHERE id=$1',[entityId]);
     await client.query("INSERT INTO sync_tombstones(entity_type,entity_id,project_id) VALUES('note',$1,$2) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now(),project_id=EXCLUDED.project_id",[entityId,existing.rows[0].project_id||null]);
     return{deleted:true,id:entityId};
   }
 
   const current=existing.rows[0];
+  if(!(await canEditSyncedNote(current,user)))fail(403,'NOTE_EDIT_DENIED','You do not have edit access to this note');
   const destinationProject=Object.prototype.hasOwnProperty.call(record,'project_id')?record.project_id:current.project_id;
-  const currentAccess=await getProjectAccess(current.project_id||null,user);
-  const destinationAccess=await getProjectAccess(destinationProject||null,user);
-  if(currentAccess.access==='none'||currentAccess.access==='view'&&current.project_id)fail(403,'PROJECT_ACCESS_DENIED','You do not have edit access to this project');
-  if(destinationAccess.access==='none'||destinationAccess.access==='view'&&destinationProject)fail(403,'PROJECT_ACCESS_DENIED','You do not have edit access to this project');
+  if(destinationProject){
+    const destinationAccess=await getProjectAccess(destinationProject,user);
+    if(destinationAccess.access!=='edit'&&destinationAccess.access!=='admin')fail(403,'PROJECT_ACCESS_DENIED','You do not have edit access to this project');
+  }
+  const nextVisibility=Object.prototype.hasOwnProperty.call(record,'visibility')?record.visibility:current.visibility;
+  if(!isVisibility(nextVisibility))fail(400,'INVALID_NOTE_VISIBILITY','visibility must be lab, project, or restricted');
+  if(nextVisibility==='project'&&!destinationProject)fail(400,'INVALID_NOTE_VISIBILITY','project visibility requires project_id');
 
   const updates=[],values=[];
   for(const field of NOTE_FIELDS){
@@ -564,7 +611,10 @@ async function applyNoteEntity(client,change,user){
   if(updates.some(x=>x.startsWith('title='))&&!String(record.title||'').trim())fail(400,'INVALID_NOTE','Note title is required');
   await client.query('INSERT INTO note_revisions(note_id,title,body,tags,edited_by) VALUES($1,$2,$3,$4,$5)',[entityId,current.title,current.body,current.tags||[],user.userId]);
   values.push(entityId);
-  return(await client.query('UPDATE notes SET '+updates.join(',')+',updated_at=now() WHERE id=$'+values.length+' RETURNING *',values)).rows[0];
+  const updated=(await client.query('UPDATE notes SET '+updates.join(',')+',updated_at=now() WHERE id=$'+values.length+' RETURNING *',values)).rows[0];
+  if(current.visibility!==nextVisibility&&nextVisibility==='restricted')await client.query("INSERT INTO record_access_grants(entity_type,entity_id,user_id,access_level,created_by) VALUES('note',$1,$2,'edit',$2) ON CONFLICT(entity_type,entity_id,user_id) DO UPDATE SET access_level='edit'",[entityId,user.userId]);
+  if(current.visibility==='restricted'&&nextVisibility!=='restricted')await client.query("DELETE FROM record_access_grants WHERE entity_type='note' AND entity_id=$1",[entityId]);
+  return updated;
 }
 
 const KNOWLEDGE_CONFIG={

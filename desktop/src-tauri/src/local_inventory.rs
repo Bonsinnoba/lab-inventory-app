@@ -5,7 +5,7 @@ use tauri::AppHandle;
 use crate::local_db;
 use crate::local_auth;
 
-const MOVEMENT_SCHEMA_VERSION: &str = "004_local_inventory_movement_cache";
+const MOVEMENT_SCHEMA_VERSION: &str = "005_local_inventory_movement_account";
 
 fn connection(app: &AppHandle) -> Result<Connection, String> {
     local_db::open_local_connection(app)
@@ -25,6 +25,20 @@ fn ensure_movement_schema(conn: &Connection) -> Result<(), String> {
         "#,
     )
     .map_err(|err| format!("Unable to initialize local inventory movement cache: {err}"))?;
+
+    let has_account_id = conn.prepare("PRAGMA table_info(local_inventory_movement_records)")
+        .map_err(|e| format!("Unable to inspect movement cache schema: {e}"))?
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| format!("Unable to read movement cache columns: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Unable to decode movement cache columns: {e}"))?
+        .iter().any(|name| name == "account_id");
+    if !has_account_id {
+        conn.execute("ALTER TABLE local_inventory_movement_records ADD COLUMN account_id TEXT", [])
+            .map_err(|e| format!("Unable to scope movement cache: {e}"))?;
+    }
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_local_movement_account_item ON local_inventory_movement_records(account_id,item_id,created_at)", [])
+        .map_err(|e| format!("Unable to index account movement cache: {e}"))?;
 
     conn.execute(
         "INSERT OR IGNORE INTO local_schema_migrations(version) VALUES (?1)",
@@ -55,18 +69,19 @@ pub fn list_local_inventory_movements(
 ) -> Result<Option<Vec<String>>, String> {
     let conn = connection(&app)?;
     ensure_movement_schema(&conn)?;
+    let account_id=local_db::active_account(&conn)?;
 
     let mut stmt = conn
         .prepare(
             "SELECT movement_json
              FROM local_inventory_movement_records
-             WHERE item_id=?1
+             WHERE item_id=?1 AND account_id=?2
              ORDER BY created_at DESC",
         )
         .map_err(|e| format!("Unable to prepare local movement query: {e}"))?;
 
     let rows = stmt
-        .query_map([item_id], |row| row.get(0))
+        .query_map(params![item_id,account_id], |row| row.get(0))
         .map_err(|e| format!("Unable to read local movements: {e}"))?;
 
     let values = rows
@@ -81,6 +96,7 @@ pub fn cache_local_inventory_movements(
     app: AppHandle,
     item_id: String,
     movements_json: String,
+    expected_account_id: String,
 ) -> Result<(), String> {
     if movements_json.trim().is_empty() {
         return Err("Local movement list cannot be empty".into());
@@ -94,12 +110,14 @@ pub fn cache_local_inventory_movements(
     local_auth::require_local_permission(&conn,"inventory.adjust_stock")?;
 
     let tx = conn
-        .transaction()
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| format!("Unable to begin movement cache transaction: {e}"))?;
+    local_db::require_sync_account(&tx,&expected_account_id)?;
+    let account_id=local_db::active_account(&tx)?;
 
     tx.execute(
-        "DELETE FROM local_inventory_movement_records WHERE item_id=?1",
-        [&item_id],
+        "DELETE FROM local_inventory_movement_records WHERE item_id=?1 AND account_id=?2",
+        params![&item_id,&account_id],
     )
     .map_err(|e| format!("Unable to replace movement cache: {e}"))?;
 
@@ -110,9 +128,9 @@ pub fn cache_local_inventory_movements(
             .ok_or_else(|| "Movement id is required".to_string())?;
 
         tx.execute(
-            "INSERT INTO local_inventory_movement_records(movement_id,item_id,movement_json)
-             VALUES (?1,?2,?3)",
-            params![id, &item_id, movement.to_string()],
+            "INSERT INTO local_inventory_movement_records(movement_id,item_id,movement_json,account_id)
+             VALUES (?1,?2,?3,?4)",
+            params![format!("account:{account_id}:{id}"), &item_id, movement.to_string(), &account_id],
         )
         .map_err(|e| format!("Unable to cache movement: {e}"))?;
     }
@@ -164,20 +182,21 @@ pub fn save_local_inventory_movement(
     let tx = conn
         .transaction()
         .map_err(|e| format!("Unable to begin local movement transaction: {e}"))?;
+    let account_id=local_db::active_account(&tx)?;
 
     tx.execute(
         "INSERT INTO sync_state(key,value)
-         VALUES ('inventory_snapshot',?1)
+         VALUES (?1,?2)
          ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        [&input.snapshot_json],
+        params![crate::local_db::scoped_state_key(&tx,"inventory_snapshot")?,&input.snapshot_json],
     )
     .map_err(|e| format!("Unable to save inventory snapshot: {e}"))?;
 
     tx.execute(
         "INSERT OR REPLACE INTO local_inventory_movement_records
-         (movement_id,item_id,movement_json)
-         VALUES (?1,?2,?3)",
-        params![id, &input.item_id, &input.movement_json],
+         (movement_id,item_id,movement_json,account_id)
+         VALUES (?1,?2,?3,?4)",
+        params![format!("account:{account_id}:{id}"), &input.item_id, &input.movement_json,&account_id],
     )
     .map_err(|e| format!("Unable to save local movement: {e}"))?;
 
@@ -197,4 +216,22 @@ pub fn save_local_inventory_movement(
         .map_err(|e| format!("Unable to commit local movement transaction: {e}"))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn movement_cache_migration_preserves_unowned_rows() {
+        let conn=Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE local_schema_migrations(version TEXT PRIMARY KEY); CREATE TABLE local_inventory_movement_records(movement_id TEXT PRIMARY KEY,item_id TEXT NOT NULL,movement_json TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP); INSERT INTO local_inventory_movement_records(movement_id,item_id,movement_json) VALUES('old','item-1','{}');").unwrap();
+        ensure_movement_schema(&conn).unwrap();
+        let legacy_owner:Option<String>=conn.query_row("SELECT account_id FROM local_inventory_movement_records WHERE movement_id='old'",[],|row|row.get(0)).unwrap();
+        assert_eq!(legacy_owner,None);
+        conn.execute("INSERT INTO local_inventory_movement_records(movement_id,item_id,movement_json,account_id) VALUES('account:a:old','item-1','{}','a')",[]).unwrap();
+        conn.execute("INSERT INTO local_inventory_movement_records(movement_id,item_id,movement_json,account_id) VALUES('account:b:old','item-1','{}','b')",[]).unwrap();
+        let owned:i64=conn.query_row("SELECT COUNT(*) FROM local_inventory_movement_records WHERE item_id='item-1' AND account_id='b'",[],|row|row.get(0)).unwrap();
+        assert_eq!(owned,1);
+    }
 }
