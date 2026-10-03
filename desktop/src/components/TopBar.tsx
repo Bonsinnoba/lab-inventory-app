@@ -1,5 +1,4 @@
 import { Search, Command, ScanLine } from 'lucide-react';
-import { Link } from 'react-router-dom';
 import NotificationCenter from './NotificationCenter';
 import SyncStatus from './SyncStatus';
 
