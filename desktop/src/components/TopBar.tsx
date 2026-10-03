@@ -1,5 +1,4 @@
 import { Search, Command, ScanLine } from 'lucide-react';
-import { Link } from 'react-router-dom';
 import NotificationCenter from './NotificationCenter';
 import SyncStatus from './SyncStatus';
 
@@ -32,10 +31,10 @@ export default function TopBar({ title, onOpenCommandPalette, onScan }: TopBarPr
 
         <button
           type="button"
-          onClick={onOpenCommandPalette}
+          onClick={() => { window.location.hash = '#/search'; }}
           className="topbar-search hidden md:flex items-center gap-2 px-3 py-1.5 rounded-sm text-text-secondary hover:text-text-primary hover:bg-surface-raised transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
-          title="Open command palette"
-          aria-label="Open command palette"
+          title="Open full search"
+          aria-label="Open full search"
         >
           <Search size={15} aria-hidden="true" />
           <span className="text-xs flex-1">Search laboratory…</span>
@@ -44,14 +43,15 @@ export default function TopBar({ title, onOpenCommandPalette, onScan }: TopBarPr
           </span>
         </button>
 
-        <Link
-          to="/search"
+        <button
+          type="button"
+          onClick={onOpenCommandPalette}
           className="topbar-search-link p-2 rounded-sm transition-colors text-text-secondary hover:text-text-primary hover:bg-surface-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
-          title="Open full search"
-          aria-label="Open full search"
+          title="Open command palette"
+          aria-label="Open command palette"
         >
           <Search size={19} aria-hidden="true" />
-        </Link>
+        </button>
       </div>
     </header>
   );
