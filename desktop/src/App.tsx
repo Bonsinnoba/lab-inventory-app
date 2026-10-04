@@ -88,12 +88,13 @@ function AppContent() {
   }, []);
 
   useEffect(() => {
-    if (isAuthenticated) {
-      getDailyUsePreferences()
-        .then((p) => setAutoPauseMusic(p.auto_pause_music))
-        .catch(() => undefined);
-    }
-  }, [isAuthenticated]);
+    if (!isAuthenticated) return;
+    let active=true;
+    const refresh=()=>{void getDailyUsePreferences().then(p=>{if(active)setAutoPauseMusic(p.auto_pause_music);}).catch(()=>undefined);};
+    const changed=(event:Event)=>setAutoPauseMusic((event as CustomEvent).detail.auto_pause_music);
+    refresh();window.addEventListener('labos:daily-preferences-changed',changed);
+    return()=>{active=false;window.removeEventListener('labos:daily-preferences-changed',changed);};
+  }, [isAuthenticated,user?.id]);
 
   useEffect(() => {
     const onManualSyncComplete = () => { void queryClient.invalidateQueries(); };

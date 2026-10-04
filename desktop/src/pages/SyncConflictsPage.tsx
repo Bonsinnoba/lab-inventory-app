@@ -19,12 +19,13 @@ export default function SyncConflictsPage(){
   }
   useEffect(()=>{void refresh()},[]);
   async function resolve(change:Conflict,resolution:'keep_local'|'accept_server'){
-    const explanation=resolution==='accept_server'?'Discard this pending local change and retrieve the server version?':'Retry the local change? The server may reject it again.';
+    const explanation=resolution==='accept_server'?(change.entity_type==='maintenance_record'?'Discard all pending edits to this maintenance record and retrieve the server version?':'Discard this pending local change and retrieve the server version?'):'Retry the local change? The server may reject it again.';
     if(!window.confirm(explanation))return;
     setBusy(change.change_id);
     try{
       await resolveSyncConflict(change.change_id,resolution);
-      if(resolution==='keep_local')await syncPendingChanges(true);
+      await syncPendingChanges(true);
+      window.dispatchEvent(new Event('labos:manual-sync-complete'));
       await refresh();
       showToast(resolution==='accept_server'?'Server version selected; synchronize to refresh local data.':'Local change queued for retry.');
     }catch(e){showToast(e instanceof Error?e.message:'Unable to resolve conflict','error')}

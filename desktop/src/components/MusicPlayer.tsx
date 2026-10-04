@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ListMusic, Pause, Play, SkipBack, SkipForward, Trash2, Upload, Volume2, X, Minimize2, Shuffle, Repeat, Repeat1, Plus, Library, FolderPlus, ChevronUp, ChevronDown } from 'lucide-react';
 import { useToast } from '../contexts/ToastContext';
+import { useMusicDefaults } from '../hooks/useMusicDefaults';
 
 type Track = { id: string; name: string; blob: Blob; addedAt?: number };
 type Playlist = { id: string; name: string; trackIds: string[]; createdAt: number };
@@ -89,6 +90,7 @@ export default function MusicPlayer({ open, onClose, minimized, onMinimize, onRe
   const [tab, setTab] = useState<'library' | 'queue' | 'playlists'>('library');
   const [playing, setPlaying] = useState(false);
   const [volume, setVolume] = useState(.65);
+  useMusicDefaults(setVolume);
   const [duration, setDuration] = useState(0);
   const [position, setPosition] = useState(0);
   const [search, setSearch] = useState('');

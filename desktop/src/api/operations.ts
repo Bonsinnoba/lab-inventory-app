@@ -1,6 +1,7 @@
 import { apiFetch, getApiErrorMessage } from './http';
 import { localBackend } from './local-backend';
 import { getItems } from './items';
+import { listMaintenance } from './maintenance';
 import { findMissingBom, enrichOutstandingRequirements } from './operations-calculations';
 import { getProjects, getProjectBom, getProjectRequirements, createProjectRequirement, updateProjectRequirement, deleteProjectRequirement } from './projects';
 
@@ -16,7 +17,7 @@ async function json<T>(path:string, init?:RequestInit):Promise<T>{const r=await 
 async function localOverview():Promise<OperationsOverview>{
   // Use the workstation's existing local-first project and inventory APIs.
   // Do not turn failed reads into empty arrays: an empty result means no shortages.
-  const [items, projects, requirements] = await Promise.all([getItems(), getProjects(), getProjectRequirements()]);
+  const [items, projects, requirements, maintenance] = await Promise.all([getItems(), getProjects(), getProjectRequirements(), listMaintenance()]);
   const bomByProject = await Promise.all(projects.map(async project => ({
     project, lines: await getProjectBom(project.id),
   })));
@@ -38,7 +39,7 @@ async function localOverview():Promise<OperationsOverview>{
       low_stock:low_stock.length,
       stock_value:items.reduce((sum,item) => sum + Number(item.current_quantity || 0) * Number(item.unit_cost || 0),0),
     },
-    low_stock, calibration_due, maintenance_due:[], equipment, missing_bom, requirements:enrichedRequirements,
+    low_stock, calibration_due, maintenance_due:maintenance.filter(record => ['scheduled','in_progress'].includes(record.status) || !!record.scheduled_date && new Date(record.scheduled_date) <= due).map(record => ({...record,name:items.find(item => item.id === record.item_id)?.name})), equipment, missing_bom, requirements:enrichedRequirements,
   };
 }
 export const getOperationsOverview=()=>localBackend.isAvailable()?localOverview():json<OperationsOverview>('/operations/overview');

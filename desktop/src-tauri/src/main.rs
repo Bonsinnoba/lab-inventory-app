@@ -22,6 +22,7 @@ fn main() {
         local_maintenance::list_local_maintenance,
         local_maintenance::mutate_local_maintenance,
         local_maintenance::apply_server_maintenance_pull,
+        local_system::apply_server_daily_preferences,
         local_projects::create_local_project_task_experiment,
         local_projects::delete_local_project_task_experiment,
         local_projects::get_local_project_attachments,

@@ -27,8 +27,8 @@ router.post('/run', hasPermission('automation.run'), async (req, res) => {
     const notify = async (userId, type, title, body, entityType, entityId, key) => {
       const exists = await pool.query("SELECT 1 FROM notifications WHERE user_id=$1 AND metadata->>'reminder_key'=$2", [userId, key]);
       if (exists.rowCount) return;
-      await pool.query(`INSERT INTO notifications(user_id,type,title,body,entity_type,entity_id,metadata) VALUES($1,$2,$3,$4,$5,$6,$7)`, [userId,type,title,body,entityType,entityId,JSON.stringify({ reminder_key:key })]);
-      created++;
+      const delivered=await pool.query(`INSERT INTO notifications(user_id,type,title,body,entity_type,entity_id,metadata) VALUES($1,$2,$3,$4,$5,$6,$7)`, [userId,type,title,body,entityType,entityId,JSON.stringify({ reminder_key:key })]);
+      created+=delivered.rowCount;
     };
     for (const item of due.maintenance) for (const user of recipients.rows) await notify(user.id,'maintenance_due','Maintenance due',`${item.name} has maintenance due on ${item.next_maintenance_date}.`,'item',item.id,`maintenance:${item.id}:${item.next_maintenance_date}`);
     for (const item of due.calibration) for (const user of recipients.rows) await notify(user.id,'calibration_due','Calibration due',`${item.name} has calibration due on ${item.next_calibration_date}.`,'item',item.id,`calibration:${item.id}:${item.next_calibration_date}`);

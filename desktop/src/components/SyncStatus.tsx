@@ -1,5 +1,6 @@
 import { AlertTriangle, Check, Cloud, Loader2, WifiOff, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { useToast } from '../contexts/ToastContext';
 import { getPendingSyncCount, getUnassignedSyncCount, getUnassignedStateCount, getSyncRuntimeState, listSyncConflicts, resolveSyncConflict, subscribeSyncStatus, syncPendingChanges, type SyncRuntimeState } from '../api/sync';
 
 type Conflict={change_id:string;entity_type:string;entity_id?:string|null;operation:string;error_message:string;created_at:string};
@@ -16,6 +17,7 @@ function formatLastSync(value:string|null):string{
 }
 
 export default function SyncStatus(){
+  const {showToast}=useToast();
   const [pending,setPending]=useState(0);
   const [unassigned,setUnassigned]=useState(0);
   const [unassignedState,setUnassignedState]=useState(0);
@@ -26,7 +28,13 @@ export default function SyncStatus(){
   const refresh=async()=>{setPending(await getPendingSyncCount());setUnassigned(await getUnassignedSyncCount());setUnassignedState(await getUnassignedStateCount());setConflicts((await listSyncConflicts()) as Conflict[]);};
   useEffect(()=>{void refresh();const unsubscribe=subscribeSyncStatus(setRuntime);const timer=window.setInterval(()=>void refresh(),5000);const online=()=>void refresh();const offline=()=>setRuntime(getSyncRuntimeState());window.addEventListener('online',online);window.addEventListener('offline',offline);return()=>{unsubscribe();window.clearInterval(timer);window.removeEventListener('online',online);window.removeEventListener('offline',offline);};},[]);
   const sync=async()=>{setBusy(true);try{await syncPendingChanges(true);window.dispatchEvent(new Event('labos:manual-sync-complete'));}finally{setBusy(false);await refresh();}};
-  const resolve=async(id:string,resolution:'keep_local'|'accept_server'|'dismiss')=>{setBusy(true);try{await resolveSyncConflict(id,resolution);if(resolution!=='dismiss')await syncPendingChanges(true);}finally{setBusy(false);await refresh();}};
+  const resolve=async(id:string,resolution:'keep_local'|'accept_server'|'dismiss')=>{
+    if(resolution!=='keep_local'&&conflicts.find(c=>c.change_id===id)?.entity_type==='maintenance_record'&&!window.confirm('Discard all pending edits to this maintenance record and restore its server version?'))return;
+    setBusy(true);
+    try{await resolveSyncConflict(id,resolution);await syncPendingChanges(true);window.dispatchEvent(new Event('labos:manual-sync-complete'));}
+    catch(error){showToast(error instanceof Error?error.message:String(error),'error');}
+    finally{setBusy(false);await refresh();}
+  };
   const count=conflicts.length;
   const offline=typeof navigator!=='undefined'&&!navigator.onLine;
   const effectiveStatus=offline?'offline':runtime.status;

@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Download, HeartPulse, Bell, Music2, ShieldCheck, CheckCircle2, RefreshCw } from 'lucide-react';
-import { downloadLabosExport, getDailyUsePreferences, getSystemHealth, updateDailyUsePreferences } from '../api/system';
+import { downloadLabosExport, getDailyUsePreferences, getSystemHealth, updateDailyUsePreferences, importLegacyMediaPreferences, type DailyUsePreferences } from '../api/system';
 import { useToast } from '../contexts/ToastContext';
 import { getStoredUser } from '../api/auth';
 
 export default function DailyUsePanel(){
   const {showToast}=useToast();
   const user=getStoredUser();
-  const [p,setP]=useState({notifications_enabled:true,auto_pause_music:true,music_volume:.65});
+  const [p,setP]=useState<DailyUsePreferences>({notifications_enabled:true,auto_pause_music:false,music_volume:.7,sync_version:0,updated_at:null,pending_sync:false});
   const [loading,setLoading]=useState(true);
   const [saving,setSaving]=useState<string|null>(null);
   const [health,setHealth]=useState<any>(null);
@@ -15,7 +15,18 @@ export default function DailyUsePanel(){
   const [exporting,setExporting]=useState(false);
 
   useEffect(()=>{getDailyUsePreferences().then(setP).catch(e=>showToast(e instanceof Error?e.message:'Failed to load preferences','error')).finally(()=>setLoading(false));},[]);
-  const save=async(k:string,v:any)=>{const next={...p,[k]:v};setP(next);setSaving(k);try{setP(await updateDailyUsePreferences(next));}catch(e){showToast(e instanceof Error?e.message:'Failed to save preference','error');}finally{setSaving(null);}};
+  const save=async(k:'notifications_enabled'|'auto_pause_music'|'music_volume',v:boolean|number)=>{
+    if(saving)return;
+    setSaving(k);
+    try{setP(await updateDailyUsePreferences({[k]:v,...(k==='notifications_enabled'?{expected_version:p.sync_version}:{})}));}
+    catch(e){showToast(e instanceof Error?e.message:'Failed to save preference','error');}
+    finally{setSaving(null);}
+  };
+  useEffect(()=>{
+    const refresh=()=>{void getDailyUsePreferences().then(setP).catch(()=>undefined);};
+    window.addEventListener('labos:manual-sync-complete',refresh);
+    return()=>window.removeEventListener('labos:manual-sync-complete',refresh);
+  },[]);
   const healthCheck=async()=>{setChecking(true);try{setHealth(await getSystemHealth());}catch(e){setHealth({status:'degraded',checks:{},error:e instanceof Error?e.message:'Health check failed'});}finally{setChecking(false);}};
   const exportData=async()=>{setExporting(true);try{await downloadLabosExport();showToast('LabOS export downloaded');}catch(e){showToast(e instanceof Error?e.message:'Export failed','error');}finally{setExporting(false);}};
   const enabledChecks=Object.entries(health?.checks||{}).filter(([,v])=>v).length;
@@ -24,6 +35,8 @@ export default function DailyUsePanel(){
     <section className="bg-surface border border-border rounded-md overflow-hidden">
       <div className="px-5 py-4 border-b border-border flex items-center justify-between"><div><h3 className="font-semibold">Daily preferences</h3><p className="text-xs text-text-secondary mt-1">These settings apply to your LabOS workspace.</p></div>{loading&&<span className="text-xs text-text-secondary">Loading…</span>}</div>
       <div className="divide-y divide-border">
+        <div className="px-5 py-3 text-xs text-text-secondary">Notifications sync with your account. Music settings stay on this device.{p.pending_sync&&<span className="block mt-1 text-amber-300">Notification change saved locally — pending sync.</span>}</div>
+        {p.legacy_media&&<div className="px-5 py-3 text-xs text-text-secondary">Previous music settings are available. <button type="button" disabled={!!saving} className="text-accent underline" onClick={()=>{setSaving('import');void importLegacyMediaPreferences().then(setP).catch(e=>showToast(String(e),'error')).finally(()=>setSaving(null));}}>Use them on this device</button></div>}
         <label className="flex items-center justify-between gap-4 px-5 py-4 text-sm hover:bg-surface-raised/40"><span><span className="flex items-center gap-2 font-medium"><Bell size={16}/>Notifications</span><span className="block text-xs text-text-secondary mt-1 ml-6">Enable LabOS notification delivery.</span></span><span className="flex items-center gap-2"><input type="checkbox" disabled={loading||saving==='notifications_enabled'} checked={p.notifications_enabled} onChange={e=>save('notifications_enabled',e.target.checked)}/>{saving==='notifications_enabled'&&<span className="text-[11px] text-text-secondary">Saving…</span>}</span></label>
         <label className="flex items-center justify-between gap-4 px-5 py-4 text-sm hover:bg-surface-raised/40"><span><span className="flex items-center gap-2 font-medium"><Music2 size={16}/>Pause music for Lab media / TTS</span><span className="block text-xs text-text-secondary mt-1 ml-6">Temporarily pauses playback while voice or media is active.</span></span><span className="flex items-center gap-2"><input type="checkbox" disabled={loading||saving==='auto_pause_music'} checked={p.auto_pause_music} onChange={e=>save('auto_pause_music',e.target.checked)}/>{saving==='auto_pause_music'&&<span className="text-[11px] text-text-secondary">Saving…</span>}</span></label>
         <div className="px-5 py-4"><div className="flex items-center justify-between gap-4 mb-2"><span><span className="flex items-center gap-2 text-sm font-medium"><Music2 size={16}/>Default music volume</span><span className="block text-xs text-text-secondary mt-1">Volume used when the music player starts.</span></span><span className="text-xs font-mono text-text-secondary">{Math.round(p.music_volume*100)}%</span></div><input disabled={loading||saving==='music_volume'} className="w-full accent-[var(--accent)]" type="range" min="0" max="1" step=".01" value={p.music_volume} onChange={e=>save('music_volume',Number(e.target.value))}/></div>

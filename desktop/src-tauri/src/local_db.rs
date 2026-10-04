@@ -195,6 +195,7 @@ pub fn list_sync_conflicts(app:AppHandle)->Result<Vec<Value>,String>{
 }
 
 fn require_conflict_permission(conn:&Connection,entity:&str,operation:&str,payload:&Value,write:bool)->Result<(),String>{
+    if entity=="daily_preferences" {active_account(conn)?;return Ok(())}
     let domain=match entity{
         "item"|"item_movement"|"location"|"maintenance_record"=>"inventory",
         "note"=>"notes", "resource"=>"resources",
@@ -236,8 +237,8 @@ fn resolve_conflict(conn:&mut Connection,change_id:&str,resolution:&str)->Result
     if resolution=="keep_local" {
         let mut value:Value=serde_json::from_str(&payload).map_err(|e|e.to_string())?;
         require_conflict_permission(&tx,&entity,&operation,&value,true)?;
-        if entity=="maintenance_record" && (code=="SYNC_CONFLICT" || code=="SYNC_DEPENDENCY_PENDING") {
-            return Err("Accept the server maintenance version, then review and reapply your edits. Automatic overwrite is not allowed.".into());
+        if ["maintenance_record","daily_preferences"].contains(&entity.as_str()) && (code=="SYNC_CONFLICT" || code=="SYNC_DEPENDENCY_PENDING") {
+            return Err("Accept the server version, then review and reapply your edits. Automatic overwrite is not allowed.".into());
         }
         if entity=="item"&&code=="SYNC_CONFLICT" {
             // An explicit overwrite is a NEW intent; never mutate an idempotency key.
@@ -250,11 +251,11 @@ fn resolve_conflict(conn:&mut Connection,change_id:&str,resolution:&str)->Result
             tx.execute("UPDATE sync_outbox SET attempt_count=0,last_error=NULL,synced_at=NULL WHERE change_id=?1",[change_id]).map_err(|e|e.to_string())?;
         }
     } else {
-        if entity=="maintenance_record" {
+        if ["maintenance_record","daily_preferences"].contains(&entity.as_str()) {
             // Subsequent offline edits depend on this intent. Discarding only the
             // head would leave a broken chain (or apply later edits to a rival version).
-            tx.execute("UPDATE sync_conflicts SET resolved_at=CURRENT_TIMESTAMP,resolution=?2 WHERE change_id IN (SELECT change_id FROM active_sync_outbox WHERE entity_type='maintenance_record' AND entity_id=?1 AND synced_at IS NULL)",params![entity_id,resolution]).map_err(|e|e.to_string())?;
-            tx.execute("UPDATE sync_outbox SET synced_at=CURRENT_TIMESTAMP,last_error=NULL WHERE account_id=?1 AND entity_type='maintenance_record' AND entity_id=?2 AND synced_at IS NULL",params![active_account(&tx)?,entity_id]).map_err(|e|e.to_string())?;
+            tx.execute("UPDATE sync_conflicts SET resolved_at=CURRENT_TIMESTAMP,resolution=?2 WHERE change_id IN (SELECT change_id FROM active_sync_outbox WHERE entity_type=?3 AND entity_id=?1 AND synced_at IS NULL)",params![entity_id,resolution,entity]).map_err(|e|e.to_string())?;
+            tx.execute("UPDATE sync_outbox SET synced_at=CURRENT_TIMESTAMP,last_error=NULL WHERE account_id=?1 AND entity_type=?3 AND entity_id=?2 AND synced_at IS NULL",params![active_account(&tx)?,entity_id,entity]).map_err(|e|e.to_string())?;
         }
         tx.execute("UPDATE sync_outbox SET synced_at=CURRENT_TIMESTAMP,last_error=NULL WHERE change_id=?1",[change_id]).map_err(|e|e.to_string())?;
         // Inventory is incremental. Other domains use complete authorized snapshots.

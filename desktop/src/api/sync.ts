@@ -118,6 +118,13 @@ async function runSync():Promise<number>{
   }
   const inventoryPullSucceeded=await runPullStep('Inventory pull',pullServerInventory);
   const maintenancePullSucceeded=await runPullStep('Maintenance pull',pullServerMaintenance);
+  const preferencesPullSucceeded=await runPullStep('Preferences pull',async()=>{
+    const response=await apiFetch('/system/daily-preferences',{cache:'no-store'});
+    if(!response.ok)throw new Error(await getApiErrorMessage(response,'Unable to download preferences'));
+    const preferences=await response.json();assertSyncSession();
+    await invoke('apply_server_daily_preferences',{preferences,expectedAccountId:syncAccountId()});
+    return true;
+  });
   const projectPullSucceeded=await runPullStep('Project pull',pullServerProjects);
   const resourcePullSucceeded=await runPullStep('Resource pull',pullServerResources);
   const financePullSucceeded=await runPullStep('Finance pull',pullServerFinance);
@@ -125,7 +132,7 @@ async function runSync():Promise<number>{
   const engineeringPullSucceeded=await runPullStep('Engineering pull',pullServerEngineering);
   const knowledgePullSucceeded=await runPullStep('Knowledge pull',pullServerKnowledge);
   const notesPullSucceeded=await runPullStep('Notes pull',pullServerNotes);
-  const pullSucceeded=inventoryPullSucceeded&&maintenancePullSucceeded&&projectPullSucceeded&&resourcePullSucceeded&&financePullSucceeded&&locationPullSucceeded&&engineeringPullSucceeded&&knowledgePullSucceeded&&notesPullSucceeded;
+  const pullSucceeded=inventoryPullSucceeded&&maintenancePullSucceeded&&preferencesPullSucceeded&&projectPullSucceeded&&resourcePullSucceeded&&financePullSucceeded&&locationPullSucceeded&&engineeringPullSucceeded&&knowledgePullSucceeded&&notesPullSucceeded;
   if(!pullSucceeded){syncSucceeded=false;publish({status:'error',lastError:runtimeState.lastError||'Unable to download the latest server changes'});scheduleRetry();}
   if(syncSucceeded&&pullSucceeded){clearRetryState();publish({status:'idle',lastSuccessAt:new Date().toISOString(),lastError:null});}
   else if(runtimeState.status!=='error')publish({status:'error',lastError:runtimeState.lastError||'Some changes could not be synchronized'});
