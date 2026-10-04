@@ -7,6 +7,8 @@ milestone. A phase includes implementation, automated tests, checks against
 the existing seeded PostgreSQL service, desktop checks, and an evidence update.
 Use namespaced test records and preserve all existing user data. Do not reset
 PostgreSQL or assign/delete unattributed legacy SQLite rows automatically.
+Exception already executed: the owner explicitly requested a full LabOS reset
+and fresh seed on 2026-10-03. This is not continuing authority for future resets.
 
 The existing Notes/Resources duplicate fixes, visibility slices for Notes,
 Resources and Projects, account-scoped cache/outbox foundation, inventory and
@@ -16,36 +18,18 @@ online-only, and the write-path audit is not yet exhaustive.
 
 ## Phase 1 — Complete the audit, security boundaries, and sync contracts
 
-**Current state (2026-10-03): in progress, not at exit criteria.** The audit now
-records additional storage, project-workflow, import, Knowledge, Engineering,
-notification/assistant and UUID findings. Knowledge and Engineering
-record-scope fixes passed targeted checks against the existing PostgreSQL
-service. A Tauri inventory-import fallback is closed. Knowledge and Engineering
-pulls now return visible IDs to evict revoked cached records while keeping
-pending local edits. Engineering sync restricted-create/replay/collision/delete
-checks passed on the existing PostgreSQL service; server write guards now
-authorize the stored row for Engineering and Knowledge. Shared relationship
-endpoint rules now cover direct and sync writes, and an isolated PostgreSQL
-researcher/project probe passed view/edit, project membership, endpoint and
-disabled-account checks. Null-result desktop fallbacks are closed in Notes,
-Knowledge, Locations and Projects. A source coverage register now maps every
-desktop API file and Rust local repository to findings. Desktop search was
-tightened to use domain permissions, filtered projects and projected finance
-records, with a Rust regression test. Cross-domain conflict recovery was found
-to depend incorrectly on inventory permission and remains open. Direct finance
-deletes now commit tombstones atomically and passed a scoped probe on the
-existing PostgreSQL service. The location direct-delete gap and missing browser
-inventory single/bulk routes were also repaired and passed scoped PostgreSQL
-probes. Finance and Resource create-ID collisions now reject a different
-change ID and passed scoped PostgreSQL probes. Long-offline tombstone
-pagination, movement-ID replay and an income-only sync permission mismatch
-remain open. The complete
-per-mutation runtime inventory, two-client cache test,
-financial/linked-record side channels, tombstone policy, preference/recovery
-decisions and full role matrix are still open; none should be inferred from
-the passing targeted probes. The API image build also reported five npm
-dependency advisories (three moderate, two high); their applicability and
-upgrade path have not yet been triaged, so they are not counted as resolved.
+**Current state (2026-10-03): implementation/verification checkpoint delivered;
+not unconditional security sign-off.** See PHASE1_EVIDENCE.md for current results:
+50 backend tests, 19 desktop tests, 16 Rust tests, the explicitly run actual
+PostgreSQL two-client Notes test, seven live PostgreSQL probes and production
+frontend build passed. Operation-level coverage is indexed in
+PHASE1_MUTATION_SOURCE_INDEX.md; the common contract is in
+../architecture/offline-sync-contract.md. Parent/child visibility, secondary
+read projections, authored replay, conflict identity, privileged leases,
+finance/location snapshot eviction and resource-copy/export defects were fixed.
+One high-severity DOCX/image-parser dependency remains open (audit finding 33).
+It must be resolved before unconditional security sign-off; it is first in the
+Phase 2 resource/security work, not silently counted as fixed.
 
 **Scope**
 
@@ -87,6 +71,10 @@ current evidence.
 ## Phase 2 — Convert the remaining data flows to their approved architecture
 
 **Scope**
+
+- First resolve the open high-severity DOCX/image parser finding 33 with a
+  compatible maintained/rebuilt converter and bounded execution tests. Do not
+  treat a transitive override as proof that bundled parser code is repaired.
 
 - Finish local-first inventory edge cases, maintenance CRUD (currently only
   server-backed), suppliers, and any uncovered project/task/experiment/BOM/

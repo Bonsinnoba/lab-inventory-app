@@ -386,7 +386,7 @@ async function getTransactionSummary({ from, to }, user) {
   return result({ from: from || null, to: to || null, income:sensitive?income:null, expense, net:sensitive?income-expense:null });
 }
 
-async function listLocations(user) {
+async function listLocations(_args, user) {
   await requireAssistantPermission('inventory.view', user);
   const rows=(await pool.query(`SELECT id,name,parent_id,created_at FROM locations ORDER BY name`)).rows;
   return result(rows, rows.map(r=>source('location',r.id,r.name)));

@@ -15,23 +15,25 @@ export default function MaintenancePanel({ item }: { item: Item }) {
   const isAdmin = getStoredUser()?.role === 'admin';
   const [form, setForm] = useState<FormState>(emptyForm());
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingVersion, setEditingVersion] = useState<number>(0);
   const [open, setOpen] = useState(false);
   const records = useQuery({ queryKey: ['maintenance', item.id], queryFn: () => getMaintenanceRecords(item.id) });
   const refresh = () => { queryClient.invalidateQueries({ queryKey: ['maintenance', item.id] }); queryClient.invalidateQueries({ queryKey: ['item', item.id] }); };
   const save = useMutation({
     mutationFn: () => editingId
-      ? updateMaintenanceRecord(item.id, editingId, { ...form, cost: form.cost ? Number(form.cost) : null, scheduled_date: form.scheduled_date || null, completed_date: form.completed_date || null })
+      ? updateMaintenanceRecord(item.id, editingId, { ...form, cost: form.cost ? Number(form.cost) : null, scheduled_date: form.scheduled_date || null, completed_date: form.completed_date || null }, editingVersion)
       : createMaintenanceRecord(item.id, { ...form, cost: form.cost ? Number(form.cost) : null, scheduled_date: form.scheduled_date || null, completed_date: form.completed_date || null }),
     onSuccess: () => { refresh(); setForm(emptyForm()); setEditingId(null); setOpen(false); showToast(editingId ? 'Maintenance record updated' : 'Maintenance record added'); },
     onError: (error: Error) => showToast(error.message, 'error'),
   });
   const remove = useMutation({
-    mutationFn: (id: string) => deleteMaintenanceRecord(item.id, id),
+    mutationFn: (id: string) => deleteMaintenanceRecord(item.id, id, records.data?.find(record => record.id === id)?.sync_version ?? 0),
     onSuccess: () => { refresh(); showToast('Maintenance record deleted'); },
     onError: (error: Error) => showToast(error.message, 'error'),
   });
   const beginEdit = (record: MaintenanceRecord) => {
     setEditingId(record.id);
+    setEditingVersion(record.sync_version);
     setForm({ maintenance_type: record.maintenance_type, status: record.status, scheduled_date: record.scheduled_date?.slice(0, 10) || '', completed_date: record.completed_date?.slice(0, 10) || '', notes: record.notes || '', cost: record.cost == null ? '' : String(record.cost) });
     setOpen(true);
   };

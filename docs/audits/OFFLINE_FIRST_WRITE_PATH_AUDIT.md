@@ -3,29 +3,27 @@
 The remaining findings in this audit are scheduled in
 `docs/audits/THREE_PHASE_REMAINING_WORK_PLAN.md`.
 
-Status: in progress, 2026-10-03. This is a source-code audit, not a claim that
-every desktop mutation has been made offline-first. Completed slices include
-fail-closed desktop guards and PostgreSQL-backed Knowledge/Engineering
-visibility checks; browser-only server writes remain available. The actual
-PostgreSQL database was seeded at the user's request, without resetting it.
-End-to-end retry tests and the remaining mutation inventory are still required
-before this audit can be closed.
+Status: Phase 1 implementation/verification checkpoint delivered, 2026-10-03.
+The operation-level source index is in PHASE1_MUTATION_SOURCE_INDEX.md; fresh
+verification and the remaining security blocker are in PHASE1_EVIDENCE.md.
+This is not a claim that every desktop module is now offline-first or that
+release security is signed off. Finding 33 remains open. The source index
+includes read/helpers and mutation candidates; runtime evidence is separately
+identified rather than inferred from the index.
 
 ### Actual PostgreSQL test dataset — 2026-10-03
 
-The add-only, repeatable seed at `backend/seeds/20261003_labos_demo.sql` ran
-against the existing `labos-db-1` container, not a disposable database. It
-added 48 items, 48 initial stock movements, 16 maintenance records, 6 projects,
-30 tasks, 12 experiments, 18 resource requirements, 18 notes, 9 placeholder links, and 9 project
-memberships. Every user-facing row carries `LABOS-SEED-20261003`, and generated
-IDs are deterministic. Existing records were not modified or deleted. The
-pre-seed counts were 2 items, 0 projects, 1 note, and 1 resource; afterward
-they were 50, 6, 19, and 10. A second seed run inserted zero rows in every
-table. The desktop's automatic sync loop runs every 15 seconds and invalidates
-queries afterward. A read-only check of the running `balika` desktop SQLite
-cache confirmed all 6 seeded projects and 18 requirements were pulled;
-visual confirmation in the window is still needed. The placeholder URLs are intentionally not downloadable videos and
-should not be used for the thumbnail regression test.
+The earlier add-only seed run was superseded by the owner's explicit request
+to clear the databases and reseed. Only the LabOS PostgreSQL volume and LabOS
+local SQLite/WebView state were reset. Other applications' databases and the
+LabOS uploaded-media volume were preserved. The current actual PostgreSQL
+service contains 2 accounts, 48 items, 6 projects, 18 notes and 9 resources
+(verified after the final probes). The seed also supplies 48 initial movements,
+16 maintenance records, 30 tasks, 12 experiments and 18 requirements.
+The namespaced live probes remove their own rows/files. The disk-backed two-client
+note test deletes its note through the API and intentionally leaves its audit,
+idempotency and tombstone evidence. It does not reset the app's SQLite cache.
+Seed placeholder links are not downloadable-video test fixtures.
 
 ## Findings
 
@@ -338,9 +336,9 @@ CURRENT WRITE PATH: A rejected outbox change creates an account-owned SQLite syn
 WHY IT BYPASSES OFFLINE-FIRST: Outbox recovery is global, but its local authorization and refresh path are hard-coded to inventory. A user with valid notes/projects/finance permissions but no inventory.view cannot inspect or resolve their own domain's rejected change, so a legitimate offline mutation can remain stuck indefinitely.
 RISK: Hidden pending changes and misleading sync status; improper exposure if the inventory permission is used as a proxy for another domain; accepting a non-inventory conflict without an explicit domain refresh may leave stale local state until a later full pull. Finance requires an unrelated inventory grant.
 RECOMMENDED CHANGE: Derive the conflict's domain from its entity_type and operation; gate payload visibility by the domain's read permission and retry by its mutation permission. Always permit a safe account-owned discard path after an explicit confirmation, even when edit access was revoked. Trigger domain-specific pull after accept_server and preserve the original change_id for retries. Test each domain and finance-sensitive case against current permissions.
-ACTUAL CHANGE MADE: None; recorded before changing recovery semantics.
-VERIFICATION: Source inspection of list_sync_conflicts and resolve_sync_conflict; runtime permission matrix pending.
-STATUS: Open — Phase 2 conflict-recovery contract required.
+ACTUAL CHANGE MADE: Conflict listing now uses the outbox entity/domain and redacts unavailable payloads. Owner-only discard does not require an unrelated inventory grant. Retry requires the correct domain write authority. Inventory explicit overwrite creates a NEW change ID; ordinary retry retains the original payload and key.
+VERIFICATION: Rust tests verify Notes recovery without inventory access, denied retries after permission loss, immutable retries, fresh UUID/account-stamped overwrite, and owner discard. Full per-domain recovery UX remains Phase 2.
+STATUS: Implemented foundation; per-domain conflict/version UI and concurrency matrix remain Phase 2.
 ```
 
 ### 22. Project financial summary mixes local projections
@@ -408,9 +406,9 @@ CURRENT WRITE PATH: Outbox push first checks change_id idempotency, then dispatc
 WHY IT BYPASSES OFFLINE-FIRST: A different change_id is a different logical mutation. Acknowledging an unrelated existing entity by UUID tells the client its new local row was accepted while the server kept someone else's row. This is distinct from safe replay of the same change_id and distinct from the URL-based resource deduplication policy.
 RISK: Silent local/server identity divergence, a false successful create, and possibly a duplicate or missing row after pull. The same issue remains for movement-ID collisions and requires a separate decision for URL/job coalescing versus a stable returned canonical ID.
 RECOMMENDED CHANGE: Preserve same-change_id replay at the idempotency layer; reject a new create using an existing UUID with a domain-specific 409. Define explicit canonical-ID reconciliation when deduplication by natural key is intentional. Test same-ID/different-change and same-change replay on actual PostgreSQL for each domain.
-ACTUAL CHANGE MADE: Resource create now rejects an existing UUID with RESOURCE_ALREADY_EXISTS; finance create rejects with FINANCE_ALREADY_EXISTS. Natural-key link deduplication and active-job coalescing were not changed. Movement collision remains open.
-VERIFICATION: The opt-in direct-delete-live-probe pushed a finance create with a fresh change ID against a test-owned existing transaction on actual PostgreSQL and received FINANCE_ALREADY_EXISTS. The inventory-routes-live-probe pushed a resource create with a new change ID against a test-owned folder ID and received RESOURCE_ALREADY_EXISTS. Both cleaned their exact temporary records. Movement replay and natural-key canonical-ID runtime tests remain open.
-STATUS: Finance and resource UUID collision guard verified; movement and natural-key reconciliation open.
+ACTUAL CHANGE MADE: Resource and finance create-ID collisions reject distinct intents; movement-ID collision rejects without a second stock effect. Same-change replay preserves the original result under current response projection.
+VERIFICATION: Actual PostgreSQL direct-delete, inventory-routes and finance-role probes passed; income-only finance probe covers movement collision and identical replay. Cross-client natural-key link convergence remains a Phase 2 case.
+STATUS: Stable-ID collision guards verified for Finance, Resources, movements and Engineering; remaining domain/natural-key matrices assigned Phase 2.
 ```
 
 ### 27. Income-only finance create permission is blocked before domain validation
@@ -422,9 +420,93 @@ CURRENT WRITE PATH: Local transaction create checks direction and accepts financ
 WHY IT BYPASSES OFFLINE-FIRST: The offline write can be accepted locally under the correct granular permission, then the server rejects its outbox replay under an unrelated permission. This is a cross-layer permission-contract mismatch, not a user conflict.
 RISK: Permanent pending income transaction and misleading sync attention for a valid role. Granting expense-create merely to unblock sync would overgrant financial authority.
 RECOMMENDED CHANGE: Derive envelope permission from the validated transaction direction and use the same helper for local/server permission tests. Preserve finance.view_sensitive and project-edit checks for income. Add an actual PostgreSQL income-only/expense-only role matrix and replay test.
-ACTUAL CHANGE MADE: None; recorded rather than loosening finance authorization without the role matrix.
-VERIFICATION: Source comparison of local_finance mutate, sync push envelope and applyFinanceEntity. Runtime granular-role test pending.
-STATUS: Open — authorization mismatch requires Phase 1 role-matrix repair.
+ACTUAL CHANGE MADE: Sync envelope derives income-create versus expense-create from transaction direction. Server retains sensitive finance/project checks and sets logged_by to the authenticated account. Local sensitive mutations require both financial read capabilities.
+VERIFICATION: finance-role-live-probe passed on actual PostgreSQL: income-only grant succeeds and replays; expense creation is denied; author attribution and movement collision assertions passed.
+STATUS: Implemented and verified on the actual PostgreSQL database.
+```
+
+### 28. Read projections leaked restricted parent/child records
+
+```text
+MODULE: Search, reports, context/evidence, assistant, finance, operations, notifications and automation
+FILE: backend/src/middleware/{visibility,read-visibility,notification-visibility}.js; backend/src/routes/{search,reports,context,assistant,transactions,sync,excel-finance,operations,experience,collaboration,automation,media-downloads}.js
+CURRENT WRITE PATH: Secondary reads queried raw rows or aggregates; project membership sometimes bypassed a restricted grant. Finance export/pull and a lab-visible Note could disclose a restricted project.
+WHY IT BYPASSES OFFLINE-FIRST: Authorization on the main CRUD page did not constrain alternate projections or the next synchronized snapshot.
+RISK: Confidential rows, names, snippets, queue metadata and aggregate counts visible without record access.
+RECOMMENDED CHANGE: Enforce stored parent-project scope in the shared visibility predicate and runtime helper; filter secondary projections before response/count/source creation; require audit authority for raw activity; recheck notification references and return read acknowledgements without body echoes.
+ACTUAL CHANGE MADE: Implemented those gates. Fixed Operations middleware to resolve the stored requirement ID from its mounted path. Fixed assistant item/location SQL columns and list-locations tool signature found by the live probe.
+VERIFICATION: Seven PostgreSQL probes passed on final image, including the expanded surface probe covering hidden/granted/revoked records, parent-restricted lab notes, notifications, queue, assistant, aggregate finance, disabled users and denied operations edits.
+STATUS: Implemented; targeted actual PostgreSQL verification passed. High-cardinality filtered pagination/query batching is a Phase 2 performance/coverage item.
+```
+
+### 29. Privileged offline authorization was renewed by permission refresh
+
+```text
+MODULE: Desktop authentication and local repository entry points
+FILE: desktop/src-tauri/src/local_auth.rs; desktop/src-tauri/src/local_db.rs
+CURRENT WRITE PATH: Cached login and permission refresh could both extend offline expiry; existing admin caches could outlive the approved privileged lease.
+WHY IT BYPASSES OFFLINE-FIRST: A refreshed token/permission response is not proof the cached password is still valid after a reset.
+RISK: Disabled/reset credentials remain usable offline longer than the approved period.
+RECOMMENDED CHANGE: Cap privileged leases at 24 hours from successful server password authentication. Never renew authentication provenance on permissions refresh; preserve pending authored work on expiry.
+ACTUAL CHANGE MADE: Implemented role/capability-based lease selection and startup caps. Refresh only narrows expiry; missing/corrupt provenance fails closed. Ordinary seven-day leases remain.
+VERIFICATION: Rust tests pass for expiry after 25 hours, delegated privileges, missing timestamp, repeated startup and downgrade without lease extension.
+STATUS: Implemented; local SQLite tests passed. Actual disconnected credential-revocation UX remains in the Phase 3 GUI matrix.
+```
+
+### 30. Resource editor copies had malformed SQL and incomplete scope inheritance
+
+```text
+MODULE: Resource PDF and DOCX editor copies
+FILE: backend/src/routes/resource-editor.js
+CURRENT WRITE PATH: File-copy operations assembled mismatched INSERT columns/values and did not atomically establish restricted creator access.
+WHY IT BYPASSES OFFLINE-FIRST: Server-side derived assets are online effects, but must still preserve entity identity, provenance and visibility.
+RISK: Failed copy, orphaned files or an improperly visible derived record.
+RECOMMENDED CHANGE: Use one transactional insertion helper, new entity UUID, inherited parent/context/visibility, derived-from ID and creator edit grant. Clean only the generated destination on failure.
+ACTUAL CHANGE MADE: Replaced PDF and DOCX copy inserts with the shared helper; retained existing cleanup.
+VERIFICATION: Actual PostgreSQL PDF-copy probe returned 201, correct source ID and restricted scope, with creator grant; generated test directories and rows removed. Full DOCX/image editing validation is not represented as passed.
+STATUS: PDF path runtime-verified; DOCX dependency and binary staging work explicitly remain open in Phase 2.
+```
+
+### 31. Long-offline finance/location cache depended on bounded tombstones
+
+```text
+MODULE: Finance and Location synchronization
+FILE: backend/src/routes/sync.js; desktop/src/api/sync.ts; desktop/src-tauri/src/{local_db,local_finance,local_locations}.rs
+CURRENT WRITE PATH: Complete row pulls were merged using only the latest bounded tombstone batch, leaving older deleted or newly revoked rows cached.
+WHY IT BYPASSES OFFLINE-FIRST: An authoritative full pull must evict missing synchronized IDs, not rely on a recent deletion tail.
+RISK: Stale/deleted rows survive reconnect; revoked financial projects may remain in the synchronized cache.
+RECOMMENDED CHANGE: Explicit complete-snapshot marker, validated before merge. Evict missing synchronized IDs while retaining pending authored intents. Never treat an unmarked/error response as an empty authoritative snapshot.
+ACTUAL CHANGE MADE: Added snapshot_complete contract and generic retain_authorized_snapshot used by Finance and Locations. Local income/sensitive mutations now also require finance.view.
+VERIFICATION: Rust regression covers 1,505 old rows, one retained server row and one pending local row. Actual PostgreSQL finance pull/project revocation and delete-tombstone probes passed.
+STATUS: Implemented and verified at helper/server boundary. Recovery-only display of revoked pending work remains a cross-domain Phase 2 requirement.
+```
+
+### 32. JSON export silently omitted data and included credentials
+
+```text
+MODULE: Administrative JSON export
+FILE: backend/src/routes/system.js
+CURRENT WRITE PATH: Export read nonexistent experiments table, swallowed per-table errors as empty lists, and selected every users column including password_hash.
+WHY IT BYPASSES OFFLINE-FIRST: A server-authoritative export must not conceal incomplete reads or broaden credentials exposure.
+RISK: Misleading backup contents and unnecessary offline exposure of password hashes.
+RECOMMENDED CHANGE: Correct project_experiments table; fail export on query errors; allowlist safe user columns. Treat this as a data export, not a demonstrated full backup/restore.
+ACTUAL CHANGE MADE: Implemented table correction, explicit user projection and error propagation.
+VERIFICATION: PostgreSQL surface probe verifies experiments array, no exported password_hash, and non-admin rejection.
+STATUS: Implemented; full consistent snapshot and restore certification remain Phase 3.
+```
+
+### 33. Backend dependency warnings include a bundled document-parser risk
+
+```text
+MODULE: Backend dependency supply chain / DOCX conversion
+FILE: backend/package-lock.json; backend/src/routes/resource-editor.js; html-to-docx dependency
+CURRENT WRITE PATH: Authenticated DOCX-copy HTML is processed by html-to-docx 1.8.0, whose package depends on image-size 1.2.1 and whose distributed bundle also contains image parsing code.
+WHY IT BYPASSES OFFLINE-FIRST: Not an outbox problem; dependency execution is part of the server-effect security boundary.
+RISK: npm reports high-severity parser denial-of-service advisories GHSA-5p2g-fcmc-qvqq and GHSA-w3rx-r6r6-pgpr. A lockfile-only override cannot be assumed to repair bundled code.
+RECOMMENDED CHANGE: Replace or rebuild the document conversion dependency with a maintained compatible implementation; isolate conversion with timeout/memory limits and test image parsing, remote-resource policy, invalid documents, and DOCX output. Do not blindly force a major-version override.
+ACTUAL CHANGE MADE: Ran non-forced npm audit fix: Express 4.22.3, Multer 2.4.0 and qs 6.16.0 now locked. Audit reduced from five affected packages to one high-severity image-size finding. No unsupported assertion of exploitability prevention.
+VERIFICATION: Final Docker image built with npm ci; seven PostgreSQL probes, backend tests, desktop tests and build passed. npm audit still exits nonzero for image-size.
+STATUS: OPEN security/release blocker, explicitly assigned first in Phase 2; Phase 1 is not an unconditional security sign-off.
 ```
 
 ## Repository coverage register
@@ -445,7 +527,7 @@ This register prevents a single grep result from being mistaken for sign-off. It
 
 This is a **source coverage register**, not a completed runtime certification. Two-client retry, revocation, UUID collision, delete/pull and forced IPC failure matrices remain open. Any new API or Rust local module must be added here and assessed with the nine-field finding format.
 
-## Next verification sequence
+## Earlier verification queue (superseded by PHASE1_EVIDENCE.md and the three-phase plan)
 
 1. Add failure-injection tests proving Tauri inventory/canvas local failures issue zero HTTP writes.
 2. Against the existing PostgreSQL service, use namespaced temporary records to test stable UUID/change-id retry, duplicate rejection, delete tombstones, and local pull. Clean only test-owned records after validating exact IDs.

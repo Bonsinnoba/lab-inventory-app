@@ -117,6 +117,7 @@ async function runSync():Promise<number>{
     }
   }
   const inventoryPullSucceeded=await runPullStep('Inventory pull',pullServerInventory);
+  const maintenancePullSucceeded=await runPullStep('Maintenance pull',pullServerMaintenance);
   const projectPullSucceeded=await runPullStep('Project pull',pullServerProjects);
   const resourcePullSucceeded=await runPullStep('Resource pull',pullServerResources);
   const financePullSucceeded=await runPullStep('Finance pull',pullServerFinance);
@@ -124,7 +125,7 @@ async function runSync():Promise<number>{
   const engineeringPullSucceeded=await runPullStep('Engineering pull',pullServerEngineering);
   const knowledgePullSucceeded=await runPullStep('Knowledge pull',pullServerKnowledge);
   const notesPullSucceeded=await runPullStep('Notes pull',pullServerNotes);
-  const pullSucceeded=inventoryPullSucceeded&&projectPullSucceeded&&resourcePullSucceeded&&financePullSucceeded&&locationPullSucceeded&&engineeringPullSucceeded&&knowledgePullSucceeded&&notesPullSucceeded;
+  const pullSucceeded=inventoryPullSucceeded&&maintenancePullSucceeded&&projectPullSucceeded&&resourcePullSucceeded&&financePullSucceeded&&locationPullSucceeded&&engineeringPullSucceeded&&knowledgePullSucceeded&&notesPullSucceeded;
   if(!pullSucceeded){syncSucceeded=false;publish({status:'error',lastError:runtimeState.lastError||'Unable to download the latest server changes'});scheduleRetry();}
   if(syncSucceeded&&pullSucceeded){clearRetryState();publish({status:'idle',lastSuccessAt:new Date().toISOString(),lastError:null});}
   else if(runtimeState.status!=='error')publish({status:'error',lastError:runtimeState.lastError||'Some changes could not be synchronized'});
@@ -238,6 +239,16 @@ async function pullServerNotes():Promise<boolean>{
     await invoke('apply_server_notes_pull',{notes:Array.isArray(body.notes)?body.notes:[],visibleNoteIds:Array.isArray(body.visible_note_ids)?body.visible_note_ids:[],deletedNoteIds:Array.isArray(body.deleted_note_ids)?body.deleted_note_ids:[],expectedAccountId:syncAccountId()});
     return true;
   }catch(error){publish({status:'error',lastError:error instanceof Error?error.message:String(error)});return false;}
+}
+
+async function pullServerMaintenance():Promise<boolean>{
+  const response=await apiFetch('/sync/maintenance/pull',{cache:'no-store'});
+  if(!response.ok)throw new Error(await getApiErrorMessage(response,'Unable to download maintenance records'));
+  const body=await response.json();
+  assertSyncSession();
+  if(body.snapshot_complete!==true||!Array.isArray(body.records))throw new Error('Maintenance pull omitted its complete snapshot; cache was not changed');
+  await invoke('apply_server_maintenance_pull',{records:body.records,snapshotComplete:true,expectedAccountId:syncAccountId()});
+  return true;
 }
 
 async function pullServerLocations():Promise<boolean>{

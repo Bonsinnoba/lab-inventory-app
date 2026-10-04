@@ -176,7 +176,7 @@ pub fn list_pending_sync_changes(app:AppHandle,limit:Option<i64>,expected_accoun
     let account=active_account(&conn)?;
     if account!=expected_account_id{return Err("Account changed during sync; retry under the active account".into())}
     let limit=limit.unwrap_or(50).clamp(1,500);
-    let mut stmt=conn.prepare("SELECT o.change_id,o.device_id,o.entity_type,o.entity_id,o.operation,o.payload_json,o.created_at,o.attempt_count,o.last_error FROM sync_outbox o LEFT JOIN sync_conflicts c ON c.change_id=o.change_id AND c.resolved_at IS NULL WHERE o.synced_at IS NULL AND o.account_id=?1 AND c.change_id IS NULL ORDER BY o.created_at ASC LIMIT ?2").map_err(|e|format!("Unable to prepare sync queue query: {e}"))?;
+    let mut stmt=conn.prepare("SELECT o.change_id,o.device_id,o.entity_type,o.entity_id,o.operation,o.payload_json,o.created_at,o.attempt_count,o.last_error FROM sync_outbox o LEFT JOIN sync_conflicts c ON c.change_id=o.change_id AND c.resolved_at IS NULL WHERE o.synced_at IS NULL AND o.account_id=?1 AND c.change_id IS NULL ORDER BY o.created_at ASC,o.rowid ASC LIMIT ?2").map_err(|e|format!("Unable to prepare sync queue query: {e}"))?;
     let rows=stmt.query_map(params![account,limit],|r|{let payload:String=r.get(5)?;let payload_json=serde_json::from_str::<serde_json::Value>(&payload).unwrap_or(serde_json::Value::Null);Ok(serde_json::json!({"change_id":r.get::<_,String>(0)?,"device_id":r.get::<_,String>(1)?,"entity_type":r.get::<_,String>(2)?,"entity_id":r.get::<_,Option<String>>(3)?,"operation":r.get::<_,String>(4)?,"payload":payload_json,"created_at":r.get::<_,String>(6)?,"attempt_count":r.get::<_,i64>(7)?,"last_error":r.get::<_,Option<String>>(8)?}))}).map_err(|e|format!("Unable to read sync queue: {e}"))?;
     rows.map(|r|r.map_err(|e|format!("Unable to decode sync queue row: {e}"))).collect()
 }
@@ -196,10 +196,10 @@ pub fn list_sync_conflicts(app:AppHandle)->Result<Vec<Value>,String>{
 
 fn require_conflict_permission(conn:&Connection,entity:&str,operation:&str,payload:&Value,write:bool)->Result<(),String>{
     let domain=match entity{
-        "item"|"item_movement"|"location"=>"inventory",
+        "item"|"item_movement"|"location"|"maintenance_record"=>"inventory",
         "note"=>"notes", "resource"=>"resources",
-        "project"|"project_task"|"project_experiment"|"project_bom_item"|"project_item"|"project_block"|"project_connector"|"project_resource_requirement"=>"projects",
-        "finding"|"result"|"knowledge_relationship"=>"notes",
+        "project"|"project_task"|"project_experiment"|"project_bom"|"project_bom_item"|"project_item"|"project_block"|"project_connector"|"project_resource_requirement"|"project_work_attachment"|"project_task_experiment"|"project_experiment_measurement"|"project_experiment_observation"=>"projects",
+        "finding"|"result"|"knowledge_result"|"knowledge_relationship"=>"projects",
         "engineering_calculation"|"engineering_test"=>"engineering",
         "transaction"|"budget_period"|"funding_source"=>"finance",
         _=>return Err("Unsupported conflict domain; discard or use the domain recovery workflow".into())
@@ -209,7 +209,9 @@ fn require_conflict_permission(conn:&Connection,entity:&str,operation:&str,paylo
     if domain=="finance" {crate::local_auth::require_local_permission(conn,"finance.view_sensitive")?;}
     if write {
         let action=match operation{"delete"|"bulk_delete"|"item_bulk_delete"=>"delete","create"=>"create",_=>"edit"};
-        let permission=if entity=="item_movement" {"inventory.adjust_stock".to_string()}
+        let permission=if domain=="projects"&&entity!="project" {"projects.edit".to_string()}
+            else if entity=="item_movement" {"inventory.adjust_stock".to_string()}
+            else if entity=="maintenance_record" {"inventory.edit".to_string()}
             else if entity=="transaction"&&operation=="create" {let record=payload.get("record").unwrap_or(payload);format!("finance.create_{}",if record["direction"]=="income"{"income"}else{"expense"})}
             else if domain=="finance"&&action=="create" {"finance.edit".to_string()}
             else {format!("{domain}.{action}")};
@@ -234,6 +236,9 @@ fn resolve_conflict(conn:&mut Connection,change_id:&str,resolution:&str)->Result
     if resolution=="keep_local" {
         let mut value:Value=serde_json::from_str(&payload).map_err(|e|e.to_string())?;
         require_conflict_permission(&tx,&entity,&operation,&value,true)?;
+        if entity=="maintenance_record" && (code=="SYNC_CONFLICT" || code=="SYNC_DEPENDENCY_PENDING") {
+            return Err("Accept the server maintenance version, then review and reapply your edits. Automatic overwrite is not allowed.".into());
+        }
         if entity=="item"&&code=="SYNC_CONFLICT" {
             // An explicit overwrite is a NEW intent; never mutate an idempotency key.
             value.as_object_mut().ok_or("Conflicted payload must be an object")?.insert("conflict_resolution".into(),Value::String("keep_local".into()));
@@ -245,6 +250,12 @@ fn resolve_conflict(conn:&mut Connection,change_id:&str,resolution:&str)->Result
             tx.execute("UPDATE sync_outbox SET attempt_count=0,last_error=NULL,synced_at=NULL WHERE change_id=?1",[change_id]).map_err(|e|e.to_string())?;
         }
     } else {
+        if entity=="maintenance_record" {
+            // Subsequent offline edits depend on this intent. Discarding only the
+            // head would leave a broken chain (or apply later edits to a rival version).
+            tx.execute("UPDATE sync_conflicts SET resolved_at=CURRENT_TIMESTAMP,resolution=?2 WHERE change_id IN (SELECT change_id FROM active_sync_outbox WHERE entity_type='maintenance_record' AND entity_id=?1 AND synced_at IS NULL)",params![entity_id,resolution]).map_err(|e|e.to_string())?;
+            tx.execute("UPDATE sync_outbox SET synced_at=CURRENT_TIMESTAMP,last_error=NULL WHERE account_id=?1 AND entity_type='maintenance_record' AND entity_id=?2 AND synced_at IS NULL",params![active_account(&tx)?,entity_id]).map_err(|e|e.to_string())?;
+        }
         tx.execute("UPDATE sync_outbox SET synced_at=CURRENT_TIMESTAMP,last_error=NULL WHERE change_id=?1",[change_id]).map_err(|e|e.to_string())?;
         // Inventory is incremental. Other domains use complete authorized snapshots.
         if entity=="item"||entity=="item_movement" {

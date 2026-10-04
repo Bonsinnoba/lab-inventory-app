@@ -10,7 +10,7 @@ import { resolveStoragePath } from './storage.js';
 import fs from 'node:fs/promises';
 
 if(process.env.LABOS_PHASE1_SURFACE_PROBE!=='1')throw new Error('Set LABOS_PHASE1_SURFACE_PROBE=1');
-const ids=Object.fromEntries(['user','project','note','resource','task','requirement','transaction','pdf'].map(k=>[k,randomUUID()]));
+const ids=Object.fromEntries(['user','project','note','resource','task','requirement','transaction','pdf','notification','job'].map(k=>[k,randomUUID()]));
 const marker=`LABOS-SURFACE-${randomUUID()}`;
 const files=[];let derived=null;
 const user={userId:ids.user,role:'researcher'};
@@ -31,6 +31,8 @@ try{
  await pool.query("INSERT INTO notes(id,title,body,project_id,visibility) VALUES($1,$2,$2,$3,'restricted')",[ids.note,marker,ids.project]);
  await pool.query("INSERT INTO resources(id,name,kind,file_type,url,project_id,visibility) VALUES($1,$2,'link','other','https://example.com',$3,'restricted')",[ids.resource,marker,ids.project]);
  await pool.query('INSERT INTO project_tasks(id,project_id,title) VALUES($1,$2,$3)',[ids.task,ids.project,marker]);
+ await pool.query("INSERT INTO notifications(id,user_id,type,title,body,entity_type,entity_id) VALUES($1,$2,'task_due',$3,$3,'project_task',$4)",[ids.notification,ids.user,marker,ids.task]);
+ await pool.query("INSERT INTO resource_download_jobs(id,resource_id,requested_by,status) VALUES($1,$2,$3,'cancelled')",[ids.job,ids.resource,ids.user]);
  await pool.query('INSERT INTO project_resource_requirements(id,project_id,name) VALUES($1,$2,$3)',[ids.requirement,ids.project,marker]);
  await pool.query("INSERT INTO transactions(id,type,direction,amount,project_id,notes) VALUES($1,'project_expense','expense',9876.54,$2,$3)",[ids.transaction,ids.project,marker]);
  const hiddenSearch=await get(`/search?q=${marker}`);
@@ -40,6 +42,15 @@ try{
  assert.equal((await request('PATCH',`/operations/requirements/${ids.requirement}`,{name:'forbidden',project_id:null})).status,403);
  assert.equal((await request('GET',`/context/projects/${ids.project}`)).status,404);
  const before=await get('/reports/overview');
+ excludes(await get('/experience/notifications'),ids.notification,'Notifications must recheck current project scope');
+ excludes(await get('/collaboration/notifications'),ids.notification,'Both notification endpoints must agree');
+ excludes(await get('/media-downloads/queue'),ids.job,'Queue must not leak restricted-resource metadata');
+ // Child scope cannot broaden its parent's scope on list, detail, or sync.
+ await pool.query("UPDATE notes SET visibility='lab' WHERE id=$1",[ids.note]);
+ excludes(await get('/notes'),ids.note,'Lab note must honor its restricted project');
+ excludes(await get('/sync/notes/pull'),ids.note,'Note pull must honor its restricted project');
+ assert.equal((await request('GET',`/notes/${ids.note}`)).status,404);
+ await pool.query("UPDATE notes SET visibility='restricted' WHERE id=$1",[ids.note]);
  await grant('project',ids.project);
  // Project access alone must not reveal restricted children.
  const context=await get(`/context/projects/${ids.project}`);
@@ -49,6 +60,8 @@ try{
   const result=await toolImplementations[name](args,user);excludes(result,ids.note,`${name} note`);excludes(result,ids.resource,`${name} resource`);
  }
  await grant('note',ids.note);await grant('resource',ids.resource);
+ assert.ok(JSON.stringify(await get('/experience/notifications')).includes(ids.notification));
+ assert.ok(JSON.stringify(await get('/media-downloads/queue')).includes(ids.job));
  assert.ok(JSON.stringify(await get(`/context/projects/${ids.project}`)).includes(ids.note));
  assert.ok(JSON.stringify(await get(`/search?q=${marker}`)).includes(ids.resource));
  const after=await get('/reports/overview');
@@ -79,6 +92,11 @@ try{
  assert.equal(copy.body.visibility,'restricted');assert.equal(copy.body.derived_from_resource_id,ids.pdf);
  assert.equal((await pool.query("SELECT 1 FROM record_access_grants WHERE entity_type='resource' AND entity_id=$1 AND user_id=$2 AND access_level='edit'",[derived,admin.userId])).rowCount,1);
  const exported=await get('/system/export',admin);assert.ok(Array.isArray(exported.tables.project_experiments));
+ const location=(await pool.query('SELECT id FROM locations LIMIT 1')).rows[0];
+ const item=(await pool.query('SELECT id FROM items LIMIT 1')).rows[0];
+ await toolImplementations.list_locations({},admin);
+ if(location)await toolImplementations.get_location({location_id:location.id},admin);
+ if(item)await toolImplementations.get_item({item_id:item.id},admin);
  assert.ok(exported.tables.users.every(row=>!('password_hash' in row)),'Exports must not contain password hashes');
  await pool.query('UPDATE users SET is_active=false WHERE id=$1',[ids.user]);assert.equal((await request('GET','/search?q=anything')).status,401);
  console.log('Phase 1 surface probe PASS: search/context/evidence/assistant/reports, grant/revoke, operations stored-row authority, finance list/aggregate/pull, restricted PDF copy, export credential projection, disabled session.');
@@ -86,6 +104,8 @@ try{
  const entityIds=[...Object.values(ids),...(derived?[derived]:[])];
  await pool.query('DELETE FROM audit_log WHERE actor_user_id=$1 OR entity_id=ANY($2::uuid[])',[ids.user,entityIds]);
  await pool.query('DELETE FROM record_access_grants WHERE user_id=$1 OR entity_id=ANY($2::uuid[])',[ids.user,entityIds]);
+ await pool.query('DELETE FROM notifications WHERE id=$1',[ids.notification]);
+ await pool.query('DELETE FROM resource_download_jobs WHERE id=$1',[ids.job]);
  await pool.query('DELETE FROM resources WHERE id=ANY($1::uuid[])',[[ids.resource,ids.pdf,...(derived?[derived]:[])]]);
  await pool.query('DELETE FROM transactions WHERE id=$1',[ids.transaction]);
  await pool.query('DELETE FROM project_resource_requirements WHERE id=$1',[ids.requirement]);

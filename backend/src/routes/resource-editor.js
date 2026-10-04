@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import mammoth from 'mammoth';
-import HTMLtoDOCX from 'html-to-docx';
+import { convertDocx } from '../docx-converter.js';
 import { pool } from '../db.js';
 import { writeAuditLog } from '../middleware/audit.js';
 import { requireResourceEditor } from '../middleware/resource-access.js';
@@ -115,7 +115,7 @@ router.put('/:id/docx-copy', async (req, res) => {
     if (!isDocxResource(resource)) return res.status(400).json({ error: 'Only DOCX resources can be edited' });
     if (typeof req.body?.html !== 'string') return res.status(400).json({ error: 'html must be a string' });
     if (Buffer.byteLength(req.body.html, 'utf8') > config.maxJsonMb * 1024 * 1024) return res.status(413).json({ error: 'DOCX content is too large' });
-    const buffer = await HTMLtoDOCX(req.body.html, null, { table: { row: { cantSplit: true } } });
+    const buffer = await convertDocx(req.body.html);
     const id = randomUUID();
     const originalName = resource.original_filename || resource.name;
     const parsed = path.parse(originalName);
@@ -128,7 +128,7 @@ router.put('/:id/docx-copy', async (req, res) => {
       await writeAuditLog({ req, action: 'CREATE', entityType: 'resource', entityId: created.id, newValue: { derived_from_resource_id: resource.id, docx_edited: true } });
       res.status(201).json(created);
     } catch (err) { await fs.rm(destinationDir, { recursive: true, force: true }).catch(() => {}); throw err; }
-  } catch (err) { console.error(err); res.status(500).json({ error: err.message || 'Failed to save edited DOCX' }); }
+  } catch (err) { console.error(err); res.status(err.status || 500).json({ error: err.message || 'Failed to save edited DOCX' }); }
 });
 
 router.post('/:id/pdf-copy', async (req, res) => {
