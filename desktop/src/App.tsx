@@ -129,7 +129,6 @@ function AppContent() {
     const m = () => {
       setMusicDockOpen(true);
       setMusicMinimized(false);
-      setRightPanelContent('music');
     };
     const e = () => setEngineeringToolsOpen(true);
     const mm = () => setRightPanelContent((c) => c === 'media' ? null : 'media');
@@ -223,6 +222,7 @@ function AppContent() {
     if (content === 'music') {
       setMusicDockOpen(true);
       setMusicMinimized(false);
+      return;
     }
     setRightPanelContent(content);
   };
@@ -230,17 +230,23 @@ function AppContent() {
   const closeMusic = () => {
     setMusicDockOpen(false);
     setMusicMinimized(false);
-    setRightPanelContent((c) => c === 'music' ? null : c);
   };
 
   const minimizeMusic = () => {
     setMusicMinimized(true);
-    setRightPanelContent((c) => c === 'music' ? null : c);
   };
 
   const restoreMusic = () => {
     setMusicMinimized(false);
-    setRightPanelContent('music');
+  };
+
+  const toggleMusic = () => {
+    if (musicDockOpen && !musicMinimized) {
+      closeMusic();
+      return;
+    }
+    setMusicDockOpen(true);
+    setMusicMinimized(false);
   };
 
   const renderRightPanelContent = () => {
@@ -266,7 +272,7 @@ function AppContent() {
       <div className="app-shell flex h-full w-full min-w-0 min-h-0 overflow-hidden text-text-primary">
         <Sidebar user={user} permissions={permissions} onLogout={handleLogout} />
         <MobileDrawer open={mobileMenuOpen} onClose={() => setMobileMenuOpen(false)} user={user} onLogout={handleLogout} />
-        <div className="flex-1 flex flex-col min-w-0 min-h-0">
+        <div className="desktop-workspace-main flex-1 flex flex-col min-w-0 min-h-0">
           <TopBar title={getPageTitle()} onOpenCommandPalette={() => setCommandPaletteOpen(true)} onOpenSearchModal={() => setGlobalSearchModalOpen(true)} onScan={() => setDesktopScanOpen(true)} />
           <MobileHeader title={getPageTitle()} onMenu={() => setMobileMenuOpen(true)} onScan={() => setMobileScanOpen(true)} />
           <main className="app-main min-w-0 min-h-0 flex-1 overflow-y-auto overflow-x-hidden pb-safe">
@@ -317,11 +323,11 @@ function AppContent() {
             {renderRightPanelContent()}
           </RightPanel>
         )}
-        <ActivityRail active={rightPanelContent} engineeringOpen={engineeringToolsOpen} musicOpen={rightPanelContent === 'music'} mediaOpen={rightPanelContent === 'media'} onSelect={selectDock} />
+        <ActivityRail active={rightPanelContent} engineeringOpen={engineeringToolsOpen} musicOpen={musicDockOpen && !musicMinimized} mediaOpen={rightPanelContent === 'media'} onSelect={selectDock} onToggleMusic={toggleMusic} />
       </div>
 
       {musicDockOpen && (
-        <div className={musicMinimized ? "fixed -left-[10000px] top-0 w-[380px] h-full opacity-0 pointer-events-none" : "fixed right-12 top-0 bottom-0 w-[380px] z-[60] border-l border-border bg-surface shadow-2xl"}>
+        <div className={musicMinimized ? "fixed -left-[10000px] top-0 w-[300px] h-full opacity-0 pointer-events-none" : "music-overlay-panel desktop-right-panel"}>
           <MusicDock minimized={false} onRestore={restoreMusic} onMinimize={minimizeMusic} onClose={closeMusic} autoPause={autoPauseMusic} />
         </div>
       )}

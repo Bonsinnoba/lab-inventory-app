@@ -43,7 +43,7 @@ export default function RightPanel({ title, onClose, children, hideHeader = fals
   }, []);
 
   return (
-    <div ref={panelRef} style={{ width }} role="complementary" aria-label={title} className="relative flex flex-col h-full bg-surface border-l border-border flex-shrink-0">
+    <div ref={panelRef} style={{ width }} role="complementary" aria-label={title} className="desktop-right-panel relative flex flex-col h-full bg-surface border-l border-border flex-shrink-0">
       <div
         onMouseDown={handleMouseDown}
         onKeyDown={handleResizeKeyDown}

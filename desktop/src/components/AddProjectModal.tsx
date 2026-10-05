@@ -44,92 +44,103 @@ export default function AddProjectModal({ onClose }: AddProjectModalProps) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-surface border border-border rounded-md p-6 w-[500px]">
-        <h3 className="text-section-header font-ui font-semibold mb-4">Add Project</h3>
-        <form onSubmit={handleSubmit} className="space-y-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" style={{ zIndex: 200 }} onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
+      <section role="dialog" aria-modal="true" aria-labelledby="add-project-title" onKeyDown={event => { if (event.key === 'Escape') onClose(); }} className="flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-2xl">
+        <header className="shrink-0 border-b border-border px-5 py-4">
+          <h3 id="add-project-title" className="text-lg font-semibold">Add Project</h3>
+        </header>
+        <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
           <div>
-            <label className="block text-sm text-text-secondary mb-1">Name *</label>
+            <label className="ui-label"><span>Name *</span>
             <input
               type="text"
               value={formData.name}
               onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-              className="w-full px-3 py-2 bg-bg border border-border rounded-sm text-text-primary focus:outline-none focus:border-accent"
+              className="ui-input"
               required
             />
+            </label>
           </div>
 
           <div>
-            <label className="block text-sm text-text-secondary mb-1">Status *</label>
+            <label className="ui-label"><span>Status *</span>
             <select
               value={formData.status}
               onChange={(e) => setFormData({ ...formData, status: e.target.value as Project['status'] })}
-              className="w-full px-3 py-2 bg-bg border border-border rounded-sm text-text-primary focus:outline-none focus:border-accent"
+              className="ui-select"
               required
             >
               <option value="planning">Planning</option>
 
             </select>
+            </label>
           </div>
 
           <div>
-            <label className="block text-sm text-text-secondary mb-1">Description</label>
+            <label className="ui-label"><span>Description</span>
             <textarea
               value={formData.description}
               onChange={(e) => setFormData({ ...formData, description: e.target.value })}
               placeholder="What is this project about?"
-              className="w-full px-3 py-2 bg-bg border border-border rounded-sm text-text-primary focus:outline-none focus:border-accent min-h-20"
+              className="ui-textarea"
             />
+            </label>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-sm text-text-secondary mb-1">Priority</label>
-              <select value={formData.priority} onChange={(e) => setFormData({ ...formData, priority: e.target.value as Project['priority'] })} className="w-full px-3 py-2 bg-bg border border-border rounded-sm text-text-primary">
+              <label className="ui-label"><span>Priority</span>
+              <select value={formData.priority} onChange={(e) => setFormData({ ...formData, priority: e.target.value as Project['priority'] })} className="ui-select">
                 <option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="critical">Critical</option>
               </select>
+              </label>
             </div>
             <div>
-              <label className="block text-sm text-text-secondary mb-1">Start date</label>
-              <input type="date" value={formData.start_date} onChange={(e) => setFormData({ ...formData, start_date: e.target.value })} className="w-full px-3 py-2 bg-bg border border-border rounded-sm text-text-primary" />
+              <label className="ui-label"><span>Start date</span>
+              <input type="date" value={formData.start_date} onChange={(e) => setFormData({ ...formData, start_date: e.target.value })} className="ui-input" />
+              </label>
             </div>
           </div>
 
           <div>
-            <label className="block text-sm text-text-secondary mb-1">Due date</label>
-            <input type="date" value={formData.due_date} onChange={(e) => setFormData({ ...formData, due_date: e.target.value })} className="w-full px-3 py-2 bg-bg border border-border rounded-sm text-text-primary" />
+            <label className="ui-label"><span>Due date</span>
+            <input type="date" value={formData.due_date} onChange={(e) => setFormData({ ...formData, due_date: e.target.value })} className="ui-input" />
+            </label>
           </div>
 
           <div>
-            <label className="block text-sm text-text-secondary mb-1">Budget</label>
+            <label className="ui-label"><span>Budget</span>
             <input
               type="number"
               step="0.01"
               value={formData.budget}
               onChange={(e) => setFormData({ ...formData, budget: e.target.value })}
               placeholder="0.00"
-              className="w-full px-3 py-2 bg-bg border border-border rounded-sm text-text-primary focus:outline-none focus:border-accent"
+              className="ui-input"
             />
+            </label>
+          </div>
           </div>
 
-          <div className="flex gap-2 justify-end">
+          <div className="flex shrink-0 justify-end gap-2 border-t border-border bg-surface px-5 py-4">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 bg-surface-raised border border-border rounded-sm hover:bg-surface-raised transition-colors"
+              className="ui-button"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={createMutation.isPending}
-              className="px-4 py-2 bg-accent text-bg rounded-sm hover:bg-accent-dim transition-colors disabled:opacity-50"
+              className="ui-button ui-button-primary"
             >
               {createMutation.isPending ? 'Creating...' : 'Add Project'}
             </button>
           </div>
         </form>
-      </div>
+      </section>
     </div>
   );
 }

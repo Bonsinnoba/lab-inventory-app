@@ -14,7 +14,7 @@ interface TabsProps {
 export default function Tabs({ tabs, activePath }: TabsProps) {
   return (
     <div
-      className="flex w-full min-w-0 items-stretch gap-1 overflow-x-auto px-3 md:px-5"
+      className="section-tabs flex w-full min-w-0 items-stretch gap-1 overflow-x-auto px-3 md:px-5"
       role="tablist"
       aria-label="Section navigation"
     >

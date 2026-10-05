@@ -1,7 +1,7 @@
 import { Bot, BookOpen, Search, Calculator, Music2, FolderOpen } from 'lucide-react';
 
 export type DockableContent = 'assistant' | 'notebook' | 'search' | 'music' | 'media' | null;
-interface ActivityRailProps { active: DockableContent; onSelect: (content: DockableContent) => void; engineeringOpen?: boolean; musicOpen?: boolean; mediaOpen?: boolean; }
+interface ActivityRailProps { active: DockableContent; onSelect: (content: DockableContent) => void; onToggleMusic: () => void; engineeringOpen?: boolean; musicOpen?: boolean; mediaOpen?: boolean; }
 const items: { id: Exclude<DockableContent, null | 'music' | 'media'>; icon: typeof Bot; label: string }[] = [
   { id: 'assistant', icon: Bot, label: 'Lab Assistant' },
   { id: 'notebook', icon: BookOpen, label: 'Notebook' },
@@ -15,7 +15,7 @@ function ToolButton({ label, active = false, onClick, children }: { label: strin
     {active && <span aria-hidden="true" className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-r-full bg-accent" />}{children}
   </button>;
 }
-export default function ActivityRail({ active, onSelect, engineeringOpen = false, musicOpen = false, mediaOpen = false }: ActivityRailProps) {
+export default function ActivityRail({ active, onSelect, onToggleMusic, engineeringOpen = false, musicOpen = false, mediaOpen = false }: ActivityRailProps) {
   return <aside className="desktop-activity-rail w-12 flex-shrink-0 bg-surface border-l border-border flex flex-col items-center py-2.5 gap-1" aria-label="Workspace tools">
     <div className="flex flex-col items-center gap-1" role="toolbar" aria-label="Docked workspace tools">
       {items.map(({ id, icon: Icon, label }) => <ToolButton key={id} label={label} active={active === id} onClick={() => onSelect(active === id ? null : id)}><Icon size={18} strokeWidth={active === id ? 2.2 : 2} aria-hidden="true" /></ToolButton>)}
@@ -25,7 +25,7 @@ export default function ActivityRail({ active, onSelect, engineeringOpen = false
       <ToolButton label="Engineering Tools" active={engineeringOpen} onClick={() => window.dispatchEvent(new CustomEvent('labos:engineering-tools'))}><Calculator size={18} strokeWidth={engineeringOpen ? 2.2 : 2} aria-hidden="true" /></ToolButton>
     </div>
     <div className="mt-auto pt-2 border-t border-border/80 w-8 flex flex-col items-center gap-1" role="group" aria-label="Media tools">
-      <ToolButton label="Music Player" active={musicOpen} onClick={() => onSelect(musicOpen ? null : 'music')}><Music2 size={18} strokeWidth={musicOpen ? 2.2 : 2} aria-hidden="true" /></ToolButton>
+      <ToolButton label="Music Player" active={musicOpen} onClick={onToggleMusic}><Music2 size={18} strokeWidth={musicOpen ? 2.2 : 2} aria-hidden="true" /></ToolButton>
       <ToolButton label="Media Manager" active={mediaOpen} onClick={() => onSelect(mediaOpen ? null : 'media')}><FolderOpen size={18} strokeWidth={mediaOpen ? 2.2 : 2} aria-hidden="true" /></ToolButton>
     </div>
   </aside>;

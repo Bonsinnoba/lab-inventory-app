@@ -40,7 +40,7 @@ export default function StatusLED({ status }: StatusLEDProps) {
           boxShadow: `0 0 8px ${color}66`,
         }}
       />
-      <span className="text-sm capitalize" style={{ color }}>
+      <span className="text-sm capitalize whitespace-nowrap" style={{ color }}>
         {status.replace('_', ' ')}
       </span>
     </div>
