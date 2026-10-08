@@ -1,3 +1,4 @@
+import { catalogHttpMutation } from '../catalog-sync.js';
 import { Router } from 'express';
 import { pool } from '../db.js';
 import { writeAuditLog } from '../middleware/audit.js';
@@ -35,39 +36,9 @@ router.get('/containers', async (req, res) => {
   } catch (err) { console.error(err); res.status(500).json({ error: { code: 'PHASE4_CONTAINERS_FAILED', message: 'Failed to fetch storage containers' } }); }
 });
 
-router.post('/containers', async (req, res) => {
-  const { name, container_type = 'box', storage_location = null, capacity = null, notes = null } = req.body;
-  if (!name?.trim()) return res.status(400).json({ error: { code: 'CONTAINER_NAME_REQUIRED', message: 'Container name is required' } });
-  try {
-    const result = await pool.query('INSERT INTO storage_containers(name, container_type, storage_location, capacity, notes) VALUES($1,$2,$3,$4,$5) RETURNING *', [name.trim(), container_type, storage_location?.trim() || null, capacity, notes]);
-    await writeAuditLog({ req, action: 'CREATE', entityType: 'storage_container', entityId: result.rows[0].id, newValue: result.rows[0] });
-    res.status(201).json(result.rows[0]);
-  } catch (err) { console.error(err); res.status(500).json({ error: { code: 'CONTAINER_CREATE_FAILED', message: 'Failed to create storage container' } }); }
-});
-
-router.patch('/containers/:id', async (req, res) => {
-  const { name, container_type = 'box', storage_location = null, capacity = null, notes = null } = req.body;
-  if (!name?.trim()) return res.status(400).json({ error: { code: 'CONTAINER_NAME_REQUIRED', message: 'Container name is required' } });
-  try {
-    const before = await pool.query('SELECT * FROM storage_containers WHERE id = $1', [req.params.id]);
-    if (!before.rowCount) return res.status(404).json({ error: { code: 'CONTAINER_NOT_FOUND', message: 'Storage container not found' } });
-    const result = await pool.query('UPDATE storage_containers SET name=$1, container_type=$2, storage_location=$3, capacity=$4, notes=$5, updated_at=now() WHERE id=$6 RETURNING *', [name.trim(), container_type, storage_location?.trim() || null, capacity, notes, req.params.id]);
-    await writeAuditLog({ req, action: 'UPDATE', entityType: 'storage_container', entityId: req.params.id, oldValue: before.rows[0], newValue: result.rows[0] });
-    res.json(result.rows[0]);
-  } catch (err) { console.error(err); res.status(500).json({ error: { code: 'CONTAINER_UPDATE_FAILED', message: 'Failed to update storage container' } }); }
-});
-
-router.delete('/containers/:id', async (req, res) => {
-  try {
-    const before = await pool.query('SELECT * FROM storage_containers WHERE id = $1', [req.params.id]);
-    if (!before.rowCount) return res.status(404).json({ error: { code: 'CONTAINER_NOT_FOUND', message: 'Storage container not found' } });
-    const linked = await pool.query('SELECT COUNT(*)::int AS count FROM items WHERE storage_container_id = $1', [req.params.id]);
-    if (Number(linked.rows[0].count) > 0) return res.status(409).json({ error: { code: 'CONTAINER_HAS_ITEMS', message: 'Move linked items before deleting this container' } });
-    await pool.query('DELETE FROM storage_containers WHERE id = $1', [req.params.id]);
-    await writeAuditLog({ req, action: 'DELETE', entityType: 'storage_container', entityId: req.params.id, oldValue: before.rows[0] });
-    res.json({ success: true });
-  } catch (err) { console.error(err); res.status(500).json({ error: { code: 'CONTAINER_DELETE_FAILED', message: 'Failed to delete storage container' } }); }
-});
+router.post('/containers',catalogHttpMutation('storage_container','create'));
+router.patch('/containers/:id',catalogHttpMutation('storage_container','update'));
+router.delete('/containers/:id',catalogHttpMutation('storage_container','delete'));
 
 router.patch('/items/:id/storage', async (req, res) => {
   const { storage_location = null, storage_container_id = null } = req.body;

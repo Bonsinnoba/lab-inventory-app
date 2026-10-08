@@ -117,6 +117,7 @@ async function runSync():Promise<number>{
     }
   }
   const inventoryPullSucceeded=await runPullStep('Inventory pull',pullServerInventory);
+  const catalogPullSucceeded=await runPullStep('Catalog pull',pullServerCatalogs);
   const maintenancePullSucceeded=await runPullStep('Maintenance pull',pullServerMaintenance);
   const preferencesPullSucceeded=await runPullStep('Preferences pull',async()=>{
     const response=await apiFetch('/system/daily-preferences',{cache:'no-store'});
@@ -132,7 +133,7 @@ async function runSync():Promise<number>{
   const engineeringPullSucceeded=await runPullStep('Engineering pull',pullServerEngineering);
   const knowledgePullSucceeded=await runPullStep('Knowledge pull',pullServerKnowledge);
   const notesPullSucceeded=await runPullStep('Notes pull',pullServerNotes);
-  const pullSucceeded=inventoryPullSucceeded&&maintenancePullSucceeded&&preferencesPullSucceeded&&projectPullSucceeded&&resourcePullSucceeded&&financePullSucceeded&&locationPullSucceeded&&engineeringPullSucceeded&&knowledgePullSucceeded&&notesPullSucceeded;
+  const pullSucceeded=catalogPullSucceeded&&inventoryPullSucceeded&&maintenancePullSucceeded&&preferencesPullSucceeded&&projectPullSucceeded&&resourcePullSucceeded&&financePullSucceeded&&locationPullSucceeded&&engineeringPullSucceeded&&knowledgePullSucceeded&&notesPullSucceeded;
   if(!pullSucceeded){syncSucceeded=false;publish({status:'error',lastError:runtimeState.lastError||'Unable to download the latest server changes'});scheduleRetry();}
   if(syncSucceeded&&pullSucceeded){clearRetryState();publish({status:'idle',lastSuccessAt:new Date().toISOString(),lastError:null});}
   else if(runtimeState.status!=='error')publish({status:'error',lastError:runtimeState.lastError||'Some changes could not be synchronized'});
@@ -246,6 +247,16 @@ async function pullServerNotes():Promise<boolean>{
     await invoke('apply_server_notes_pull',{notes:Array.isArray(body.notes)?body.notes:[],visibleNoteIds:Array.isArray(body.visible_note_ids)?body.visible_note_ids:[],deletedNoteIds:Array.isArray(body.deleted_note_ids)?body.deleted_note_ids:[],expectedAccountId:syncAccountId()});
     return true;
   }catch(error){publish({status:'error',lastError:error instanceof Error?error.message:String(error)});return false;}
+}
+
+async function pullServerCatalogs():Promise<boolean>{
+  for(const kind of ['supplier','storage_container']){
+    const response=await apiFetch(`/sync/catalog/${kind}/pull`,{cache:'no-store'});
+    if(!response.ok)throw new Error(await getApiErrorMessage(response,'Unable to download catalog'));
+    const body=await response.json();assertSyncSession();
+    if(body.snapshot_complete!==true||!Array.isArray(body.records))throw new Error('Incomplete catalog snapshot');
+    await invoke('apply_server_catalog_pull',{kind,records:body.records,snapshotComplete:true,expectedAccountId:syncAccountId()});
+  }return true;
 }
 
 async function pullServerMaintenance():Promise<boolean>{

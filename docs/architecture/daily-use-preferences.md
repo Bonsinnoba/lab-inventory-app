@@ -7,18 +7,20 @@ assistant, notification-read, or media settings share this contract.
 
 ## Current state and migration boundary
 
-- Tauri currently writes all three fields to account-scoped SQLite `sync_state`
-  without an outbox entry. Browser mode writes all three to
-  `user_daily_use_preferences` in PostgreSQL. Neither path currently provides
-  a consistent cross-device notification value.
-- Phase 1 records the ownership decision. Phase 2 must implement the paths
-  below as one vertical slice. Until then, the UI must not claim that a Tauri
-  notification change has synchronized. Existing PostgreSQL music columns and
-  SQLite values must not be deleted or silently assigned to another account.
-- The `notifications_enabled` label currently promises "delivery", but a
-  repository search found no consumer of that column outside its API and UI.
-  Phase 2 must wire an actual delivery gate or relabel it as a preference;
-  passing a persistence test alone is not enough.
+- Implemented in Phase 2: Tauri notification changes commit account-scoped
+  SQLite state and an immutable outbox event atomically. Music values remain
+  installation/account-local. Browser notification PATCH uses the same server
+  apply/version rules; browser music values use account-scoped localStorage.
+- Populated SQLite music values and PostgreSQL legacy media columns are
+  retained. Browser migration is an explicit import and refuses to overwrite
+  existing device values. Pending notifications are labelled pending, not synced.
+- A PostgreSQL BEFORE INSERT notification gate suppresses new delivery when
+  disabled or the account is inactive. Historical notifications remain intact.
+  Automation counts only notifications actually inserted.
+- Real PostgreSQL probing exposed and fixed a UUID/text parameter inference
+  error in browser PATCH (2026-10-08). Automated disk-client, browser API and
+  database evidence is tracked in `../audits/PHASE2_EVIDENCE.md`. Running two
+  GUI clients and checking controls visually is still Phase 3 acceptance work.
 
 ## Per-account notification preference
 

@@ -197,7 +197,7 @@ pub fn list_sync_conflicts(app:AppHandle)->Result<Vec<Value>,String>{
 fn require_conflict_permission(conn:&Connection,entity:&str,operation:&str,payload:&Value,write:bool)->Result<(),String>{
     if entity=="daily_preferences" {active_account(conn)?;return Ok(())}
     let domain=match entity{
-        "item"|"item_movement"|"location"|"maintenance_record"=>"inventory",
+        "item"|"item_movement"|"location"|"maintenance_record"|"supplier"|"storage_container"=>"inventory",
         "note"=>"notes", "resource"=>"resources",
         "project"|"project_task"|"project_experiment"|"project_bom"|"project_bom_item"|"project_item"|"project_block"|"project_connector"|"project_resource_requirement"|"project_work_attachment"|"project_task_experiment"|"project_experiment_measurement"|"project_experiment_observation"=>"projects",
         "finding"|"result"|"knowledge_result"|"knowledge_relationship"=>"projects",
@@ -237,7 +237,7 @@ fn resolve_conflict(conn:&mut Connection,change_id:&str,resolution:&str)->Result
     if resolution=="keep_local" {
         let mut value:Value=serde_json::from_str(&payload).map_err(|e|e.to_string())?;
         require_conflict_permission(&tx,&entity,&operation,&value,true)?;
-        if ["maintenance_record","daily_preferences"].contains(&entity.as_str()) && (code=="SYNC_CONFLICT" || code=="SYNC_DEPENDENCY_PENDING") {
+        if ["maintenance_record","daily_preferences","supplier","storage_container"].contains(&entity.as_str()) && (code=="SYNC_CONFLICT" || code=="SYNC_DEPENDENCY_PENDING") {
             return Err("Accept the server version, then review and reapply your edits. Automatic overwrite is not allowed.".into());
         }
         if entity=="item"&&code=="SYNC_CONFLICT" {
@@ -251,7 +251,7 @@ fn resolve_conflict(conn:&mut Connection,change_id:&str,resolution:&str)->Result
             tx.execute("UPDATE sync_outbox SET attempt_count=0,last_error=NULL,synced_at=NULL WHERE change_id=?1",[change_id]).map_err(|e|e.to_string())?;
         }
     } else {
-        if ["maintenance_record","daily_preferences"].contains(&entity.as_str()) {
+        if ["maintenance_record","daily_preferences","supplier","storage_container"].contains(&entity.as_str()) {
             // Subsequent offline edits depend on this intent. Discarding only the
             // head would leave a broken chain (or apply later edits to a rival version).
             tx.execute("UPDATE sync_conflicts SET resolved_at=CURRENT_TIMESTAMP,resolution=?2 WHERE change_id IN (SELECT change_id FROM active_sync_outbox WHERE entity_type=?3 AND entity_id=?1 AND synced_at IS NULL)",params![entity_id,resolution,entity]).map_err(|e|e.to_string())?;

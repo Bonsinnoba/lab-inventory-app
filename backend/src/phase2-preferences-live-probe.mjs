@@ -25,7 +25,12 @@ try{
   await pool.query('UPDATE user_daily_use_preferences SET auto_pause_music=true,music_volume=.43 WHERE user_id=$1',[users[0]]);
   p=await request('GET','/system/daily-preferences');assert.equal(p.body.legacy_media.music_volume,.43);
   const key=randomUUID();keys.push(key);const body={notifications_enabled:false,expected_version:p.body.sync_version};
-  for(let i=0;i<2;i++)assert.equal((await request('PATCH','/system/daily-preferences',body,users[0],key)).status,200);
+  for(let i=0;i<2;i++){
+    const response=await request('PATCH','/system/daily-preferences',body,users[0],key);
+    assert.equal(response.status,200,JSON.stringify(response));
+  }
+  assert.equal((await request('PATCH','/system/daily-preferences',{...body,notifications_enabled:true},users[0],key)).status,409,'A replay cannot change its payload');
+  assert.equal((await request('PATCH','/system/daily-preferences',body,users[1],key)).status,409,'A replay cannot change its owner');
   assert.equal((await request('GET','/system/daily-preferences')).body.legacy_media.music_volume,.43,'Account writes preserve historical media');
   const badKey=randomUUID();keys.push(badKey);assert.equal((await request('PATCH','/system/daily-preferences',{...body,music_volume:.9},users[0],badKey)).status,400);
   assert.equal((await push([one],users[1]))[0].error.code,'IDEMPOTENCY_OWNERSHIP_MISMATCH');

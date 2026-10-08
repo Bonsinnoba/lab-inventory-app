@@ -46,6 +46,9 @@ div[class~="max-w-[1400px]"]:has(> div.mb-6 > div > h2.text-page-title) > div[cl
 div[class~="max-w-[1400px]"]:has(> div.mb-6 > div > h2.text-page-title) > div[class~="sm:flex-row"] > div:first-child p { margin-top: 0; }
 div[class~="max-w-[1400px]"]:has(> div.mb-6 > div > h2.text-page-title) > div[class~="sm:flex-row"] > div:last-child { justify-content: flex-start; }
 div[class~="max-w-[1400px]"]:has(> div.mb-6 > div > h2.text-page-title) > div[class~="sm:flex-row"] h2.text-page-title { display: none; }
+div.fixed[class~="inset-0"][class~="z-50"],
+div.fixed[role="dialog"],
+div.fixed:has([role="dialog"]) { z-index: 200 !important; }
 /* Tailwind opacity modifiers cannot resolve these hex-valued CSS color tokens. */
 [class~="bg-accent/5"] { background-color: color-mix(in srgb, var(--color-accent) 5%, transparent); }
 [class~="bg-accent/10"] { background-color: color-mix(in srgb, var(--color-accent) 10%, transparent); }

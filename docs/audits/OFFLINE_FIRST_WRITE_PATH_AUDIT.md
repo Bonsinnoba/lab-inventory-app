@@ -66,27 +66,27 @@ STATUS: Guard implemented; end-to-end verification pending.
 ```text
 MODULE: System preferences
 FILE: desktop/src/api/system.ts; desktop/src-tauri/src/local_system.rs; backend/src/routes/system.js; backend/src/routes/sync.js
-CURRENT WRITE PATH: Tauri -> account-scoped SQLite sync_state; browser -> server PATCH. The local preference write has no outbox event, and sync has no preference entity handler.
-WHY IT BYPASSES OFFLINE-FIRST: Previously, a failed Tauri write fell back to a server PATCH. Even a successful Tauri write remains device-local and does not synchronize.
-RISK: Different settings on different devices; a failed local write could previously create a server-only change. A local success should not be presented as a synchronized preference.
+CURRENT WRITE PATH: Tauri notification edit -> atomic account-scoped SQLite state + outbox -> versioned PostgreSQL apply -> pending-aware pull. Music stays device/account-local. Browser notifications use versioned idempotent PATCH; music uses localStorage.
+WHY IT BYPASSES OFFLINE-FIRST: Original fallback and missing outbox are removed. Device-only music intentionally has no outbox under the approved hybrid contract.
+RISK: Historical risk was divergent notification state and server-only writes after local failure. Concurrent stale edits now surface conflicts; pending work is retained until resolved.
 RECOMMENDED CHANGE: Use the owner-approved hybrid contract in docs/architecture/daily-use-preferences.md: notifications_enabled per-account with transactional outbox, versioned server apply and pull; auto_pause_music and music_volume account-scoped per-device without an outbox. Preserve legacy server values during migration.
-ACTUAL CHANGE MADE: Removed the Tauri error -> server-write fallback. Documented the approved hybrid ownership and conflict contract; no preference data migration or new sync handler has been added yet.
-VERIFICATION: Desktop TypeScript check passed; source review confirms local_system writes sync_state without outbox and sync.js has no daily-use-preferences handler. Real-PostgreSQL and multi-device tests pending.
-STATUS: Ownership decision resolved; Phase 2 implementation and synchronization remain open.
+ACTUAL CHANGE MADE: Hybrid local/server repositories, additive version migration, shared browser/sync apply with atomic required audit + idempotency, predecessor handling, pending-aware pull, conflict protections, actual notification-delivery gate, explicit legacy music import and immediate player preference updates. Fixed browser PATCH UUID/text SQL inference from actual PostgreSQL failure.
+VERIFICATION: Actual PostgreSQL probe and two disk-backed SQLite clients pass restart/replay/chained edits/conflict/account isolation/browser HTTP/device media checks. Native preference atomicity tests, browser fail-closed/retry tests and TypeScript check pass. Current commands and limitations: PHASE2_EVIDENCE.md.
+STATUS: Hybrid data path implemented and automated database/client verification passed; GUI interaction/visual acceptance remains Phase 3. Not whole-phase sign-off.
 ```
 
 ### 4. Maintenance records
 
 ```text
 MODULE: Inventory maintenance
-FILE: desktop/src/api/items.ts; desktop/src/components/MaintenancePanel.tsx; backend/src/routes/items.js; backend/src/routes/maintenance.js; backend/src/index.js
-CURRENT WRITE PATH: Direct HTTP create/update/delete from desktop, with no local mutation or outbox event. The referenced HTTP routes were missing entirely before this slice.
-WHY IT BYPASSES OFFLINE-FIRST: No Tauri maintenance repository, outbox operation, or pull/reconciliation contract exists.
-RISK: Offline failure; server success with stale local inventory/operations views; repeated POST after an uncertain response can duplicate records. The formerly missing routes made the panel fail even online.
+FILE: desktop/src/api/maintenance.ts; desktop/src/api/items.ts; desktop/src-tauri/src/local_maintenance.rs; desktop/src/components/MaintenancePanel.tsx; backend/src/maintenance-sync.js; backend/src/routes/maintenance.js; backend/src/routes/sync.js
+CURRENT WRITE PATH: Desktop -> immediate SQLite mutation + immutable authored outbox -> shared versioned PostgreSQL apply -> complete pending-aware pull. Browser -> versioned/idempotent HTTP using the same apply function.
+WHY IT BYPASSES OFFLINE-FIRST: Original direct desktop HTTP mutations are replaced. Missing local response/error fails closed, with no server fallback.
+RISK: Original offline failure, duplicate uncertain retry and stale operations views are addressed. Conflicting concurrent edits require explicit recovery, not automatic overwrite.
 RECOMMENDED CHANGE: Add account-scoped local maintenance state with atomic outbox writes, server change-id idempotency, pull/reconciliation, and delete handling. Add an updated_at/version contract before merging concurrent edits.
-ACTUAL CHANGE MADE: Restored the missing authenticated maintenance GET/POST/PATCH/DELETE routes with validation, inventory permission enforcement, and audit entries; deployed only the API service. The panel now exposes load errors and labels edits as online-only. Desktop API errors retain backend messages.
-VERIFICATION: Actual PostgreSQL-backed HTTP probe passed create, invalid input, update, read, permission denial, delete, and repeat-delete. The unique probe record was removed; 16 seeded maintenance rows remain. Existing 34 backend security tests passed. No offline or uncertain-response retry test has passed.
-STATUS: Online baseline repaired; offline-first migration OPEN.
+ACTUAL CHANGE MADE: Additive version/authorship/tombstone migration; local CRUD/outbox transaction; UUID normalization; dependency chain/version checks; authenticated author and required audit in the same server transaction as idempotency; complete pull with pending-delete preservation; operations overview integration; explicit conflict-chain discard; browser uncertain retry retains identity.
+VERIFICATION: Actual PostgreSQL probe and two disk SQLite clients pass offline create/update, restart/replay, repeated pull, concurrent conflict, delete/replay, cascade tombstone and permission checks. Three native unit tests and three API fail-closed/retry tests pass. See PHASE2_EVIDENCE.md for scope and commands.
+STATUS: Core offline-first vertical slice implemented and automated verification passed; full GUI/release acceptance remains Phase 3.
 ```
 
 ### 4b. Operations suppliers
@@ -499,14 +499,14 @@ STATUS: Implemented; full consistent snapshot and restore certification remain P
 
 ```text
 MODULE: Backend dependency supply chain / DOCX conversion
-FILE: backend/package-lock.json; backend/src/routes/resource-editor.js; html-to-docx dependency
-CURRENT WRITE PATH: Authenticated DOCX-copy HTML is processed by html-to-docx 1.8.0, whose package depends on image-size 1.2.1 and whose distributed bundle also contains image parsing code.
+FILE: backend/package-lock.json; backend/src/routes/resource-editor.js; backend/src/docx-input.js; backend/src/docx-converter.js; backend/src/docx-worker.js
+CURRENT WRITE PATH: Authenticated DOCX-copy HTML -> strict reconstructed allowlist -> bounded separate converter process using pinned @turbodocx/html-to-docx 1.23.1 -> existing copy persistence.
 WHY IT BYPASSES OFFLINE-FIRST: Not an outbox problem; dependency execution is part of the server-effect security boundary.
-RISK: npm reports high-severity parser denial-of-service advisories GHSA-5p2g-fcmc-qvqq and GHSA-w3rx-r6r6-pgpr. A lockfile-only override cannot be assumed to repair bundled code.
+RISK: Original bundled image-size denial-of-service dependency was removed, not overridden. Conversion remains untrusted-input processing; execution, input/output and concurrency limits remain necessary. Separate newly reported dependency advisories are tracked in PHASE2_EVIDENCE.md.
 RECOMMENDED CHANGE: Replace or rebuild the document conversion dependency with a maintained compatible implementation; isolate conversion with timeout/memory limits and test image parsing, remote-resource policy, invalid documents, and DOCX output. Do not blindly force a major-version override.
-ACTUAL CHANGE MADE: Ran non-forced npm audit fix: Express 4.22.3, Multer 2.4.0 and qs 6.16.0 now locked. Audit reduced from five affected packages to one high-severity image-size finding. No unsupported assertion of exploitability prevention.
-VERIFICATION: Final Docker image built with npm ci; seven PostgreSQL probes, backend tests, desktop tests and build passed. npm audit still exits nonzero for image-size.
-STATUS: OPEN security/release blocker, explicitly assigned first in Phase 2; Phase 1 is not an unconditional security sign-off.
+ACTUAL CHANGE MADE: Replaced html-to-docx; removed image-size; added HTML/image allowlist, remote-resource rejection, bounded child worker (15 seconds, 128 MiB V8 heap, two active jobs), input/output limits and error handling. Compatible proxy-addr patch 2.0.8 also applied on 2026-10-08; no forced Mammoth downgrade.
+VERIFICATION: Five conversion tests passed on Windows and Docker, including text/table/link/image fidelity, malformed inputs, no remote requests, stuck-worker termination and recovery. Current serial backend regression 55/55 passed. See PHASE2_EVIDENCE.md for new advisory triage and GUI limits.
+STATUS: Original bundled-parser blocker addressed with automated boundary tests; not unconditional dependency/security or GUI sign-off.
 ```
 
 ## Repository coverage register

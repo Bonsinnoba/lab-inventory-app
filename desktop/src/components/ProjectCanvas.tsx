@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getCanvas, createBlock, updateBlock, deleteBlock, createConnector, deleteConnector, CanvasData, CanvasBlock } from '../api/canvas';
 import { getResource, getResourceAccessUrl, Resource } from '../api/resources';
-import { Plus, X, Image as ImageIcon, Video as VideoIcon, FileText, Music, Link as LinkIcon, Cable, ZoomIn, ZoomOut, Maximize2, Grid, MousePointer2, Trash2, RotateCcw, PanelRight, Search, Crosshair } from 'lucide-react';
+import { Plus, X, Image as ImageIcon, Video as VideoIcon, FileText, Music, Link as LinkIcon, Cable, ZoomIn, ZoomOut, Maximize2, Grid, Map, MousePointer2, Trash2, RotateCcw, PanelRight, Search, Crosshair, ChevronDown, ChevronUp, GripVertical } from 'lucide-react';
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import AddBlockModal from './AddBlockModal';
 import ResourceViewerModal from './ResourceViewerModal';
@@ -64,6 +64,11 @@ export default function ProjectCanvas({ projectId }: ProjectCanvasProps) {
   const [zoom, setZoom] = useState(0.75);
   const [showGrid, setShowGrid] = useState(true);
   const [showInspector, setShowInspector] = useState(true);
+  const [minimapCollapsed, setMinimapCollapsed] = useState(false);
+  const [minimapPosition, setMinimapPosition] = useState<{ left: number; top: number } | null>(null);
+  const canvasAreaRef = useRef<HTMLDivElement>(null);
+  const minimapRef = useRef<HTMLDivElement>(null);
+  const minimapDragRef = useRef<{ offsetX: number; offsetY: number } | null>(null);
   const [canvasSearch, setCanvasSearch] = useState('');
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['canvas', projectId] });
@@ -184,6 +189,34 @@ export default function ProjectCanvas({ projectId }: ProjectCanvasProps) {
   const startTitle=(b:CanvasBlock)=>{setEditingTitleId(b.id);setTitleDraft(b.title??'')};
   const saveTitle=(b:CanvasBlock)=>{const v=titleDraft.trim();if(v!==(b.title??''))updateBlockMutation.mutate({id:b.id,patch:{title:v||null}});setEditingTitleId(null)};
   const handleCreateBlock=(payload:{block_type:CanvasBlock['block_type'];title?:string;text_content?:string;resource_id?:string})=>{const count=canvas?.blocks.length??0;createBlockMutation.mutate({...payload,x:80+(count%4)*40,y:80+(count%4)*40,width:DEFAULT_WIDTH,height:DEFAULT_HEIGHT})};
+  const startMinimapDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    const area = canvasAreaRef.current;
+    const minimap = minimapRef.current;
+    if (!area || !minimap || (event.target as HTMLElement).closest('button')) return;
+    event.preventDefault();
+    const areaRect = area.getBoundingClientRect();
+    const minimapRect = minimap.getBoundingClientRect();
+    const left = minimapPosition?.left ?? minimapRect.left - areaRect.left;
+    const top = minimapPosition?.top ?? minimapRect.top - areaRect.top;
+    setMinimapPosition({ left, top });
+    minimapDragRef.current = { offsetX: event.clientX - areaRect.left - left, offsetY: event.clientY - areaRect.top - top };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const moveMinimap = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = minimapDragRef.current;
+    const area = canvasAreaRef.current;
+    const minimap = minimapRef.current;
+    if (!drag || !area || !minimap) return;
+    const areaRect = area.getBoundingClientRect();
+    setMinimapPosition({
+      left: Math.max(0, Math.min(areaRect.width - minimap.offsetWidth, event.clientX - areaRect.left - drag.offsetX)),
+      top: Math.max(0, Math.min(areaRect.height - minimap.offsetHeight, event.clientY - areaRect.top - drag.offsetY)),
+    });
+  };
+  const stopMinimapDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    minimapDragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  };
 
   if(isLoading)return <div className="p-6 text-text-secondary">Loading canvas…</div>;
   if(error)return <div className="p-6 text-status-danger">Error loading canvas</div>;
@@ -213,7 +246,8 @@ export default function ProjectCanvas({ projectId }: ProjectCanvasProps) {
     {!canEdit&&<div className="mx-3 mt-2 px-3 py-2 bg-surface-raised border border-border rounded-sm text-xs text-text-secondary">This project is read-only for your current project role.</div>}
 
     <div className="flex-1 min-h-0 flex overflow-hidden">
-      <div ref={viewportRef} className={`canvas-viewport flex-1 overflow-auto relative ${showGrid?'':'[background-image:none]'}`}>
+      <div ref={canvasAreaRef} className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+       <div ref={viewportRef} className="canvas-viewport absolute inset-0 overflow-auto" style={{ backgroundImage: showGrid ? undefined : 'none' }}>
         <div className="relative" style={{width:CANVAS_SIZE.width*zoom,height:CANVAS_SIZE.height*zoom}}>
           <div className="canvas-stage" style={{width:CANVAS_SIZE.width,height:CANVAS_SIZE.height,transform:`scale(${zoom})`}}>
             <svg className="absolute inset-0 pointer-events-none" width={CANVAS_SIZE.width} height={CANVAS_SIZE.height}>
@@ -230,7 +264,17 @@ export default function ProjectCanvas({ projectId }: ProjectCanvasProps) {
           </div>
         </div>
         {canvas.blocks.length===0&&<div className="absolute inset-0 flex items-center justify-center"><div className="text-center max-w-sm"><div className="w-14 h-14 mx-auto mb-4 rounded-xl bg-accent/10 text-accent flex items-center justify-center"><Crosshair size={26}/></div><h3 className="text-lg font-semibold">Build the project map</h3><p className="text-sm text-text-secondary mt-2 mb-5">Connect notes, documents, media and project knowledge on one visual engineering board.</p><button disabled={!canEdit} onClick={()=>setShowAddBlock(true)} className="px-4 py-2 bg-accent text-bg rounded-sm text-sm font-medium">Add first block</button></div></div>}
-        <div className="canvas-minimap absolute bottom-3 right-3 w-44 h-28 rounded-md p-2 hidden md:block pointer-events-none"><div className="relative w-full h-full bg-bg/60 overflow-hidden">{canvas.blocks.map(b=><div key={b.id} className="canvas-mini-block" style={{left:`${b.x/CANVAS_SIZE.width*100}%`,top:`${b.y/CANVAS_SIZE.height*100}%`,width:`${Math.max(2,b.width/CANVAS_SIZE.width*100)}%`,height:`${Math.max(2,b.height/CANVAS_SIZE.height*100)}%`}}/>)}<div className="absolute inset-0 border border-accent/40"/></div></div>
+      </div>
+       <div ref={minimapRef} className={`canvas-minimap absolute hidden rounded-md md:block ${minimapCollapsed?'h-9 w-9':'h-32 w-48'} ${minimapPosition?'':'bottom-3 right-3'}`} style={minimapPosition?{left:minimapPosition.left,top:minimapPosition.top}:undefined}>
+         {minimapCollapsed
+           ? <div className="flex h-full w-full items-center justify-center gap-1"><button type="button" onClick={()=>setMinimapCollapsed(false)} title="Expand canvas minimap" aria-label="Expand canvas minimap" className="flex h-7 w-7 items-center justify-center rounded-sm text-accent hover:bg-surface-raised"><Map size={15}/></button><div onPointerDown={startMinimapDrag} onPointerMove={moveMinimap} onPointerUp={stopMinimapDrag} className="flex h-7 w-3 cursor-move touch-none items-center justify-center text-text-secondary hover:text-text-primary" title="Move canvas minimap"><GripVertical size={13}/></div></div>
+           : <div className="h-full p-2">
+             <div className="flex h-full flex-col gap-1.5">
+               <div className="flex items-center justify-between"><div onPointerDown={startMinimapDrag} onPointerMove={moveMinimap} onPointerUp={stopMinimapDrag} className="flex min-w-0 flex-1 cursor-move touch-none items-center gap-1 text-[9px] font-mono uppercase tracking-wider text-text-secondary"><GripVertical size={12}/>Canvas map</div><button type="button" onClick={()=>setMinimapCollapsed(true)} title="Collapse canvas minimap" aria-label="Collapse canvas minimap" className="rounded-sm p-1 text-text-secondary hover:bg-surface-raised hover:text-text-primary"><ChevronDown size={13}/></button></div>
+               <div className="relative min-h-0 flex-1 overflow-hidden bg-bg/60">{canvas.blocks.map(b=><div key={b.id} className="canvas-mini-block" style={{left:`${b.x/CANVAS_SIZE.width*100}%`,top:`${b.y/CANVAS_SIZE.height*100}%`,width:`${Math.max(2,b.width/CANVAS_SIZE.width*100)}%`,height:`${Math.max(2,b.height/CANVAS_SIZE.height*100)}%`}}/>)}<div className="absolute inset-0 border border-accent/40"/></div>
+             </div>
+           </div>}
+       </div>
       </div>
 
       {showInspector&&<aside className="canvas-inspector flex-shrink-0 overflow-y-auto hidden md:block"><div className="p-4 border-b border-border"><div className="flex items-center justify-between"><div><div className="page-kicker">INSPECTOR</div><h3 className="text-sm font-semibold mt-1">Canvas properties</h3></div><button onClick={()=>setShowInspector(false)} className="p-1 text-text-secondary hover:text-text-primary"><X size={15}/></button></div></div>{selectedBlock?<div className="p-4 space-y-4"><div className="flex items-center gap-3"><div className="w-10 h-10 rounded-md bg-accent/10 text-accent flex items-center justify-center">{(()=>{const I=TYPE_ICON[selectedBlock.block_type];return I?<I size={19}/>:null})()}</div><div className="min-w-0"><div className="font-medium truncate">{selectedBlock.title||TYPE_LABEL[selectedBlock.block_type]}</div><div className="text-[10px] text-text-secondary uppercase tracking-wider">{TYPE_LABEL[selectedBlock.block_type]}</div></div></div><div className="grid grid-cols-2 gap-2">{(['x','y','width','height'] as const).map(k=><div key={k} className="bg-bg border border-border rounded-sm p-2"><div className="text-[10px] text-text-secondary uppercase">{k}</div><div className="font-mono text-xs mt-1">{Math.round(geometryFor(selectedBlock)[k])}</div></div>)}</div><div className="border-t border-border pt-4"><div className="text-[10px] text-text-secondary uppercase tracking-wider mb-2">Actions</div><div className="space-y-1"><button disabled={!canEdit} onClick={()=>startTitle(selectedBlock)} className="w-full flex items-center gap-2 px-2.5 py-2 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-raised rounded-sm"><MousePointer2 size={14}/>Rename block</button><button disabled={!canEdit} onClick={()=>{if(!canEdit)return;setLiveGeometry(p=>({...p,[selectedBlock.id]:{...selectedBlock,x:80,y:80}}));updateBlockMutation.mutate({id:selectedBlock.id,patch:{x:80,y:80}})}} className="w-full flex items-center gap-2 px-2.5 py-2 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-raised rounded-sm"><RotateCcw size={14}/>Reset position</button><button disabled={!canEdit} onClick={()=>{requestDeleteBlock(selectedBlock.id)}} className="w-full flex items-center gap-2 px-2.5 py-2 text-xs text-status-danger hover:bg-status-danger/10 rounded-sm"><Trash2 size={14}/>Delete block</button></div></div>{selectedBlock.resource_id&&<div className="border-t border-border pt-4"><div className="text-[10px] text-text-secondary uppercase tracking-wider">Resource</div><div className="text-xs mt-1 break-all text-text-primary">{selectedBlock.resource_id}</div></div>}</div>:<div className="p-5 text-center text-text-secondary"><MousePointer2 size={22} className="mx-auto mb-3 opacity-60"/><p className="text-xs">Select a block to inspect it.</p><p className="text-[10px] mt-2">Drag to move · corner handle to resize · Delete to remove</p></div>}</aside>}

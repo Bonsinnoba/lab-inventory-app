@@ -29,7 +29,7 @@ export default function SyncStatus(){
   useEffect(()=>{void refresh();const unsubscribe=subscribeSyncStatus(setRuntime);const timer=window.setInterval(()=>void refresh(),5000);const online=()=>void refresh();const offline=()=>setRuntime(getSyncRuntimeState());window.addEventListener('online',online);window.addEventListener('offline',offline);return()=>{unsubscribe();window.clearInterval(timer);window.removeEventListener('online',online);window.removeEventListener('offline',offline);};},[]);
   const sync=async()=>{setBusy(true);try{await syncPendingChanges(true);window.dispatchEvent(new Event('labos:manual-sync-complete'));}finally{setBusy(false);await refresh();}};
   const resolve=async(id:string,resolution:'keep_local'|'accept_server'|'dismiss')=>{
-    if(resolution!=='keep_local'&&conflicts.find(c=>c.change_id===id)?.entity_type==='maintenance_record'&&!window.confirm('Discard all pending edits to this maintenance record and restore its server version?'))return;
+    if(resolution!=='keep_local'&&['maintenance_record','daily_preferences','supplier','storage_container'].includes(conflicts.find(c=>c.change_id===id)?.entity_type??'')&&!window.confirm('Discard all pending edits to this record and restore its server version?'))return;
     setBusy(true);
     try{await resolveSyncConflict(id,resolution);await syncPendingChanges(true);window.dispatchEvent(new Event('labos:manual-sync-complete'));}
     catch(error){showToast(error instanceof Error?error.message:String(error),'error');}

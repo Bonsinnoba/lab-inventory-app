@@ -45,7 +45,7 @@ export async function patchDailyPreferences(pool,req){
     }else{
       result=await applyDailyPreferenceChange(c,{change_id:key,entity_id:req.user.userId,operation:'update',payload},req.user);
       await c.query(`INSERT INTO sync_idempotency(change_id,device_id,user_id,entity_type,entity_id,operation,payload_json,response_json,response_status)
-        VALUES($1,'preferences-http',$2,'daily_preferences',$2::text,'update',$3,$4,200)`,[key,req.user.userId,payload,result]);
+        VALUES($1,'preferences-http',$2::uuid,'daily_preferences',$2::text,'update',$3,$4,200)`,[key,req.user.userId,payload,result]);
     }
     await c.query('COMMIT');return result;
   }catch(error){await c.query('ROLLBACK').catch(()=>{});throw error;}finally{c.release();}

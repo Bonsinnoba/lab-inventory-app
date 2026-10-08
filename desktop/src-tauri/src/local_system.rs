@@ -102,3 +102,7 @@ mod tests{
         assert!(pull(&mut c,"a",json!({})).is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "local_system_live_test.rs"]
+mod live_tests;

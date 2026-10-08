@@ -1,3 +1,4 @@
+import { catalogHttpMutation } from '../catalog-sync.js';
 import { Router } from 'express';
 import { pool } from '../db.js';
 import { writeAuditLog } from '../middleware/audit.js';
@@ -54,17 +55,9 @@ router.get('/suppliers', async (_req,res) => {
   try { const r=await pool.query(`SELECT s.*,COUNT(i.id)::int AS item_count FROM suppliers s LEFT JOIN items i ON i.supplier_id=s.id GROUP BY s.id ORDER BY s.name`); res.json(r.rows); }
   catch(err){console.error(err);res.status(500).json({error:'Failed to fetch suppliers'});}
 });
-router.post('/suppliers', async (req,res) => {
-  const {name,contact_name=null,email=null,phone=null,website=null,notes=''}=req.body||{};
-  if(!String(name||'').trim()) return res.status(400).json({error:'name is required'});
-  try { const r=await pool.query(`INSERT INTO suppliers(name,contact_name,email,phone,website,notes,created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,[String(name).trim(),contact_name,email,phone,website,notes,req.user.userId]); await writeAuditLog({req,action:'CREATE',entityType:'supplier',entityId:r.rows[0].id,newValue:r.rows[0]});res.status(201).json(r.rows[0]); }
-  catch(err){if(err.code==='23505')return res.status(409).json({error:'Supplier already exists'});console.error(err);res.status(500).json({error:'Failed to create supplier'});}
-});
-router.patch('/suppliers/:id', async (req,res) => {
-  const allowed=['name','contact_name','email','phone','website','notes'];const updates=[],values=[];for(const f of allowed)if(f in req.body){values.push(req.body[f]===''?null:req.body[f]);updates.push(`${f}=$${values.length}`);}if(!updates.length)return res.status(400).json({error:'No valid fields to update'});values.push(req.params.id);
-  try{const before=await pool.query('SELECT * FROM suppliers WHERE id=$1',[req.params.id]);if(!before.rowCount)return res.status(404).json({error:'Supplier not found'});const r=await pool.query(`UPDATE suppliers SET ${updates.join(',')} WHERE id=$${values.length} RETURNING *`,values);await writeAuditLog({req,action:'UPDATE',entityType:'supplier',entityId:req.params.id,oldValue:before.rows[0],newValue:r.rows[0]});res.json(r.rows[0]);}catch(err){console.error(err);res.status(500).json({error:'Failed to update supplier'});}
-});
-router.delete('/suppliers/:id', requireRole('admin'), async(req,res)=>{try{const before=await pool.query('SELECT * FROM suppliers WHERE id=$1',[req.params.id]);if(!before.rowCount)return res.status(404).json({error:'Supplier not found'});await pool.query('DELETE FROM suppliers WHERE id=$1',[req.params.id]);await writeAuditLog({req,action:'DELETE',entityType:'supplier',entityId:req.params.id,oldValue:before.rows[0]});res.status(204).send();}catch(err){console.error(err);res.status(500).json({error:'Failed to delete supplier'});}});
+router.post('/suppliers',catalogHttpMutation('supplier','create'));
+router.patch('/suppliers/:id',catalogHttpMutation('supplier','update'));
+router.delete('/suppliers/:id',catalogHttpMutation('supplier','delete'));
 
 router.get('/requirements', async(req,res)=>{try{const r=await pool.query(`SELECT r.*,p.name AS project_name,i.name AS preferred_item_name,i.current_quantity AS preferred_quantity FROM project_resource_requirements r JOIN projects p ON p.id=r.project_id LEFT JOIN items i ON i.id=r.preferred_item_id WHERE ($1::uuid IS NULL OR r.project_id=$1) ORDER BY r.required_by NULLS LAST,p.name,r.name`,[req.query.project_id||null]);res.json(await filterReadableRows('tasks',r.rows,req.user));}catch(err){console.error(err);res.status(500).json({error:'Failed to fetch resource requirements'});}});
 router.post('/requirements', async(req,res)=>{const {project_id,name,requirement_type='component',quantity=1,unit=null,required_by=null,preferred_item_id=null,notes='',status='required'}=req.body||{};if(!project_id||!String(name||'').trim())return res.status(400).json({error:'project_id and name are required'});if(Number(quantity)<=0)return res.status(400).json({error:'quantity must be greater than zero'});try{const r=await pool.query(`INSERT INTO project_resource_requirements(project_id,name,requirement_type,quantity,unit,required_by,preferred_item_id,notes,status,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,[project_id,String(name).trim(),requirement_type,quantity,unit,required_by,preferred_item_id,notes,status,req.user.userId]);await writeAuditLog({req,action:'CREATE',entityType:'project_resource_requirement',entityId:r.rows[0].id,newValue:r.rows[0],metadata:{project_id}});res.status(201).json(r.rows[0]);}catch(err){console.error(err);res.status(500).json({error:'Failed to create requirement'});}});

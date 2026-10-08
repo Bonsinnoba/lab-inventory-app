@@ -19,7 +19,7 @@ export default function SyncConflictsPage(){
   }
   useEffect(()=>{void refresh()},[]);
   async function resolve(change:Conflict,resolution:'keep_local'|'accept_server'){
-    const explanation=resolution==='accept_server'?(change.entity_type==='maintenance_record'?'Discard all pending edits to this maintenance record and retrieve the server version?':'Discard this pending local change and retrieve the server version?'):'Retry the local change? The server may reject it again.';
+    const explanation=resolution==='accept_server'?(['maintenance_record','daily_preferences','supplier','storage_container'].includes(change.entity_type)?'Discard all pending edits to this record and retrieve the server version?':'Discard this pending local change and retrieve the server version?'):'Retry the local change? The server may reject it again.';
     if(!window.confirm(explanation))return;
     setBusy(change.change_id);
     try{

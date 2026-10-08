@@ -13,8 +13,9 @@ and fresh seed on 2026-10-03. This is not continuing authority for future resets
 The existing Notes/Resources duplicate fixes, visibility slices for Notes,
 Resources and Projects, account-scoped cache/outbox foundation, inventory and
 canvas fail-closed guards, project-requirement guard, and maintenance HTTP
-route repair are starting points, not work to redo. Maintenance is still
-online-only, and the write-path audit is not yet exhaustive.
+route repair are starting points, not work to redo. Maintenance was online-only
+at the start of this plan; its Phase 2 local-first implementation is now verified
+as recorded in PHASE2_EVIDENCE.md. Source audit coverage is not runtime sign-off.
 
 ## Phase 1 — Complete the audit, security boundaries, and sync contracts
 
@@ -69,6 +70,14 @@ CI results and unresolved failures rather than treating old green runs as
 current evidence.
 
 ## Phase 2 — Convert the remaining data flows to their approved architecture
+
+**October 8 checkpoint:** DOCX isolation/replacement, the maintenance local-first
+slice and hybrid preference data paths are implemented with automated evidence.
+The preference two-disk-client test passed against existing PostgreSQL, including
+an API restart between commit and lost-ACK replay. Finding 33's original parser
+dependency was removed; newly reported dependency advisories are separately
+tracked in PHASE2_EVIDENCE.md. Supplier/storage and the other paths below remain
+open. Phase 2 is **not complete**; GUI acceptance is not inferred from API tests.
 
 **Scope**
 
