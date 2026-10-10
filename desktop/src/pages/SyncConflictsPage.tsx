@@ -19,7 +19,7 @@ export default function SyncConflictsPage(){
   }
   useEffect(()=>{void refresh()},[]);
   async function resolve(change:Conflict,resolution:'keep_local'|'accept_server'){
-    const explanation=resolution==='accept_server'?(['maintenance_record','daily_preferences','supplier','storage_container'].includes(change.entity_type)?'Discard all pending edits to this record and retrieve the server version?':'Discard this pending local change and retrieve the server version?'):'Retry the local change? The server may reject it again.';
+    const explanation=resolution==='accept_server'?(['item','item_movement','maintenance_record','daily_preferences','supplier','storage_container','project_comment'].includes(change.entity_type)?'Discard pending changes to this record and connected inventory items/shared batches, then retrieve server values?':'Discard this pending local change and retrieve the server version?'):'Retry the local change? The server may reject it again.';
     if(!window.confirm(explanation))return;
     setBusy(change.change_id);
     try{

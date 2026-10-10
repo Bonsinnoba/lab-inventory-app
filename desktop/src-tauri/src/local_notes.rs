@@ -58,7 +58,7 @@ fn valid_visibility(value:&str)->bool{matches!(value,"lab"|"project"|"restricted
 
 #[tauri::command]
 pub fn list_local_notes(app:AppHandle,filters:Option<Value>)->Result<Vec<Value>,String>{
-    let c=conn(&app)?; let notes=load(&c)?;
+    let c=conn(&app)?; local_auth::require_local_permission(&c,"notes.view")?; let notes=load(&c)?;
     let f=filters.unwrap_or_else(||json!({}));
     let search=f.get("search").and_then(Value::as_str).map(|s|s.to_lowercase());
     let item_id=f.get("item_id").and_then(Value::as_str);
@@ -79,13 +79,13 @@ pub fn list_local_notes(app:AppHandle,filters:Option<Value>)->Result<Vec<Value>,
 
 #[tauri::command]
 pub fn get_local_note_tags(app:AppHandle)->Result<Vec<String>,String>{
-    let c=conn(&app)?; let notes=load(&c)?; let mut tags:Vec<String>=Vec::new();
+    let c=conn(&app)?; local_auth::require_local_permission(&c,"notes.view")?; let notes=load(&c)?; let mut tags:Vec<String>=Vec::new();
     for n in notes { if let Some(a)=n.get("tags").and_then(Value::as_array){for t in a{if let Some(s)=t.as_str(){if !tags.iter().any(|x|x==s){tags.push(s.to_string());}}}}}
     tags.sort(); Ok(tags)
 }
 
 #[tauri::command]
-pub fn get_local_note(app:AppHandle,note_id:String)->Result<Option<Value>,String>{let c=conn(&app)?;Ok(load(&c)?.into_iter().find(|n|n.get("id").and_then(Value::as_str)==Some(note_id.as_str())))}
+pub fn get_local_note(app:AppHandle,note_id:String)->Result<Option<Value>,String>{let c=conn(&app)?;local_auth::require_local_permission(&c,"notes.view")?;Ok(load(&c)?.into_iter().find(|n|n.get("id").and_then(Value::as_str)==Some(note_id.as_str())))}
 
 #[tauri::command]
 pub fn create_local_note(app:AppHandle,note:Value)->Result<Value,String>{
@@ -126,7 +126,7 @@ pub fn delete_local_note(app:AppHandle,note_id:String)->Result<(),String>{
 }
 
 #[tauri::command]
-pub fn get_local_note_revisions(app:AppHandle,note_id:String)->Result<Vec<Value>,String>{let c=conn(&app)?;let n=load(&c)?.into_iter().find(|n|n.get("id").and_then(Value::as_str)==Some(note_id.as_str())).ok_or("Note not found")?;Ok(n.get("revisions").and_then(Value::as_array).cloned().unwrap_or_default())}
+pub fn get_local_note_revisions(app:AppHandle,note_id:String)->Result<Vec<Value>,String>{let c=conn(&app)?;local_auth::require_local_permission(&c,"notes.view")?;let n=load(&c)?.into_iter().find(|n|n.get("id").and_then(Value::as_str)==Some(note_id.as_str())).ok_or("Note not found")?;Ok(n.get("revisions").and_then(Value::as_array).cloned().unwrap_or_default())}
 
 #[tauri::command]
 pub fn restore_local_note_revision(app:AppHandle,note_id:String,revision_id:String)->Result<Value,String>{

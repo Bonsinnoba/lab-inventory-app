@@ -1,10 +1,13 @@
 import { apiFetch, getApiErrorMessage } from './http';
 import { getLocalInventorySnapshot } from './local-inventory';
-import type { Item } from './items';
+import { getItems, type Item } from './items';
+import { captureAccountSession, isAccountSessionCurrent } from './auth';
+import { writeInventoryHttp } from './inventory-http';
 import { invoke } from '@tauri-apps/api/tauri';
 import { isTauriRuntime } from '../lib/runtime';
 
 export type InventoryImportPreview = {
+  plan_id?: string;
   template: string;
   filename: string;
   total_rows: number;
@@ -39,63 +42,61 @@ export async function downloadInventoryExcel(): Promise<Blob> {
   return response.blob();
 }
 
-async function postInventoryFile(path: string, file: File): Promise<Response> {
-  const form = new FormData();
-  form.append('file', file);
-  return apiFetch(path, { method: 'POST', body: form });
-}
+type ImportPlan={id:string;accountId:string;base:string;rows:Array<{operation:'create'|'update';record:Record<string,unknown>}>;bases:Array<{id:string;version:number}>};
+const importPlans=new WeakMap<File,ImportPlan>();
 
-export async function previewInventoryExcel(file: File): Promise<InventoryImportPreview> {
-  const local = await getLocalInventorySnapshot();
-  if (local === null) {
-    const response = await postInventoryFile('/excel/inventory/preview', file);
-    if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Unable to preview this Excel workbook'));
-    return response.json();
-  }
-  const rows = await parseInventoryWorkbook(file);
-  const result = validateLocalInventoryRows(rows, file.name, local);
-  return { ...result, valid_rows: undefined };
-}
-
-export async function importInventoryExcel(file: File): Promise<{ imported: number; created: number; updated: number }> {
-  const local = await getLocalInventorySnapshot();
-  if (local === null) {
-    if (isTauriRuntime()) throw new Error('Local inventory is unavailable. Reconnect and refresh before importing.');
-    const response = await postInventoryFile('/excel/inventory/import', file);
-    if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Inventory import failed'));
-    return response.json();
-  }
-
-  const rows = await parseInventoryWorkbook(file);
-  const validation = validateLocalInventoryRows(rows, file.name, local);
-  if (validation.error_rows > 0) throw new Error(validation.errors.map((item) => `Row ${item.row}: ${item.errors.join('; ')}`).join('\n'));
-
-  const now = new Date().toISOString();
-  const prepared = (validation.valid_rows || []).map((row) => {
-    const item = { ...row } as Record<string, unknown>;
-    if (!item.id) {
-      item.id = crypto.randomUUID();
-      item.created_at = now;
-      item.updated_at = now;
-    } else {
-      const existing = local.find((candidate) => candidate.id === item.id);
-      item.created_at = existing?.created_at ?? now;
-      item.updated_at = now;
-    }
-    return item;
+export function prepareInventoryImport(rows:Array<Record<string,unknown>>,local:Item[],accountId:string):ImportPlan{
+  if(!rows.length||rows.length>500)throw new Error('Import 1–500 inventory rows at a time');
+  const bases:Array<{id:string;version:number}>=[];
+  const planned=rows.map(row=>{
+    const operation=row.id?'update':'create';
+    const id=row.id?String(row.id):crypto.randomUUID();
+    const existing=local.find(item=>item.id===id);
+    const version=operation==='create'?0:existing?.sync_version;
+    if(!Number.isSafeInteger(version)||(operation==='update'&&(version??0)<1))throw new Error('Refresh inventory before reviewing this import');
+    bases.push({id,version:version!});
+    return {operation,record:{...row,id}} as ImportPlan['rows'][number];
   });
+  return{id:crypto.randomUUID(),accountId,base:JSON.stringify(local),rows:planned,bases};
+}
 
-  try {
-    return await invoke<{ imported: number; created: number; updated: number }>('import_local_inventory_rows', {
-      rowsJson: JSON.stringify(prepared),
-    });
-  } catch (error: any) {
-    throw new Error(error?.message || String(error) || 'Inventory import failed');
+export async function previewInventoryExcel(file:File):Promise<InventoryImportPreview>{
+  const session=captureAccountSession();if(!session)throw new Error('Sign in before importing inventory');
+  importPlans.delete(file);
+  let local=await getLocalInventorySnapshot();
+  if(local===null){
+    if(isTauriRuntime())throw new Error('Local inventory is unavailable. Reconnect and refresh before importing.');
+    local=await getItems();
   }
+  const rows=await parseInventoryWorkbook(file);
+  if(!isAccountSessionCurrent(session))throw new Error('Account changed while reviewing inventory');
+  const result=validateLocalInventoryRows(rows,file.name,local);
+  if(!result.error_rows&&result.ready_rows){
+    const plan=prepareInventoryImport(result.valid_rows||[],local,session.accountId);
+    importPlans.set(file,plan);
+    return{...result,valid_rows:undefined,plan_id:plan.id};
+  }
+  return{...result,valid_rows:undefined};
+}
+
+export async function importInventoryExcel(file:File,preview?:InventoryImportPreview):Promise<{imported:number;created:number;updated:number}>{
+  const plan=importPlans.get(file),session=captureAccountSession();
+  if(!plan||preview?.plan_id!==plan.id)throw new Error('Review this workbook before importing');
+  if(!session||session.accountId!==plan.accountId)throw new Error('Account changed; review the workbook again');
+  let result:{imported:number;created:number;updated:number};
+  if(isTauriRuntime()){
+    result=await invoke('import_local_inventory_rows',{rowsJson:JSON.stringify(plan.rows),expectedSnapshotJson:plan.base,expectedAccountId:plan.accountId,changeId:plan.id});
+    if(!result)throw new Error('Local import returned no result; no server fallback was attempted');
+  }else{
+    result=await writeInventoryHttp('/excel/inventory/import','POST',{inventory_protocol:2,rows:plan.rows,item_bases:plan.bases});
+  }
+  if(!isAccountSessionCurrent(session))throw new Error('Account changed while importing inventory');
+  importPlans.delete(file);return result;
 }
 
 async function parseInventoryWorkbook(file: File): Promise<WorkbookRow[]> {
   if (!file.name.toLowerCase().endsWith('.xlsx')) throw new Error('Only .xlsx Excel workbooks are supported');
+  if(file.size>10*1024*1024)throw new Error('Workbook exceeds 10 MiB');
   const bytes = new Uint8Array(await file.arrayBuffer());
   const zip = await readZip(bytes);
   const workbook = decodeText(await readZipEntry(zip, 'xl/workbook.xml'));
@@ -109,8 +110,9 @@ async function parseInventoryWorkbook(file: File): Promise<WorkbookRow[]> {
   return parseSheetRows(sheetXml, sharedStrings);
 }
 
-function validateLocalInventoryRows(rows: WorkbookRow[], filename: string, local: Item[]): InventoryImportPreview {
+export function validateLocalInventoryRows(rows: WorkbookRow[], filename: string, local: Item[]): InventoryImportPreview {
   const data = normalizeRows(rows);
+  if(data.length>500)throw new Error('Import at most 500 rows per workbook');
   const errors: Array<{ row: number; errors: string[] }> = [];
   const valid: Array<Record<string, unknown>> = [];
   const seen = new Set<string>();
@@ -118,7 +120,9 @@ function validateLocalInventoryRows(rows: WorkbookRow[], filename: string, local
   data.forEach((row, index) => {
     const rowNumber = index + 2;
     const rowErrors: string[] = [];
-    const id = asText(value(row, 'LabOS ID')) || null;
+    const rawId = asText(value(row, 'LabOS ID')).replaceAll('-', '').toLowerCase();
+    const id = rawId ? rawId.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5') : null;
+    if (rawId && !/^[0-9a-f]{32}$/.test(rawId)) rowErrors.push('Invalid LabOS UUID');
     const name = asText(value(row, 'Name'));
     const type = asText(value(row, 'Type'));
     if (!name) rowErrors.push('Name is required');

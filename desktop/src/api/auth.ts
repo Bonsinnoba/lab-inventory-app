@@ -6,6 +6,7 @@ async function localInvoke<T>(command: string, args: Record<string, unknown> = {
 
 export type User = {
   id: string;
+  central_user_id?: string | null;
   username: string;
   role: 'admin' | 'researcher' | 'technician' | 'viewer' | 'member';
   display_name?: string | null;
@@ -23,69 +24,121 @@ export type LocalAuthStatus = {
   bootstrapped: boolean;
   authenticated: boolean;
   user: User | null;
+  token?: string | null;
 };
 
-async function fetchServerPermissions(): Promise<string[]> {
-  const response = await fetch(`${API_BASE}/auth/me/permissions`, { headers: { Authorization: `Bearer ${getToken() || ''}` } });
+function localUser(user: User): User {
+  if (!user.central_user_id) throw new Error('Cached account has no verified server identity');
+  return { ...user, id: user.central_user_id };
+}
+
+export type ServerRequestContext = {
+  token: string; accountId: string | null; generation: number; nativeSessionToken: string | null;
+};
+
+export async function captureServerRequest(token: string): Promise<ServerRequestContext> {
+  const context: ServerRequestContext = { token, accountId: getStoredUser()?.id ?? null, generation: sessionGeneration, nativeSessionToken: null };
+  if (isTauriRuntime() && context.accountId && getToken() === token && !token.startsWith('local:')) {
+    context.nativeSessionToken = await localInvoke<string>('local_authorization_guard', { expectedAccountId: context.accountId });
+  }
+  return context;
+}
+
+export function isServerRequestCurrent(context: ServerRequestContext): boolean {
+  return context.generation === sessionGeneration && getToken() === context.token && (getStoredUser()?.id ?? null) === context.accountId;
+}
+
+async function endServerSession(context: ServerRequestContext, revokeOffline: boolean): Promise<void> {
+  if (!isServerRequestCurrent(context)) return;
+  if (revokeOffline && context.nativeSessionToken && context.accountId) {
+    const locked = await localInvoke<boolean>('invalidate_local_authorization', {
+      expectedAccountId: context.accountId, expectedSessionToken: context.nativeSessionToken,
+    });
+    // A different native login won the race. Never lock or sign out that login.
+    if (locked !== true) return;
+  }
+  if (!isServerRequestCurrent(context)) return;
+  removeToken(); removeStoredUser();
+  window.dispatchEvent(new Event('labos:auth-expired'));
+}
+
+export async function observeServerAuthResponse(response: Response, context: ServerRequestContext): Promise<void> {
+  if (response.status !== 401 || !isServerRequestCurrent(context)) return;
+  const body = await response.clone().json().catch(() => null);
+  const revoked = body?.error?.code === 'SESSION_REVOKED' || body?.error?.code === 'ACCOUNT_DISABLED';
+  await endServerSession(context, revoked);
+}
+
+export async function observeNativeAuthFailure(error: unknown, context: ServerRequestContext): Promise<void> {
+  if (String(error).startsWith('AUTH_REVOKED:')) await endServerSession(context, false);
+}
+
+async function cachePermissions(user: User, context: ServerRequestContext): Promise<string[]> {
+  if (!isServerRequestCurrent(context) || context.accountId !== user.id || !context.nativeSessionToken) {
+    throw new Error('Session changed or native authorization is unavailable');
+  }
+  let permissions: string[] | null;
+  try {
+    permissions = await localInvoke<string[]>('cache_server_permissions', {
+      centralUserId: user.id, serverToken: context.token, expectedSessionToken: context.nativeSessionToken,
+    });
+  } catch (error) {
+    // Native refresh can observe a revocation after the renderer's earlier /me
+    // succeeded. The native cache is already locked; expire only this UI session.
+    await observeNativeAuthFailure(error, context);
+    throw error;
+  }
+  if (!permissions || !isServerRequestCurrent(context)) throw new Error('Session changed during permission refresh');
+  return permissions;
+}
+
+// Bound actual connection failures, including a paused (not just stopped) API.
+async function authFetch(url: string, init: RequestInit = {}, observe = true): Promise<Response> {
+  const bearer = new Headers(init.headers).get('Authorization')?.replace(/^Bearer /, '');
+  const context = observe && bearer ? await captureServerRequest(bearer) : null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    if (context) await observeServerAuthResponse(response, context);
+    return response;
+  }
+  finally { clearTimeout(timeout); }
+}
+
+async function fetchServerPermissions(token = getToken() || '', observe = true): Promise<string[]> {
+  const response = await authFetch(`${API_BASE}/auth/me/permissions`, { headers: { Authorization: `Bearer ${token}` } }, observe);
   if (!response.ok) throw new Error('Unable to load your LabOS permissions');
   const body = await response.json();
   return Array.isArray(body?.permissions) ? body.permissions.filter((p: any) => p?.effective).map((p: any) => String(p.permission)) : [];
 }
 
 export async function getLocalAuthStatus(): Promise<LocalAuthStatus | null> {
-  return localInvoke<LocalAuthStatus>('local_auth_status');
+  const status = await localInvoke<LocalAuthStatus>('local_auth_status');
+  return status ? { ...status, user: status.user ? localUser(status.user) : null } : null;
 }
 
 export async function login(username: string, password: string): Promise<AuthResponse> {
-  const inTauri = isTauriRuntime();
-  // In Tauri, navigator.onLine is not a reliable indicator for a LAN-only
-  // LabOS server. Always try the central API first so a successful online
-  // login refreshes the local password and permission cache; only fall back
-  // to the cached account when the central request actually fails to connect.
-  {
+  if (isTauriRuntime()) {
     try {
-      const response = await fetch(`${API_BASE}/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
-      });
-      if (response.ok) {
-        const result = await response.json() as AuthResponse;
-        if (inTauri) {
-          setToken(result.token);
-          const permissions = await fetchServerPermissions();
-          await localInvoke('cache_server_user', {
-            centralUserId: result.user.id,
-            username: result.user.username,
-            password,
-            role: result.user.role,
-            displayName: result.user.display_name ?? null,
-            email: result.user.email ?? null,
-            permissions,
-          });
-        }
-        return result;
-      }
-      const error = await response.json().catch(() => null);
-      if (response.status >= 500 && inTauri) {
-        removeToken();
-        const local = await localInvoke<AuthResponse>('local_login', { username, password });
-        if (local) return local;
-      }
-      throw new Error(error?.error?.message || error?.error || 'Login failed');
-    } catch (error) {
-      if (inTauri && (error instanceof TypeError || (error instanceof DOMException && error.name === 'AbortError'))) {
-        removeToken();
-        const local = await localInvoke<AuthResponse>('local_login', { username, password });
-        if (local) return local;
-      }
-      throw error;
+      // Native code owns server verification and the bounded outage fallback.
+      // No caller-supplied role, grants, identity or origin can provision access.
+      const result = await localInvoke<AuthResponse>('cache_server_user', { username, password });
+      if (!result) throw new Error('Native authentication is unavailable');
+      return { ...result, user: localUser(result.user) };
+    } catch (error: any) {
+      throw new Error(error?.message || String(error));
     }
   }
-  removeToken();
-  const local = await localInvoke<AuthResponse>('local_login', { username, password });
-  if (local) return local as AuthResponse;
-  throw new Error('Connect to LabOS to sign in on this installation.');
+  const response = await authFetch(`${API_BASE}/auth/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => null);
+    throw new Error(error?.error?.message || error?.error || 'Login failed');
+  }
+  return response.json();
 }
 
 export async function register(username: string, password: string, role?: 'admin' | 'member'): Promise<AuthResponse> {
@@ -101,27 +154,25 @@ export async function register(username: string, password: string, role?: 'admin
   return response.json();
 }
 
-export async function getCurrentUser(token: string): Promise<{ user: User }> {
+export async function getCurrentUser(token: string): Promise<{ user: User; token?: string }> {
   if (!token.startsWith('local:')) {
     try {
-      const response = await fetch(`${API_BASE}/auth/me`, {
+      const context = await captureServerRequest(token);
+      const response = await authFetch(`${API_BASE}/auth/me`, {
         headers: { Authorization: `Bearer ${token}` },
       });
+      if (response.status >= 500) throw new TypeError('LabOS authentication is temporarily unavailable');
       if (!response.ok) throw new Error('Failed to get current user');
       const result = await response.json() as { user: User };
       if (isTauriRuntime()) {
         try {
-          const permissions = await fetchServerPermissions();
-          await localInvoke('cache_server_permissions', {
-            centralUserId: result.user.id,
-            role: result.user.role,
-            permissions,
-          });
+          await cachePermissions(result.user, context);
         } catch {
           // Keep a valid authenticated session usable during a transient
           // permission-refresh failure; the existing local cache remains in place.
         }
       }
+      if (!isServerRequestCurrent(context)) throw new Error('Session changed during account restoration');
       return result;
     } catch (error) {
       // A central network outage must not discard a valid cached desktop
@@ -129,20 +180,30 @@ export async function getCurrentUser(token: string): Promise<{ user: User }> {
       // not fall back to the local cache.
       if (isTauriRuntime() && (error instanceof TypeError || (error instanceof DOMException && error.name === 'AbortError'))) {
         const local = await localInvoke<User | null>('local_current_user');
-        if (local !== null) return { user: local as User };
+        if (local !== null) {
+          const user = localUser(local);
+          const expected = getStoredUser();
+          if (expected && user.id !== (expected.central_user_id || expected.id)) {
+            throw new Error('Cached session belongs to another account; sign in again');
+          }
+          return { user };
+        }
       }
       throw error;
     }
   }
-  const local = await localInvoke<User | null>('local_current_user');
-  if (local !== null) return { user: local as User };
+  const local = await getLocalAuthStatus();
+  if (local?.authenticated && local.user && local.token?.startsWith('local:')) {
+    return { user: local.user, token: local.token };
+  }
   throw new Error('Local session is unavailable');
 }
 
 export async function changePassword(current_password: string, new_password: string): Promise<void> {
   const token = getToken();
   if (!token || token.startsWith('local:')) throw new Error('Reconnect to LabOS before changing your password.');
-  const response = await fetch(`${API_BASE}/auth/me/password`, {
+  const context = await captureServerRequest(token);
+  const response = await authFetch(`${API_BASE}/auth/me/password`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({ current_password, new_password }),
@@ -152,12 +213,13 @@ export async function changePassword(current_password: string, new_password: str
     const message = typeof body?.error === 'string' ? body.error : body?.error?.message;
     throw new Error(message || 'Failed to update password');
   }
+  await endServerSession(context, true);
 }
 
 export async function updateProfile(display_name: string, email: string): Promise<User> {
   const token = getToken();
   if (!token || token.startsWith('local:')) throw new Error('Reconnect to LabOS before updating your profile.');
-  const response = await fetch(`${API_BASE}/auth/me/profile`, {
+  const response = await authFetch(`${API_BASE}/auth/me/profile`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({ display_name, email }),
@@ -176,7 +238,9 @@ export async function logout(): Promise<void> {
   if (local !== null) return;
 }
 
+let sessionGeneration = 0;
 export function setToken(token: string): void {
+  if (getToken() !== token) sessionGeneration++;
   localStorage.setItem('auth_token', token);
 }
 
@@ -184,21 +248,23 @@ export function getToken(): string | null {
   return localStorage.getItem('auth_token');
 }
 
-export type AccountSession = { accountId: string; token: string };
+export type AccountSession = { accountId: string; token: string; generation: number };
 export function captureAccountSession(): AccountSession | null {
   const accountId = getStoredUser()?.id;
   const token = getToken();
-  return accountId && token ? { accountId, token } : null;
+  return accountId && token ? { accountId, token, generation: sessionGeneration } : null;
 }
 export function isAccountSessionCurrent(session: AccountSession | null): session is AccountSession {
-  return !!session && getToken() === session.token && getStoredUser()?.id === session.accountId;
+  return !!session && session.generation === sessionGeneration && getToken() === session.token && getStoredUser()?.id === session.accountId;
 }
 
 export function removeToken(): void {
+  sessionGeneration++;
   localStorage.removeItem('auth_token');
 }
 
 export function setStoredUser(user: User): void {
+  if (getStoredUser()?.id !== user.id) sessionGeneration++;
   localStorage.setItem('auth_user', JSON.stringify(user));
   if (typeof window !== 'undefined') window.dispatchEvent(new Event('labos-user-updated'));
 }
@@ -225,13 +291,11 @@ export async function getCurrentPermissions(): Promise<string[]> {
       throw new Error('Cached desktop permissions unavailable: ' + String(localError ?? 'No local session'));
     }
     try {
-      const permissions = await fetchServerPermissions();
+      const context = await captureServerRequest(token!);
       if (user?.id) {
-        await localInvoke('cache_server_permissions', {
-          centralUserId: user.id, role: user.role, permissions,
-        });
+        return await cachePermissions(user, context);
       }
-      return permissions;
+      throw new Error('No active account');
     } catch (serverError) {
       throw new Error('Unable to refresh desktop permissions: ' + String(serverError) +
         (localError ? '; local error: ' + String(localError) : ''));
@@ -246,5 +310,6 @@ export function getStoredUser(): User | null {
 }
 
 export function removeStoredUser(): void {
+  sessionGeneration++;
   localStorage.removeItem('auth_user');
 }

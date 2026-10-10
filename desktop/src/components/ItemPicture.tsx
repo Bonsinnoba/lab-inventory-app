@@ -7,10 +7,11 @@ import { useToast } from '../contexts/ToastContext';
 
 interface ItemPictureProps {
   itemId: string;
+  expectedVersion?: number;
   imageResourceId: string | null | undefined;
 }
 
-export default function ItemPicture({ itemId, imageResourceId }: ItemPictureProps) {
+export default function ItemPicture({ itemId, imageResourceId, expectedVersion }: ItemPictureProps) {
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -50,7 +51,7 @@ export default function ItemPicture({ itemId, imageResourceId }: ItemPictureProp
       // — it is never inferred from "whatever image was last attached",
       // so this item's picture can't be hijacked by some other image
       // resource someone attaches to this item later.
-      await updateItem(itemId, { image_resource_id: uploaded.id });
+      await updateItem(itemId, { image_resource_id: uploaded.id }, expectedVersion);
       if (previousId) {
         await deleteResource(previousId).catch(() => {});
       }
@@ -68,7 +69,7 @@ export default function ItemPicture({ itemId, imageResourceId }: ItemPictureProp
 
   const removeMutation = useMutation({
     mutationFn: async () => {
-      await updateItem(itemId, { image_resource_id: null });
+      await updateItem(itemId, { image_resource_id: null }, expectedVersion);
       await deleteResource(imageResourceId!);
     },
     onSuccess: () => {

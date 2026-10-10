@@ -1,6 +1,9 @@
+import {applyInventoryPage} from './inventory-pull';
+import {pullActivitySnapshot} from './activity';
+import {pullDownloadSnapshot} from './downloads-local';
 import { invoke } from '@tauri-apps/api/tauri';
 import { apiFetch, getApiErrorMessage } from './http';
-import { getStoredUser, getToken } from './auth';
+import { getStoredUser, getToken, captureServerRequest, isServerRequestCurrent } from './auth';
 
 type PendingChange = { change_id:string; device_id:string; entity_type:string; entity_id?:string|null; operation:string; payload:unknown; created_at:string; attempt_count:number; last_error?:string|null };
 type SyncResult = { change_id:string; status:'synced'|'failed'|'rejected'; result?:unknown; error?:{code?:string;message?:string} };
@@ -81,6 +84,8 @@ async function runSync():Promise<number>{
     const deviceId=changes[0].device_id;
     try{
       assertSyncSession();
+      const downloadContext=await captureServerRequest(token);
+      assertSyncSession();
       const response=await apiFetch('/sync/push',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id:deviceId,changes:changes.map(({change_id,entity_type,entity_id,operation,payload})=>({change_id,entity_type,entity_id,operation,payload}))})});
       assertSyncSession();
       if(response.ok){
@@ -88,6 +93,12 @@ async function runSync():Promise<number>{
         assertSyncSession();
         const results=Array.isArray(body.results)?body.results:[];
         const synced=results.filter(r=>r.status==='synced').map(r=>r.change_id).filter(Boolean);
+        const downloadReceipts=results.filter(r=>r.status==='synced'&&changes.some(c=>c.change_id===r.change_id&&['resource_download_job','media_download_settings'].includes(c.entity_type)));
+        if(downloadReceipts.length){
+          if(!downloadContext.nativeSessionToken||!isServerRequestCurrent(downloadContext))throw new Error('Session changed before download acknowledgement');
+          await invoke('acknowledge_local_download_changes',{expectedAccountId:accountId,expectedSessionToken:downloadContext.nativeSessionToken,results:downloadReceipts});
+          assertSyncSession();
+        }
         if(synced.length){await invoke('mark_sync_changes_synced',{changeIds:synced});syncedCount=synced.length;}
         const rejectedOrFailed=results.filter(r=>r.status!=='synced');
         if(rejectedOrFailed.some(r=>r.status==='failed'))scheduleRetry();
@@ -117,6 +128,8 @@ async function runSync():Promise<number>{
     }
   }
   const inventoryPullSucceeded=await runPullStep('Inventory pull',pullServerInventory);
+  const notificationPullSucceeded=await runPullStep('Notifications pull',pullServerNotifications);
+  const activityPullSucceeded=await runPullStep('Activity pull',pullActivitySnapshot);
   const catalogPullSucceeded=await runPullStep('Catalog pull',pullServerCatalogs);
   const maintenancePullSucceeded=await runPullStep('Maintenance pull',pullServerMaintenance);
   const preferencesPullSucceeded=await runPullStep('Preferences pull',async()=>{
@@ -127,13 +140,15 @@ async function runSync():Promise<number>{
     return true;
   });
   const projectPullSucceeded=await runPullStep('Project pull',pullServerProjects);
+  const commentPullSucceeded=await runPullStep('Comments pull',pullServerComments);
   const resourcePullSucceeded=await runPullStep('Resource pull',pullServerResources);
+  const downloadsPullSucceeded=await runPullStep('Downloads pull',pullDownloadSnapshot);
   const financePullSucceeded=await runPullStep('Finance pull',pullServerFinance);
   const locationPullSucceeded=await runPullStep('Location pull',pullServerLocations);
   const engineeringPullSucceeded=await runPullStep('Engineering pull',pullServerEngineering);
   const knowledgePullSucceeded=await runPullStep('Knowledge pull',pullServerKnowledge);
   const notesPullSucceeded=await runPullStep('Notes pull',pullServerNotes);
-  const pullSucceeded=catalogPullSucceeded&&inventoryPullSucceeded&&maintenancePullSucceeded&&preferencesPullSucceeded&&projectPullSucceeded&&resourcePullSucceeded&&financePullSucceeded&&locationPullSucceeded&&engineeringPullSucceeded&&knowledgePullSucceeded&&notesPullSucceeded;
+  const pullSucceeded=downloadsPullSucceeded&&activityPullSucceeded&&commentPullSucceeded&&notificationPullSucceeded&&catalogPullSucceeded&&inventoryPullSucceeded&&maintenancePullSucceeded&&preferencesPullSucceeded&&projectPullSucceeded&&resourcePullSucceeded&&financePullSucceeded&&locationPullSucceeded&&engineeringPullSucceeded&&knowledgePullSucceeded&&notesPullSucceeded;
   if(!pullSucceeded){syncSucceeded=false;publish({status:'error',lastError:runtimeState.lastError||'Unable to download the latest server changes'});scheduleRetry();}
   if(syncSucceeded&&pullSucceeded){clearRetryState();publish({status:'idle',lastSuccessAt:new Date().toISOString(),lastError:null});}
   else if(runtimeState.status!=='error')publish({status:'error',lastError:runtimeState.lastError||'Some changes could not be synchronized'});
@@ -153,14 +168,10 @@ async function pullServerInventory():Promise<boolean>{
       const response=await apiFetch(query,{method:'GET',cache:'no-store'});
       if(!response.ok){publish({status:'error',lastError:await getApiErrorMessage(response,'Unable to download server changes')});return false;}
       const body=await response.json() as PullResponse;
-      const items=Array.isArray(body.items)?body.items:[];
-      const deletedItemIds=Array.isArray(body.deleted_item_ids)?body.deleted_item_ids:[];
-      if(!items.length&&!deletedItemIds.length){if(!body.has_more)return true;return false;}
-      if(!body.next_cursor)return false;
       assertSyncSession();
-      await invoke('apply_server_inventory_pull',{itemsJson:JSON.stringify(items),deletedItemIds,nextCursor:body.next_cursor,expectedAccountId:syncAccountId()});
-      cursor=body.next_cursor;
-      if(!body.has_more)return true;
+      const pageResult=await applyInventoryPage(body,cursor,syncAccountId());
+      assertSyncSession();cursor=pageResult.cursor;
+      if(pageResult.done)return true;
     }
     return false;
   }catch(error){publish({status:'error',lastError:error instanceof Error?error.message:String(error)});return false;}
@@ -247,6 +258,22 @@ async function pullServerNotes():Promise<boolean>{
     await invoke('apply_server_notes_pull',{notes:Array.isArray(body.notes)?body.notes:[],visibleNoteIds:Array.isArray(body.visible_note_ids)?body.visible_note_ids:[],deletedNoteIds:Array.isArray(body.deleted_note_ids)?body.deleted_note_ids:[],expectedAccountId:syncAccountId()});
     return true;
   }catch(error){publish({status:'error',lastError:error instanceof Error?error.message:String(error)});return false;}
+}
+
+async function pullServerComments():Promise<boolean>{
+  const response=await apiFetch('/sync/comments/pull',{cache:'no-store'});
+  if(!response.ok)throw new Error(await getApiErrorMessage(response));
+  const body=await response.json();assertSyncSession();
+  if(body.snapshot_complete!==true||!Array.isArray(body.records)||!Array.isArray(body.visible_project_ids))throw new Error('Incomplete comment snapshot');
+  await invoke('apply_server_comments_pull',{records:body.records,visibleProjectIds:body.visible_project_ids,snapshotComplete:true,expectedAccountId:syncAccountId()});return true;
+}
+
+async function pullServerNotifications():Promise<boolean>{
+  const response=await apiFetch('/sync/notifications/pull',{cache:'no-store'});
+  if(!response.ok)throw new Error(await getApiErrorMessage(response));
+  const body=await response.json();assertSyncSession();
+  if(body.snapshot_complete!==true||!Array.isArray(body.records))throw new Error('Incomplete notification snapshot');
+  await invoke('apply_server_notifications_pull',{records:body.records,snapshotComplete:true,expectedAccountId:syncAccountId()});return true;
 }
 
 async function pullServerCatalogs():Promise<boolean>{

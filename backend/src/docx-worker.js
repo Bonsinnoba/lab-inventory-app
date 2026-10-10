@@ -5,7 +5,9 @@ process.once('message', async ({ html }) => {
   try {
     const buffer = Buffer.from(await HTMLtoDOCX(validateDocxHtml(html), null, {
       table: { row: { cantSplit: true } },
-      preProcessing: { skipHTMLMinify: true },
+      // 1.23.1's runtime reads lowercase `preprocessing` (its README differs).
+      // Input is already rebuilt by our validator; do not run another parser.
+      preprocessing: { skipHTMLMinify: true },
       imageProcessing: { maxRetries: 0, maxImageSize: 2 * 1024 * 1024, maxCacheSize: 8 * 1024 * 1024, suppressSharpWarning: true },
     }));
     if (buffer.length > 16 * 1024 * 1024) throw new Error('Converted DOCX exceeds 16 MiB');

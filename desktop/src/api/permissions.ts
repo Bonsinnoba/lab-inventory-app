@@ -1,6 +1,6 @@
 import { apiFetch, getApiErrorMessage } from './http';
 import { invoke } from '@tauri-apps/api/tauri';
-import { getToken } from './auth';
+import { getToken, captureServerRequest, isServerRequestCurrent, observeNativeAuthFailure } from './auth';
 
 export type PermissionEffect = 'inherited' | 'grant' | 'deny';
 export type PermissionEntry = { permission: string; baseline: boolean; effect: PermissionEffect; effective: boolean };
@@ -20,6 +20,7 @@ export async function getCurrentUserPermissions(): Promise<{ user: { id: string;
     }
   }
   let response: Response;
+  const context = token && !token.startsWith('local:') ? await captureServerRequest(token) : null;
   try {
     response = await apiFetch('/auth/me/permissions');
   } catch (error) {
@@ -41,16 +42,17 @@ export async function getCurrentUserPermissions(): Promise<{ user: { id: string;
   const body = await response.json();
   if (isTauri) {
     const token = getToken();
-    if (token && !token.startsWith('local:')) {
+    if (token && !token.startsWith('local:') && context?.nativeSessionToken && isServerRequestCurrent(context) && body?.user?.id === context.accountId) {
       try {
         await invoke('cache_server_permissions', {
           centralUserId: body?.user?.id,
-          role: body?.user?.role,
-          permissions: Array.isArray(body?.permissions) ? body.permissions.filter((p: any) => p?.effective).map((p: any) => String(p.permission)) : [],
+          serverToken: context.token,
+          expectedSessionToken: context.nativeSessionToken,
         });
-      } catch { /* cached account may not exist yet */ }
+      } catch (error) { await observeNativeAuthFailure(error, context); }
     }
   }
+  if (context && !isServerRequestCurrent(context)) throw new Error('Session changed during permission refresh');
   return body;
 }
 

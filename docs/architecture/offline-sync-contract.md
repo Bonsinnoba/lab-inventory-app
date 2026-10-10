@@ -24,7 +24,9 @@ Phase 1 contract, 2026-10-03. Implementation status is in the audit and evidence
 - Lost acknowledgement: retry the original event. Already committed requests acknowledge success without replaying a stale record snapshot that could now be unauthorized.
 - Permission, validation and version conflicts are not all transport errors. Keep the author's intent and show recovery; do not silently change role grants, reassign authors or replace UUIDs to force acceptance.
 - Conflict listing uses the event's domain. If the current account no longer has permission to see the payload, expose only redacted recovery metadata. Retrying requires current domain write permission; explicit discard requires ownership, not renewed access to secret contents.
-- Inventory explicit keep-local overrides use a new change ID. Other retries keep the original payload unchanged. Generic retries do not invent a merge strategy for every domain. Phase 2 supplies richer per-domain conflict UI and version tests.
+- Legacy inventory explicit keep-local overrides use a new change ID. New inventory protocol-2 edits reject automatic overwrite: refresh, review and reapply instead. Ordinary retries keep the original payload unchanged. Discarding an inventory conflict also discards connected pending edits, including shared bulk batches, after confirmation; unrelated items remain queued.
+- New desktop inventory item/bulk/movement intents carry per-target integer versions and predecessor change IDs. PostgreSQL resolves predecessor outcomes only for the same author and device. Metadata, absolute stock adjustment, transfer and deletion require matching versions; additive stock deltas can combine. The item update trigger advances versions for all SQL writers, but legacy immutable events and imports are not thereby converted to version-checked/idempotent writes.
+- Browser item CRUD, bulk, movement and storage endpoints share the inventory apply transaction and require captured versions plus stable retry keys. Per-account browser intents persist in tab session storage before HTTP; uncertain retries, including after refresh to a newer displayed version, reuse the original key/body/base. This is online-only retry recovery, not a durable browser outbox: closing/clearing session storage loses that recovery identity. Old callers missing keys/versions fail closed.
 - Delete is an intent referencing the stable entity UUID. Replay must not duplicate effects. Server deletes emit tombstones; local revocation eviction is not an outbound delete.
 - Finance and Location pulls are complete authorized snapshots, explicitly marked `snapshot_complete: true`. A client rejects an unmarked snapshot rather than treating a truncated/older response as authority to erase cache. Missing synchronized IDs are evicted even if their tombstones have aged beyond the latest 1,000. Pending authored intents are preserved.
 - Notes, Resources, Projects, Knowledge and Engineering expose authorized ID sets. Preserve pending edits while reconciling authorized server rows. Inventory remains cursor-driven; any future tombstone retention/compaction must introduce a minimum cursor and full-resync protocol, never silently advance past unseen deletes.
@@ -37,6 +39,35 @@ Phase 1 contract, 2026-10-03. Implementation status is in the audit and evidence
 - Hybrid preferences: notifications follow the account; media volume and auto-pause follow the device. See `daily-use-preferences.md`. Device settings do not produce server events; account settings do.
 - Identity, permission grants, project approvals/reservation coordination, AI generation and automation execution remain explicitly online-authoritative. Do not manufacture offline success for an operation the server must arbitrate. Phase 2 must add consistent online-only UX, idempotency and local refresh.
 - Imports need a stable batch ID and row IDs, atomic local import/outbox, server replay protection and current stored-row permission checks. Preview is computation, not a committed import. A failed import must not leave success audit entries for rolled-back writes.
+
+### Inventory import and history implementation (2026-10-09)
+
+- A reviewed workbook freezes explicit `create`/`update` rows, canonical entity
+  UUIDs, the account, snapshot base, integer versions and one batch/change UUID.
+  Generated IDs do not imply updates. Desktop commit merges workbook fields
+  without dropping other item metadata, and writes one `item/import` protocol-2
+  event in the same SQLite transaction. Repeated native commit with the same
+  key/body is a no-op; key reuse with changed rows fails.
+- PostgreSQL locks all targets in UUID order, checks import plus row-specific
+  permissions and stock authority, and applies all rows/audit/history with one
+  receipt or rolls the transaction back. The receipt's per-item outcomes can be
+  predecessors of later local edits. Pending import targets participate in pull
+  preservation and explicitly confirmed connected-chain discard.
+- Browser inventory imports use the reviewed JSON plan, not a multipart write.
+  An uncertain re-preview retains the original retry key, create IDs and bases
+  while tab session storage survives. This is not a browser offline queue.
+  Legacy queued payloads are not rewritten into the new protocol.
+- Local inventory/history permission, parse and persistence errors propagate.
+  History refresh merges server rows while preserving pending local movements;
+  cached history is available offline/after transport or 5xx failure, but never
+  used to hide a 401/403. An account-scoped cache marker distinguishes a downloaded
+  empty history from history never downloaded. These are derived cache writes,
+  not authored business changes, so no outbox event is appropriate.
+- Initial empty inventory is valid only after the server explicitly returns a
+  complete initial snapshot. An empty incremental page must not erase the cache.
+  A first-ever offline installation cannot assume the shared inventory is empty:
+  it must download once before editing. Native pending protection still applies
+  to explicitly confirmed empty refreshes.
 
 ## Legacy data decision
 

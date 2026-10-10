@@ -40,7 +40,7 @@ import LoginPage from "./pages/LoginPage";
 import CommandPalette from "./components/CommandPalette";
 const LabIntelligencePage = lazy(() => import("./pages/LabIntelligencePage"));
 const DownloadsPage = lazy(() => import("./pages/DownloadsPage"));
-import { getToken, setToken, removeToken, getStoredUser, setStoredUser, removeStoredUser, getCurrentUser, getCurrentPermissions, logout } from "./api/auth";
+import { getToken, setToken, removeToken, getStoredUser, setStoredUser, removeStoredUser, getCurrentUser, getCurrentPermissions, logout, captureAccountSession, isAccountSessionCurrent } from "./api/auth";
 import type { User } from "./api/auth";
 import { getDailyUsePreferences } from './api/system';
 import { syncPendingChanges } from './api/sync';
@@ -70,11 +70,27 @@ function AppContent() {
   const [engineeringToolsMinimized, setEngineeringToolsMinimized] = useState(false);
   const [autoPauseMusic, setAutoPauseMusic] = useState(true);
 
+  const refreshPermissions = () => {
+    const session = captureAccountSession();
+    void getCurrentPermissions().then(value => {
+      if (isAccountSessionCurrent(session)) setPermissions(value);
+    }).catch(() => { if (isAccountSessionCurrent(session)) setPermissions([]); });
+  };
+
   useEffect(() => {
     const f = () => setUser(getStoredUser());
     window.addEventListener('labos-user-updated', f);
     return () => window.removeEventListener('labos-user-updated', f);
   }, []);
+
+  useEffect(() => {
+    const expired = () => {
+      setUser(null); setPermissions([]); setIsAuthenticated(false);
+      queryClient.clear();
+    };
+    window.addEventListener('labos:auth-expired', expired);
+    return () => window.removeEventListener('labos:auth-expired', expired);
+  }, [queryClient]);
 
   useEffect(() => {
     const f = (e: KeyboardEvent) => {
@@ -145,37 +161,44 @@ function AppContent() {
   useEffect(() => {
     const t = getToken();
     const u = getStoredUser();
+    let active = true;
+    const unchanged = () => active && getToken() === t && getStoredUser()?.id === u?.id;
     if (t && u) {
       getCurrentUser(t)
         .then(({ user: cu }) => {
+          if (!unchanged()) return;
           setUser(cu);
           setStoredUser(cu);
-          void getCurrentPermissions().then(setPermissions).catch(() => setPermissions([]));
+          refreshPermissions();
           setIsAuthenticated(true);
         })
         .catch(() => {
+          if (!unchanged()) return;
           removeToken();
           removeStoredUser();
         });
-      return;
+      return () => { active = false; };
     }
     getCurrentUser('local:')
-      .then(({ user: cu }) => {
+      .then(({ user: cu, token }) => {
+        if (!unchanged()) return;
+        if (!token) throw new Error('Local session could not be restored');
+        setToken(token);
         setUser(cu);
         setStoredUser(cu);
-        void getCurrentPermissions().then(setPermissions).catch(() => setPermissions([]));
+        refreshPermissions();
         setIsAuthenticated(true);
       })
       .catch(() => undefined);
+    return () => { active = false; };
   }, []);
 
   const handleLoginSuccess = (u: User, t: string) => {
-    setUser(u);
-    void getCurrentPermissions().then(setPermissions).catch(() => setPermissions([]));
-    setIsAuthenticated(true);
-    if (t.startsWith('local:')) removeToken();
-    else setToken(t);
+    setToken(t);
     setStoredUser(u);
+    setUser(u);
+    refreshPermissions();
+    setIsAuthenticated(true);
   };
 
   const handleLogout = () => {

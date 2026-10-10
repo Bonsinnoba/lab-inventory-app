@@ -102,7 +102,7 @@ fn canonicalize_legacy_ids(connection: &Connection) -> Result<(), String> {
 #[derive(Debug, Serialize)]
 pub struct LocalDatabaseStatus { pub path: String, pub device_id: String, pub schema_version: String, pub pending_sync_count: i64, pub sync_conflict_count: i64, pub unassigned_pending_sync_count: i64, pub unassigned_state_count: i64 }
 #[derive(Debug, Deserialize)]
-pub struct LocalSyncWriteInput { pub snapshot_json: String, pub change_id: String, pub entity_type: String, pub entity_id: Option<String>, pub operation: String, pub payload_json: String, pub state_key: Option<String>, pub state_json: Option<String> }
+pub struct LocalSyncWriteInput { pub snapshot_json: String, pub expected_snapshot_json: String, pub expected_account_id: String, pub change_id: String, pub entity_type: String, pub entity_id: Option<String>, pub operation: String, pub payload_json: String, pub state_key: Option<String>, pub state_json: Option<String> }
 fn database_path(app: &AppHandle) -> Result<PathBuf, String> { let dir=app_data_dir(&app.config()).ok_or_else(|| "Unable to resolve LabOS app-data directory".to_string())?; fs::create_dir_all(&dir).map_err(|e| format!("Unable to create local data directory: {e}"))?; Ok(dir.join(DB_FILE)) }
 pub fn open_local_connection(app: &AppHandle) -> Result<Connection, String> { let path=database_path(app)?; let connection=Connection::open(&path).map_err(|e| format!("Unable to open local SQLite database: {e}"))?; connection.pragma_update(None,"foreign_keys",true).map_err(|e| format!("Unable to enable SQLite foreign keys: {e}"))?; connection.pragma_update(None,"journal_mode","WAL").map_err(|e| format!("Unable to enable SQLite WAL mode: {e}"))?; connection.pragma_update(None,"synchronous","NORMAL").map_err(|e| format!("Unable to configure SQLite synchronous mode: {e}"))?; crate::local_auth::enforce_offline_lease_bounds(&connection)?; Ok(connection) }
 fn open_connection(app:&AppHandle)->Result<(Connection,PathBuf),String>{let path=database_path(app)?;Ok((open_local_connection(app)?,path))}
@@ -168,7 +168,7 @@ pub fn local_database_status(app:AppHandle)->Result<LocalDatabaseStatus,String>{
 #[tauri::command]
 pub fn get_inventory_sync_cursor(app:AppHandle,expected_account_id:String)->Result<Option<String>,String>{let(conn,_)=open_connection(&app)?;ensure_schema(&conn)?;require_sync_account(&conn,&expected_account_id)?;let key=scoped_state_key(&conn,"inventory_sync_cursor")?;conn.query_row("SELECT value FROM sync_state WHERE key=?1",[key],|r|r.get(0)).optional().map_err(|e|format!("Unable to read inventory sync cursor: {e}"))}
 #[tauri::command]
-pub fn save_local_snapshot_with_sync(app:AppHandle,input:LocalSyncWriteInput)->Result<(),String>{if input.snapshot_json.trim().is_empty(){return Err("Local inventory snapshot cannot be empty".into())} serde_json::from_str::<serde_json::Value>(&input.snapshot_json).map_err(|e|format!("Invalid local inventory snapshot JSON: {e}"))?;serde_json::from_str::<serde_json::Value>(&input.payload_json).map_err(|e|format!("Invalid sync payload JSON: {e}"))?;if let Some(s)=&input.state_json{serde_json::from_str::<serde_json::Value>(s).map_err(|e|format!("Invalid local state JSON: {e}"))?;}let mut conn=open_local_connection(&app)?;ensure_schema(&conn)?;let tx=conn.transaction().map_err(|e|format!("Unable to begin local sync transaction: {e}"))?;let permission=match (input.entity_type.as_str(),input.operation.as_str()){("item","create")=>"inventory.create",("item","delete")|(_, "bulk_delete")|(_, "item_bulk_delete")=>"inventory.delete",("item","update")|(_, "bulk_status")|(_, "item_bulk_status")=>"inventory.edit",_=>""};if !permission.is_empty(){let (permissions,expires):(String,Option<String>)=tx.query_row("SELECT u.permissions_json,u.offline_expires_at FROM local_users u JOIN local_session s ON s.user_id=u.id WHERE s.id=1 AND u.central_user_id IS NOT NULL AND u.is_active=1",[],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|format!("Unable to read local authorization: {e}"))?;let expires=expires.ok_or("Offline authorization has expired")?;let valid:i64=tx.query_row("SELECT CASE WHEN datetime('now') < datetime(?1) THEN 1 ELSE 0 END",params![expires],|r|r.get(0)).unwrap_or(0);if valid==0{return Err("Offline authorization has expired. Connect to LabOS to refresh access.".into())}let permissions:Vec<String>=serde_json::from_str(&permissions).map_err(|e|format!("Unable to decode local authorization: {e}"))?;if !permissions.iter().any(|p|p==permission){return Err(format!("Permission required: {permission}"))}}let device_id:String=tx.query_row("SELECT device_id FROM device_identity WHERE id=1",[],|r|r.get(0)).map_err(|e|format!("Unable to read device identity: {e}"))?;tx.execute("INSERT INTO sync_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![scoped_state_key(&tx,"inventory_snapshot")?,&input.snapshot_json]).map_err(|e|format!("Unable to save local inventory snapshot: {e}"))?;if let(Some(k),Some(v))=(&input.state_key,&input.state_json){tx.execute("INSERT INTO sync_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![scoped_state_key(&tx,k)?,v]).map_err(|e|format!("Unable to save local state: {e}"))?;}tx.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES(?1,?2,?3,?4,?5,?6)",params![input.change_id,device_id,input.entity_type,input.entity_id,input.operation,input.payload_json]).map_err(|e|format!("Unable to queue local change for sync: {e}"))?;tx.commit().map_err(|e|format!("Unable to commit local snapshot and sync change: {e}"))?;Ok(())}
+pub fn save_local_snapshot_with_sync(app:AppHandle,input:LocalSyncWriteInput)->Result<(),String>{let mut conn=open_local_connection(&app)?;ensure_schema(&conn)?;crate::inventory_sync_state::save(&mut conn,input)}
 #[tauri::command]
 pub fn list_pending_sync_changes(app:AppHandle,limit:Option<i64>,expected_account_id:String)->Result<Vec<serde_json::Value>,String>{
     let(conn,_)=open_connection(&app)?;
@@ -195,7 +195,9 @@ pub fn list_sync_conflicts(app:AppHandle)->Result<Vec<Value>,String>{
 }
 
 fn require_conflict_permission(conn:&Connection,entity:&str,operation:&str,payload:&Value,write:bool)->Result<(),String>{
-    if entity=="daily_preferences" {active_account(conn)?;return Ok(())}
+    if ["media_download_settings","resource_download_job"].contains(&entity){return crate::local_auth::require_local_permission(conn,"resources.edit")}
+    if entity=="daily_preferences"||entity=="notification_read" {active_account(conn)?;return Ok(())}
+    if entity=="project_comment" {return crate::local_comments::require_comment_project_access(conn,payload.pointer("/record/project_id").and_then(Value::as_str).ok_or("Comment project missing")?,write)}
     let domain=match entity{
         "item"|"item_movement"|"location"|"maintenance_record"|"supplier"|"storage_container"=>"inventory",
         "note"=>"notes", "resource"=>"resources",
@@ -209,6 +211,14 @@ fn require_conflict_permission(conn:&Connection,entity:&str,operation:&str,paylo
     // Conflict payloads can contain an old income record even after a role downgrade.
     if domain=="finance" {crate::local_auth::require_local_permission(conn,"finance.view_sensitive")?;}
     if write {
+        if entity=="item"&&operation=="import"{
+            crate::local_auth::require_local_permission(conn,"inventory.import")?;
+            for row in payload["rows"].as_array().ok_or("Import rows missing")?{
+                let permission=match row["operation"].as_str(){Some("create")=>"inventory.create",Some("update")=>"inventory.edit",_=>return Err("Invalid import operation".into())};
+                crate::local_auth::require_local_permission(conn,permission)?;
+            }
+            return Ok(())
+        }
         let action=match operation{"delete"|"bulk_delete"|"item_bulk_delete"=>"delete","create"=>"create",_=>"edit"};
         let permission=if domain=="projects"&&entity!="project" {"projects.edit".to_string()}
             else if entity=="item_movement" {"inventory.adjust_stock".to_string()}
@@ -237,7 +247,10 @@ fn resolve_conflict(conn:&mut Connection,change_id:&str,resolution:&str)->Result
     if resolution=="keep_local" {
         let mut value:Value=serde_json::from_str(&payload).map_err(|e|e.to_string())?;
         require_conflict_permission(&tx,&entity,&operation,&value,true)?;
-        if ["maintenance_record","daily_preferences","supplier","storage_container"].contains(&entity.as_str()) && (code=="SYNC_CONFLICT" || code=="SYNC_DEPENDENCY_PENDING") {
+        if ["item","item_movement"].contains(&entity.as_str())&&value["inventory_protocol"]==2&&(code=="SYNC_CONFLICT"||code=="SYNC_DEPENDENCY_PENDING"){
+            return Err("Accept the server version, then review and reapply your inventory edits. Automatic overwrite is not allowed.".into());
+        }
+        if ["maintenance_record","daily_preferences","supplier","storage_container","project_comment","media_download_settings"].contains(&entity.as_str()) && (code=="SYNC_CONFLICT" || code=="SYNC_DEPENDENCY_PENDING") {
             return Err("Accept the server version, then review and reapply your edits. Automatic overwrite is not allowed.".into());
         }
         if entity=="item"&&code=="SYNC_CONFLICT" {
@@ -251,7 +264,10 @@ fn resolve_conflict(conn:&mut Connection,change_id:&str,resolution:&str)->Result
             tx.execute("UPDATE sync_outbox SET attempt_count=0,last_error=NULL,synced_at=NULL WHERE change_id=?1",[change_id]).map_err(|e|e.to_string())?;
         }
     } else {
-        if ["maintenance_record","daily_preferences","supplier","storage_container"].contains(&entity.as_str()) {
+        if ["item","item_movement"].contains(&entity.as_str()){
+            crate::inventory_sync_state::discard_connected(&tx,change_id,resolution)?;
+        }
+        if ["maintenance_record","daily_preferences","supplier","storage_container","project_comment","media_download_settings"].contains(&entity.as_str()) {
             // Subsequent offline edits depend on this intent. Discarding only the
             // head would leave a broken chain (or apply later edits to a rival version).
             tx.execute("UPDATE sync_conflicts SET resolved_at=CURRENT_TIMESTAMP,resolution=?2 WHERE change_id IN (SELECT change_id FROM active_sync_outbox WHERE entity_type=?3 AND entity_id=?1 AND synced_at IS NULL)",params![entity_id,resolution,entity]).map_err(|e|e.to_string())?;
@@ -269,11 +285,24 @@ fn resolve_conflict(conn:&mut Connection,change_id:&str,resolution:&str)->Result
 #[tauri::command]
 pub fn mark_sync_changes_synced(app:AppHandle,change_ids:Vec<String>)->Result<(),String>{let mut conn=open_local_connection(&app)?;ensure_schema(&conn)?;mark_changes_synced(&mut conn,change_ids)}
 
-fn mark_changes_synced(conn:&mut Connection,change_ids:Vec<String>)->Result<(),String>{if change_ids.is_empty(){return Ok(())}let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|format!("Unable to begin sync acknowledgement: {e}"))?;let account=active_account(&tx)?;for id in change_ids{let updated=tx.execute("UPDATE sync_outbox SET synced_at=CURRENT_TIMESTAMP,last_error=NULL WHERE change_id=?1 AND account_id=?2",params![id,account]).map_err(|e|format!("Unable to mark sync change complete: {e}"))?;if updated!=1{return Err("Sync change does not belong to the active account".into())}}tx.commit().map_err(|e|format!("Unable to commit sync acknowledgement: {e}"))?;Ok(())}
+pub(crate) fn mark_changes_synced(conn:&mut Connection,change_ids:Vec<String>)->Result<(),String>{
+    if change_ids.is_empty(){return Ok(())}
+    let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+    let account=active_account(&tx)?;let mut inventory_changed=false;
+    for id in change_ids{
+        let kind:String=tx.query_row("SELECT entity_type FROM sync_outbox WHERE change_id=?1 AND account_id=?2",params![id,account],|r|r.get(0)).map_err(|_|"Sync change does not belong to the active account")?;
+        inventory_changed|=kind=="item"||kind=="item_movement";
+        tx.execute("UPDATE sync_outbox SET synced_at=CURRENT_TIMESTAMP,last_error=NULL WHERE change_id=?1 AND account_id=?2",params![id,account]).map_err(|e|e.to_string())?;
+    }
+    // A pull may have skipped a pending row after the server already committed it.
+    // Re-read it after ACK even if its timestamp is behind our incremental cursor.
+    if inventory_changed{tx.execute("DELETE FROM sync_state WHERE key=?1",[scoped_state_key(&tx,"inventory_sync_cursor")?]).map_err(|e|e.to_string())?;}
+    tx.commit().map_err(|e|e.to_string())
+}
 #[tauri::command]
 pub fn record_sync_failure(app:AppHandle,change_id:String,error:String)->Result<(),String>{let mut conn=open_local_connection(&app)?;ensure_schema(&conn)?;let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|format!("Unable to begin sync failure record: {e}"))?;let account=active_account(&tx)?;let updated=tx.execute("UPDATE sync_outbox SET attempt_count=attempt_count+1,last_attempt_at=CURRENT_TIMESTAMP,last_error=?2 WHERE change_id=?1 AND account_id=?3",params![change_id,error,account]).map_err(|e|format!("Unable to record sync failure: {e}"))?;if updated!=1{return Err("Sync change does not belong to the active account".into())}tx.commit().map_err(|e|format!("Unable to commit sync failure: {e}"))?;Ok(())}
 #[tauri::command]
-pub fn apply_server_inventory_pull(app:AppHandle,items_json:String,deleted_item_ids:Vec<String>,next_cursor:String,expected_account_id:String)->Result<(),String>{let incoming:Vec<serde_json::Value>=serde_json::from_str(&items_json).map_err(|e|format!("Invalid server inventory payload: {e}"))?;let mut conn=open_local_connection(&app)?;ensure_schema(&conn)?;let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|format!("Unable to begin server inventory merge: {e}"))?;require_sync_account(&tx,&expected_account_id)?;let snapshot_raw:Option<String>=tx.query_row("SELECT value FROM sync_state WHERE key=?1",[scoped_state_key(&tx,"inventory_snapshot")?],|r|r.get(0)).optional().map_err(|e|format!("Unable to read local inventory snapshot: {e}"))?;let mut current:Vec<serde_json::Value>=match snapshot_raw{Some(raw)=>serde_json::from_str(&raw).map_err(|e|format!("Invalid local inventory snapshot: {e}"))?,None=>Vec::new()};let mut pending=HashSet::new();{let mut stmt=tx.prepare("SELECT entity_id FROM active_sync_outbox WHERE synced_at IS NULL AND entity_type='item' AND entity_id IS NOT NULL").map_err(|e|format!("Unable to inspect pending item changes: {e}"))?;let rows=stmt.query_map([],|r|r.get::<_,String>(0)).map_err(|e|format!("Unable to inspect pending item changes: {e}"))?;for row in rows{pending.insert(row.map_err(|e|format!("Unable to read pending item id: {e}"))?);}}let deleted:HashSet<String>=deleted_item_ids.into_iter().collect();current.retain(|item|item.get("id").and_then(|v|v.as_str()).map(|id|!deleted.contains(id)||pending.contains(id)).unwrap_or(true));for item in incoming{let Some(item_id)=item.get("id").and_then(|v|v.as_str()).map(ToOwned::to_owned) else{continue};if pending.contains(&item_id){continue;}if let Some(existing)=current.iter_mut().find(|value|value.get("id").and_then(|v|v.as_str())==Some(item_id.as_str())){*existing=item;}else{current.push(item);}}let snapshot=serde_json::to_string(&current).map_err(|e|format!("Unable to encode merged inventory snapshot: {e}"))?;tx.execute("INSERT INTO sync_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![scoped_state_key(&tx,"inventory_snapshot")?,snapshot]).map_err(|e|format!("Unable to save merged inventory snapshot: {e}"))?;tx.execute("INSERT INTO sync_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![scoped_state_key(&tx,"inventory_sync_cursor")?,next_cursor]).map_err(|e|format!("Unable to save inventory sync cursor: {e}"))?;tx.commit().map_err(|e|format!("Unable to commit server inventory merge: {e}"))?;Ok(())}
+pub fn apply_server_inventory_pull(app:AppHandle,items_json:String,deleted_item_ids:Vec<String>,next_cursor:String,expected_account_id:String)->Result<(),String>{let incoming=crate::inventory_sync_state::decode(&items_json)?;let mut conn=open_local_connection(&app)?;ensure_schema(&conn)?;crate::inventory_sync_state::merge(&mut conn,&expected_account_id,incoming,deleted_item_ids,Some(&next_cursor))}
 
 #[cfg(test)]
 mod tests {

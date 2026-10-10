@@ -37,14 +37,14 @@ null-return and Rust transaction paths still require failure injection.
 
 ```text
 MODULE: Inventory
-FILE: desktop/src/api/items.ts; desktop/src/api/local-inventory.ts; backend/src/routes/items.js; backend/src/index.js
-CURRENT WRITE PATH: Tauri -> local snapshot + SQLite outbox; browser -> HTTP API.
-WHY IT BYPASSES OFFLINE-FIRST: Previously, a missing/failed local snapshot returned null and the Tauri caller fell through to HTTP POST/PUT/DELETE. This could commit remotely without a durable local event.
-RISK: Remote-only item, lost local edit, inconsistent retry or duplicate movement after refresh/sync.
-RECOMMENDED CHANGE: Fail closed on Tauri when local storage is unavailable; retain HTTP only in browser. Then distinguish uninitialized versus failed snapshots so a new offline account can create its first item safely.
-ACTUAL CHANGE MADE: Added a Tauri guard before HTTP writes for create, update, delete, bulk status, bulk delete, and movement creation. Restored the missing browser delete/bulk routes and operation-specific server permissions with atomic delete tombstones (finding 25). No data was migrated.
-VERIFICATION: Desktop TypeScript check passed. Source review confirms the existing local item and movement paths generate UUIDs and queue changes; backend sync has bulk/delete/movement handlers and change-id idempotency. The scoped PostgreSQL inventory route probe passed. Runtime IPC failure injection and two-client retry tests are pending.
-STATUS: Guard and browser route repair implemented; end-to-end desktop verification pending.
+FILE: desktop/src/api/items.ts; desktop/src/api/inventory-http.ts; desktop/src-tauri/src/inventory_sync_state.rs; desktop/src-tauri/src/local_inventory.rs; backend/src/inventory-apply.js; backend/src/inventory-sync.js; backend/src/inventory-http.js; backend/src/routes/sync.js; backend/src/migrations/20261009_inventory_versions.sql
+CURRENT WRITE PATH: New desktop item CRUD/bulk/movements atomically commit SQLite state plus versioned outbox events. Browser item/storage/movement routes share the versioned PostgreSQL apply transaction, required audit/history, receipt and tombstones. Browser retry identities persist per account in tab session storage; browser remains online-only.
+WHY IT BYPASSES OFFLINE-FIRST: Local-write fallback and listed browser split paths are closed. Newly reviewed imports now also use protocol 2. Previously queued immutable events retain their original semantics; no automatic payload rewrite occurs.
+RISK: Legacy-event recovery and broader relationship/cache edge cases remain. Browser retry persistence survives tab reload, not clearing/closing its session storage; it is not a durable offline queue. Offline history can be stale; a first installation still needs one successful inventory download.
+RECOMMENDED CHANGE: Preserve the transactional/versioned reference; finish legacy recovery and remaining inventory relationships. Test every remaining mutation rather than infer domain-wide completion.
+ACTUAL CHANGE MADE: Account/base snapshot guards, canonical IDs, pending intent preservation, repaired IPC and ACK cursor reset. Added server integer versions, same-author/device predecessor outcomes, ordered target locks, stale bulk/delete rollback, additive-delta handling, transactional audit/history/tombstones and microsecond cursors. Browser routes now require stable keys/IDs and displayed versions; storage uses the same path. Retry after refresh reuses the original persisted body/base even when the displayed version advanced. Versionless caches fail closed; versioned conflicts disallow automatic overwrite and discard only confirmed connected batches.
+VERIFICATION: October 9 latest: 65 desktop API tests, TypeScript, 37 native tests (7 opt-in live tests skipped by default), explicit inventory suite 9/9 including two disk clients against PostgreSQL. Actual PostgreSQL import/browser/version probes pass rollback, replay, permissions, predecessor ownership and 600-row pagination. History cache/read permissions and explicit empty initialization have native/API tests. Backend 55/55 after DOCX option correction. Detailed scope and limitations are in PHASE2_EVIDENCE.md.
+STATUS: New inventory imports, pending-safe history refresh and explicitly confirmed empty-server initialization now verified in addition to the earlier protocol-2 slice. Broader relationships and legacy recovery remain open. No inventory-wide or Phase 2 sign-off.
 ```
 
 ### 2. Canvas mutations
@@ -93,14 +93,14 @@ STATUS: Core offline-first vertical slice implemented and automated verification
 
 ```text
 MODULE: Operations suppliers
-FILE: desktop/src/api/operations.ts
-CURRENT WRITE PATH: Direct HTTP create/update/delete from desktop, with no local mutation or outbox event.
-WHY IT BYPASSES OFFLINE-FIRST: No Tauri repository branch exists.
-RISK: Offline failure, stale local view, and duplicate create on uncertain retry.
-RECOMMENDED CHANGE: Add account-scoped local supplier state, atomic outbox writes, server idempotency, pull/reconciliation, and deletion semantics.
-ACTUAL CHANGE MADE: None.
-VERIFICATION: Source-path audit only; actual-PostgreSQL create/retry/delete tests pending.
-STATUS: Open.
+FILE: desktop/src/api/catalog.ts; desktop/src-tauri/src/local_catalog.rs; backend/src/catalog-sync.js; backend/src/routes/operations.js
+CURRENT WRITE PATH: Desktop supplier CRUD uses atomic SQLite state plus authored outbox; browser uses shared PostgreSQL apply with stable ID/key and expected version.
+WHY IT BYPASSES OFFLINE-FIRST: The previous direct desktop HTTP writes had no local repository. That path is replaced; no HTTP fallback on null/rejected IPC.
+RISK: Historical uncertain retries could duplicate suppliers; stale edits and linked-item cleanup require ordered reconciliation.
+RECOMMENDED CHANGE: Preserve shared catalog apply, canonical UUIDs, version/dependency checks, full snapshots and deletion guards; finish broader inventory relationship reconciliation.
+ACTUAL CHANGE MADE: Supplier local repository and sync pull/push; immutable predecessor chain; PostgreSQL version/tombstone migration; transactionally required audit/idempotency; admin-only delete and linked-item timestamp advancement; browser replay identity and UI captured versions.
+VERIFICATION: Two native unit tests, four API boundary tests, actual PostgreSQL parallel/replay/conflict/permission/delete probe, and two disk-client restart/replay/conflict/delete test passed (October 8). No GUI acceptance claimed.
+STATUS: Supplier CRUD slice verified; broader inventory relationship/cache behavior remains Phase 2 work.
 ```
 
 ### 5. Requirements without project context
@@ -149,14 +149,14 @@ STATUS: Open.
 
 ```text
 MODULE: Collaboration; assistant; automation
-FILE: desktop/src/api/collaboration.ts; desktop/src/components/AssistantChat.tsx; desktop/src/api/automation.ts
-CURRENT WRITE PATH: Direct HTTP writes for notifications/comments, assistant preferences/conversations/chat, and automation runs.
-WHY IT BYPASSES OFFLINE-FIRST: No local outbox for these mutations. Assistant generation and automation execution may intentionally require the server, while comments/notification state may not.
-RISK: Offline failure, duplicate comments or runs after uncertain retries, and stale local notification/conversation state.
-RECOMMENDED CHANGE: Split online-only actions from offline-capable records. Give effectful server actions idempotency keys; add local/outbox/pull for comments and read markers only after their conflict policy is defined.
-ACTUAL CHANGE MADE: None.
-VERIFICATION: Source-path audit only; actual-PostgreSQL retry/deletion tests pending.
-STATUS: Open classification and implementation.
+FILE: desktop/src/api/comments.ts; desktop/src/api/notifications.ts; desktop/src-tauri/src/local_comments.rs; backend/src/comment-sync.js; desktop/src/components/AssistantChat.tsx; desktop/src/api/automation.ts
+CURRENT WRITE PATH: Comments create/delete and notification reads now commit local state + immutable account outbox. Browser comments share idempotent server apply. Assistant/automation effects remain server-authoritative HTTP.
+WHY IT BYPASSES OFFLINE-FIRST: Comment/read-marker direct writes are replaced. Assistant generation and automation execution deliberately need server authority but still lack a complete retry/cache contract.
+RISK: Duplicate comments/notifications, unauthorized author deletion, revoked cached content and lost unsent work; remaining assistant/automation retries can repeat effects.
+RECOMMENDED CHANGE: Keep immutable comments with authenticated authorship and author/admin deletion, current parent authorization, full scoped pull, pending-delete retention and tombstones. Separately harden online effects.
+ACTUAL CHANGE MADE: Comment repository, atomic outbox, canonical UUIDs, dependent deletes, no deleted-ID resurrection, server audit/idempotency/notification transaction, reauthorization before replay, visibility snapshots and revoked-content eviction without deleting authored outbox intent. Full-chain discard confirmation matches recovery behavior.
+VERIFICATION: Two native comment unit tests and three API boundary tests passed; actual PostgreSQL parallel replay/exactly-once notification/author/parent/revocation/delete probe passed; two disk SQLite clients exercised offline create, restart, lost ACK, repeated pull and cross-client deletion against PostgreSQL (October 8).
+STATUS: Comment/read-marker slices verified automatically; assistant/automation online-effect hardening and broader recovery/UI acceptance remain open.
 ```
 
 ### 9. Administrative account/permission mutations
@@ -177,28 +177,28 @@ STATUS: Intentional server authority; credential/cache-coherence and offline-rev
 
 ```text
 MODULE: Inventory import
-FILE: desktop/src/api/excel.ts; desktop/src/api/local-inventory.ts
-CURRENT WRITE PATH: Tauri with a local snapshot parses and imports through SQLite/outbox; a null snapshot previously selected server POST /excel/inventory/import. Browser imports use that HTTP endpoint.
-WHY IT BYPASSES OFFLINE-FIRST: getLocalInventorySnapshot returns null both for an uninitialized cache and for an invocation/parse failure. The importer treated either as permission to write remotely.
-RISK: Server-only bulk create/update after a local failure; uncertain HTTP retries can repeat the import, and local inventory can remain stale.
-RECOMMENDED CHANGE: Fail closed on Tauri when the local snapshot is unavailable. Later distinguish missing initialization from a broken cache and give a new account a safe empty snapshot.
-ACTUAL CHANGE MADE: Tauri import now raises an explicit local-inventory error before the HTTP branch. Browser import is unchanged.
-VERIFICATION: Desktop TypeScript check passed; source review confirms the guard precedes HTTP. Forced-null runtime and real-PostgreSQL retry tests remain pending.
-STATUS: Fallback closed; end-to-end verification open.
+FILE: desktop/src/api/excel.ts; desktop/src/api/inventory-http.ts; desktop/src/api/inventory-pull.ts; desktop/src-tauri/src/local_excel.rs; desktop/src-tauri/src/inventory_sync_state.rs; backend/src/inventory-sync.js; backend/src/inventory-http.js; backend/src/routes/excel.js
+CURRENT WRITE PATH: Workbook preview freezes explicit create/update rows, canonical UUIDs, captured versions and one batch ID. Desktop imports atomically persist the merged SQLite snapshot and one immutable item/import event. Browser submits the same versioned JSON plan to shared PostgreSQL apply with a persisted retry key.
+WHY IT BYPASSES OFFLINE-FIRST: Earlier missing-cache/server fallback is removed. Native invocation/parse/permission failures propagate, not masquerade as cache misses. Cache/pull writes are derived state and intentionally do not produce business outbox events.
+RISK: Legacy queued import payloads retain their old semantics. Browser retry recovery lasts only as long as tab session storage. Inventory import accepts at most 500 rows and 10 MiB workbooks; old multipart mutation callers must migrate to reviewed JSON plans. Finance/purchase import conversion remains separate.
+RECOMMENDED CHANGE: Retain immutable batch/row IDs and per-row authorization, exact preview bases, atomic local/outbox and server transactions. Never initialize a missing cache as empty solely because a local read failed.
+ACTUAL CHANGE MADE: Fixed generated-UUID creates being classified as updates; canonicalized duplicate checks; preserved non-workbook fields on updates. Added import/view/create/edit/stock permission checks, quantity validation, all-target ordered locks, atomic per-row audit and single receipt, predecessor support and pending-pull/discard integration. Native IPC retry returns the previous batch result without reapplying. Browser uncertain re-preview retains original IDs/body. Empty first pull initializes only with snapshot_complete=true; first-use offline without a server snapshot still fails closed.
+VERIFICATION: Three native import tests, three workbook API tests, browser re-preview/retry test and four pull-page tests pass. Actual PostgreSQL probe verifies rollback after an earlier row created, permission-denied rollback, parallel replay, mismatched-key rejection, single sync receipt and dependent edits. Two disk-client restart/lost-ACK import test passes. Existing shared database was not cleared to simulate an empty installation; empty-response behavior was tested at the API/native boundary.
+STATUS: New inventory import path implemented and verified October 9; legacy recovery, workbook parser hardening and GUI acceptance remain separate open work.
 ```
 
 ### 11. Storage containers and item storage
 
 ```text
-MODULE: Phase 4 storage
-FILE: desktop/src/api/phase4.ts; backend/src/routes/phase4.js; backend/src/index.js
-CURRENT WRITE PATH: Container create/update/delete and item-storage PATCH go directly to HTTP from Tauri and browser. API methods are permission-gated, but no desktop SQLite/outbox mutation or pull contract exists for containers.
-WHY IT BYPASSES OFFLINE-FIRST: These are ordinary persistent inventory records, yet the desktop API has no local branch. An item-storage PATCH also changes a server item outside the inventory outbox.
-RISK: Offline failure, server/local storage divergence, duplicate container creation on uncertain retry, and a removed container still shown locally. The current item update does not update the desktop inventory snapshot.
-RECOMMENDED CHANGE: In Phase 2, add a container entity and item-storage operation to the atomic local/outbox contract; use stable UUIDs and change IDs, pull and tombstones, and reject deletes while items still reference a container.
-ACTUAL CHANGE MADE: None; classified, not rewritten.
-VERIFICATION: Source-path and route-permission review only. PostgreSQL retry/delete and desktop reconciliation tests pending.
-STATUS: Open — offline-capable domain.
+MODULE: Storage containers and item storage
+FILE: desktop/src/api/phase4.ts; desktop/src/api/catalog.ts; desktop/src/api/inventory-http.ts; desktop/src-tauri/src/local_catalog.rs; backend/src/catalog-sync.js; backend/src/inventory-http.js; backend/src/routes/phase4.js
+CURRENT WRITE PATH: Desktop container/item-storage writes use atomic local/outbox paths. Browser containers use shared catalog apply; browser item-storage edits and the legacy storage URL now use shared versioned inventory apply with required audit/idempotency.
+WHY IT BYPASSES OFFLINE-FIRST: Earlier container and storage bypasses are removed; desktop failures never select the browser route.
+RISK: Broader relationship/cache reconciliation and legacy writers remain separate inventory work; UI acceptance remains pending.
+RECOMMENDED CHANGE: Preserve catalog/item versions and relationship constraints; finish remaining import/relationship paths and visual acceptance.
+ACTUAL CHANGE MADE: Container repository/version/tombstone/linked-item guard retained. Storage-label UI captures its displayed version and retains its selected container. Both item update and storage PATCH require expected versions and stable browser retry keys; desktop still uses its outbox.
+VERIFICATION: Catalog PostgreSQL/two-disk-client evidence from October 8 retained. October 9 actual PostgreSQL browser probe passes storage CAS and replay; desktop fail-closed API tests and TypeScript pass. No GUI sign-off.
+STATUS: Container CRUD and item-storage browser mutation slice verified; broader inventory relationship/cache work remains open.
 ```
 
 ### 12. Project workflow actions outside the local project repository
@@ -220,11 +220,11 @@ STATUS: Open — mixed offline-capable and server-authoritative actions.
 ```text
 MODULE: Import/export
 FILE: desktop/src/api/excel.ts; desktop/src/api/excel-finance.ts; desktop/src/api/purchases.ts; backend/src/routes/excel.js; backend/src/routes/excel-finance.js; backend/src/routes/excel-purchases.js
-CURRENT WRITE PATH: Inventory import uses local SQLite/outbox when a snapshot exists; browser import uses HTTP. Finance and purchase imports POST workbooks directly from the desktop. Preview POSTs parse only; exports and templates are reads.
+CURRENT WRITE PATH: Inventory imports now use an immutable atomic protocol-2 batch locally and shared versioned apply in the browser (Finding 10). Finance and purchase imports still POST workbooks directly from the desktop. Preview POSTs parse only; exports and templates are reads.
 WHY IT BYPASSES OFFLINE-FIRST: Finance/purchase imports can create multiple database records without a local batch/outbox representation or atomic desktop reconciliation. The upload response alone is not a durable local commit.
 RISK: Partial or repeated imports after network uncertainty, duplicate purchases/transactions, and finance or inventory cache divergence. Export projections and audit logging require independent security review.
 RECOMMENDED CHANGE: Give each import an immutable batch ID, row IDs, server idempotency and reconciliation or a fully local parsed/outbox path; classify previews separately from writes. Preserve import-specific permission gates.
-ACTUAL CHANGE MADE: Only the inventory Tauri null-snapshot guard in Finding 10.
+ACTUAL CHANGE MADE: Inventory batch/outbox/HTTP replay conversion and actual PostgreSQL tests in Finding 10. No finance/purchase import conversion in this slice.
 VERIFICATION: Source classification only for finance/purchases; PostgreSQL repeat-upload, rollback and cache checks pending.
 STATUS: Open.
 ```
@@ -246,15 +246,15 @@ STATUS: Server visibility and sync mutation boundary repaired; linked-record pro
 ### 15. Notification and assistant UI writes
 
 ```text
-MODULE: Notifications, assistant conversation/context
-FILE: desktop/src/api/experience.ts; desktop/src/api/collaboration.ts; desktop/src/components/AssistantChat.tsx
-CURRENT WRITE PATH: Notification read markers and project comments use HTTP directly. AssistantChat sends PATCH preferences, DELETE conversation and POST chat directly from the component rather than through an API repository. No local/outbox mutation exists for these paths.
-WHY IT BYPASSES OFFLINE-FIRST: UI-level HTTP hides the mutation from the central sync inventory. Chat generation is an intentional online effect; context preference and conversation deletion have no local reconciliation contract.
-RISK: Stale unread counts or assistant history; duplicate comments/chat submissions on uncertain retry; context UI may show an unsaved selection because it updates optimistically before PATCH succeeds.
-RECOMMENDED CHANGE: Move writes behind explicit domain APIs. Classify chat generation as online-only with request IDs and honest pending/error state; decide whether notification read state and comments should be offline-capable; reconcile or invalidate local state after server success.
-ACTUAL CHANGE MADE: None.
-VERIFICATION: Direct UI/API source-path review only; retry and two-account PostgreSQL checks pending.
-STATUS: Open — mixed deliberate online effects and offline-capable records.
+MODULE: Notification read state; assistant conversation/context
+FILE: desktop/src/api/notifications.ts; desktop/src-tauri/src/local_notifications.rs; backend/src/notification-sync.js; desktop/src/api/experience.ts; desktop/src/api/collaboration.ts; desktop/src/components/AssistantChat.tsx
+CURRENT WRITE PATH: Both notification API aliases delegate to the local-first repository on desktop; browser uses frozen IDs and stable idempotency keys. Assistant component writes remain direct HTTP.
+WHY IT BYPASSES OFFLINE-FIRST: Notification bypass is removed. Assistant online-effect writes still need a domain API/retry/cache contract.
+RISK: Read-all retry could acknowledge later arrivals, cross-account markers or hidden content; assistant optimistic context/history can diverge.
+RECOMMENDED CHANGE: Monotonic read acknowledgements for an explicit frozen ID set, account ownership and current visibility filtering; separately centralize online assistant effects and error states.
+ACTUAL CHANGE MADE: Atomic local read/outbox, pending-aware full pull, revoked notification-content eviction while retaining ID-only outbox intent; PostgreSQL monotonic timestamps and shared idempotent aliases; future arrivals excluded from retries.
+VERIFICATION: Native atomicity/account/revocation unit and three API boundary tests passed. Actual PostgreSQL ownership/visibility/parallel retry/timestamp/deleted-record probe and two-disk-client offline/restart/concurrent-read/lost-ACK/later-arrival/browser-parity test passed (October 8).
+STATUS: Notification read-state slice verified automatically; assistant changes remain open.
 ```
 
 ### 16. UUIDs and retry keys outside Notes/Resources
@@ -266,9 +266,9 @@ CURRENT WRITE PATH: Inventory and Excel generate entity UUIDs in TypeScript; Rus
 WHY IT BYPASSES OFFLINE-FIRST: Identity creation is scattered by module; direct HTTP POST retries do not participate in sync_idempotency. A new client ID and change ID for the same logical user action can create a second row despite per-change idempotency.
 RISK: Duplicates on uncertain response, cross-device identity drift, or non-replayable direct imports/actions.
 RECOMMENDED CHANGE: Define one canonical UUID representation and persisted logical-operation ID; preserve it across retries and API modes. Explicitly test create, update, delete and replay for every entity family, including browser HTTP writes.
-ACTUAL CHANGE MADE: None in this slice.
-VERIFICATION: Source review confirms UUID-generation sites and the sync_idempotency ownership/payload checks; full per-domain replay tests pending.
-STATUS: Contract open; no claim of repository-wide normalization.
+ACTUAL CHANGE MADE: Inventory/browser/import paths use canonical UUIDs, immutable retry payloads and stable batch keys. Import creates have explicit operation labels rather than treating every generated ID as an update. Browser lost-ACK re-preview reuses the original generated IDs and bases.
+VERIFICATION: Native duplicate-normalization and retry tests, desktop browser-reload/re-preview tests, actual PostgreSQL import/browser/version probes and two-client restart tests pass for inventory. Full per-domain replay tests remain pending.
+STATUS: Inventory identity/replay slice verified; no claim of repository-wide normalization.
 ```
 
 ### 17. Engineering scope and record mutation authority
@@ -387,14 +387,14 @@ STATUS: Direct delete gap fixed; long-offline reconciliation open.
 
 ```text
 MODULE: Inventory item deletion and bulk status/deletion
-FILE: desktop/src/api/items.ts; backend/src/routes/items.js; backend/src/index.js; backend/src/routes/sync.js
-CURRENT WRITE PATH: Tauri item mutations use SQLite/outbox and sync push; browser calls DELETE /items/:id, POST /items/bulk-status and POST /items/bulk-delete. Those three HTTP routes were absent, even though the sync handler supported corresponding mutations. The API's generic POST gate also required inventory.create for every item POST, including stock movements and the missing bulk endpoints.
-WHY IT BYPASSES OFFLINE-FIRST: The browser's server-authoritative branch was incomplete and permission routing did not match the operation. A desktop fallback to those URLs would fail instead of reconciling; adding them without tombstones would have created another delete divergence.
-RISK: Browser item deletion/bulk actions returned 404; a user with the correct inventory.edit, inventory.delete or inventory.adjust_stock grant could be blocked by an unrelated inventory.create requirement. Cross-device item caches would retain direct deletes without tombstones.
-RECOMMENDED CHANGE: Define the exact three routes with operation-specific permissions and atomic tombstones for deletes; give stock movements their adjust_stock gate in the mount middleware. Keep the desktop Tauri fail-closed behavior so these browser routes never become local-write fallbacks. Test all routes on existing PostgreSQL with uniquely identified records.
-ACTUAL CHANGE MADE: Added single DELETE, bulk-status and bulk-delete routes; direct deletes and tombstones commit together. The mount middleware now routes bulk-status to inventory.edit, bulk-delete/single delete to inventory.delete, and movements to inventory.adjust_stock before its generic create rule. Tauri item writes still require local state/outbox and cannot fall through to these routes.
-VERIFICATION: API-only rebuild succeeded. The opt-in inventory-routes-live-probe passed bulk status, single and bulk delete, row absence and all item tombstones on existing PostgreSQL; it cleaned only its three items, tombstones and matching audit entries. A non-admin permission matrix and two-client desktop reconciliation remain open.
-STATUS: Route mismatch fixed; role/two-client verification open.
+FILE: desktop/src/api/items.ts; desktop/src/api/inventory-http.ts; backend/src/inventory-http.js; backend/src/inventory-sync.js; backend/src/inventory-apply.js; backend/src/routes/items.js; backend/src/index.js
+CURRENT WRITE PATH: Tauri uses SQLite/outbox. Browser item create/update/delete, bulk status/delete, stock movements and storage writes use explicit HTTP routes backed by the shared inventory transaction handler.
+WHY IT BYPASSES OFFLINE-FIRST: Missing routes and incorrect permission routing were repaired earlier. Separate unversioned SQL bodies are now replaced; these endpoints cannot be selected after a desktop local failure.
+RISK: Previously duplicate uncertain retries, stale overwrites, partial bulk effects and missing audit/history. Old external callers now fail closed unless they send UUID keys/IDs and captured versions.
+RECOMMENDED CHANGE: Keep required retry keys and versions; migrate remaining imports/legacy writers explicitly and retain real PostgreSQL regression probes.
+ACTUAL CHANGE MADE: Shared apply/ordered locks/version checks and atomic required audit/history/receipt/tombstone. Permission checks also run on replay. Browser tab-persisted immutable intents survive transport/5xx/truncated responses and reload; refreshed versions do not turn unresolved stock intents into new operations. UI supplies captured edit versions; desktop guards remain.
+VERIFICATION: Actual PostgreSQL probes pass parallel create, mismatched key rejection, revoked replay, edit/history uniqueness, stale atomic bulk/delete, movement replay, stale absolute adjustment, storage CAS, deletion replay and tombstones. Eight browser API tests plus existing fail-closed suite pass (54 total). Two disk clients against PostgreSQL passed after shared apply extraction.
+STATUS: Listed browser mutation routes and desktop regression verified October 9; remaining import/legacy paths and GUI/release acceptance are not complete.
 ```
 
 ### 26. Different change IDs could claim an existing create ID
@@ -504,9 +504,107 @@ CURRENT WRITE PATH: Authenticated DOCX-copy HTML -> strict reconstructed allowli
 WHY IT BYPASSES OFFLINE-FIRST: Not an outbox problem; dependency execution is part of the server-effect security boundary.
 RISK: Original bundled image-size denial-of-service dependency was removed, not overridden. Conversion remains untrusted-input processing; execution, input/output and concurrency limits remain necessary. Separate newly reported dependency advisories are tracked in PHASE2_EVIDENCE.md.
 RECOMMENDED CHANGE: Replace or rebuild the document conversion dependency with a maintained compatible implementation; isolate conversion with timeout/memory limits and test image parsing, remote-resource policy, invalid documents, and DOCX output. Do not blindly force a major-version override.
-ACTUAL CHANGE MADE: Replaced html-to-docx; removed image-size; added HTML/image allowlist, remote-resource rejection, bounded child worker (15 seconds, 128 MiB V8 heap, two active jobs), input/output limits and error handling. Compatible proxy-addr patch 2.0.8 also applied on 2026-10-08; no forced Mammoth downgrade.
+ACTUAL CHANGE MADE: Replaced html-to-docx; removed image-size; added HTML/image allowlist, remote-resource rejection, bounded child worker (15 seconds, 128 MiB V8 heap, two active jobs), input/output limits and error handling. Compatible proxy-addr patch 2.0.8 also applied on 2026-10-08; no forced Mammoth downgrade. October 9 corrected preProcessing to preprocessing, as required by the installed converter runtime, so already-sanitized HTML actually skips minification. Timeout/memory limits were not increased.
 VERIFICATION: Five conversion tests passed on Windows and Docker, including text/table/link/image fidelity, malformed inputs, no remote requests, stuck-worker termination and recovery. Current serial backend regression 55/55 passed. See PHASE2_EVIDENCE.md for new advisory triage and GUI limits.
 STATUS: Original bundled-parser blocker addressed with automated boundary tests; not unconditional dependency/security or GUI sign-off.
+```
+
+### 34. Composite pages and resource/media reads lose offline availability
+
+```text
+MODULE: Operations, Lab Intelligence, Dashboard, Reports, Collaboration, Downloads, Resources
+FILE: desktop/src/api/operations.ts; desktop/src/api/phase4.ts; desktop/src/api/experience.ts; desktop/src/api/reports.ts; desktop/src/api/collaboration.ts; desktop/src/api/mediaDownloads.ts; desktop/src/api/resources.ts; corresponding desktop/src/pages files
+CURRENT WRITE PATH: Read-side companion finding, not a newly found mutation. Reports/activity/download-queue reads still use direct HTTP. Operations/intelligence/dashboard now independently settle local sources under the captured account. Desktop Resources reads native metadata without an HTTP fallback or awaited queue enrichment. Media helpers still return server URLs even when named local.
+WHY IT BYPASSES OFFLINE-FIRST: Some durable authorized read projections are still absent. A server-held downloaded file is not a desktop copy. Aggregate dependency rejection and fabricated healthy workspace status are repaired, but durable per-domain cache completeness/freshness is not yet established.
+RISK: Lost access to cached work, delayed loads during server pause, hidden native/permission errors, misleading zero/healthy totals and confusion between device-available versus server-only media. Exact installed-desktop failures may also involve cache/session/lease/runtime detection; not yet determined.
+RECOMMENDED CHANGE: Complete the owner-approved available-section contract: durable initialization/completeness and real last-sync/pending metadata, remaining authorized local projections and explicit media location. Never invent zero or bypass permissions. Keep server execution/AI generation explicitly online-only.
+ACTUAL CHANGE MADE: Shared account-guarded independent reads with five-second deadline; overview partial/unavailable states, nullable metrics and honest local-read notice; workspace failure is unknown, not healthy. Desktop Resources metadata no longer calls HTTP enrichment/fallback. Native Notes/Resources/Projects read entry points enforce domain view permission. No binary copying or new report/activity/job cache yet.
+VERIFICATION: 86 combined API/static-render/mixed diagnostic tests passed; four characterization cases still assert known Reports/activity/download/media gaps. Native 37 passed, 7 ignored; explicit actual-PostgreSQL two-client comments probe passed; TypeScript and production build passed. Controlled stalled reads were tested, not real Docker stop/pause or physical GUI acceptance. See PHASE2_EVIDENCE.md.
+STATUS: Partial implementation — first overview/resource read slice verified. Durable completeness/freshness, remaining remote readers and installed-desktop outage acceptance remain open. No Phase 2 sign-off.
+```
+
+### 35. Offline session identity blocked authorized local repositories
+
+```text
+MODULE: Authentication; Dashboard/Operations/Intelligence/Resources; shared local repository guards
+FILE: desktop/src/App.tsx; desktop/src/api/auth.ts; desktop/src/api/http.ts; desktop/src-tauri/src/local_auth.rs
+CURRENT WRITE PATH: Local login/session restore supplies a native local session; protected domain writes continue through their existing SQLite/outbox paths. Previously App removed local tokens, while captureAccountSession required a token and used a local credential-row ID instead of the central account identity.
+WHY IT BYPASSES OFFLINE-FIRST: Valid offline sessions were rejected before local reads/writes. Sending a local token to a server-only feature could also receive 401 and erase frontend authorization. Late unauthorized responses could clear a newer account's session.
+RISK: Cached data appears inaccessible/empty; local edits fail; wrong expected-account identity blocks native operations. This is separate from missing file replication and intentionally server-confirmed effects.
+RECOMMENDED CHANGE: Normalize central identity, restore and retain a distinct local session, never transmit local credentials as server JWTs, protect asynchronous account transitions, retain native lease/permission enforcement and verify with real API downtime.
+ACTUAL CHANGE MADE: Native auth responses expose central account ID; validated local auth status includes the existing local session token for restoration. Frontend normalizes older native user shapes, retains local session tokens before permission loads, uses session generations, bounds auth requests and rejects cross-account restoration. Shared HTTP rejects local tokens before transport; stale 401 cannot clear a different token. Startup restoration ignores responses after a session change.
+VERIFICATION: Ten new real-adapter regression cases passed; combined frontend suite 96 passed (four known-gap characterization checks remain), native suite 38 passed / 7 opt-in tests ignored; build passed. Real API stopped: owner confirmed manual offline login; actual Tauri Resources retained 12 records after reload, Dashboard loaded counts, and native process cold restart restored Dashboard. API restored healthy. See PHASE2_EVIDENCE.md for reconnect outcome and boundaries.
+STATUS: Implemented and stopped-server login/read/cold-restart slice verified. Signed/native-verified permission caching, encryption, credential revocation, throttling, clock hardening and complete account/revocation coverage remain open in the Phase 2 security addendum. No whole-phase or offline file/write-lifecycle sign-off.
+```
+
+### 36. Password reset/change did not revoke existing server credentials
+
+```text
+MODULE: Authentication/security; temporary resource-download authorization
+FILE: backend/src/routes/auth.js; backend/src/middleware/auth.js; backend/src/routes/resources.js; backend/src/credential-version.js; backend/src/migrations/20261009_credential_versions.sql
+CURRENT WRITE PATH: Server-only password change/reset and account status update commit in PostgreSQL with required audit. Previously JWTs carried only a user ID; middleware checked account activity/current role but not whether credentials had changed.
+WHY IT BYPASSES OFFLINE-FIRST: These sensitive mutations correctly bypass the outbox by design (never queue passwords). The defect is missing server-session invalidation and the resulting inconsistency with the planned offline credential/security version. It is not a reason to turn password writes into local mutations.
+RISK: Old server tokens and temporary file access URLs remain usable after password reset/change. Re-enabling a disabled account revives old tokens. Database outages were also misreported as invalid tokens, potentially clearing valid frontend sessions.
+RECOMMENDED CHANGE: Add a monotonic database credential version; bind all session/download JWTs to the version authenticated with the password; check current version on every request. Increment transactionally on hash changes/disabling and preserve required audit rollback. Follow with native-verified cached authorization and observed-revocation handling.
+ACTUAL CHANGE MADE: Additive version-zero migration and SQL trigger (password hash change or active-to-disabled transition); token claims and middleware comparison; version-bound resource URLs; self-password version recheck under row lock; explicit reauthentication-required responses; authentication DB failures return 503. Old signed tokens without a version match only version zero, never later versions. No local cache/lease mutation, token replacement, data reset or password queue was introduced.
+VERIFICATION: 64 backend tests passed, including three new version/middleware tests; targeted security suite 46 passed (overlapping, not additive). Real existing PostgreSQL probe passed 33 assertions using exact disposable accounts/resources: reset/change, legacy/media token rejection, disable/re-enable, authorization denial, audit rows, transactional rollback, direct-SQL invalidation, migration repeatability and other-account isolation. See PHASE2_EVIDENCE.md for packaged image checks and service restoration.
+STATUS: Server-side implementation verified. NOT end-to-end offline revocation or Phase 2 closure: cached-password replacement, observed revocation/native trust, immediate desktop reauthentication UX, offline leases/security and actual two-account desktop outage acceptance remain open.
+```
+
+### 37. Observed server revocation left native authorization usable
+
+```text
+MODULE: Desktop authentication; shared HTTP; permissions; native offline session
+FILE: desktop/src/api/auth.ts; desktop/src/api/http.ts; desktop/src/api/permissions.ts; desktop/src/App.tsx; desktop/src-tauri/src/local_auth.rs; desktop/src-tauri/src/main.rs
+CURRENT WRITE PATH: Explicit server credential revocation previously cleared frontend token/user storage only. SQLite local_users/local_session could still authorize a restored session or cached-password login. Permission refresh set is_active=1 without a captured native-session guard.
+WHY IT BYPASSES OFFLINE-FIRST: Security decisions observed online were not reflected in the local authorization source of truth. This is derived authorization/device-session state, not an outbox business mutation; locking local access must never become a delete of authored data or a server delete request.
+RISK: A known-revoked session could return through offline restoration. A late response or permission refresh could affect a different/newer login. Successful password change left the old local password cache usable. Auth-expired events had no App listener to leave the authenticated UI.
+RECOMMENDED CHANGE: Compare-and-lock the captured account/native session after explicit revocation; clear effective local authority while preserving pending work. Separate ordinary JWT expiry and network failures. Guard permission refresh and asynchronous UI updates; commit online credential/session publication atomically. Verify restart/account races and real server outage/reconnect.
+ACTUAL CHANGE MADE: Native guard capture and transactional authorization lock; locked account cannot offline-login or restore. Permission refresh requires the captured native session and cannot reactivate a locked cache. Shared HTTP/auth observe SESSION_REVOKED/ACCOUNT_DISABLED; successful password change also locks its old cache. App handles auth expiry and guards late permission results. Auth 5xx restoration retains valid native identity. Online login no longer publishes a token paired with the previous user; cached credentials/session commit together. No business/outbox/author rows deleted.
+VERIFICATION: Frontend suite 104 passed (including four retained known-gap characterization tests); final native ordinary suite 41 passed / 8 ignored. All seven targeted auth tests passed with the actual PostgreSQL regression enabled after making cached-password verification/session creation atomic. TypeScript and frontend production build passed. Native disk-reopen, stale/same-account guards, second cached account and rollback verified. Actual stopped API plus owner offline login and populated desktop dashboard observed on an earlier binary. Final native runtime rebuild and complete interactive revocation acceptance remain pending. See PHASE2_EVIDENCE.md for exact scope and cleanup.
+STATUS: Implemented; automated native/frontend checks passed. Interactive revocation -> stopped-server offline login denial/restart remains UNVERIFIED because the desktop was closed/minimized and computer-use input conflicted with owner activity. Native-verified positive permission caching, secure storage, throttling and clock hardening remain open. No Phase 2 closure.
+```
+
+### 38. Renderer-supplied offline authority and missing local login safeguards
+
+```text
+MODULE: Native authentication, desktop login/permission refresh
+FILE: desktop/src-tauri/src/native_authorization.rs; desktop/src-tauri/src/local_auth.rs; desktop/src/api/auth.ts; desktop/src/api/permissions.ts; desktop/src-tauri/{Cargo.toml,build.rs}
+CURRENT WRITE PATH: cache_server_user previously trusted renderer-supplied central identity, role and permissions and minted a fresh SQLite lease. cache_server_permissions accepted arbitrary positive claims. Cached-password attempts had no persistent backoff and backward system-clock movement could prolong access.
+WHY IT BYPASSES OFFLINE-FIRST: Local authorization was not rooted in a trusted native server exchange. Authorization cache writes are not domain outbox events; native verification must precede publication, not queue credentials or accept caller assertions.
+RISK: A compromised renderer could grant offline authority or renew a lease. Delayed login could restore a signed-out session. Unlimited offline guessing and clock rollback weakened cached access.
+RECOMMENDED CHANGE: Native password exchange and independently verified permission refresh against a fixed trusted endpoint; transactional generation guards; persistent per-account backoff and conservative clock high-water handling. Separately address secure storage, recovery and legacy cache trust.
+ACTUAL CHANGE MADE: Native commands no longer accept role/grant/identity claims for login. Native HTTP uses build-time HTTPS or loopback-only HTTP origin, five-second request deadlines, no redirects/proxies and bounded response parsing. Permission refresh verifies server account and captured native session, never renews a lease, and locks observed revocation. SQLite login generations reject delayed online/offline completion. Per-account guessing backoff persists across restart; backward clock jumps beyond five minutes null leases without deleting outbox/business rows. Server credentials still reside in renderer storage; no encryption migration was performed.
+VERIFICATION: Final native ordinary tests 48 passed / 9 ignored; targeted auth tests 10 passed including the actual PostgreSQL exchange/revocation fixture; the separately enabled real stopped-API native fallback/restart/expired-lease regression passed. Final frontend 105 passed; TypeScript, frontend production and native debug builds passed. See latest PHASE2_EVIDENCE.md for executable hashes and runtime limitations. Four frontend known-gap tests still characterize incomplete unrelated offline pages.
+STATUS: Implemented bounded security slice, not full security/Phase 2 closure. Interactive authentication acceptance remains unverified at the sign-in screen. Encryption/recovery choice, protected token storage, CSP/direct-transport coverage, legacy authority transition and complete native repository authorization audit remain open.
+```
+
+### 39. Reports server dependency and misleading incomplete totals
+
+```text
+MODULE: Reports overview and CSV export (read-only projection)
+FILE: desktop/src/api/reports.ts; desktop/src/api/reports-export.ts; desktop/src/pages/ReportsPage.tsx
+CURRENT WRITE PATH: No domain mutation. Previously getReportsOverview always requested /reports/overview, including desktop offline use. CSV was generated in the renderer from that response.
+WHY IT BYPASSES OFFLINE-FIRST: The report required a server response despite authorized local records. Missing sources could not be distinguished from empty datasets. This is a read dependency, not an outbox bypass.
+RISK: No reports during API outages; incomplete data mistaken for zero; mixed quantity units added together; misleading export completeness.
+RECOMMENDED CHANGE: Generate desktop projections from authorized local repositories, guard native report access/account continuity, retain partial sections, distinguish missing totals, and export explicit source/availability information.
+ACTUAL CHANGE MADE: Desktop reads local project workspaces, resource metadata and the native inventory snapshot directly, with no report HTTP fallback. Native report permission is checked before/after aggregation, and account changes discard results. Task/experiment workspace failures produce partial/unavailable states. Inventory groups include units; stable IDs are counted once. UI shows unknown totals as a dash and resource charts use kind correctly. CSV now includes inventory, units, availability, generation time and local provenance; formula-like strings are escaped. Unreplicated audit aggregates are explicitly unavailable, not fabricated from modification times. Browser keeps its existing server endpoint.
+VERIFICATION: Two focused permission/account-continuity checks passed. TypeScript checked as recorded in PHASE2_EVIDENCE.md. New aggregate/export/render regressions are prepared for the phase-end sweep; actual desktop outage/restart/reconnect and actual PostgreSQL comparison have NOT been run for this batch.
+STATUS: IMPLEMENTED / AWAITING VERIFICATION. Source snapshot completeness/last successful synchronization and the replicated audit ledger remain open. No database writes, reset, migrations or stock changes in this batch.
+```
+
+### 40. Collaboration activity has no persistent offline read model
+
+```text
+MODULE: Collaboration activity / synchronization
+FILE: backend/src/routes/collaboration.js; desktop/src-tauri/src/local_activity.rs; desktop/src-tauri/src/main.rs; desktop/src/api/activity.ts; desktop/src/api/collaboration.ts; desktop/src/api/sync.ts; desktop/src/pages/CollaborationPage.tsx
+CURRENT WRITE PATH: Previously desktop getActivity performed GET /collaboration/activity on every page read. New sync path downloads a complete authorized snapshot and transactionally replaces an account-scoped SQLite sync_state projection. Business/audit authoring is unchanged.
+WHY IT BYPASSES OFFLINE-FIRST: No durable local activity feed; disconnected reads failed and the page displayed zero/empty labels for missing data. Projection cache writes are not authored domain mutations and deliberately create no outbox events.
+RISK: Loss of offline visibility; false empty history; leakage if account/role/session boundaries or revoked cache cleanup are mishandled.
+RECOMMENDED CHANGE: Separate local reads from synchronization; durable complete snapshots, native account/admin/audit/lease/session checks, atomic replacement, explicit availability and source timestamp, safe revocation eviction.
+ACTUAL CHANGE MADE: Added admin/audit-protected full snapshot endpoint, native account-scoped snapshot commands, sync pull integration and local-only desktop feed reads. Full snapshot must validate before replacement; failed/incomplete/older pulls preserve previous data. Stable event UUIDs normalize; duplicates reject the snapshot rather than duplicate display rows. Confirmed permission denial clears only captured account/session projection, not authored records or server audit data. Native reads enforce admin role plus audit permission; late login/account responses are rejected. UI distinguishes restricted/not-downloaded/empty/error and displays the persisted snapshot timestamp. Notification failures no longer masquerade as zero unread.
+VERIFICATION: Build/syntax and focused safety checks recorded in PHASE2_EVIDENCE.md. Full snapshot/replay/UI, actual PostgreSQL endpoint, native disk restart, API outage/reconnect and large-ledger checks are queued for the phase-end sweep, not claimed passed.
+STATUS: IMPLEMENTED / AWAITING VERIFICATION. New commands/endpoint require the rebuilt desktop/API at deployment. Whole-history snapshot transfer is intentionally complete, not a truncated 100-event cache; high-volume transfer/memory performance still needs measured acceptance. Experience activity and Reports audit aggregation are not converted by this finding.
 ```
 
 ## Repository coverage register

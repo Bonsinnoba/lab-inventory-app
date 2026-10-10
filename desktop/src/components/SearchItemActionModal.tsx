@@ -29,7 +29,7 @@ export default function SearchItemActionModal({itemId,mode,onClose}:Props){
  async function record(){
   if(!item)return;const amount=Number(quantity);if(!Number.isFinite(amount)||amount<=0||amount>Number(item.current_quantity)){showToast('Enter a valid quantity within available stock','error');return}
   setSaving(true);
-  try{await createItemMovement(item.id,{movement_type:isReusable(item.type)?'checkout':'consume',quantity:amount,project_id:projectId||undefined});await Promise.all([qc.invalidateQueries({queryKey:['items']}),qc.invalidateQueries({queryKey:['item',item.id]}),qc.invalidateQueries({queryKey:['search']})]);showToast(isReusable(item.type)?'Checkout recorded':'Usage recorded');onClose()}
+  try{await createItemMovement(item.id,{movement_type:isReusable(item.type)?'checkout':'consume',quantity:amount,project_id:projectId||undefined},item.sync_version);await Promise.all([qc.invalidateQueries({queryKey:['items']}),qc.invalidateQueries({queryKey:['item',item.id]}),qc.invalidateQueries({queryKey:['search']})]);showToast(isReusable(item.type)?'Checkout recorded':'Usage recorded');onClose()}
   catch(e){showToast(e instanceof Error?e.message:'Unable to record usage','error')}
   finally{setSaving(false)}
  }

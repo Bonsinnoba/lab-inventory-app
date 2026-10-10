@@ -68,7 +68,7 @@ fn ensure_schema(conn: &rusqlite::Connection) -> Result<(), String> {
     Ok(())
 }
 
-fn read_resources(conn: &rusqlite::Connection) -> Result<Vec<LocalResource>, String> {
+pub(crate) fn read_resources(conn: &rusqlite::Connection) -> Result<Vec<LocalResource>, String> {
     let raw: String = conn.query_row(
         "SELECT value FROM sync_state WHERE key=?1",
         [scoped_state_key(conn, STATE_KEY)?],
@@ -186,6 +186,7 @@ fn validate_parent(resources: &[LocalResource], item_id: &Option<String>, projec
 #[tauri::command]
 pub fn list_local_resources(app: AppHandle, item_id: Option<String>, project_id: Option<String>, note_id: Option<String>, parent_resource_id: Option<String>) -> Result<Vec<LocalResource>, String> {
     let conn = open_local_connection(&app)?;
+    crate::local_auth::require_local_permission(&conn,"resources.view")?;
     ensure_schema(&conn)?;
     let mut resources = read_resources(&conn)?;
     resources.retain(|r| {
@@ -204,6 +205,7 @@ pub fn list_local_resources(app: AppHandle, item_id: Option<String>, project_id:
 #[tauri::command]
 pub fn get_local_resource(app: AppHandle, id: String) -> Result<LocalResource, String> {
     let conn = open_local_connection(&app)?;
+    crate::local_auth::require_local_permission(&conn,"resources.view")?;
     ensure_schema(&conn)?;
     read_resources(&conn)?.into_iter().find(|r| r.id == id).ok_or_else(|| "Resource not found".into())
 }
@@ -262,31 +264,12 @@ pub fn create_local_resource_link(app: AppHandle, url: String, name: Option<Stri
 
 #[tauri::command]
 pub fn queue_local_resource_download(app: AppHandle, resource_id: String, quality: Option<String>) -> Result<serde_json::Value, String> {
-    let conn = open_local_connection(&app)?;
-    ensure_schema(&conn)?;
-    let (role, permissions, expires): (String, String, Option<String>) = conn.query_row(
-        "SELECT u.role,u.permissions_json,u.offline_expires_at FROM local_users u JOIN local_session s ON s.user_id=u.id WHERE s.id=1 AND u.central_user_id IS NOT NULL AND u.is_active=1",
-        [],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-    ).map_err(|e| format!("Unable to read local authorization: {e}"))?;
-    let expires = expires.ok_or_else(|| "Offline authorization has expired. Connect to LabOS to refresh access.".to_string())?;
-    let valid: i64 = conn.query_row("SELECT CASE WHEN datetime('now') < datetime(?1) THEN 1 ELSE 0 END", [&expires], |r| r.get(0)).unwrap_or(0);
-    if valid == 0 { return Err("Offline authorization has expired. Connect to LabOS to refresh access.".into()); }
-    let permissions: Vec<String> = serde_json::from_str(&permissions).map_err(|e| format!("Unable to decode local authorization: {e}"))?;
-    if role != "admin" && !permissions.iter().any(|p| p == "resources.edit") {
-        return Err("Permission required: resources.edit".into());
-    }
-    let resources = read_resources(&conn)?;
-    let exists = resources.iter().any(|r| r.id == resource_id && r.kind == "link" && r.url.as_deref().is_some());
-    if !exists { return Err("Resource not found".into()); }
-    let change_id = uuid::Uuid::new_v4().to_string();
-    let job_id = uuid::Uuid::new_v4().to_string();
-    let device_id: String = conn.query_row("SELECT device_id FROM device_identity WHERE id=1", [], |r| r.get(0)).map_err(|e| format!("Unable to read device identity: {e}"))?;
-    let selected_quality = match quality.as_deref() { Some("best") => "best", Some("1080p") => "1080p", Some("480p") => "480p", _ => "720p" };
-    let payload = serde_json::json!({"resource_id": resource_id, "quality": selected_quality});
-    conn.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES(?1,?2,'resource_download_job',?3,'create',?4)", rusqlite::params![change_id, device_id, job_id, payload.to_string()]).map_err(|e| format!("Unable to queue local download request: {e}"))?;
-    Ok(serde_json::json!({"id": job_id, "resource_id": resource_id, "status": "queued", "quality": selected_quality}))
+    let mut conn=open_local_connection(&app)?;
+    let account=crate::local_db::active_account(&conn)?;
+    crate::local_downloads::queue(&mut conn,&account,&resource_id,quality,None)
 }
+
+
 
 #[tauri::command]
 pub fn create_local_resource_folder(app: AppHandle, name: String, item_id: Option<String>, project_id: Option<String>, note_id: Option<String>, parent_resource_id: Option<String>, category: Option<String>, description: Option<String>, tags: Option<Vec<String>>) -> Result<LocalResource, String> {
@@ -355,7 +338,7 @@ pub fn apply_server_resource_pull(app: AppHandle, resources_json: String, visibl
 
 #[tauri::command]
 pub fn get_local_resource_tags(app: AppHandle) -> Result<Vec<String>, String> {
-    let conn=open_local_connection(&app)?; ensure_schema(&conn)?; let resources=read_resources(&conn)?;
+    let conn=open_local_connection(&app)?; crate::local_auth::require_local_permission(&conn,"resources.view")?; ensure_schema(&conn)?; let resources=read_resources(&conn)?;
     let mut tags=resources.into_iter().flat_map(|r|r.tags).collect::<Vec<_>>(); tags.sort(); tags.dedup(); Ok(tags)
 }
 

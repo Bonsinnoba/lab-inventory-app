@@ -1,7 +1,7 @@
+import {inventoryHttpMutation} from '../inventory-http.js';
 import { catalogHttpMutation } from '../catalog-sync.js';
 import { Router } from 'express';
 import { pool } from '../db.js';
-import { writeAuditLog } from '../middleware/audit.js';
 
 const router = Router();
 const clampPageSize = (value) => Math.min(100, Math.max(1, Number(value) || 6));
@@ -40,16 +40,7 @@ router.post('/containers',catalogHttpMutation('storage_container','create'));
 router.patch('/containers/:id',catalogHttpMutation('storage_container','update'));
 router.delete('/containers/:id',catalogHttpMutation('storage_container','delete'));
 
-router.patch('/items/:id/storage', async (req, res) => {
-  const { storage_location = null, storage_container_id = null } = req.body;
-  try {
-    const before = await pool.query('SELECT * FROM items WHERE id = $1', [req.params.id]);
-    if (!before.rowCount) return res.status(404).json({ error: { code: 'ITEM_NOT_FOUND', message: 'Item not found' } });
-    const result = await pool.query('UPDATE items SET storage_location = $1, storage_container_id = $2 WHERE id = $3 RETURNING *', [storage_location?.trim() || null, storage_container_id || null, req.params.id]);
-    await writeAuditLog({ req, action: 'UPDATE_STORAGE', entityType: 'item', entityId: req.params.id, oldValue: { storage_location: before.rows[0].storage_location, storage_container_id: before.rows[0].storage_container_id }, newValue: { storage_location: result.rows[0].storage_location, storage_container_id: result.rows[0].storage_container_id } });
-    res.json(result.rows[0]);
-  } catch (err) { console.error(err); res.status(500).json({ error: { code: 'ITEM_STORAGE_UPDATE_FAILED', message: 'Failed to update item storage' } }); }
-});
+router.patch('/items/:id/storage',inventoryHttpMutation('update',{storageOnly:true}));
 
 router.get('/intelligence', async (_req, res) => {
   try {

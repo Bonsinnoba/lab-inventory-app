@@ -1,11 +1,14 @@
+import { listNotifications, markNotificationsRead, markAllVisibleNotificationsRead } from './notifications';
 import { apiFetch, getApiErrorMessage } from './http';
 import { getProjects, Project, getProjectWorkspace } from './projects';
 import { getItems } from './items';
 import { getNotes } from './notes';
 import { getAllResources } from './resources';
+import {captureAccountSession} from './auth';
+import {readLocalSections,readWithDeadline,assertReadAccount,type ReadAvailability} from './read-availability';
 
-export interface ExperienceNotification { id:string; type:string; title:string; body:string; entity_type?:string; entity_id?:string; read_at?:string|null; created_at:string; }
-export interface ExperienceDashboard { metrics:{active_projects:number;overdue_tasks:number;due_next_7_days:number;low_stock:number}; projects:any[]; overdue:any[]; due:any[]; recent:any[]; low_stock:any[]; }
+export interface ExperienceNotification { id:string; type:string; title:string; body:string; entity_type?:string|null; entity_id?:string|null; read_at?:string|null; created_at:string; }
+export interface ExperienceDashboard { availability?:ReadAvailability; metrics:{active_projects:number|null;overdue_tasks:number|null;due_next_7_days:number|null;low_stock:number|null}; projects:any[]; overdue:any[]; due:any[]; recent:any[]; low_stock:any[]; }
 
 function isTauriRuntime(): boolean { return typeof window !== 'undefined' && !!(window as any).__TAURI_IPC__; }
 
@@ -19,21 +22,23 @@ function localDate(value:any): Date | null {
 }
 
 async function getLocalExperienceDashboard(): Promise<ExperienceDashboard> {
-  const [projects, items, notes, resources] = await Promise.all([
-    getProjects(),
-    getItems(),
-    getNotes(),
-    getAllResources(),
-  ]);
+  const session=captureAccountSession();
+  const {values,availability}=await readLocalSections({projects:getProjects,inventory:getItems,notes:getNotes,resources:getAllResources},session);
+  const projects=values.projects??[],items=values.inventory??[],notes=values.notes??[],resources=values.resources??[];
 
   const now = Date.now();
   const nextWeek = now + 7*24*60*60*1000;
   const workspaces = await Promise.all(projects.map(async project => {
-    try { return { project, workspace: await getProjectWorkspace(project.id) }; }
-    catch { return { project, workspace: { tasks: [], experiments: [] } as any }; }
+    try { return { project, workspace: await readWithDeadline(()=>getProjectWorkspace(project.id)) }; }
+    catch { return { project, workspace: null }; }
   }));
+  assertReadAccount(session);
+  const tasksComplete=values.projects!==null&&workspaces.every(w=>w.workspace!==null);
+  availability.sections.tasks=values.projects===null?'unavailable':tasksComplete?'available':'partial';
+  availability.sections.recent=tasksComplete&&values.notes!==null&&values.resources!==null?'available':'partial';
 
   const projectRows = workspaces.map(({project,workspace}) => {
+    if(!workspace)return {...project,open_tasks:null,experiment_count:null,health_score:null,health:'unknown'};
     const tasks = Array.isArray(workspace.tasks) ? workspace.tasks : [];
     const openTasks = tasks.filter((t:any) => !['done','cancelled'].includes(String(t.status))).length;
     const overdueCount = tasks.filter((t:any) => {
@@ -55,6 +60,7 @@ async function getLocalExperienceDashboard(): Promise<ExperienceDashboard> {
   const due:any[] = [];
   const recent:any[] = [];
   for(const {project,workspace} of workspaces) {
+    if(!workspace)continue;
     const tasks=Array.isArray(workspace.tasks)?workspace.tasks:[];
     for(const task of tasks) {
       const d=localDate(task.due_date);
@@ -86,11 +92,12 @@ async function getLocalExperienceDashboard(): Promise<ExperienceDashboard> {
   }).sort((a,b)=>Number((a as {current_quantity?:number; quantity?:number}).current_quantity ?? (a as {current_quantity?:number; quantity?:number}).quantity ?? 0)-Number((b as {current_quantity?:number; quantity?:number}).current_quantity ?? (b as {current_quantity?:number; quantity?:number}).quantity ?? 0));
 
   return {
+    availability,
     metrics:{
-      active_projects: projectRows.filter(p=>p.status==='active').length,
-      overdue_tasks: overdue.length,
-      due_next_7_days: due.length,
-      low_stock: lowStock.length,
+      active_projects: values.projects===null?null:projectRows.filter(p=>p.status==='active').length,
+      overdue_tasks: tasksComplete?overdue.length:null,
+      due_next_7_days: tasksComplete?due.length:null,
+      low_stock: values.inventory===null?null:lowStock.length,
     },
     projects: projectRows,
     overdue,
@@ -104,8 +111,8 @@ export const getExperienceDashboard=async():Promise<ExperienceDashboard>=>{
   if(isTauriRuntime()) return getLocalExperienceDashboard();
   return json<ExperienceDashboard>('/experience/dashboard');
 };
-export const getNotifications=()=>json<{items:ExperienceNotification[];unread:number}>('/experience/notifications?limit=40');
-export const markNotificationRead=(id:string)=>json<ExperienceNotification>(`/experience/notifications/${id}/read`,{method:'POST'});
-export const markAllNotificationsRead=()=>json<{ok:boolean}>('/experience/notifications/read-all',{method:'POST'});
+export const getNotifications=async()=>{const rows=await listNotifications();return {items:rows.slice(0,40),unread:rows.filter(r=>!r.read_at).length};};
+export const markNotificationRead=(id:string)=>markNotificationsRead([id]);
+export const markAllNotificationsRead=markAllVisibleNotificationsRead;
 export const getProjectHealth=(id:string)=>json<any>(`/experience/project-health/${id}`);
 export const getActivity=(limit=30)=>json<any[]>(`/experience/activity?limit=${limit}`);

@@ -1,7 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod local_db;
 mod local_auth;
+mod native_authorization;
 mod local_inventory;
+mod inventory_sync_state;
 mod local_finance;
 mod local_inventory_cache;
 mod local_projects;
@@ -14,13 +16,32 @@ mod local_excel;
 mod local_system;
 mod local_maintenance;
 mod local_catalog;
+mod local_notifications;
+mod local_activity;
+mod local_downloads;
+mod local_comments;
 mod local_engineering;
 use tauri::Manager;
 fn main() {
     let show=tauri::CustomMenuItem::new("show".to_string(),"Show"); let hide=tauri::CustomMenuItem::new("hide".to_string(),"Hide"); let quit=tauri::CustomMenuItem::new("quit".to_string(),"Quit"); let tray_menu=tauri::SystemTrayMenu::new().add_item(show).add_item(hide).add_item(quit);
     tauri::Builder::default().setup(|app|{local_db::initialize(&app.handle()).map_err(|e|Box::<dyn std::error::Error>::from(std::io::Error::new(std::io::ErrorKind::Other,e)))?;local_inventory::initialize(&app.handle()).map_err(|e|Box::<dyn std::error::Error>::from(std::io::Error::new(std::io::ErrorKind::Other,e)))?;Ok(())}).invoke_handler(tauri::generate_handler![local_db::local_database_status,local_auth::local_auth_status,local_auth::cache_server_user,local_auth::local_login,local_auth::local_current_user,local_auth::local_current_permissions,local_auth::cache_server_permissions,local_auth::local_logout,local_auth::local_change_password,local_auth::local_update_profile,local_db::get_inventory_sync_cursor,local_db::save_local_snapshot_with_sync,local_db::list_pending_sync_changes,local_db::list_sync_conflicts,local_db::record_sync_conflict,local_db::resolve_sync_conflict,local_db::mark_sync_changes_synced,local_db::record_sync_failure,local_db::apply_server_inventory_pull,local_inventory::list_local_inventory_movements,local_inventory::cache_local_inventory_movements,local_inventory::save_local_inventory_movement,local_excel::import_local_inventory_rows,local_inventory_cache::get_local_inventory_snapshot,local_inventory_cache::cache_local_inventory_snapshot,local_projects::list_local_projects,local_projects::get_local_project,local_projects::create_local_project,local_projects::update_local_project,local_projects::delete_local_project,local_projects::list_local_project_workspace,local_projects::get_local_project_canvas,local_projects::create_local_project_block,local_projects::update_local_project_block,local_projects::delete_local_project_block,local_projects::create_local_project_connector,local_projects::delete_local_project_connector,local_projects::create_local_project_task,
         local_projects::get_local_project_task_experiments,
+        local_auth::local_authorization_guard,
+        local_auth::invalidate_local_authorization,
         local_maintenance::list_local_maintenance,
+        local_comments::list_local_comments,
+        local_comments::mutate_local_comment,
+        local_comments::apply_server_comments_pull,
+        local_notifications::list_local_notifications,
+        local_activity::list_local_activity,
+        local_downloads::get_local_download_snapshot,
+        local_downloads::queue_local_download,
+        local_downloads::save_local_download_settings,
+        local_downloads::apply_server_download_snapshot,
+        local_downloads::acknowledge_local_download_changes,
+        local_activity::apply_server_activity_snapshot,
+        local_notifications::mark_local_notifications_read,
+        local_notifications::apply_server_notifications_pull,
         local_catalog::list_local_catalog,
         local_catalog::mutate_local_catalog,
         local_catalog::apply_server_catalog_pull,

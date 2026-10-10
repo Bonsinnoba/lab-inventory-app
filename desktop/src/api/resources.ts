@@ -20,6 +20,12 @@ export interface ResourceManifest { folder: string; files: Array<{ id: string; r
 export interface ResourceAccessGrant { user_id:string; username?:string; access_level:'view'|'edit'; created_at?:string; created_by?:string|null; }
 
 const localMediaResourceIds = new Set<string>();
+let mediaAccount:string|null=null;
+function rememberDesktopMedia(rows:Resource[],accountId:string,replace=false){
+  if(replace||mediaAccount!==accountId)localMediaResourceIds.clear();
+  mediaAccount=accountId;
+  for(const row of rows){if(row.local_media_filename)localMediaResourceIds.add(row.id);else localMediaResourceIds.delete(row.id);}
+}
 export function isLocalResourceRuntime() { return isTauriRuntime(); }
 async function localInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauriRuntime()) throw new Error('Local LabOS runtime is unavailable');
@@ -49,10 +55,13 @@ async function enrichWithDownloadedMedia(resources: Resource[]): Promise<Resourc
 
 export async function getResource(id: string): Promise<Resource> {
   if (isTauriRuntime()) {
-    try {
-      const local = await localInvoke<Resource>('get_local_resource', { id });
-      return (await enrichWithDownloadedMedia([local]))[0];
-    } catch {}
+    const session=captureAccountSession();
+    if(!isAccountSessionCurrent(session))throw new Error('Sign in to read resources');
+    const local=await localInvoke<Resource>('get_local_resource',{id});
+    if(!isAccountSessionCurrent(session))throw new Error('Account changed while reading resources');
+    if(!local?.id)throw new Error('Resource is not available on this device');
+    rememberDesktopMedia([local],session.accountId);
+    return local;
   }
   const session = captureAccountSession();
   const response = await apiFetch(`/resources/${id}`);
@@ -63,10 +72,7 @@ export async function getResource(id: string): Promise<Resource> {
 }
 export async function getAllResources(): Promise<Resource[]> {
   if (isTauriRuntime()) {
-    try {
-      const local = await localInvoke<Resource[]>('list_local_resources');
-      return enrichWithDownloadedMedia(local);
-    } catch {}
+    return readDesktopResources();
   }
   const session = captureAccountSession();
   const response = await apiFetch('/resources');
@@ -77,10 +83,7 @@ export async function getAllResources(): Promise<Resource[]> {
 }
 export async function getResources(filters: { item_id?: string; project_id?: string; note_id?: string; parent_resource_id?: string }): Promise<Resource[]> {
   if (isTauriRuntime()) {
-    try {
-      const local = await localInvoke<Resource[]>('list_local_resources', filters);
-      return enrichWithDownloadedMedia(local);
-    } catch {}
+    return readDesktopResources({itemId:filters.item_id??null,projectId:filters.project_id??null,noteId:filters.note_id??null,parentResourceId:filters.parent_resource_id??null});
   }
   const params = new URLSearchParams(); if (filters.item_id) params.append('item_id', filters.item_id); if (filters.project_id) params.append('project_id', filters.project_id); if (filters.note_id) params.append('note_id', filters.note_id); if (filters.parent_resource_id) params.append('parent_resource_id', filters.parent_resource_id);
   const session = captureAccountSession();
@@ -139,6 +142,17 @@ export async function updateResourceMetadata(id: string, metadata: { category?: 
   const response = await apiFetch(`/resources/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(metadata) });
   if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to update resource metadata'));
   return response.json();
+}
+async function readDesktopResources(filters?:Record<string,unknown>):Promise<Resource[]>{
+  const session=captureAccountSession();
+  if(!isAccountSessionCurrent(session))throw new Error('Sign in to read resources');
+  const rows=await localInvoke<Resource[]>('list_local_resources',filters);
+  if(!isAccountSessionCurrent(session))throw new Error('Account changed while reading resources');
+  if(!Array.isArray(rows))throw new Error('Local resource list is unavailable');
+  rememberDesktopMedia(rows,session.accountId,!filters);
+  // Synced resource records already contain media metadata. Reading them must
+  // neither wait for server job enrichment nor hide a failed native read.
+  return rows;
 }
 export async function updateResourceVisibility(id:string,visibility:NonNullable<Resource['visibility']>):Promise<Resource>{
   const response=await apiFetch(`/resources/${encodeURIComponent(id)}/visibility`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({visibility})});

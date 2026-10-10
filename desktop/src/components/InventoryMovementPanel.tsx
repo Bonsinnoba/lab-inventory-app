@@ -21,7 +21,7 @@ export default function InventoryMovementPanel({ item }: Props) {
   const [toLocation, setToLocation] = useState(''); const [reason, setReason] = useState('');
   const { data: movements = [] } = useQuery({ queryKey: ['item-movements', item.id], queryFn: () => getItemMovements(item.id) });
   const mutation = useMutation({
-    mutationFn: () => createItemMovement(item.id, { movement_type: type, quantity: Number(quantity), to_storage_location: type === 'transfer' ? toLocation.trim() : undefined, reason: reason || undefined }),
+    mutationFn: () => createItemMovement(item.id, { movement_type: type, quantity: Number(quantity), to_storage_location: type === 'transfer' ? toLocation.trim() : undefined, reason: reason || undefined }, item.sync_version),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['item', item.id] }); queryClient.invalidateQueries({ queryKey: ['items'] }); queryClient.invalidateQueries({ queryKey: ['item-movements', item.id] }); setReason(''); setQuantity('1'); setToLocation(''); showToast('Inventory movement recorded'); },
     onError: (err: any) => showToast(err?.message || 'Failed to record movement', 'error'),
   });

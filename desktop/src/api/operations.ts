@@ -5,9 +5,12 @@ import { getItems } from './items';
 import { listMaintenance } from './maintenance';
 import { findMissingBom, enrichOutstandingRequirements } from './operations-calculations';
 import { getProjects, getProjectBom, getProjectRequirements, createProjectRequirement, updateProjectRequirement, deleteProjectRequirement } from './projects';
+import {readLocalSections,readWithDeadline,assertReadAccount,type ReadAvailability} from './read-availability';
+import {captureAccountSession} from './auth';
 
 export interface OperationsOverview {
-  summary: { total_items:number; equipment:number; tools:number; components:number; materials:number; low_stock:number; stock_value:number };
+  summary: { total_items:number|null; equipment:number|null; tools:number|null; components:number|null; materials:number|null; low_stock:number|null; stock_value:number|null };
+  availability?:ReadAvailability;
   low_stock:any[]; calibration_due:any[]; maintenance_due:any[]; equipment:any[]; missing_bom:any[]; requirements:any[];
 }
 export interface Supplier { id:string; sync_version:number; name:string; contact_name?:string|null; email?:string|null; phone?:string|null; website?:string|null; notes:string; item_count:number; }
@@ -16,29 +19,32 @@ export interface ResourceRequirement { id:string; project_id:string; project_nam
 async function json<T>(path:string, init?:RequestInit):Promise<T>{const r=await apiFetch(path,init);if(!r.ok)throw new Error(await getApiErrorMessage(r));return r.status===204?undefined as T:r.json();}
 
 async function localOverview():Promise<OperationsOverview>{
-  // Use the workstation's existing local-first project and inventory APIs.
-  // Do not turn failed reads into empty arrays: an empty result means no shortages.
-  const [items, projects, requirements, maintenance] = await Promise.all([getItems(), getProjects(), getProjectRequirements(), listMaintenance()]);
-  const bomByProject = await Promise.all(projects.map(async project => ({
-    project, lines: await getProjectBom(project.id),
-  })));
-  const missing_bom = bomByProject.flatMap(({project,lines}) =>
+  const session=captureAccountSession();
+  const {values,availability}=await readLocalSections({inventory:getItems,projects:getProjects,requirements:()=>getProjectRequirements(),maintenance:()=>listMaintenance()},session);
+  const items=values.inventory??[],projects=values.projects??[],requirements=values.requirements??[],maintenance=values.maintenance??[];
+  const bomResults=await Promise.allSettled(projects.map(async project=>({project,lines:await readWithDeadline(()=>getProjectBom(project.id))})));
+  assertReadAccount(session);
+  const bomByProject=bomResults.flatMap(result=>result.status==='fulfilled'?[result.value]:[]);
+  availability.sections.bom=values.inventory===null||values.projects===null?'unavailable':bomResults.some(r=>r.status==='rejected')?'partial':'available';
+  const missing_bom = values.inventory===null?[]:bomByProject.flatMap(({project,lines}) =>
     findMissingBom(lines,items).map(line => ({...line,project_name:project.name,availability:'missing'})));
   const low_stock = items.filter(item => item.status === 'low_stock' || Number(item.current_quantity) <= Number(item.initial_quantity || 0) * 0.2);
   const now = new Date();
   const due = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
   const calibration_due = items.filter(item => item.next_calibration_date && new Date(item.next_calibration_date) <= due);
   const equipment = items.filter(item => ['equipment','instrument','tool'].includes(item.type));
-  const enrichedRequirements = enrichOutstandingRequirements(requirements,items);
+  const enrichedRequirements = values.inventory===null?requirements.filter(r=>!['fulfilled','cancelled'].includes(r.status)).map(r=>({...r,preferred_quantity:null})):enrichOutstandingRequirements(requirements,items);
+  if(values.requirements!==null&&values.inventory===null)availability.sections.requirements='partial';
   return {
+    availability,
     summary: {
-      total_items:items.length,
-      equipment:items.filter(item => item.type === 'equipment').length,
-      tools:items.filter(item => item.type === 'tool').length,
-      components:items.filter(item => ['component','spare_part'].includes(item.type)).length,
-      materials:items.filter(item => item.type === 'material').length,
-      low_stock:low_stock.length,
-      stock_value:items.reduce((sum,item) => sum + Number(item.current_quantity || 0) * Number(item.unit_cost || 0),0),
+      total_items:values.inventory===null?null:items.length,
+      equipment:values.inventory===null?null:items.filter(item => item.type === 'equipment').length,
+      tools:values.inventory===null?null:items.filter(item => item.type === 'tool').length,
+      components:values.inventory===null?null:items.filter(item => ['component','spare_part'].includes(item.type)).length,
+      materials:values.inventory===null?null:items.filter(item => item.type === 'material').length,
+      low_stock:values.inventory===null?null:low_stock.length,
+      stock_value:values.inventory===null||items.some(i=>i.unit_cost==null)?null:items.reduce((sum,item) => sum + Number(item.current_quantity || 0) * Number(item.unit_cost || 0),0),
     },
     low_stock, calibration_due, maintenance_due:maintenance.filter(record => ['scheduled','in_progress'].includes(record.status) || !!record.scheduled_date && new Date(record.scheduled_date) <= due).map(record => ({...record,name:items.find(item => item.id === record.item_id)?.name})), equipment, missing_bom, requirements:enrichedRequirements,
   };

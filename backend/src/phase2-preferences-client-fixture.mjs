@@ -8,6 +8,7 @@ const [action, id] = process.argv.slice(2);
 if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id || '')) throw new Error('Fixture UUID required');
 const username = 'LABOS-P2-PREF-CLIENT-' + id;
 const c = await pool.connect();
+let result = { ok: true };
 try {
   await c.query('BEGIN');
   if (action === 'create') {
@@ -16,8 +17,9 @@ try {
     const row = await c.query('SELECT id FROM users WHERE id=$1 AND username=$2 FOR UPDATE', [id, username]);
     if (row.rowCount !== 1) throw new Error('Not this test fixture; refusing mutation');
     if (action === 'disable') await c.query('UPDATE users SET is_active=false WHERE id=$1', [id]);
+    else if (action === 'notify') result = (await c.query("INSERT INTO notifications(user_id,type,title) VALUES($1,'test','LABOS-P2-CLIENT-NOTIFICATION') RETURNING id", [id])).rows[0];
     else if (action === 'cleanup') {
-      await c.query("DELETE FROM sync_idempotency WHERE user_id=$1 AND entity_type='daily_preferences'", [id]);
+      await c.query("DELETE FROM sync_idempotency WHERE user_id=$1 AND entity_type IN ('daily_preferences','notification_read')", [id]);
       await c.query('DELETE FROM notifications WHERE user_id=$1', [id]);
       await c.query('DELETE FROM audit_log WHERE actor_user_id=$1', [id]);
       await c.query('DELETE FROM user_daily_use_preferences WHERE user_id=$1', [id]);
@@ -26,7 +28,7 @@ try {
   }
   await c.query('COMMIT');
   // Captured by the native test runner, never logged by the app.
-  console.log(JSON.stringify(action === 'create' ? { token: jwt.sign({ userId: id }, config.jwtSecret, { expiresIn: '15m' }) } : { ok: true }));
+  console.log(JSON.stringify(action === 'create' ? { token: jwt.sign({ userId: id }, config.jwtSecret, { expiresIn: '15m' }) } : result));
 } catch (error) {
   await c.query('ROLLBACK'); throw error;
 } finally { c.release(); await pool.end(); }

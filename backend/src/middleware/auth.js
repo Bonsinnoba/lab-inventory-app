@@ -3,6 +3,7 @@ import { config } from '../config.js';
 import { pool } from '../db.js';
 import { getUserPermissions } from './permissions.js';
 import { getProjectAccess } from './project-access.js';
+import { credentialVersionMatches } from '../credential-version.js';
 
 export async function authenticateToken(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -22,8 +23,17 @@ export async function authenticateToken(req, res, next) {
 
   if (!token) return res.status(401).json({ error: { code: 'AUTH_REQUIRED', message: 'Authentication required' } });
 
+  let decoded;
   try {
-    const decoded = jwt.verify(token, config.jwtSecret);
+    decoded = jwt.verify(token, config.jwtSecret);
+    if (!decoded || typeof decoded !== 'object' || typeof decoded.userId !== 'string') {
+      throw new Error('Invalid token claims');
+    }
+  } catch {
+    return res.status(401).json({ error: { code: 'INVALID_TOKEN', message: 'Invalid or expired token' } });
+  }
+
+  try {
     if (decoded.purpose === 'resource-download' && !req.path.endsWith('/download')) {
       return res.status(401).json({ error: { code: 'INVALID_TOKEN_PURPOSE', message: 'Invalid token purpose' } });
     }
@@ -32,7 +42,7 @@ export async function authenticateToken(req, res, next) {
     // means disabling a user or changing their role takes effect immediately,
     // even if an old JWT has not expired yet.
     const result = await pool.query(
-      'SELECT id, username, role, is_active FROM users WHERE id = $1',
+      'SELECT id, username, role, is_active, credential_version FROM users WHERE id = $1',
       [decoded.userId]
     );
     if (!result.rowCount || !result.rows[0].is_active) {
@@ -40,17 +50,21 @@ export async function authenticateToken(req, res, next) {
     }
 
     const user = result.rows[0];
+    if (!credentialVersionMatches(decoded, user)) {
+      return res.status(401).json({ error: { code: 'SESSION_REVOKED', message: 'Your credentials have changed. Sign in again.' } });
+    }
     req.user = {
       userId: user.id,
       username: user.username,
       role: user.role,
+      credentialVersion: user.credential_version,
       ...(decoded.purpose ? { purpose: decoded.purpose } : {}),
       ...(decoded.resourceId ? { resourceId: decoded.resourceId } : {}),
     };
     next();
   } catch (err) {
     console.error('Authentication error:', err.message);
-    return res.status(401).json({ error: { code: 'INVALID_TOKEN', message: 'Invalid or expired token' } });
+    return res.status(503).json({ error: { code: 'AUTH_UNAVAILABLE', message: 'Authentication service is temporarily unavailable' } });
   }
 }
 

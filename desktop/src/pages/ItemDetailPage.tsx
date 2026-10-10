@@ -33,6 +33,7 @@ export default function ItemDetailPage() {
 
   const [showTransactionForm, setShowTransactionForm] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
+  const [editVersion, setEditVersion] = useState<number>();
   const [editForm, setEditForm] = useState<Partial<Item>>({});
   const [transactionForm, setTransactionForm] = useState({ type: 'purchase' as Transaction['type'], direction: 'expense' as Transaction['direction'], amount: '', vendor: '', notes: '', funding_source_id: '' });
 
@@ -48,7 +49,7 @@ export default function ItemDetailPage() {
   });
 
   const updateMutation = useMutation({
-    mutationFn: (data: Partial<Item>) => updateItem(itemId!, data),
+    mutationFn: (data: Partial<Item>) => updateItem(itemId!, data, editVersion),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['item', itemId] });
       queryClient.invalidateQueries({ queryKey: ['items'] });
@@ -59,13 +60,14 @@ export default function ItemDetailPage() {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: () => deleteItem(itemId!),
+    mutationFn: () => deleteItem(itemId!, item?.sync_version),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['items'] }); showToast('Item deleted'); navigate('/inventory'); },
     onError: (err: any) => showToast(err?.message || 'Failed to delete item', 'error'),
   });
 
   const handleEdit = () => {
     if (!item) return;
+    setEditVersion(item.sync_version);
     setEditForm({
       name: item.name, type: item.type, status: item.status, initial_quantity: item.initial_quantity,
       unit: item.unit, sku: item.sku, category: item.category, dimensions: item.dimensions,
@@ -114,7 +116,7 @@ export default function ItemDetailPage() {
     <div className="flex-1 overflow-auto p-6 max-w-[1400px] mx-auto w-full">
       {activeTab === 'details' && <div className="bg-surface border border-border rounded-md p-6 w-full">
         <h3 className="text-section-header font-ui font-semibold mb-4">Details</h3>
-        <ItemPicture itemId={itemId!} imageResourceId={item.image_resource_id} />
+        <ItemPicture itemId={itemId!} imageResourceId={item.image_resource_id} expectedVersion={item.sync_version} />
         <div className="item-detail-field-grid">
           <div className="item-detail-primary-fields grid grid-cols-1 md:grid-cols-3 gap-5 items-start">
             <div className="space-y-4 min-w-0">

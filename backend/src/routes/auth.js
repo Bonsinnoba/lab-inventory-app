@@ -11,7 +11,7 @@ import { PERMISSIONS, getUserPermissions, rolePermissions, hasPermission } from 
 const router = Router();
 const ROLES = ['admin', 'researcher', 'technician', 'viewer', 'member'];
 
-function issueToken(user) { return jwt.sign({ userId: user.id }, config.jwtSecret, { expiresIn: config.jwtExpiresIn }); }
+function issueToken(user) { return jwt.sign({ userId: user.id, credentialVersion: user.credential_version }, config.jwtSecret, { expiresIn: config.jwtExpiresIn }); }
 function deny(message, code = 'PERMISSION_DENIED', permission = null) {
   const error = { code, message };
   if (permission) error.permission = permission;
@@ -32,7 +32,7 @@ router.post('/register', async (req, res) => {
     const countResult = await client.query('SELECT COUNT(*)::int AS count FROM users');
     if (countResult.rows[0].count !== 0) { await client.query('ROLLBACK'); return res.status(403).json({ error: 'Registration is closed. Ask a lab administrator to create your account.' }); }
     const passwordHash = await bcrypt.hash(password, 12);
-    const result = await client.query(`INSERT INTO users (username, password_hash, role) VALUES ($1, $2, 'admin') RETURNING id, username, role, is_active, created_at`, [username.trim(), passwordHash]);
+    const result = await client.query(`INSERT INTO users (username, password_hash, role) VALUES ($1, $2, 'admin') RETURNING id, username, role, is_active, created_at, credential_version`, [username.trim(), passwordHash]);
     const user = result.rows[0];
     await writeAuditLog({ req, actorUserId: user.id, action: 'CREATE', entityType: 'user', entityId: user.id, newValue: user, client, required: true });
     await client.query('COMMIT'); const token = issueToken(user);
@@ -44,14 +44,14 @@ router.post('/login', loginRateLimit(), async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'username and password are required' });
   try {
-    const result = await pool.query('SELECT id, username, password_hash, role, created_at, is_active FROM users WHERE username = $1', [username.trim()]);
+    const result = await pool.query('SELECT id, username, password_hash, role, created_at, is_active, credential_version FROM users WHERE username = $1', [username.trim()]);
     if (!result.rowCount) { await writeAuditLog({ req, action: 'LOGIN_FAILED', entityType: 'auth', metadata: { username: String(username).trim(), reason: 'unknown_user' } }); return res.status(401).json({ error: 'Invalid credentials' }); }
     const user = result.rows[0]; const validPassword = await bcrypt.compare(password, user.password_hash);
     if (!validPassword) { await writeAuditLog({ req, action: 'LOGIN_FAILED', entityType: 'auth', entityId: user.id, metadata: { username: user.username, reason: 'invalid_password' } }); return res.status(401).json({ error: 'Invalid credentials' }); }
     if (!user.is_active) { await writeAuditLog({ req, action: 'LOGIN_FAILED', entityType: 'auth', entityId: user.id, metadata: { username: user.username, reason: 'account_disabled' } }); return res.status(403).json({ error: 'Account is disabled' }); }
     await pool.query('UPDATE users SET last_login_at = now() WHERE id = $1', [user.id]);
     const safeUser = { id: user.id, username: user.username, role: user.role, created_at: user.created_at, is_active: user.is_active };
-    const token = issueToken(safeUser); await writeAuditLog({ req, actorUserId: user.id, action: 'LOGIN', entityType: 'auth', entityId: user.id, metadata: { username: user.username } });
+    const token = issueToken(user); await writeAuditLog({ req, actorUserId: user.id, action: 'LOGIN', entityType: 'auth', entityId: user.id, metadata: { username: user.username } });
     res.json({ user: safeUser, token });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Login failed' }); }
 });
@@ -88,7 +88,11 @@ router.patch('/me/password', authenticateToken, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const current = await client.query('SELECT id, password_hash FROM users WHERE id = $1 AND is_active = TRUE FOR UPDATE', [req.user.userId]);
+    const current = await client.query('SELECT id, password_hash, credential_version FROM users WHERE id = $1 AND is_active = TRUE FOR UPDATE', [req.user.userId]);
+    if (current.rowCount && current.rows[0].credential_version !== req.user.credentialVersion) {
+      await client.query('ROLLBACK');
+      return res.status(401).json(deny('Your credentials have changed. Sign in again.', 'SESSION_REVOKED'));
+    }
     if (!current.rowCount || !(await bcrypt.compare(current_password, current.rows[0].password_hash))) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Current password is incorrect' });
@@ -97,7 +101,7 @@ router.patch('/me/password', authenticateToken, async (req, res) => {
     await client.query('UPDATE users SET password_hash = $1 WHERE id = $2', [passwordHash, req.user.userId]);
     await writeAuditLog({ req, action: 'UPDATE', entityType: 'user_password', entityId: req.user.userId, client, required: true });
     await client.query('COMMIT');
-    res.json({ message: 'Password updated successfully' });
+    res.json({ message: 'Password updated successfully. Sign in again.', reauthentication_required: true });
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch {}
     console.error(err);
@@ -175,7 +179,7 @@ router.post('/users/:id/password', authenticateToken, hasPermission('users.reset
     await client.query('UPDATE users SET password_hash = $1 WHERE id = $2', [passwordHash, req.params.id]);
     await writeAuditLog({ req, action: 'UPDATE', entityType: 'user_password', entityId: req.params.id, metadata: { username: target.rows[0].username, reset_by_admin: req.user.role === 'admin' }, client, required: true });
     await client.query('COMMIT');
-    res.json({ message: 'Password reset successfully' });
+    res.json({ message: 'Password reset successfully. The account must sign in again.', reauthentication_required: true });
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch {}
     console.error(err);

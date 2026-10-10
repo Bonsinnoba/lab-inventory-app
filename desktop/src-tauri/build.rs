@@ -38,6 +38,7 @@ fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
 }
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=LABOS_NATIVE_API_BASE");
     println!("cargo:rerun-if-changed=icons/icon.ico.b64");
 
     let icon_source = include_str!("icons/icon.ico.b64");

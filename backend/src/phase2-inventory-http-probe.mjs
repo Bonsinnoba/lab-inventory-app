@@ -1,0 +1,61 @@
+import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
+import jwt from 'jsonwebtoken';
+import {pool} from './db.js';
+import {config} from './config.js';
+if(process.env.LABOS_PHASE2_INVENTORY_PROBE!=='1')throw Error('Explicit inventory probe opt-in required');
+const users=[randomUUID(),randomUUID()],ids=[randomUUID(),randomUUID(),randomUUID()],marker='LABOS-P2-INVENTORY-HTTP-'+randomUUID();
+async function request(method,path,body,key=randomUUID(),user=users[0]){
+  const response=await fetch('http://127.0.0.1:4000/api'+path,{method,headers:{Authorization:'Bearer '+jwt.sign({userId:user},config.jwtSecret,{expiresIn:'15m'}),'Content-Type':'application/json',...(key?{'Idempotency-Key':key}:{})},body:body?JSON.stringify(body):undefined});
+  return{status:response.status,body:response.status===204?null:await response.json()};
+}
+const ok=(r,status=200)=>{assert.equal(r.status,status,JSON.stringify(r));return r.body;};
+const item=async id=>(await pool.query('SELECT * FROM items WHERE id=$1',[id])).rows[0];
+const counts=async()=>(await pool.query('SELECT count(*)::int n FROM audit_log WHERE actor_user_id=ANY($1::uuid[])',[users])).rows[0].n;
+try{
+  for(const [i,id] of users.entries())await pool.query("INSERT INTO users(id,username,password_hash,role) VALUES($1,$2,'not-login',$3)",[id,marker+i,i?'viewer':'admin']);
+  await pool.query("INSERT INTO user_permission_overrides(user_id,permission,effect) VALUES($1,'inventory.create','grant')",[users[1]]);
+  const create={id:ids[0],name:marker,type:'component',initial_quantity:10},key=randomUUID();
+  ok(await request('POST','/items',create,null),400);
+  for(const r of await Promise.all([request('POST','/items',create,key),request('POST','/items',create,key)]))ok(r,201);
+  assert.equal((await item(ids[0])).sync_version,1);assert.equal(await counts(),1);
+  ok(await request('POST','/items',{...create,name:'other'},key),409);
+  const delegated={...create,id:ids[2]},delegateKey=randomUUID();ok(await request('POST','/items',delegated,delegateKey,users[1]),201);
+  await pool.query('DELETE FROM user_permission_overrides WHERE user_id=$1',[users[1]]);
+  ok(await request('POST','/items',delegated,delegateKey,users[1]),403);
+  const edit={name:marker+' edited',expected_version:1},editKey=randomUUID();
+  ok(await request('PUT','/items/'+ids[0],edit,editKey));ok(await request('PUT','/items/'+ids[0],edit,editKey));assert.equal((await item(ids[0])).sync_version,2);
+  assert.equal((await pool.query("SELECT count(*)::int n FROM item_history WHERE item_id=$1 AND field_name='name'",[ids[0]])).rows[0].n,1);
+  ok(await request('PUT','/items/'+ids[0],{name:'stale',expected_version:1}),409);
+  ok(await request('PUT','/items/'+ids[0],{current_quantity:999,expected_version:2}),400);
+  ok(await request('POST','/items',{...create,id:ids[1]}),201);
+  const stale={ids:ids.slice(0,2),status:'in_use',item_bases:[{id:ids[0],version:1},{id:ids[1],version:1}]};
+  const audit=await counts();ok(await request('POST','/items/bulk-status',stale),409);ok(await request('POST','/items/bulk-delete',stale),409);
+  assert.equal((await item(ids[1])).status,'available');assert.equal(await counts(),audit);
+  const valid={...stale,item_bases:[{id:ids[0],version:2},{id:ids[1],version:1}]},bulkKey=randomUUID();
+  assert.equal(ok(await request('POST','/items/bulk-status',valid,bulkKey)).updated,2);ok(await request('POST','/items/bulk-status',valid,bulkKey));assert.equal((await item(ids[0])).sync_version,3);
+  const delta={id:randomUUID(),movement_type:'consume',quantity:2,expected_version:3},moveKey=randomUUID();
+  ok(await request('POST',`/items/${ids[0]}/movements`,delta,moveKey),201);ok(await request('POST',`/items/${ids[0]}/movements`,delta,moveKey),201);
+  assert.equal(Number((await item(ids[0])).current_quantity),8);assert.equal((await item(ids[0])).sync_version,4);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM item_movements WHERE item_id=$1',[ids[0]])).rows[0].n,1);
+  ok(await request('POST',`/items/${ids[0]}/movements`,{id:randomUUID(),movement_type:'adjust',quantity:4,expected_version:3}),409);
+  const storage={storage_location:'Test shelf',storage_container_id:null,expected_version:4},storageKey=randomUUID();
+  ok(await request('PATCH',`/phase4/items/${ids[0]}/storage`,storage,storageKey));ok(await request('PATCH',`/phase4/items/${ids[0]}/storage`,storage,storageKey));assert.equal((await item(ids[0])).sync_version,5);
+  ok(await request('PATCH',`/phase4/items/${ids[0]}/storage`,{...storage,storage_location:'stale'}),409);
+  ok(await request('DELETE','/items/'+ids[0],{expected_version:4}),409);
+  const deleteKey=randomUUID();ok(await request('DELETE','/items/'+ids[0],{expected_version:5},deleteKey),204);ok(await request('DELETE','/items/'+ids[0],{expected_version:5},deleteKey),204);assert.equal(await item(ids[0]),undefined);
+  ok(await request('POST','/items',create),409);
+  const bulkDelete={ids:ids.slice(1),item_bases:[{id:ids[1],version:2},{id:ids[2],version:1}]},deleteBatchKey=randomUUID();
+  assert.equal(ok(await request('POST','/items/bulk-delete',bulkDelete,deleteBatchKey)).deleted,2);ok(await request('POST','/items/bulk-delete',bulkDelete,deleteBatchKey));
+  assert.equal((await pool.query("SELECT count(*)::int n FROM sync_tombstones WHERE entity_type='item' AND entity_id=ANY($1::uuid[])",[ids])).rows[0].n,3);
+  console.log('PASS real PostgreSQL browser inventory: parallel/replayed create, key mismatch, permission-rechecked replay, versioned edit/history, stale atomic bulk/delete, stock delta replay, stale adjustment, storage CAS/replay, tombstones and no resurrection.');
+}finally{
+  await pool.query('DELETE FROM item_movements WHERE item_id=ANY($1::uuid[])',[ids]);
+  await pool.query('DELETE FROM items WHERE id=ANY($1::uuid[])',[ids]);
+  await pool.query("DELETE FROM sync_tombstones WHERE entity_type='item' AND entity_id=ANY($1::uuid[])",[ids]);
+  await pool.query('DELETE FROM sync_idempotency WHERE user_id=ANY($1::uuid[])',[users]);
+  await pool.query('DELETE FROM audit_log WHERE actor_user_id=ANY($1::uuid[])',[users]);
+  await pool.query('DELETE FROM notifications WHERE user_id=ANY($1::uuid[])',[users]);
+  await pool.query('DELETE FROM user_permission_overrides WHERE user_id=ANY($1::uuid[])',[users]);
+  await pool.query('DELETE FROM users WHERE id=ANY($1::uuid[])',[users]);await pool.end();
+}

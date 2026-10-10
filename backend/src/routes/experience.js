@@ -1,3 +1,4 @@
+import { notificationReadHttp } from '../notification-sync.js';
 import { Router } from 'express';
 import { pool } from '../db.js';
 import { getProjectAccess } from '../middleware/project-access.js';
@@ -24,20 +25,8 @@ router.get('/notifications', async (req, res) => {
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to load notifications' }); }
 });
 
-router.post('/notifications/:id/read', async (req, res) => {
-  try {
-    const r = await pool.query(`UPDATE notifications SET read_at=COALESCE(read_at,now()) WHERE id=$1 AND user_id=$2 RETURNING id,read_at`, [req.params.id, req.user.userId]);
-    if (!r.rowCount) return res.status(404).json({ error: 'Notification not found' });
-    res.json(r.rows[0]);
-  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to update notification' }); }
-});
-
-router.post('/notifications/read-all', async (req, res) => {
-  try {
-    await pool.query(`UPDATE notifications SET read_at=now() WHERE user_id=$1 AND read_at IS NULL`, [req.user.userId]);
-    res.json({ ok: true });
-  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to update notifications' }); }
-});
+router.post('/notifications/:id/read',notificationReadHttp);
+router.post('/notifications/read-all',notificationReadHttp);
 
 router.get('/dashboard', hasPermission('projects.view'), async (req, res) => {
   try {

@@ -1,5 +1,5 @@
 import { API_BASE, API_TIMEOUT_MS } from '../lib/config';
-import { getToken, removeToken, removeStoredUser } from './auth';
+import { getToken, captureServerRequest, observeServerAuthResponse } from './auth';
 
 const RETRYABLE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -10,6 +10,10 @@ function sleep(ms: number): Promise<void> {
 export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers || {});
   const token = getToken();
+  // Local credentials identify a native session, not a server bearer token.
+  // Sending them would provoke 401 and erase an otherwise valid offline login.
+  if (token?.startsWith('local:')) throw new Error('This action needs a server connection and an online sign-in; your local session remains available.');
+  const authContext = token ? await captureServerRequest(token) : null;
   if (token) headers.set('Authorization', `Bearer ${token}`);
   if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
@@ -32,11 +36,7 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
 
     try {
       const response = await fetch(`${API_BASE}${path}`, { ...init, headers, signal: controller.signal });
-      if (response.status === 401 && path !== '/auth/login' && path !== '/auth/register') {
-        removeToken();
-        removeStoredUser();
-        window.dispatchEvent(new Event('labos:auth-expired'));
-      }
+      if (authContext && path !== '/auth/login' && path !== '/auth/register') await observeServerAuthResponse(response, authContext);
       if (response.status >= 500 && attempt < maxAttempts && RETRYABLE_METHODS.has(method)) {
         await sleep(250 * attempt);
         continue;

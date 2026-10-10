@@ -56,7 +56,7 @@ export default function ExcelInventoryModal({ onClose, onImported }: { onClose: 
     setBusy(true);
     setError('');
     try {
-      const result = await importInventoryExcel(file);
+      const result = await importInventoryExcel(file, preview);
       showToast(`${result.imported} inventory row${result.imported === 1 ? '' : 's'} imported`);
       onImported();
       onClose();
@@ -126,7 +126,7 @@ export default function ExcelInventoryModal({ onClose, onImported }: { onClose: 
 
         <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-border bg-surface-raised/50">
           <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-text-secondary hover:text-text-primary rounded-sm">Cancel</button>
-          <button onClick={commit} disabled={!preview || preview.error_rows > 0 || busy} className="px-4 py-2 bg-accent text-bg rounded-sm hover:bg-accent-dim disabled:opacity-40 disabled:cursor-not-allowed font-medium text-sm">{busy && preview ? 'Importing…' : 'Import inventory'}</button>
+          <button onClick={commit} disabled={!preview?.plan_id || preview.error_rows > 0 || busy} className="px-4 py-2 bg-accent text-bg rounded-sm hover:bg-accent-dim disabled:opacity-40 disabled:cursor-not-allowed font-medium text-sm">{busy && preview ? 'Importing…' : 'Import inventory'}</button>
         </div>
       </div>
     </div>

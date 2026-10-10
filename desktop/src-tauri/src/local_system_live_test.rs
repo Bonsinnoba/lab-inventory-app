@@ -1,7 +1,7 @@
 use super::*;
 use std::{path::PathBuf, process::Command};
 
-fn fixture(action: &str, id: &str) -> Value {
+pub(crate) fn fixture(action: &str, id: &str) -> Value {
     let out = Command::new("docker").args([
         "exec", "-e", "LABOS_PHASE2_PREFERENCES_PROBE=1", "labos-labos-api-1",
         "node", "src/phase2-preferences-client-fixture.mjs", action, id,
@@ -10,7 +10,7 @@ fn fixture(action: &str, id: &str) -> Value {
     serde_json::from_slice(&out.stdout).unwrap()
 }
 
-fn http(method: &str, path: &str, body: Value, token: &str, key: &str) -> Value {
+pub(crate) fn http(method: &str, path: &str, body: Value, token: &str, key: &str) -> Value {
     let out = Command::new("node").args(["-e", r#"
       (async()=>{const r=await fetch('http://127.0.0.1:4000/api'+process.env.PATH_SUFFIX,
         {method:process.env.METHOD,headers:{'Content-Type':'application/json',
@@ -24,7 +24,7 @@ fn http(method: &str, path: &str, body: Value, token: &str, key: &str) -> Value 
     serde_json::from_slice(&out.stdout).unwrap()
 }
 
-fn initialize(c: &Connection, account: &str) {
+pub(crate) fn initialize(c: &Connection, account: &str) {
     local_db::ensure_schema(c).unwrap();
     c.execute_batch("CREATE TABLE local_users(id TEXT PRIMARY KEY,central_user_id TEXT,is_active INTEGER,offline_expires_at TEXT);
       CREATE TABLE local_session(id INTEGER PRIMARY KEY,user_id TEXT);").unwrap();

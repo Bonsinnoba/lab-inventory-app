@@ -1812,6 +1812,7 @@ version = "2.2.1"
 dependencies = [
  "argon2",
  "rand_core 0.6.4",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",

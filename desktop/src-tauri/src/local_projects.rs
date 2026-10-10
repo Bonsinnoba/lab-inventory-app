@@ -72,8 +72,18 @@ fn load_all(conn: &Connection) -> Result<Vec<Value>, String> {
 }
 
 fn load(conn: &Connection) -> Result<Vec<Value>, String> {
+    local_auth::require_local_permission(conn,"projects.view")?;
     let (user_id, _) = current_principal(conn)?;
     Ok(load_all(conn)?.into_iter().filter(|p| readable_for_user(p, &user_id)).collect())
+}
+
+pub(crate) fn require_cached_project_access(conn:&Connection,project_id:&str,edit:bool)->Result<(),String>{
+    local_auth::require_local_permission(conn,"projects.view")?;
+    let project=load(conn)?.into_iter().find(|p|p["id"]==project_id).ok_or("Project is not available to this account")?;
+    if edit{
+        local_auth::require_local_permission(conn,"projects.edit")?;
+        require_local_project_editor(&project,&local_db::active_account(conn)?)?;
+    }Ok(())
 }
 
 fn save(conn: &mut Connection, projects: &[Value], changes: Vec<(String, String, String, String, Value)>) -> Result<(), String> {
