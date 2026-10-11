@@ -2,7 +2,7 @@ import { localBackend } from './local-backend';
 import { captureAccountSession,isAccountSessionCurrent,captureServerRequest,isServerRequestCurrent,getToken } from './auth';
 import { apiFetch } from './http';
 import type { DownloadJob,DownloadSettings,DownloadQuality } from './mediaDownloads';
-export interface DownloadSnapshot {jobs:DownloadJob[];settings:DownloadSettings|null;snapshot_complete:boolean;last_synced_at:string|null;}
+export interface DownloadSnapshot {jobs:DownloadJob[];settings:DownloadSettings|null;snapshot_complete:boolean;last_synced_at:string|null;pending_removal_count?:number;}
 function session(){const s=captureAccountSession();if(!s)throw new Error('Sign in to use downloads');return s;}
 export async function readDownloadSnapshot():Promise<DownloadSnapshot>{
   const s=session();const value=await localBackend.invoke<DownloadSnapshot>('get_local_download_snapshot',{expectedAccountId:s.accountId});
@@ -12,6 +12,13 @@ export async function readDownloadSnapshot():Promise<DownloadSnapshot>{
 export async function enqueueLocalDownload(resourceId:string,quality?:DownloadQuality,scheduledFor?:string):Promise<DownloadJob>{
   const s=session();const result=await localBackend.invoke<DownloadJob>('queue_local_download',{expectedAccountId:s.accountId,resourceId,quality:quality??null,scheduledFor:scheduledFor??null});
   if(!isAccountSessionCurrent(s))throw new Error('Account changed while queuing download');return result;
+}
+export type DownloadAction='edit'|'start'|'pause'|'cancel'|'remove';
+export async function controlLocalDownload(job:DownloadJob,action:DownloadAction,patch:Record<string,unknown>={}):Promise<DownloadJob>{
+  const s=session();
+  if(!Number.isSafeInteger(job.control_version))throw new Error('Synchronize and refresh the download before changing it');
+  const result=await localBackend.invoke<DownloadJob>('control_local_download',{expectedAccountId:s.accountId,jobId:job.id,expectedVersion:job.control_version,action,patch});
+  if(!isAccountSessionCurrent(s))throw new Error('Account changed while saving download action');return result;
 }
 export const downloadSettingFields=['enabled','mode','window_start','window_end','concurrent_downloads','default_quality','max_retries'] as const;
 export function downloadSettingsPatch(settings:Partial<DownloadSettings>){return Object.fromEntries(downloadSettingFields.filter(key=>settings[key]!==undefined).map(key=>[key,settings[key]]));}

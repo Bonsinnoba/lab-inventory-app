@@ -40,6 +40,7 @@ export function inferFileType(mimeType, filename) {
   if (mimeType?.startsWith('image/')) return 'image';
   if (mimeType?.startsWith('video/')) return 'video';
   if (mimeType?.startsWith('audio/')) return 'audio';
+  if (['.mp4','.webm','.mov','.m4v','.mkv','.avi'].includes(ext)) return 'video';
   if (mimeType === 'application/pdf' || ext === '.pdf') return 'pdf';
   // Plain-text formats we can read and preview inline as text --
   // kept separate from 'document' below, which covers opaque binary

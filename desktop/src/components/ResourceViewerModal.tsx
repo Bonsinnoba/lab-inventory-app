@@ -4,6 +4,7 @@ import { X, Download, ChevronLeft, ChevronRight, Repeat, Maximize2, Minimize2, Z
 import { Document, Page, pdfjs } from 'react-pdf';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
+import {useVideoPoster} from './VideoResourcePoster';
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
 
@@ -21,6 +22,7 @@ function usePaneContent(resource: Resource|null) {
   return {text,docxHtml,loading,error};
 }
 function PaneContent({resource,zoom,pdfPage,setPdfPages,onWheel}:{resource:Resource|null;zoom:number;pdfPage:number;setPdfPages:(pages:number)=>void;onWheel:(e:WheelEvent<HTMLDivElement>)=>void}){
+  const poster=useVideoPoster(resource);
   const content=usePaneContent(resource);if(!resource)return <div className="flex h-full items-center justify-center text-sm text-slate-500">Select a resource to compare.</div>;if(content.loading)return <div className="flex h-full items-center justify-center text-sm text-slate-400">Loading preview…</div>;if(content.error)return <div className="flex h-full items-center justify-center p-6 text-center text-sm text-red-300">{content.error}</div>;
   const ext=extension(resource),url=getResourceDownloadUrl(resource.id),youtubeUrl=resource.kind==='link'?youtubeEmbedUrl(resource):null;
   if(ext==='pdf')return <div className="flex h-full items-start justify-center overflow-auto p-3" onWheel={onWheel}><div style={{transform:`scale(${zoom})`,transformOrigin:'top center'}}><Document file={url as unknown as File} onLoadSuccess={({numPages})=>setPdfPages(numPages)} onLoadError={()=>setPdfPages(0)}><Page pageNumber={pdfPage} renderTextLayer renderAnnotationLayer/></Document></div></div>;
@@ -28,7 +30,7 @@ function PaneContent({resource,zoom,pdfPage,setPdfPages,onWheel}:{resource:Resou
   if(isMarkdownResource(resource)&&content.text!==null)return <pre className="h-full overflow-auto whitespace-pre-wrap p-6 text-sm leading-6 text-slate-200">{content.text}</pre>;
   if(['txt','csv','json','xml','yaml','yml'].includes(ext)&&content.text!==null)return <pre className="h-full overflow-auto whitespace-pre-wrap p-6 text-sm leading-6 text-slate-200">{content.text}</pre>;
   if(['png','jpg','jpeg','gif','webp','svg'].includes(ext))return <div className="flex h-full items-center justify-center overflow-auto p-4" onWheel={onWheel}><img src={url} alt={resource.name} style={{transform:`scale(${zoom})`,maxWidth:'100%',maxHeight:'100%',objectFit:'contain'}}/></div>;
-  if(['mp4','webm','mov','m4v'].includes(ext))return <div className="flex h-full items-center justify-center p-4"><video controls src={url} className="max-h-full max-w-full"/></div>;
+  if(resource.file_type==='video'||resource.local_media_filename||['mp4','webm','mov','m4v'].includes(ext))return <div className="flex h-full items-center justify-center p-4"><video controls preload="metadata" poster={poster} src={url} className="max-h-full max-w-full"/></div>;
   if(['mp3','wav','ogg','m4a'].includes(ext))return <div className="flex h-full items-center justify-center p-6"><audio controls src={url} className="w-full max-w-xl"/></div>;
   if(youtubeUrl)return <div className="flex h-full items-center justify-center bg-black p-2"><iframe src={youtubeUrl} title={resource.name||'YouTube video'} className="h-full w-full rounded-lg" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowFullScreen/></div>;
   if(resource.kind==='link')return <div className="flex h-full items-center justify-center p-8 text-center"><a href={resource.url||url} target="_blank" rel="noreferrer" className="text-sm text-sky-300 underline">Open resource link</a></div>;

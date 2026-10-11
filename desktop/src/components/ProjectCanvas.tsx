@@ -6,6 +6,7 @@ import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import AddBlockModal from './AddBlockModal';
 import ResourceViewerModal from './ResourceViewerModal';
 import FolderBrowserModal from './FolderBrowserModal';
+import VideoResourcePoster from './VideoResourcePoster';
 
 interface ProjectCanvasProps { projectId: string; }
 
@@ -34,7 +35,7 @@ function BlockContent({ block, onOpen, connectMode }: { block: CanvasBlock; onOp
   const hasYoutube = resource?.file_type === 'youtube' && resource.thumbnail_url;
   return (
     <button onClick={(e) => { if (connectMode) return; e.stopPropagation(); onOpen(); }} className="w-full h-full relative group overflow-hidden text-left">
-      {hasImage ? <img src={previewUrl || ''} alt={resource!.name} className="w-full h-full object-cover" /> : hasVideo ? <video src={previewUrl || ''} className="w-full h-full object-cover" preload="metadata" muted /> : hasYoutube ? <img src={resource!.thumbnail_url} alt={resource!.name} className="w-full h-full object-cover" /> : (
+      {hasImage ? <img src={previewUrl || ''} alt={resource!.name} className="w-full h-full object-cover" /> : hasVideo ? <VideoResourcePoster resource={resource!}/> : hasYoutube ? <img src={resource!.thumbnail_url} alt={resource!.name} className="w-full h-full object-cover" /> : (
         <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-text-secondary bg-gradient-to-br from-surface-raised to-bg/40">
           {Icon && <Icon size={30} strokeWidth={1.4} />}
           <span className="text-[10px] font-mono uppercase tracking-wider">{TYPE_LABEL[block.block_type]}</span>

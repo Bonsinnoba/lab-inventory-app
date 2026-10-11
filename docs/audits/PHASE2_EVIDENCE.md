@@ -909,6 +909,269 @@ failures in the phase-end sweep before grouped fixes and full retesting. No real
 data was modified, deleted or reseeded. Existing audit/notification writes and
 their outboxes are unchanged; Reports audit aggregation remains a separate item.
 
+## October 10 — Downloads local preparation batch
+
+Status: IMPLEMENTED / AWAITING VERIFICATION, not Downloads completion.
+
+- Queue/history and shared settings have account-scoped native SQLite snapshots.
+  Pending creation/settings intents derive from durable outbox rows, not React
+  memory. Local read failure does not trigger a server read/write fallback.
+- Immediate and scheduled desktop enqueue use one native transaction boundary.
+  Native local deduplication and shared HTTP/sync PostgreSQL resource-row locking
+  prevent concurrent active enqueue paths from creating separate jobs in the new
+  paths. Server schedule validation preserves scheduled requests.
+- Global settings are versioned via a preserving migration/trigger. Native edits
+  carry expected versions and immutable dependency IDs; server updates recheck
+  permissions/version/receipt ownership. HTTP settings use the same apply logic
+  and idempotency receipts. Conflicts preserve pending work for explicit review.
+- Download result publication and local ACK share a native transaction, avoiding
+  a gap where an accepted job disappears if the subsequent snapshot pull fails.
+  Account/login guards reject stale-session results. Pending settings overlays do
+  not overwrite the last confirmed settings snapshot.
+- UI no longer blocks the entire queue on missing settings. It labels pending
+  sync, settings conflicts, last snapshot time and completion on the server versus
+  actual PC availability. Controls for pending/conflicted IDs are disabled.
+
+Quick checks: TypeScript PASS; `cargo check --no-default-features --offline` PASS;
+backend new modules/routes syntax PASS. Two focused frontend boundary checks PASS
+(local failure never falls back to HTTP; signed-out/account-switched reads reject).
+The full diagnostic and regression suites were updated/authored but NOT RUN. No
+Docker interruption, migration application, real PostgreSQL test, service restart
+or desktop deployment was performed in this implementation batch.
+
+Prepared actual PostgreSQL probe: `backend/src/phase2-downloads-live-probe.mjs`,
+opt-in `LABOS_PHASE2_DOWNLOADS_PROBE=1`, after migration. It uses exact namespaced
+identity/resource fixtures and rolls back all settings/job mutations to avoid
+changing the live worker configuration. It has NOT BEEN RUN and does not replace
+HTTP replay, two-client concurrency, worker races, disk restart or actual desktop
+API-stopped/reconnect acceptance. Those remain phase-end sweep cases.
+
+Deployment prerequisite: migration `20261010_download_settings_version.sql` and
+coordinated API/native-desktop rebuild. Old settings clients without an expected
+version/idempotency key will be rejected by the upgraded route, not silently
+allowed to overwrite newer settings. Running binaries remain unchanged.
+
+Still OPEN within Downloads: durable existing-job quality/priority/schedule edits,
+pause/resume/start/cancel/remove intentions and completion races; tool-status
+cache; PC file/thumbnails transfer and readiness; scoped non-admin edit grants;
+browser enqueue receipt parity; load/performance and full per-account acceptance.
+Existing-job controls remain explicitly server-connected, not offline success.
+See audit finding 41 for the nine-field write-path record.
+
+## October 11 checkpoint — durable download controls (source implementation)
+
+Supersedes the October 10 statement that existing-job controls are server-only.
+Status: **IMPLEMENTED / AWAITING VERIFICATION**, not Downloads or Phase 2 sign-off.
+
+- Desktop quality/priority/schedule edits, start/resume, pause, cancel and history
+  removal now append immutable account-owned SQLite outbox events. A failed local
+  write never issues an HTTP write. The current confirmed job is retained with a
+  separate pending action/patch; offline cancellation is not displayed as confirmed.
+- One outstanding intention per canonical job is supported. A new job must first
+  receive its server acknowledgement. Pending/conflicted actions must synchronize
+  or be explicitly resolved before another action on that job; authored evidence
+  is retained. Restricted non-admin edit authority still fails closed locally.
+- Shared server apply code checks resource permission, expected control revision,
+  current worker state and resource/job row locks. HTTP controls require a stable
+  idempotency key; sync uses its existing transactional receipt. Replay checks
+  current resource authority before returning a prior download receipt.
+- Worker claims no longer clear concurrent control requests. Completion publishes
+  the resource file metadata and completed job atomically under the same lock
+  order as controls. Late cancel/pause after completion returns the completed
+  state, not a fabricated cancellation. A committed stop request is observed even
+  without progress output (including the worker's thumbnail subprocess).
+- Worker cleanup is scoped to a job-specific filename. Uncertain completion
+  commits do not trigger file cleanup. Removing history does not delete resources
+  or completed media. Running jobs cannot be removed until the stop has settled.
+- Local removal hides the row while pending and keeps an explicit pending count;
+  rejected removals become visible as conflicts. Confirmed removal IDs survive
+  stale snapshot refresh. Receipt merging guards control revision and timestamp;
+  generic sync acknowledgement follows atomic native receipt publication.
+
+Checks: TypeScript and native cargo check passed; backend syntax passed. Two
+focused adapter safety tests passed (local failure/no HTTP fallback and account
+boundary; expected-version/missing-version handling). The PostgreSQL rollback
+probe now covers job edit/start/pause/cancel/remove, stale versions and late
+completion semantics, but was **NOT RUN**. No mocked database was substituted.
+
+Still NOT RUN: actual PostgreSQL migration/probe, HTTP lost-response replay,
+permission revocation between enqueue/apply, native disk restart and receipt
+ordering/removal replay, real worker subprocess/completion races, actual desktop
+API-stopped and reconnect acceptance. Extend the sweep to multi-process worker
+startup/recovery and crash/retry orphan-media handling; current deployment still
+assumes one worker process. Full-snapshot/receipt interleavings need stress tests,
+not just revision guards. Filesystem and database commit are not one transaction.
+
+Deployment requires **both** `20261010_download_settings_version.sql` and
+`20261010_download_job_control_version.sql`, then coordinated API/native rebuild.
+Old control clients without revisions/idempotency keys intentionally fail closed.
+Neither migration was applied here; running services/binaries and databases were
+not reset, reseeded or replaced.
+
+Remaining Downloads implementation: PC media/thumbnail replication/readiness,
+tool-status cache, scoped non-admin native edit grants, browser enqueue receipt
+parity and the above recovery/concurrency acceptance. See audit finding 42.
+
+## October 11 checkpoint — uploaded-video posters and offline preview cache
+
+Owner reported that PC-uploaded videos stay blank until playback. Source cause:
+upload did not extract a poster, and Resources/embedded panels/canvas relied on a
+metadata-only video element to paint a frame. This is not reliable poster creation.
+
+Implemented, awaiting phase acceptance:
+
+- Server extracts a JPEG poster from uploaded or server-downloaded video using
+  FFmpeg, with a short-video fallback, timeout, bounded concurrency, bounded JPEG
+  size, no shell, local-container/protocol allowlist, unique temporary output and
+  atomic publication. Source path/size/mtime fingerprint invalidates replaced
+  files. Errors never fail or roll back an already successful upload.
+- Single/folder video uploads request background preparation. A protected preview
+  endpoint supports existing videos too and rechecks resource access before
+  delivery. It derives a preview without creating a resource or outbox mutation.
+- Resources, embedded resource panels, project canvas and viewer use the shared
+  poster component/hook; no hidden metadata-only video is used as the card poster.
+  The viewer has a poster before playback; unsupported/missing extraction has an
+  explicit placeholder. Extension classification covers generic-MIME video files.
+- Desktop metadata sync/upload-cache updates trigger derived JPEG replication.
+  SQLite stores bounded poster bytes per account/resource/revision. Reads are
+  local-only; HTTP failure is not a local-read fallback. Native writes check the
+  captured native session, active account, local lease/permission and resource
+  revision. Known visibility revocation evicts derived bytes and blocks an
+  in-flight stale response, even if pending authored resource work is retained.
+  Resource removal prunes derived posters without deleting authored outbox work.
+- UI object URLs are disposed; account changes and metadata pulls refresh/clear
+  displayed previews. Tokens are never appended to resource-provided external URLs.
+
+Checks: TypeScript, native compilation and backend syntax passed; two focused
+adapter safety tests passed (no network fallback, missing cache, switched/signed-out
+account, fixed-origin URL construction). No database or full GUI test was run.
+The final phase sweep still needs actual FFmpeg fixtures (short/black intro,
+rotation, corrupted/unsupported input), upload/folder upload, old-video repair,
+replacement, concurrency/timeouts, native restart, revocation/late response and
+Docker-API-stopped display. Native/API binaries were NOT rebuilt or deployed.
+
+This batch is **video posters**, not full binary mirroring: original uploaded
+files, playable video/audio/PDF copies, remote link/image thumbnails, resumable
+transfer, editor copies and overall disk/retention policy remain OPEN. Cache
+encryption/recovery remains part of the unfinished storage security work. Current
+resource updated_at is a conservative poster-cache revision: metadata-only edits
+can temporarily invalidate a poster until another successful sync. A dedicated
+binary revision is needed alongside full resource-copy replication. Source-based
+server preview files need bounded retention/orphan cleanup in that same work.
+Status: **IMPLEMENTED / AWAITING VERIFICATION**, not a claim that Resources now
+works fully offline. See audit finding 43.
+
+## October 11 continuation — runtime startup and binary transfer foundation
+
+The previous startup checkpoint rebuilt the Docker API and applied the additive
+download job-control and settings-version migrations against existing PostgreSQL;
+health returned 200 at that point. The native debug build also completed. This
+supersedes the earlier poster/control entries' NOT DEPLOYED statements for those
+changes, but is not runtime acceptance of their features.
+
+At the resumed check, the Lab Inventory executable (PID 30432) has a responding
+window titled Lab Inventory Management. The missing Vite frontend was restarted
+and returned HTTP 200 on 127.0.0.1:1420. Docker Desktop was started, but both Docker
+engine named pipes remain unavailable and API port 4000 refuses connections.
+Docker's backend logs report waiting for its engine and missing VM forwarding
+pipe. A read-only WSL listing also stalled. No WSL reset/shutdown, database reset,
+volume deletion or reseed was performed. Do not call the server currently healthy
+based on the earlier startup result. GUI content/login was not visually verified.
+
+Implemented this continuation:
+
+- Protected resource binary manifest and bounded conditional chunk endpoints,
+  for uploaded files and server-downloaded link media. SHA-256 content revision
+  is independent of metadata edits. Chunk retry is read-only/idempotent.
+- Strict single ranges (4 MiB maximum), mandatory If-Match, whole-file/chunk
+  digests, source replacement checks, root/realpath containment, bounded IO and
+  digest cache. External resource URLs are not transfer sources.
+- Current credentials, global permission and resource/ancestor access are checked
+  before IO and before response. Changed sources and revoked access fail closed.
+  Internal paths are omitted; closed HTTP responses are not written again.
+- Contract and remaining native replication/recovery/playback steps recorded in
+  ../architecture/resource-binary-replication.md; audit finding 44.
+
+Checks: 9 focused file/handler tests passed using isolated temporary filesystem
+fixtures (not mock or live database tests); source syntax and diff whitespace
+checks passed. Coverage includes exact reconstruction, repeated ranges, replaced
+files, empty/missing files, range/precondition validation, path traversal/junction
+escape and authorization loss/source change during preparation. Fixtures alone
+were cleaned up. No authored data was changed.
+
+New binary endpoints are **IMPLEMENTED / AWAITING VERIFICATION**, not deployed in
+the currently unavailable Docker engine. Actual PostgreSQL permission matrix,
+load/races, native durable copies and desktop Docker-offline/reconnect acceptance
+remain open. This batch does not make original resources playable offline yet.
+
+## October 11 continuation — desktop-authored file staging
+
+Single-file desktop uploads now use native managed files followed by atomic
+SQLite metadata/outbox publication. Sync transfers resumable 1 MiB chunks using
+stable IDs, verifies SHA-256 and uses the existing transactional receipt. File-create
+audit entries share that transaction. Added guarded local file capabilities and a
+saved-on-PC/pending-sync badge. No HTTP fallback after native-save failure.
+
+Native build and TypeScript passed. Seven upload-adapter checks passed (including
+Windows URL encoding, failure/session guards and resume), plus two staging-input
+checks and nine prior binary filesystem/handler checks. These are NOT PostgreSQL
+or actual WebView/offline acceptance tests. The updated desktop was launched with
+owner approval; its window/process was confirmed responsive.
+
+Docker engine remains unavailable (latest probe returned HTTP 500). The new server
+migration is NOT APPLIED and API deployment is pending. Real PostgreSQL, desktop
+server-stopped upload/playback and reconnect/replay/delete acceptance remain for
+the phase-end sweep. Finding 45 and the binary architecture document record scoped
+attachment, large-file, recovery and replication limitations. No reset/reseed or
+deletion of existing storage/authored work occurred.
+
+## October 11 recovery/deployment checkpoint — after Windows restart
+
+Owner reported Docker recovered after restarting Windows. Confirmed PostgreSQL
+and API containers healthy, then rebuilt/recreated only labos-api using the existing
+Compose volumes. Migration 20261011_resource_upload_staging is now recorded in the
+actual PostgreSQL schema_migrations table. API health returned HTTP 200 with API,
+database and storage all ok. Frontend returned HTTP 200; updated desktop window
+was started and its process confirmed responsive. No database reset or volume
+deletion. This supersedes the earlier Docker-blocked deployment status, not the
+outstanding real offline/reconnect functional acceptance.
+
+Image build reported three moderate npm advisories. No forced dependency upgrades
+were applied; dependency-level assessment remains in the security review queue.
+
+## October 11 continuation — local folder uploads and manifests
+
+Desktop uploadFolderFiles now delegates to the native file staging path instead
+of multipart HTTP. Up to 200 selected files are copied before one guarded SQLite
+transaction publishes all child metadata and their individual stable-ID outbox
+events. Failure rolls back that metadata transaction and preserves staged bytes.
+The already-created folder itself is a separate operation and may remain empty
+after a failed selection; recovery/cleanup UI is still open. Server publication
+remains per-file/retryable, not a whole-folder distributed transaction.
+
+Added relative-path validation before staging and at native/server boundaries,
+case-insensitive duplicate selection/existing-local-path rejection, and serialized
+duplicate-path checks between sync-created server children. This does not certify
+the legacy browser multipart endpoint's cross-writer overwrite behavior. Child
+bytes remain stored by UUID, never by submitted relative filesystem paths.
+
+Folder manifests now read account-scoped SQLite rows. Corrected folder creation's
+snake-case/camel-case IPC parent mapping and applied the native parent authority
+guard. Non-admin note/folder writes still fail closed until scoped native edit
+grants are available; this batch does not relax that security boundary.
+
+TypeScript and cargo check passed. Thirteen frontend adapter checks and three
+server input-validation checks passed. These are not database tests. Actual
+PostgreSQL rollback/replay, interrupted staging, multiple-client duplicate paths,
+restart, offline folder viewing and reconnect acceptance remain at phase end.
+No authored-file or database cleanup performed.
+
+Deployment checkpoint: cargo build passed; updated API image deployed with existing
+volumes and API/database/storage health returned HTTP 200. With explicit owner
+approval, LabOS was closed and reopened on the new binary; its window was responsive
+and Vite returned HTTP 200. This is startup verification only, not folder workflow
+or outage acceptance.
+
 ## Remaining Phase 2 work (current)
 
 October 9 owner-directed planning update: authentication/security findings and

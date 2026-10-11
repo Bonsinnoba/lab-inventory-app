@@ -1,12 +1,15 @@
+import {processSyncReceipts,type SyncResult} from './sync-receipts';
 import {applyInventoryPage} from './inventory-pull';
 import {pullActivitySnapshot} from './activity';
 import {pullDownloadSnapshot} from './downloads-local';
+import {pullResourcePosters} from './resource-posters';
+import {isResourceUpload,transferResourceUpload} from './resource-uploads';
+import type {Resource} from './resources';
 import { invoke } from '@tauri-apps/api/tauri';
 import { apiFetch, getApiErrorMessage } from './http';
 import { getStoredUser, getToken, captureServerRequest, isServerRequestCurrent } from './auth';
 
 type PendingChange = { change_id:string; device_id:string; entity_type:string; entity_id?:string|null; operation:string; payload:unknown; created_at:string; attempt_count:number; last_error?:string|null };
-type SyncResult = { change_id:string; status:'synced'|'failed'|'rejected'; result?:unknown; error?:{code?:string;message?:string} };
 type LocationPullResponse = { snapshot_complete?:boolean; locations?:unknown[]; deleted_location_ids?:string[] };
 type EngineeringPullResponse = { calculations?:unknown[]; tests?:unknown[]; visible_calculation_ids?:string[]; visible_test_ids?:string[]; deleted_calculation_ids?:string[]; deleted_test_ids?:string[] };
 type PullResponse = { items?:unknown[]; deleted_item_ids?:string[]; next_cursor?:string|null; has_more?:boolean };
@@ -40,7 +43,7 @@ export async function getUnassignedStateCount():Promise<number>{try{const status
 export async function getSyncConflictCount():Promise<number>{try{const status=await invoke<{sync_conflict_count:number}>('local_database_status');return Number(status.sync_conflict_count||0);}catch{return 0;}}
 export async function listSyncConflicts():Promise<unknown[]>{return invoke<unknown[]>('list_sync_conflicts');}
 export async function resolveSyncConflict(changeId:string,resolution:'keep_local'|'accept_server'|'dismiss'):Promise<void>{await invoke('resolve_sync_conflict',{changeId,resolution});}
-export async function syncPendingChanges(force=false):Promise<number>{if(activeSync)return activeSync;if(!force&&nextRetryAt>Date.now()){return 0;}activeSync=runSync().finally(()=>{activeSync=null;});return activeSync;}
+export async function syncPendingChanges(force=false):Promise<number>{if(activeSync)return activeSync;if(!force&&nextRetryAt>Date.now()){return 0;}activeSync=runSync().finally(()=>{currentSyncSession=null;activeSync=null;});return activeSync;}
 
 type SyncSession={token:string;accountId:string};
 let currentSyncSession:SyncSession|null=null;
@@ -80,6 +83,23 @@ async function runSync():Promise<number>{
   catch(error){const message=error instanceof Error?error.message:String(error);publish({status:'error',lastError:message});scheduleRetry();currentSyncSession=null;return 0;}
   let syncedCount=0;
   let syncSucceeded=true;
+  const blockedUploads=new Set<string>();
+  for(const change of changes.filter(isResourceUpload)){
+    try{
+      assertSyncSession();const context=await captureServerRequest(token);assertSyncSession();
+      if(!context.nativeSessionToken)throw new Error('Native upload session unavailable');
+      await transferResourceUpload(change,accountId,context.nativeSessionToken,()=>{assertSyncSession();if(!isServerRequestCurrent(context))throw new Error('Upload session changed');});
+    }catch(error){
+      syncSucceeded=false;blockedUploads.add(change.entity_id||'');
+      const message=error instanceof Error?error.message:String(error);
+      assertSyncSession();
+      await invoke('record_sync_failure',{changeId:change.change_id,error:message});
+      publish({status:'error',lastError:`File transfer: ${message}`});scheduleRetry();
+    }
+  }
+  // Withhold dependent edits/deletes for a file whose create is not ready;
+  // independent domain changes can still synchronize in this pass.
+  changes=changes.filter(c=>!(c.entity_type==='resource'&&blockedUploads.has(c.entity_id||'')));
   if(changes.length){
     const deviceId=changes[0].device_id;
     try{
@@ -92,37 +112,48 @@ async function runSync():Promise<number>{
         const body=await response.json() as {results?:SyncResult[]};
         assertSyncSession();
         const results=Array.isArray(body.results)?body.results:[];
-        const synced=results.filter(r=>r.status==='synced').map(r=>r.change_id).filter(Boolean);
-        const downloadReceipts=results.filter(r=>r.status==='synced'&&changes.some(c=>c.change_id===r.change_id&&['resource_download_job','media_download_settings'].includes(c.entity_type)));
-        if(downloadReceipts.length){
-          if(!downloadContext.nativeSessionToken||!isServerRequestCurrent(downloadContext))throw new Error('Session changed before download acknowledgement');
-          await invoke('acknowledge_local_download_changes',{expectedAccountId:accountId,expectedSessionToken:downloadContext.nativeSessionToken,results:downloadReceipts});
-          assertSyncSession();
-        }
-        if(synced.length){await invoke('mark_sync_changes_synced',{changeIds:synced});syncedCount=synced.length;}
-        const rejectedOrFailed=results.filter(r=>r.status!=='synced');
-        if(rejectedOrFailed.some(r=>r.status==='failed'))scheduleRetry();
-        for(const result of rejectedOrFailed){
-          syncSucceeded=false;
-          const change=changes.find(c=>c.change_id===result.change_id);
-          if(!change)continue;
-          if(result.status==='rejected'||result.error?.code==='SYNC_CONFLICT'){
-            await invoke('record_sync_conflict',{changeId:change.change_id,entityType:change.entity_type,entityId:change.entity_id??null,operation:change.operation,payloadJson:JSON.stringify(change.payload),errorCode:result.error?.code||'SYNC_REJECTED',errorMessage:result.error?.message||'The server rejected this offline change'}).catch(()=>undefined);
-          }else{
-            await invoke('record_sync_failure',{changeId:change.change_id,error:result.error?.message||result.error?.code||'Unable to apply sync change'}).catch(()=>undefined);
+        const outcome=await processSyncReceipts(changes,results,{
+          assertSession:assertSyncSession,
+          acknowledge:async(change,result)=>{
+            assertSyncSession();
+            if(isResourceUpload(change)){
+              if(!downloadContext.nativeSessionToken||!isServerRequestCurrent(downloadContext))throw new Error('Upload acknowledgement session changed');
+              await invoke('bind_local_resource_upload_receipts',{expectedAccountId:accountId,expectedSessionToken:downloadContext.nativeSessionToken,results:[result]});
+              assertSyncSession();
+            }
+            if(['resource_download_job','media_download_settings'].includes(change.entity_type)){
+              if(!downloadContext.nativeSessionToken||!isServerRequestCurrent(downloadContext))throw new Error('Download acknowledgement session changed');
+              // This native command commits the projection and ACK atomically.
+              await invoke('acknowledge_local_download_changes',{expectedAccountId:accountId,expectedSessionToken:downloadContext.nativeSessionToken,results:[result]});
+            }else{
+              await invoke('mark_sync_changes_synced',{changeIds:[change.change_id]});
+            }
+          },
+          reject:async(change,result)=>{
+            assertSyncSession();
+            await invoke('record_sync_conflict',{changeId:change.change_id,entityType:change.entity_type,entityId:change.entity_id??null,operation:change.operation,payloadJson:JSON.stringify(change.payload),errorCode:result.error?.code||'SYNC_REJECTED',errorMessage:result.error?.message||'The server rejected this offline change'});
+            publish({status:'error',lastError:result.error?.message||'A change requires review'});
+          },
+          fail:async(change,message)=>{
+            assertSyncSession();
+            await invoke('record_sync_failure',{changeId:change.change_id,error:message});
+            publish({status:'error',lastError:`Sync confirmation: ${message}`});
           }
-        }
+        });
+        syncedCount=outcome.syncedCount;
+        if(outcome.failedCount)syncSucceeded=false;
+        if(outcome.retry)scheduleRetry();
       }else{
         syncSucceeded=false;
         const message=await getApiErrorMessage(response,'Unable to synchronize local changes');
-        for(const change of changes)await invoke('record_sync_failure',{changeId:change.change_id,error:message}).catch(()=>undefined);
+        for(const change of changes){assertSyncSession();await invoke('record_sync_failure',{changeId:change.change_id,error:message}).catch(()=>undefined);}
         publish({status:'error',lastError:`Sync push: ${message}`});
         scheduleRetry();
       }
     }catch(error){
       syncSucceeded=false;
       const message=error instanceof Error?error.message:String(error);
-      for(const change of changes)await invoke('record_sync_failure',{changeId:change.change_id,error:message}).catch(()=>undefined);
+      for(const change of changes){assertSyncSession();await invoke('record_sync_failure',{changeId:change.change_id,error:message}).catch(()=>undefined);}
       publish({status:'error',lastError:`Sync push: ${message}`});
       scheduleRetry();
     }
@@ -197,9 +228,11 @@ async function pullServerResources():Promise<boolean>{
   try{
     const response=await apiFetch('/sync/resources/pull',{method:'GET',cache:'no-store'});
     if(!response.ok){publish({status:'error',lastError:await getApiErrorMessage(response,'Unable to download resource changes')});return false;}
-    const body=await response.json() as {resources?:unknown[];visible_resource_ids?:string[];deleted_resource_ids?:string[]};
+    const body=await response.json() as {resources?:Resource[];visible_resource_ids?:string[];deleted_resource_ids?:string[]};
     assertSyncSession();
     await invoke('apply_server_resource_pull',{resourcesJson:JSON.stringify(Array.isArray(body.resources)?body.resources:[]),visibleResourceIds:Array.isArray(body.visible_resource_ids)?body.visible_resource_ids:[],deletedResourceIds:Array.isArray(body.deleted_resource_ids)?body.deleted_resource_ids:[],expectedAccountId:syncAccountId()});
+    window.dispatchEvent(new Event('labos-posters-updated'));
+    void pullResourcePosters(body.resources||[]).catch(()=>{});
     return true;
   }catch(error){publish({status:'error',lastError:error instanceof Error?error.message:String(error)});return false;}
 }

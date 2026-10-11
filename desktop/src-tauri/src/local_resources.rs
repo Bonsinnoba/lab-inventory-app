@@ -78,12 +78,13 @@ pub(crate) fn read_resources(conn: &rusqlite::Connection) -> Result<Vec<LocalRes
     serde_json::from_str(&raw).map_err(|e| format!("Invalid local resources state: {e}"))
 }
 
-fn write_resources(conn: &rusqlite::Connection, resources: &[LocalResource]) -> Result<(), String> {
+pub(crate) fn write_resources(conn: &rusqlite::Connection, resources: &[LocalResource]) -> Result<(), String> {
     let raw = serde_json::to_string(resources).map_err(|e| format!("Unable to encode local resources: {e}"))?;
     conn.execute(
         "INSERT INTO sync_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         params![scoped_state_key(conn, STATE_KEY)?, raw],
     ).map_err(|e| format!("Unable to save local resources: {e}"))?;
+    crate::local_resource_posters::purge_absent(conn,resources)?;
     Ok(())
 }
 
@@ -275,6 +276,8 @@ pub fn queue_local_resource_download(app: AppHandle, resource_id: String, qualit
 pub fn create_local_resource_folder(app: AppHandle, name: String, item_id: Option<String>, project_id: Option<String>, note_id: Option<String>, parent_resource_id: Option<String>, category: Option<String>, description: Option<String>, tags: Option<Vec<String>>) -> Result<LocalResource, String> {
     if name.trim().is_empty() { return Err("name is required".into()); }
     let mut conn=open_local_connection(&app)?; ensure_schema(&conn)?;
+    local_auth::require_local_permission(&conn,"resources.create")?;
+    crate::local_resource_uploads::parent_guard(&conn,&serde_json::json!({"item_id":item_id,"project_id":project_id,"note_id":note_id,"parent_resource_id":parent_resource_id}))?;
     let mut resources=read_resources(&conn)?; validate_parent(&resources,&item_id,&project_id,&note_id,&parent_resource_id)?;
     let (category,description,tags)=metadata(category,description,tags); let id=new_id(&conn)?; let timestamp=now(&conn)?;
     let resource=LocalResource{id:id.clone(),name:name.trim().to_string(),kind:"folder".into(),file_type:"schematic_folder".into(),original_filename:None,mime_type:None,size_bytes:None,url:None,thumbnail_url:None,local_media_path:None,local_media_filename:None,local_media_mime_type:None,local_media_size_bytes:None,local_media_downloaded_at:None,parent_resource_id,relative_path:None,item_id,project_id,note_id,visibility:Some("lab".into()),item_name:None,project_name:None,note_title:None,category:Some(category),description:Some(description),tags,updated_at:timestamp.clone(),created_at:timestamp,derived_from_resource_id:None};
@@ -324,6 +327,7 @@ pub fn apply_server_resource_pull(app: AppHandle, resources_json: String, visibl
     }
     let deleted: HashSet<String> = deleted_resource_ids.into_iter().collect();
     let visible: HashSet<String> = visible_resource_ids.into_iter().map(|id| canonical_resource_id(&id)).collect();
+    crate::local_resource_posters::restrict_to_visible(&tx,&expected_account_id,&visible)?;
     current.retain(|r| {
         let id = canonical_resource_id(&r.id);
         pending.contains(&id) || (visible.contains(&id) && !deleted.iter().any(|deleted_id| canonical_resource_id(deleted_id) == id))

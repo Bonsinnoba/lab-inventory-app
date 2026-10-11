@@ -1,7 +1,7 @@
 import { apiFetch, apiUrl, getApiErrorMessage } from './http';
 import { getToken } from './auth';
 import { isTauriRuntime } from '../lib/runtime';
-import {readDownloadSnapshot,enqueueLocalDownload,saveLocalDownloadSettings,downloadSettingsPatch} from './downloads-local';
+import {readDownloadSnapshot,enqueueLocalDownload,saveLocalDownloadSettings,downloadSettingsPatch,controlLocalDownload,type DownloadAction} from './downloads-local';
 import { captureAccountSession,isAccountSessionCurrent } from './auth';
 export {readDownloadSnapshot} from './downloads-local';
 
@@ -9,10 +9,11 @@ export interface DownloadJob {
   id: string; resource_id: string; resource_name: string; resource_url?: string; thumbnail_url?: string;
   local_media_filename?: string; local_media_size_bytes?: number;
   status: 'queued'|'scheduled'|'downloading'|'paused'|'completed'|'failed'|'cancelled';
-  quality: string; scheduled_for?: string; priority: number; progress: number;
+  quality: string; scheduled_for?: string|null; priority: number; progress: number;
   bytes_downloaded?: number; total_bytes?: number; error_message?: string; attempts: number; max_attempts?: number;
   cancel_requested?: boolean; stop_requested_status?: 'paused'|'cancelled'|null;
   started_at?: string; process_started_at?: string; last_progress_at?: string; completed_at?: string; created_at: string; updated_at?: string;
+  control_version?:number; pending_action?:DownloadAction; requested_patch?:Record<string,unknown>; sync_error?:string; control_outcome?:'already_completed';
   sync_state?:'pending_sync'|'conflict'|'server';
 }
 export interface DownloadSettings { enabled: boolean; mode: 'manual'|'scheduled'|'always'; window_start: string; window_end: string; concurrent_downloads: number; default_quality: string; max_retries: number; sync_version:number; pending_sync?:boolean; sync_conflict?:boolean; }
@@ -31,10 +32,29 @@ export async function queueVideoDownload(resource_id:string, quality?:DownloadQu
   const r=await apiFetch('/media-downloads/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({resource_id,quality,scheduled_for})});
   if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to queue video download'));return r.json();
 }
-export async function updateDownloadJob(id:string, changes:Partial<Pick<DownloadJob,'status'|'quality'|'scheduled_for'|'priority'>>):Promise<DownloadJob>{ const r=await apiFetch(`/media-downloads/queue/${id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(changes)});if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to update download job'));return r.json(); }
-export async function startDownloadJob(id:string):Promise<DownloadJob>{const r=await apiFetch(`/media-downloads/queue/${id}/start`,{method:'POST'});if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to start download'));return r.json();}
-export async function cancelDownloadJob(id:string):Promise<DownloadJob>{return updateDownloadJob(id,{status:'cancelled'});}
-export async function removeDownloadJob(id:string){ const r=await apiFetch(`/media-downloads/queue/${id}`,{method:'DELETE'}); if(!r.ok) throw new Error(await getApiErrorMessage(r,'Failed to remove download job')); }
+export type DownloadEdits=Partial<Pick<DownloadJob,'status'|'quality'|'scheduled_for'|'priority'>>;
+const uncertainControls=new Map<string,string>();
+async function controlDownload(job:DownloadJob,action:DownloadAction,patch:Record<string,unknown>={}):Promise<DownloadJob>{
+  if(isTauriRuntime())return controlLocalDownload(job,action,patch);
+  const session=captureAccountSession();if(!session)throw new Error('Sign in before changing downloads');
+  if(!Number.isSafeInteger(job.control_version))throw new Error('Refresh the download before changing it');
+  const payload={resource_id:job.resource_id,expected_version:job.control_version,action,patch};
+  const signature=JSON.stringify([session.accountId,job.id,payload]);
+  let key=uncertainControls.get(signature);if(!key){key=crypto.randomUUID();uncertainControls.set(signature,key);}
+  const r=await apiFetch(`/media-downloads/queue/${job.id}${action==='start'?'/start':''}`,{
+    method:action==='remove'?'DELETE':action==='start'?'POST':'PATCH',
+    headers:{'Content-Type':'application/json','Idempotency-Key':key},body:JSON.stringify(payload)});
+  if(!r.ok){if(r.status>=400&&r.status<500)uncertainControls.delete(signature);throw new Error(await getApiErrorMessage(r,'Unable to save download action'));}
+  const result=await r.json();uncertainControls.delete(signature);
+  if(!isAccountSessionCurrent(session))throw new Error('Account changed while saving download action');return result;
+}
+export async function updateDownloadJob(job:DownloadJob,changes:DownloadEdits):Promise<DownloadJob>{
+  if(changes.status==='paused'||changes.status==='cancelled')return controlDownload(job,changes.status==='paused'?'pause':'cancel');
+  return controlDownload(job,'edit',changes);
+}
+export async function startDownloadJob(job:DownloadJob):Promise<DownloadJob>{return controlDownload(job,'start');}
+export async function cancelDownloadJob(job:DownloadJob):Promise<DownloadJob>{return controlDownload(job,'cancel');}
+export async function removeDownloadJob(job:DownloadJob){return controlDownload(job,'remove');}
 export async function getDownloadSettings():Promise<DownloadSettings>{
   if(isTauriRuntime()){const snapshot=await readDownloadSnapshot();if(!snapshot.settings)throw new Error('Download settings have not been synchronized to this PC');return snapshot.settings;}
   const r=await apiFetch('/media-downloads/settings');if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to fetch download settings'));return r.json();

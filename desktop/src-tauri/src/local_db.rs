@@ -250,7 +250,7 @@ fn resolve_conflict(conn:&mut Connection,change_id:&str,resolution:&str)->Result
         if ["item","item_movement"].contains(&entity.as_str())&&value["inventory_protocol"]==2&&(code=="SYNC_CONFLICT"||code=="SYNC_DEPENDENCY_PENDING"){
             return Err("Accept the server version, then review and reapply your inventory edits. Automatic overwrite is not allowed.".into());
         }
-        if ["maintenance_record","daily_preferences","supplier","storage_container","project_comment","media_download_settings"].contains(&entity.as_str()) && (code=="SYNC_CONFLICT" || code=="SYNC_DEPENDENCY_PENDING") {
+        if ["maintenance_record","daily_preferences","supplier","storage_container","project_comment","media_download_settings","resource_download_job"].contains(&entity.as_str()) && (code=="SYNC_CONFLICT" || code=="SYNC_DEPENDENCY_PENDING") {
             return Err("Accept the server version, then review and reapply your edits. Automatic overwrite is not allowed.".into());
         }
         if entity=="item"&&code=="SYNC_CONFLICT" {

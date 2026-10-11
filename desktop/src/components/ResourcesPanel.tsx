@@ -1,8 +1,10 @@
+import { isLocalResourceRuntime } from '../api/resources';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getResources, uploadFile, createLink, deleteResource, getResourceDownloadUrl, Resource } from '../api/resources';
 import { useState, useRef } from 'react';
 import { Upload, Link as LinkIcon, File, Folder, Trash2, Play } from 'lucide-react';
 import ResourceViewerModal from './ResourceViewerModal';
+import VideoResourcePoster from './VideoResourcePoster';
 import { useToast } from '../contexts/ToastContext';
 
 interface ResourcesPanelProps {
@@ -30,7 +32,7 @@ export default function ResourcesPanel({ parent }: ResourcesPanelProps) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['resources', parent] });
       setUploadProgress(null);
-      showToast('File uploaded');
+      showToast(isLocalResourceRuntime()?'Saved on this PC — pending sync':'File uploaded');
     },
     onError: (err: any) => {
       setUploadProgress(null);
@@ -132,16 +134,7 @@ export default function ResourcesPanel({ parent }: ResourcesPanelProps) {
       }
 
       if (resource.file_type === 'video') {
-        return (
-          <div className="w-full h-full flex items-center justify-center bg-surface-raised relative">
-            <Play size={32} className="text-accent" />
-            <video
-              src={downloadUrl}
-              className="absolute inset-0 w-full h-full object-cover opacity-50"
-              preload="metadata"
-            />
-          </div>
-        );
+        return <VideoResourcePoster resource={resource}/>;
       }
 
       if (resource.file_type === 'audio') {

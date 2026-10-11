@@ -607,6 +607,90 @@ VERIFICATION: Build/syntax and focused safety checks recorded in PHASE2_EVIDENCE
 STATUS: IMPLEMENTED / AWAITING VERIFICATION. New commands/endpoint require the rebuilt desktop/API at deployment. Whole-history snapshot transfer is intentionally complete, not a truncated 100-event cache; high-volume transfer/memory performance still needs measured acceptance. Experience activity and Reports audit aggregation are not converted by this finding.
 ```
 
+### 41. Downloads queue/settings server reads and scheduled-write bypass
+
+```text
+MODULE: Downloads queue/history, enqueue, shared download settings
+FILE: desktop/src/api/mediaDownloads.ts; desktop/src/api/downloads-local.ts; desktop/src-tauri/src/local_downloads.rs; desktop/src-tauri/src/local_resources.rs; desktop/src-tauri/src/local_db.rs; desktop/src/api/sync.ts; desktop/src/pages/DownloadsPage.tsx; backend/src/download-settings-sync.js; backend/src/download-queue-create.js; backend/src/routes/media-downloads.js; backend/src/routes/sync.js; backend/src/migrations/20261010_download_settings_version.sql
+CURRENT WRITE PATH: Previously immediate desktop enqueue appended an outbox event but had no durable visible job projection; scheduled enqueue and settings bypassed it via HTTP. Queue/settings reads always required server responses. This batch moves desktop enqueue and settings into native/account-scoped outbox transactions and local projections; browser settings use the same versioned apply function and stable HTTP retry keys.
+WHY IT BYPASSES OFFLINE-FIRST: Desktop schedule/settings writes could not survive disconnection. Missing settings prevented the whole Downloads page from rendering. Server-accepted queue intents could disappear between acknowledgement and a failed refresh.
+RISK: Lost offline preparation; duplicate jobs across HTTP/sync; silent shared-settings overwrites; false empty history and misleading completion/worker-control status.
+RECOMMENDED CHANGE: Separate durable local intent, server acceptance, worker execution and PC file availability. Persist complete authorized queue/settings snapshots; version shared settings; make enqueue and receipts atomic with outbox state; later convert worker controls with race-safe semantics.
+ACTUAL CHANGE MADE: Added complete authorized snapshot pull, native local queue/settings reads and account/session/permission guards. Pending job rows derive durably from immutable outbox intents. Both immediate and scheduled desktop enqueue use the native path; same-resource requests reuse visible active intent. HTTP and sync enqueue now share resource-row locking and active-job lookup. Shared settings gain a non-destructive version column/trigger, expected-version conflicts, same-user/device dependency receipts and HTTP idempotency. Native receipt publication and acknowledgement are atomic before ordinary sync ACK; a later failed refresh cannot erase accepted jobs/settings. Pending settings overlay server snapshots without changing them, and conflict discard restores the base projection while retaining outbox evidence. UI separates pending sync, last-known server state and server completion, keeps queue visible without settings and blocks controls on pending/conflicted job IDs. Restricted non-admin resource enqueue fails closed until native scoped edit authority is available.
+VERIFICATION: TypeScript, native cargo check and backend syntax passed; two focused local-failure/no-server-fallback and account-boundary checks passed. Remaining unit/diagnostic/render suites and real PostgreSQL/outage acceptance deferred per batch policy. An opt-in actual PostgreSQL rollback probe was authored but NOT RUN. Migration NOT APPLIED; no database reset/reseed or running service deployment.
+STATUS: IMPLEMENTED / AWAITING VERIFICATION for local reads, enqueue and versioned settings only. Pause/resume/start/cancel/remove, editing an existing job, tool-status caching, binary/thumbnails replication, browser enqueue receipt replay and worker completion races remain OPEN. Do not label Downloads or Phase 2 complete. Apply migration and rebuild API/desktop together before acceptance.
+```
+
+## 42. Existing download controls bypass the desktop outbox; worker races
+
+```text
+MODULE: Downloads / worker / synchronization
+FILE: desktop/src/api/mediaDownloads.ts; desktop/src/api/downloads-local.ts; desktop/src-tauri/src/local_downloads.rs; desktop/src-tauri/src/local_db.rs; desktop/src/pages/DownloadsPage.tsx; backend/src/download-job-control.js; backend/src/routes/media-downloads.js; backend/src/routes/sync.js; backend/src/media-downloads.js; backend/src/migrations/20261010_download_job_control_version.sql
+CURRENT WRITE PATH: Desktop existing-job edits/start/pause/cancel/remove previously called HTTP directly. They now use native account-scoped SQLite outbox intents; sync and browser controls share versioned server apply with transactional idempotency receipts.
+WHY IT BYPASSES OFFLINE-FIRST: Direct writes failed offline and had no durable intention or local reconciliation. Worker claim could clear a concurrent pause; resource completion and job completion were separate writes.
+RISK: Lost controls, stale overwrites, duplicate retries, resurrected history, cancellation deleting completed media or claiming a false server outcome.
+RECOMMENDED CHANGE: Keep pending intent separate from confirmed worker status; version controls, atomically publish receipts, enforce authorization/replay ownership and coordinate worker transitions with row locks. Preserve authored work and resource files.
+ACTUAL CHANGE MADE: Added native guarded control command and immutable outbox payload with expected revision and base job; no HTTP fallback. One pending intention per canonical job, explicit conflict review instead of automatic overwrite. Shared server control apply and keyed HTTP retries; sync replay rechecks resource edit authority. Conditional worker claims, stop observer, atomic resource/job completion, late-completion outcome, per-job filenames and no cleanup on uncertain completion commit. Local pending-removal overlay and confirmed-removal tombstones; receipt revision/timestamp guards. History removal never deletes resource media.
+VERIFICATION: TypeScript/native compilation, backend syntax and two focused adapter safety tests passed. Actual PostgreSQL rollback probe extended but NOT RUN. Full native persistence/receipt, HTTP replay, worker-race, permissions and real desktop Docker-outage/reconnect matrix deferred to phase-end sweep. New migration NOT APPLIED; running API/desktop NOT REDEPLOYED; no reset/reseed.
+STATUS: IMPLEMENTED / AWAITING VERIFICATION for existing-job controls, not full Downloads completion. Remaining: PC binary/thumbnail replication, tool-status cache, scoped native edit grants, browser enqueue replay, snapshot interleavings, worker crash/recovery and multi-process startup coverage. Current deployment assumes one worker process. Filesystem/DB atomicity remains a recovery boundary. See October 11 evidence checkpoint.
+```
+
+## 43. Uploaded-video poster generation and local preview availability
+
+```text
+MODULE: Resource media previews / project canvas / offline files
+FILE: backend/src/resource-posters.js; backend/src/routes/resources.js; backend/src/storage.js; desktop/src-tauri/src/local_resource_posters.rs; desktop/src-tauri/src/local_resources.rs; desktop/src/api/resource-posters.ts; desktop/src/api/resources.ts; desktop/src/api/sync.ts; desktop/src/components/VideoResourcePoster.tsx; desktop/src/components/ResourcesPanel.tsx; desktop/src/components/ResourceViewerModal.tsx; desktop/src/components/ProjectCanvas.tsx; desktop/src/pages/ResourcesPage.tsx
+CURRENT WRITE PATH: Uploaded video bytes went to server storage without thumbnail extraction. Cards relied on metadata-only video elements. Added derived server JPEG generation and account-scoped native JPEG cache populated after metadata sync or upload acknowledgement.
+WHY IT BYPASSES OFFLINE-FIRST: A remote media URL and SQLite metadata do not supply playable bytes or a persisted preview. Metadata preload does not guarantee a decoded video frame.
+RISK: Blank video cards, unavailable offline previews, stale replacement posters, cross-account or revoked preview disclosure, parser/process resource exhaustion.
+RECOMMENDED CHANGE: Extract bounded previews independently of playback; replicate verified derived bytes with account/session/permission guards; render cached previews without network fallback. Treat original file replication as a separate durable transfer contract.
+ACTUAL CHANGE MADE: Added protected FFmpeg poster endpoint/preparation with source fingerprint, timeout, concurrency cap, fixed local paths, protocol/container restriction and atomic JPEG publication. Added SQLite poster cache guarded by active lease/account/native session/resource revision, known visibility denial and deletion pruning. Shared preview component/hook used by Resources, panels, canvas and viewer. Missing previews remain explicit; upload success is unaffected by extraction failure. Derived cache writes intentionally have no domain outbox event.
+VERIFICATION: TypeScript/native compilation and backend syntax passed; two focused adapter safety tests passed. FFmpeg fixture extraction, real upload/replacement, native restart, revocation and actual Docker-offline UI acceptance NOT RUN, deferred to the phase-end sweep. No database reset/reseed or running service deployment.
+STATUS: IMPLEMENTED / AWAITING VERIFICATION for video posters only. Full original-file/media replication, remote link/image thumbnails, binary revisions, quotas/preview retention, recoverable cache encryption and editor copies remain OPEN. Metadata-only edits currently invalidate the conservative local preview revision. See October 11 evidence checkpoint.
+```
+
+## 44. Original resource binary replication — server transfer foundation
+
+```text
+MODULE: Resources / downloaded media / device file availability
+FILE: backend/src/resource-binaries.js; backend/src/routes/resource-binaries.js; backend/src/routes/resources.js; backend/src/resource-binaries.test.js; docs/architecture/resource-binary-replication.md
+CURRENT WRITE PATH: Desktop metadata sync and poster cache exist, but original resource viewing still uses server URLs. New read-only manifest/chunk endpoints provide content-versioned bytes for the forthcoming native replication writer.
+WHY IT BYPASSES OFFLINE-FIRST: SQLite resource rows and remote URLs are not PC file copies; original media cannot be opened offline merely because a resource card is cached.
+RISK: Unavailable offline files, mixed revisions during resumed transfers, false availability, unsafe paths, stale permissions and duplicate records if replication is confused with creation.
+RECOMMENDED CHANGE: Mirror authorized binaries into guarded account-scoped native storage with verified resumable transfer, atomic publication, local playback, visibility eviction and preserved authored work. Use content revisions rather than metadata timestamps.
+ACTUAL CHANGE MADE: Added authenticated manifest and strict conditional chunk endpoints for server-owned uploaded/downloaded files; stable SHA-256 revisions, bounded ranges/IO/cache, per-chunk digest, replacement/path containment checks and post-IO current-authority validation. No domain mutations or outbox changes. Native transfer writer and playback are not implemented by this finding.
+VERIFICATION: Nine focused filesystem/handler tests passed; syntax and whitespace checks passed. No database test was run. Docker engine is unavailable, so new endpoints are not deployed and actual PostgreSQL/desktop offline acceptance is pending. Existing databases and user files preserved.
+STATUS: SERVER FOUNDATION IMPLEMENTED / AWAITING VERIFICATION. Native copies/resume/publication, guarded local playback, uploads/editor staging, quotas/retention, recovery/protected storage and full offline/reconnect verification remain OPEN. See October 11 continuation checkpoint.
+```
+
+## 45. Desktop-authored files — native staging and outbox publication
+
+```text
+MODULE: Resources / desktop uploads / synchronization
+FILE: desktop/src-tauri/src/local_resource_uploads.rs; desktop/src/api/resource-uploads.ts; desktop/src/api/resources.ts; desktop/src/api/sync.ts; backend/src/resource-upload-staging.js; backend/src/routes/resource-uploads.js; backend/src/routes/sync.js; backend/src/migrations/20261011_resource_upload_staging.sql
+CURRENT WRITE PATH: Desktop single-file selection stages managed bytes, then atomically publishes SQLite metadata plus a create outbox event. Sync transfers chunks before normal server create/receipt. Browser uploads remain HTTP.
+WHY IT BYPASSES OFFLINE-FIRST: Previously desktop file creation required a multipart server request and failed offline before durable local publication.
+RISK: Lost authored work, duplicate retries, partial publication, account-crossing access, unsafe paths, premature acknowledgement and missing audit provenance.
+RECOMMENDED CHANGE: Durable native staging, stable IDs, atomic metadata/outbox, verified resumable transfer, transactional receipts/audit and guarded local viewing. Preserve uncertain work; no HTTP fallback.
+ACTUAL CHANGE MADE: Native per-chunk authority guards, fsync/SHA-256, atomic metadata/outbox, resumable server staging, verified publication, transactional file-create audit, receipt binding, session-bound local reader and pending-sync UI. Windows URL encoding accommodated. Existing data preserved.
+VERIFICATION: Native build and TypeScript passed. Seven adapter, two staging-input and nine binary filesystem/handler tests passed. Updated desktop launched with approval and responsive process confirmed. No live PostgreSQL or WebView/offline acceptance run. Docker unavailable; new migration/API deployment pending.
+STATUS: IMPLEMENTED / AWAITING VERIFICATION for single-file desktop staging. OPEN: folder/editor uploads, older server-file replication, offline poster extraction, native non-admin note/folder scoped grants, metadata-revision reconciliation, large/non-range and suffix-range viewing, recovery/quota/encryption and restart/retry/delete/two-account acceptance. Not Phase 2 completion.
+```
+
+## 46. Folder child uploads and folder manifests still required HTTP
+
+```text
+MODULE: Resources / project canvas folders / file staging
+FILE: desktop/src/api/resources.ts; desktop/src/api/resource-uploads.ts; desktop/src-tauri/src/local_resource_uploads.rs; desktop/src-tauri/src/local_resources.rs; desktop/src-tauri/src/main.rs; backend/src/resource-upload-staging.js
+CURRENT WRITE PATH: Desktop folder children now stage into managed files and publish metadata/outbox together in a native batch transaction. Each child syncs with a stable resource/change ID through the single-file server protocol. Browser multipart behavior is unchanged. Folder manifests now read local metadata on desktop.
+WHY IT BYPASSES OFFLINE-FIRST: uploadFolderFiles and getResourceManifest previously used HTTP unconditionally. Folder creation also passed snake-case parent keys to camel-case native IPC, risking an unattached folder.
+RISK: Failed offline folder imports, partial local publication, incorrect project association, duplicate logical paths and unsafe relative paths.
+RECOMMENDED CHANGE: Reuse native staging, preserve nested relative paths, atomically publish the selection, validate all boundaries and read the local manifest. Keep authority checks and stable identities.
+ACTUAL CHANGE MADE: Native batch finalization (maximum 200 children), per-file hash/size verification and transactional outbox/metadata; preflight/native/server relative-path checks; duplicate selection/local-path rejection and serialized server sync-path checks; local manifest reads; corrected IPC parent mapping and guarded folder context. Staged bytes remain preserved on failure.
+VERIFICATION: TypeScript and native cargo check passed. Thirteen frontend adapter and three server validation checks passed. Actual PostgreSQL, native transaction fault injection, Docker-offline/reconnect, two-client and WebView acceptance deferred to phase-end sweep; no mocked database substituted.
+STATUS: IMPLEMENTED / AWAITING VERIFICATION. Folder creation is separate and may leave an empty folder on failed staging. Server publication is per-file, not folder-atomic. Non-admin scoped folder grants, staging recovery, legacy browser overwrite/race behavior, editor copies and full binary replication remain OPEN.
+```
+
 ## Repository coverage register
 
 This register prevents a single grep result from being mistaken for sign-off. It covers every TypeScript file under `desktop/src/api` and the Rust local repositories as of this review. A file may appear in more than one row when it mixes paths. The numbered findings above contain the requested nine-field assessment; the register identifies where each file is assessed. Dynamic `RequestInit` wrappers and the UI call sites were also inspected, not just literal `method:` text.

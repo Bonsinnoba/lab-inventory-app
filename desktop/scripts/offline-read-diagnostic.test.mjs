@@ -22,6 +22,7 @@ function load(root,overrides={}){
     './notifications':{listNotifications:async()=>[]},
     './comments':{},
     './activity':{listActivity:async()=>({items:[],state:'not_downloaded',next_before:null})},
+    './downloads-local':{readDownloadSnapshot:async()=>({jobs:[],settings:null,snapshot_complete:true,last_synced_at:'2026-10-10T12:00:00Z'})},
     './auth':{getToken:()=>null,captureAccountSession:()=>({accountId:'fixture'}),isAccountSessionCurrent:()=>true},
     './local-backend':{localBackend:{isAvailable:()=>true}},
     '../lib/runtime':{isTauriRuntime:()=>true},
@@ -42,11 +43,9 @@ function load(root,overrides={}){
   };
   return{api:get(root),requests};
 }
-for(const [module,fn] of [['mediaDownloads','getDownloadJobs']]){
-  test(`KNOWN GAP: ${module}.${fn} rejects when server transport fails`,async()=>{
-    const c=load(module);await assert.rejects(c.api[fn](),/INJECTED_SERVER_UNREACHABLE/);assert.equal(c.requests.length,1);
-  });
-}
+test('Downloads: queue reads delegate to the local snapshot without HTTP',async()=>{
+  const c=load('mediaDownloads');assert.equal((await c.api.getDownloadJobs()).length,0);assert.equal(c.requests.length,0);
+});
 
 test('Reports: local projection works without server transport',async()=>{
   const c=load('reports');const report=await c.api.getReportsOverview();
