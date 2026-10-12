@@ -3,6 +3,7 @@ import {applyInventoryPage} from './inventory-pull';
 import {pullActivitySnapshot} from './activity';
 import {pullDownloadSnapshot} from './downloads-local';
 import {pullResourcePosters} from './resource-posters';
+import {pullResourceFiles} from './resource-replication';
 import {isResourceUpload,transferResourceUpload} from './resource-uploads';
 import type {Resource} from './resources';
 import { invoke } from '@tauri-apps/api/tauri';
@@ -233,6 +234,7 @@ async function pullServerResources():Promise<boolean>{
     await invoke('apply_server_resource_pull',{resourcesJson:JSON.stringify(Array.isArray(body.resources)?body.resources:[]),visibleResourceIds:Array.isArray(body.visible_resource_ids)?body.visible_resource_ids:[],deletedResourceIds:Array.isArray(body.deleted_resource_ids)?body.deleted_resource_ids:[],expectedAccountId:syncAccountId()});
     window.dispatchEvent(new Event('labos-posters-updated'));
     void pullResourcePosters(body.resources||[]).catch(()=>{});
+    void pullResourceFiles(body.resources||[]).catch(()=>{});
     return true;
   }catch(error){publish({status:'error',lastError:error instanceof Error?error.message:String(error)});return false;}
 }

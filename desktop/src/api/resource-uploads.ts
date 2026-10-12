@@ -70,7 +70,7 @@ async function stageFiles(entries:Array<{file:File;metadata:Record<string,unknow
 export type UploadChange={change_id:string;entity_type:string;entity_id?:string|null;operation:string;payload:unknown};
 export function isResourceUpload(change:UploadChange):boolean{
   const p=change.payload as {upload?:{protocol?:number};resource?:{kind?:string}}|null;
-  return change.entity_type==='resource'&&change.operation==='create'&&p?.resource?.kind==='file'&&p.upload?.protocol===1;
+  return change.entity_type==='resource'&&['create','create_copy'].includes(change.operation)&&p?.resource?.kind==='file'&&p.upload?.protocol===1;
 }
 // Only the sync worker calls this. A failed transfer leaves the authored outbox
 // record and managed PC file intact. Stable change ID + offsets make retry safe.

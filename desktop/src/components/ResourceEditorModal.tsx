@@ -31,6 +31,7 @@ import {
   saveDocxCopy,
   saveResourceText,
   createPdfEditCopy,
+  isLocalResourceRuntime,
 } from '../api/resources';
 import { useToast } from '../contexts/ToastContext';
 
@@ -199,7 +200,7 @@ export default function ResourceEditorModal({ resource, onClose, onSaved }: Prop
     try {
       const created = await createPdfEditCopy(resource.id);
       onSaved(created);
-      showToast('PDF edit copy created');
+      showToast(isLocalResourceRuntime()?'PDF copy saved on this PC and queued for sync':'PDF edit copy created');
       onClose();
     } catch (err: any) {
       showToast(err?.message || 'Failed to create PDF copy', 'error');
@@ -282,7 +283,7 @@ export default function ResourceEditorModal({ resource, onClose, onSaved }: Prop
             </div>
           ) : markdown ? (
             <div className="h-full flex flex-col">
-              <div className="px-4 py-2 border-b border-border text-xs text-text-secondary">Edit the Markdown source directly. Changes are saved back to this LabOS resource.</div>
+              <div className="px-4 py-2 border-b border-border text-xs text-text-secondary">Edit the Markdown source directly. Saving still requires the server; offline Markdown saving is not implemented yet.</div>
               <textarea value={content} onChange={e => setContent(e.target.value)} spellCheck={false} className="flex-1 w-full resize-none bg-bg text-text-primary font-mono text-sm leading-6 p-5 outline-none" />
             </div>
           ) : docx ? (
@@ -299,7 +300,7 @@ export default function ResourceEditorModal({ resource, onClose, onSaved }: Prop
                 <Copy size={40} className="mx-auto mb-4 text-text-secondary" />
                 <h4 className="text-lg font-medium text-text-primary mb-2">Create an editable PDF copy</h4>
                 <p className="text-sm text-text-secondary leading-6">LabOS will duplicate the original PDF into a new resource. The original stays untouched. The duplicated PDF can then be edited externally and re-uploaded to that copy.</p>
-                <p className="text-xs text-text-secondary mt-3">This preserves laboratory source material while establishing safe document versioning.</p>
+                <p className="text-xs text-text-secondary mt-3">{isLocalResourceRuntime()?'Requires a verified PDF on this PC and cached edit authority. The copy is saved locally and queued for synchronization; the original is unchanged.':'The original is preserved; creating the copy requires a server connection.'}</p>
               </div>
             </div>
           ) : (

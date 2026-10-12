@@ -58,6 +58,7 @@ fn validate_relative_path(path:&str)->Result<(),String>{
 #[tauri::command]
 pub fn begin_local_resource_upload(app:AppHandle,expected_account_id:String,expected_session_token:String,mut metadata:Value)->Result<Value,String>{
     if !metadata.is_object(){return Err("Invalid file metadata".into())}
+    if !metadata["derived_from_resource_id"].is_null(){return Err("Use the guarded editor-copy command for derived resources".into())}
     let mut c=local_db::open_local_connection(&app)?;schema(&c)?;
     let tx=c.transaction_with_behavior(TransactionBehavior::Immediate).map_err(err)?;
     guard(&tx,&expected_account_id,&expected_session_token)?;parent_guard(&tx,&metadata)?;
@@ -86,7 +87,15 @@ fn readable_file(c:&Connection,resource_id:&str)->Result<(String,String,String,u
     let record=local_resources::read_resources(c)?.into_iter().find(|r|r.id==resource_id).ok_or("Resource unavailable")?;
     let (change,mime,size,revision):(String,String,i64,Option<String>)=c.query_row("SELECT change_id,COALESCE(json_extract(resource_json,'$.mime_type'),'application/octet-stream'),size_bytes,server_revision FROM local_resource_uploads WHERE account_id=?1 AND resource_id=?2 AND state='ready'",params![account,resource_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(err)?;
     let pending:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM active_sync_outbox WHERE change_id=?1 AND synced_at IS NULL)",[&change],|r|r.get(0)).map_err(err)?;
-    if pending{local_auth::require_local_permission(c,"resources.create")?;parent_guard(c,&serde_json::to_value(&record).map_err(err)?)?;}
+    if pending{
+        local_auth::require_local_permission(c,"resources.create")?;parent_guard(c,&serde_json::to_value(&record).map_err(err)?)?;
+        if let Some(source_id)=&record.derived_from_resource_id{
+            let source=local_resources::read_resources(c)?.into_iter().find(|r|r.id==*source_id).ok_or("Source access is no longer available")?;
+            crate::local_resource_attachments::require_cached_resource_editor(c,&source)?;
+            let denied:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM local_resource_poster_denials WHERE account_id=?1 AND resource_id=?2)",params![account,source_id],|r|r.get(0)).unwrap_or(true);
+            if denied{return Err("Source resource access was revoked; the authored copy is preserved".into())}
+        }
+    }
     else if revision.as_deref()!=Some(record.updated_at.as_str()){return Err("Local file needs revision verification".into())}
     // A pending metadata edit must not bypass a known server visibility removal.
     if !pending {
@@ -99,11 +108,89 @@ fn capability(c:&Connection,id:&str)->Result<String,String>{
     let token:String=c.query_row("SELECT session_token FROM local_session WHERE id=1",[],|r|r.get(0)).map_err(err)?;
     Ok(format!("{:x}",Sha256::digest(format!("labos-file:{token}:{id}").as_bytes())))
 }
+fn resolved_file(app:&AppHandle,c:&Connection,id:&str)->Result<(PathBuf,String,u64),String>{
+    if let Ok((account,change,mime,size))=readable_file(c,id){
+        let path=file_path(app,&account,&change)?;
+        if fs::metadata(&path).map(|m|m.len()==size).unwrap_or(false){return Ok((path,mime,size))}
+    }
+    crate::local_resource_replication::readable(app,c,id)
+}
+
+fn editor_source(c:&Connection,account:&str,session:&str,id:&str)->Result<local_resources::LocalResource,String>{
+    local_db::require_sync_account(c,account)?;
+    let token:String=c.query_row("SELECT session_token FROM local_session WHERE id=1",[],|r|r.get(0)).map_err(err)?;
+    if token!=session{return Err("Session changed while opening editor resource".into())}
+    let resource=local_resources::read_resources(c)?.into_iter().find(|r|r.id==id).ok_or("Resource unavailable on this PC")?;
+    crate::local_resource_attachments::require_cached_resource_editor(c,&resource)?;
+    Ok(resource)
+}
+
+#[tauri::command]
+pub fn read_local_resource_markdown(app:AppHandle,expected_account_id:String,expected_session_token:String,resource_id:String)->Result<String,String>{
+    let c=local_db::open_local_connection(&app)?;schema(&c)?;
+    let source=editor_source(&c,&expected_account_id,&expected_session_token,&resource_id)?;
+    let name=source.original_filename.as_deref().unwrap_or(&source.name).to_lowercase();
+    if source.kind!="file"||source.file_type!="text"||!(name.ends_with(".md")||name.ends_with(".markdown")){return Err("Only Markdown files can be opened as source text".into())}
+    let (path,_,size)=resolved_file(&app,&c,&resource_id).map_err(|_|"A verified file copy is not available on this PC yet")?;
+    if size>4*1024*1024{return Err("Markdown editor supports files up to 4 MiB".into())}
+    let mut bytes=Vec::new();fs::File::open(&path).map_err(err)?.take(size+1).read_to_end(&mut bytes).map_err(err)?;
+    if bytes.len() as u64!=size{return Err("Local file changed while reading".into())}
+    let current=editor_source(&c,&expected_account_id,&expected_session_token,&resource_id)?;
+    if current.updated_at!=source.updated_at||resolved_file(&app,&c,&resource_id)?.0!=path{return Err("Resource changed while opening editor".into())}
+    String::from_utf8(bytes).map_err(|_|"Markdown is not valid UTF-8; the file has not been changed".into())
+}
+
+#[tauri::command]
+pub fn create_local_pdf_edit_copy(app:AppHandle,expected_account_id:String,expected_session_token:String,resource_id:String)->Result<local_resources::LocalResource,String>{
+    let mut c=local_db::open_local_connection(&app)?;schema(&c)?;
+    let tx=c.transaction_with_behavior(TransactionBehavior::Immediate).map_err(err)?;
+    guard(&tx,&expected_account_id,&expected_session_token)?;
+    let source=editor_source(&tx,&expected_account_id,&expected_session_token,&resource_id)?;
+    let original=source.original_filename.as_deref().unwrap_or(&source.name);
+    if source.kind!="file"||source.file_type!="pdf"||!original.to_lowercase().ends_with(".pdf"){return Err("Only PDF resources can be copied for editing".into())}
+    let pending:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM active_sync_outbox WHERE entity_type='resource' AND entity_id=?1 AND synced_at IS NULL)",[&resource_id],|r|r.get(0)).map_err(err)?;
+    if pending{return Err("Sync the source resource's pending changes before creating a derived copy".into())}
+    let (source_path,_,size)=resolved_file(&app,&tx,&resource_id).map_err(|_|"A verified PDF copy is not available on this PC yet")?;
+    if size>MAX_FILE{return Err("PDF exceeds the 500 MiB local copy limit".into())}
+    parent_guard(&tx,&serde_json::to_value(&source).map_err(err)?)?;
+    let id=uuid::Uuid::new_v4().to_string();let change=uuid::Uuid::new_v4().to_string();
+    let mut record=source.clone();
+    record.id=id.clone();
+    let stem=original.replace('\\',"/").rsplit('/').next().unwrap_or("Document.pdf").chars().collect::<Vec<_>>();
+    let stem:String=stem[..stem.len().saturating_sub(4)].iter().take(80).collect();
+    let filename=format!("{stem} — Edited-{}.pdf",&id[..8]);
+    record.name=filename.clone();record.original_filename=Some(filename.clone());
+    record.relative_path=record.parent_resource_id.as_ref().map(|_|filename);
+    record.derived_from_resource_id=Some(source.id.clone());
+    record.mime_type=Some("application/pdf".into());record.size_bytes=Some(size as i64);
+    record.thumbnail_url=None;record.local_media_path=None;record.local_media_filename=None;
+    record.local_media_mime_type=None;record.local_media_size_bytes=None;record.local_media_downloaded_at=None;
+    let timestamp:String=tx.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')",[],|r|r.get(0)).map_err(err)?;
+    record.created_at=timestamp.clone();record.updated_at=timestamp;
+    let target=file_path(&app,&expected_account_id,&change)?;
+    fs::create_dir_all(target.parent().unwrap()).map_err(err)?;
+    let mut output=OpenOptions::new().write(true).create_new(true).open(&target).map_err(err)?;
+    let mut input=fs::File::open(&source_path).map_err(err)?.take(size+1);
+    if std::io::copy(&mut input,&mut output).map_err(err)?!=size{return Err("Source PDF changed while copying; nothing was queued".into())}
+    output.sync_all().map_err(err)?;drop(output);
+    let digest=hash_file(&target)?;
+    guard(&tx,&expected_account_id,&expected_session_token)?;
+    if resolved_file(&app,&tx,&resource_id)?.0!=source_path{return Err("Source resource changed while copying".into())}
+    let payload=json!({"resource":record,"copy":{"protocol":1,"source_id":source.id,"source_updated_at":source.updated_at},"upload":{"protocol":1,"sha256":digest,"size_bytes":size}});
+    let device:String=tx.query_row("SELECT device_id FROM device_identity WHERE id=1",[],|r|r.get(0)).map_err(err)?;
+    tx.execute("INSERT INTO local_resource_uploads(account_id,change_id,resource_id,resource_json,size_bytes,sha256,state) VALUES(?1,?2,?3,?4,?5,?6,'ready')",params![expected_account_id,change,id,serde_json::to_string(&record).map_err(err)?,size as i64,digest]).map_err(err)?;
+    let mut resources=local_resources::read_resources(&tx)?;resources.push(record.clone());local_resources::write_resources(&tx,&resources)?;
+    tx.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES(?1,?2,'resource',?3,'create_copy',?4)",params![change,device,id,payload.to_string()]).map_err(err)?;
+    tx.commit().map_err(err)?;Ok(record)
+}
 #[tauri::command]
 pub fn local_resource_file_access(app:AppHandle,expected_account_id:String)->Result<Value,String>{
     let c=local_db::open_local_connection(&app)?;schema(&c)?;local_db::require_sync_account(&c,&expected_account_id)?;local_auth::require_local_permission(&c,"resources.view")?;
     let mut files=serde_json::Map::new();
     for record in local_resources::read_resources(&c)?{
+        if crate::local_resource_replication::readable(&app,&c,&record.id).is_ok(){
+            files.insert(record.id.clone(),json!({"path":format!("{}.{}",record.id,capability(&c,&record.id)?),"pending":false}));
+        }
         if let Ok((account,change,_,size))=readable_file(&c,&record.id){
             if fs::metadata(file_path(&app,&account,&change)?).map(|m|m.len()==size).unwrap_or(false){
                 let pending:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM active_sync_outbox WHERE change_id=?1 AND synced_at IS NULL)",[change],|r|r.get(0)).map_err(err)?;
@@ -136,7 +223,7 @@ pub fn serve_file(app:&AppHandle,request:&tauri::http::Request)->Result<tauri::h
         if parts.len()!=2{return Err("Invalid local resource URL".into())}uuid::Uuid::parse_str(parts[0]).map_err(err)?;
         let c=local_db::open_local_connection(app)?;schema(&c)?;
         if capability(&c,parts[0])?!=parts[1]{return Err("Local resource session changed".into())}
-        let (account,change,mime,size)=readable_file(&c,parts[0])?;
+        let (file_path,mime,size)=resolved_file(app,&c,parts[0])?;
         let range=request.headers().get("range").and_then(|v|v.to_str().ok());
         let (start,end)=if let Some(range)=range{
             let pair=range.strip_prefix("bytes=").ok_or("Invalid range")?.split_once('-').ok_or("Invalid range")?;
@@ -145,10 +232,10 @@ pub fn serve_file(app:&AppHandle,request:&tauri::http::Request)->Result<tauri::h
             if start>=size||requested<start{return Err("Invalid range".into())}(start,requested.min(size-1).min(start+4*1024*1024-1))
         }else{if size>32*1024*1024{return Err("Large files require ranged access".into())}(0,size.saturating_sub(1))};
         let length=if size==0{0}else{end-start+1};
-        let mut file=fs::File::open(file_path(app,&account,&change)?).map_err(err)?;
+        let mut file=fs::File::open(&file_path).map_err(err)?;
         if file.metadata().map_err(err)?.len()!=size{return Err("Local file changed".into())}
         let mut bytes=if request.method().as_str()=="HEAD"{Vec::new()}else{vec![0;length as usize]};file.seek(SeekFrom::Start(start)).map_err(err)?;file.read_exact(&mut bytes).map_err(err)?;
-        readable_file(&c,parts[0])?;if capability(&c,parts[0])?!=parts[1]{return Err("Session changed".into())}
+        if resolved_file(app,&c,parts[0])?.0!=file_path{return Err("Local file revision changed".into())}if capability(&c,parts[0])?!=parts[1]{return Err("Session changed".into())}
         let mime=if mime.starts_with("image/")||mime.starts_with("audio/")||mime.starts_with("video/")||mime=="application/pdf"{mime}else{"text/plain".into()};
         let origin=request.headers().get("origin").and_then(|v|v.to_str().ok()).filter(|o|["http://localhost:1420","http://127.0.0.1:1420","tauri://localhost","http://tauri.localhost","https://tauri.localhost"].contains(o)).unwrap_or("http://tauri.localhost");
         let mut builder=tauri::http::ResponseBuilder::new().status(if range.is_some(){206}else{200}).header("Content-Type",mime).header("Cache-Control","no-store").header("Accept-Ranges","bytes").header("Content-Length",length.to_string()).header("Access-Control-Allow-Origin",origin).header("Access-Control-Expose-Headers","Content-Range, Content-Length, Accept-Ranges").header("Content-Security-Policy","default-src 'none'; sandbox").header("X-Content-Type-Options","nosniff");

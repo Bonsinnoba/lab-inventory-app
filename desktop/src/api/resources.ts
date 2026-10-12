@@ -9,6 +9,8 @@ import {stageResourceFile,stageResourceFolderFiles,refreshLocalFileAccess,localF
 
 export interface Resource {
   local_file_pending?: boolean;
+  local_file_available?: boolean;
+  local_copy?: {state:string;verified_bytes:number;size_bytes:number|null;error?:string|null};
   id: string; name: string; kind: 'file' | 'folder' | 'link';
   file_type: 'image' | 'video' | 'audio' | 'pdf' | 'text' | 'document' | 'youtube' | 'other' | 'schematic_folder';
   original_filename?: string; mime_type?: string; size_bytes?: number; url?: string; thumbnail_url?: string;
@@ -107,12 +109,23 @@ export async function getResourceManifest(id: string): Promise<ResourceManifest>
 }
 export function getResourceDownloadUrl(id: string, forceDownload = false): string { if(isTauriRuntime()){const local=localFileUrl(id);if(local)return local;} if (!forceDownload && localMediaResourceIds.has(id)) return getLocalMediaUrl(id); const token = getToken(); const params = new URLSearchParams(); if (forceDownload) params.set('download', 'true'); if (token) params.set('access_token', token); const query = params.toString(); return apiUrl(`/resources/${id}/download${query ? `?${query}` : ''}`); }
 export async function getResourceAccessUrl(id: string, forceDownload = false): Promise<string> { const response = await apiFetch(`/resources/${id}/access-url`); if (!response.ok) throw new Error('Failed to create resource access URL'); const body = await response.json(); return `${body.url}${forceDownload ? (body.url.includes('?') ? '&' : '?') + 'download=true' : ''}`; }
-export async function getResourceText(id: string): Promise<string> { const response = await apiFetch(`/resource-editor/${id}/content`); if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to read resource content')); return response.text(); }
+export async function getResourceText(id: string): Promise<string> { if(isTauriRuntime())return localEditorCommand<string>('read_local_resource_markdown',id); const response = await apiFetch(`/resource-editor/${id}/content`); if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to read resource content')); return response.text(); }
 export async function saveResourceText(id: string, content: string): Promise<Resource> { const response = await apiFetch(`/resource-editor/${id}/content`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }) }); if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to save resource content')); return response.json(); }
 export async function getDocxHtml(id: string): Promise<{ html: string; messages: Array<{ type?: string; message?: string }> }> { const response = await apiFetch(`/resource-editor/${id}/docx`); if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to open DOCX')); return response.json(); }
 export async function saveDocxCopy(id: string, html: string): Promise<Resource> { const response = await apiFetch(`/resource-editor/${id}/docx-copy`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ html }) }); if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to save DOCX copy')); return response.json(); }
-export async function createPdfEditCopy(id: string): Promise<Resource> { const response = await apiFetch(`/resource-editor/${id}/pdf-copy`, { method: 'POST' }); if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to create PDF edit copy')); return response.json(); }
+export async function createPdfEditCopy(id: string): Promise<Resource> { if(isTauriRuntime())return localEditorCommand<Resource>('create_local_pdf_edit_copy',id); const response = await apiFetch(`/resource-editor/${id}/pdf-copy`, { method: 'POST' }); if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to create PDF edit copy')); return response.json(); }
 export async function replaceResourceFile(id: string, file: File): Promise<Resource> { const formData = new FormData(); formData.append('file', file); const response = await apiFetch(`/resource-editor/${id}/file`, { method: 'PUT', body: formData }); if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to replace resource file')); return response.json(); }
+
+async function localEditorCommand<T>(command:string,id:string):Promise<T>{
+  const session=captureAccountSession();
+  if(!session||!isAccountSessionCurrent(session))throw new Error('Sign in before opening resource editors');
+  const expectedSessionToken=await localInvoke<string>('local_authorization_guard',{expectedAccountId:session.accountId});
+  if(!isAccountSessionCurrent(session))throw new Error('Account changed while opening resource editor');
+  const result=await localInvoke<T>(command,{expectedAccountId:session.accountId,expectedSessionToken,resourceId:id});
+  if(command==='create_local_pdf_edit_copy'&&isAccountSessionCurrent(session))await refreshLocalFileAccess().catch(()=>undefined);
+  if(!isAccountSessionCurrent(session))throw new Error('Account changed while opening resource editor');
+  return result;
+}
 
 export async function uploadFile(file: File, parent: { item_id?: string; project_id?: string; note_id?: string; parent_resource_id?: string }, name?: string, onProgress?: (progress: number) => void, metadata?: { category?: string; description?: string; tags?: string[] }): Promise<Resource> {
   if(isTauriRuntime())return stageResourceFile(file,{...parent,name,...metadata},onProgress);
@@ -140,10 +153,17 @@ export async function createLink(url: string, parent: { item_id?: string; projec
   return response.json();
 }
 export async function attachExistingResource(id: string, destination: {item_id?:string|null;project_id?:string|null;note_id?:string|null}): Promise<Resource> {
-  // Reassignment is server-backed until the desktop outbox supports attachment moves.
-  if (isTauriRuntime() && typeof navigator !== 'undefined' && !navigator.onLine)
-    throw new Error('Reconnect to change resource attachments.');
   const session=captureAccountSession();
+  if(isTauriRuntime()){
+    if(!session||!isAccountSessionCurrent(session))throw new Error('Sign in before moving resources');
+    const expectedSessionToken=await localInvoke<string>('local_authorization_guard',{expectedAccountId:session.accountId});
+    if(!isAccountSessionCurrent(session))throw new Error('Account changed while moving resource');
+    const resource=await localInvoke<Resource>('move_local_resource_attachment',{
+      expectedAccountId:session.accountId,expectedSessionToken,resourceId:id,destination,
+    });
+    if(!isAccountSessionCurrent(session))throw new Error('Account changed while moving resource');
+    return resource;
+  }
   const response=await apiFetch(`/resources/${encodeURIComponent(id)}/attachment`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(destination)});
   if(!response.ok)throw new Error(await getApiErrorMessage(response,'Unable to attach resource'));
   const resource:Resource=await response.json();
@@ -164,12 +184,13 @@ async function readDesktopResources(filters?:Record<string,unknown>):Promise<Res
   const rows=await localInvoke<Resource[]>('list_local_resources',filters);
   // File capability failure must not hide otherwise available SQLite metadata.
   await refreshLocalFileAccess().catch(()=>undefined);
+  const copies:Record<string,NonNullable<Resource['local_copy']>>=await localInvoke<Record<string,NonNullable<Resource['local_copy']>>>('local_resource_copy_status',{expectedAccountId:session.accountId}).catch(()=>({}));
   if(!isAccountSessionCurrent(session))throw new Error('Account changed while reading resources');
   if(!Array.isArray(rows))throw new Error('Local resource list is unavailable');
   rememberDesktopMedia(rows,session.accountId,!filters);
   // Synced resource records already contain media metadata. Reading them must
   // neither wait for server job enrichment nor hide a failed native read.
-  return rows.map(row=>({...row,local_file_pending:localFilePending(row.id)}));
+  return rows.map(row=>({...row,local_file_pending:localFilePending(row.id),local_file_available:!!localFileUrl(row.id),local_copy:copies[row.id]}));
 }
 export async function updateResourceVisibility(id:string,visibility:NonNullable<Resource['visibility']>):Promise<Resource>{
   const response=await apiFetch(`/resources/${encodeURIComponent(id)}/visibility`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({visibility})});

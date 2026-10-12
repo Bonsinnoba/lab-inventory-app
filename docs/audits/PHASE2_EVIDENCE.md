@@ -1172,6 +1172,109 @@ approval, LabOS was closed and reopened on the new binary; its window was respon
 and Vite returned HTTP 200. This is startup verification only, not folder workflow
 or outage acceptance.
 
+## 2026-10-12 — stuck-sync repair (findings 47–48)
+
+- Corrected server acknowledgement projections without returning full historical
+  record snapshots. Upload ID/revision and authorized download control/settings
+  receipt fields now match native consumers.
+- Desktop confirms each submitted change independently; a failed confirmation
+  cannot skip unrelated successes or rejected-change reporting. Unknown replies
+  cannot ACK local work; missing/duplicate replies retry the original identity.
+- Seven new focused receipt tests, nineteen related tests, and TypeScript check
+  passed. These are not substitutes for native or PostgreSQL integration tests.
+- Actual PostgreSQL/API replay verified the original upload receipt, and the
+  desktop SQLite row shows it acknowledged at 2026-10-11 18:01:55.
+- Live retry exposed a second defect: resource deletion's SET NULL action broke
+  the canvas content constraint. Migration 20261012_canvas_resource_removal
+  preserves the node as text, including its identity/layout/annotations and
+  connectors. The real PostgreSQL rollback-only regression passed both direct
+  and folder-cascade deletion. No fixtures remain from that probe.
+- Original blocked deletion successfully committed and replayed with one receipt;
+  the referenced canvas block remains at (80,80) as Resource removed. The other
+  queued deletes were also accepted through their existing IDs. Only already
+  authored deletion intents were replayed; local ACK state was never edited.
+- Eight deletions still awaited desktop acknowledgement at the final read-only
+  check. Computer-use app approval timed out. Desktop retry/queue drain and the
+  full stopped-API/reconnect matrix remain unverified; Phase 2 is not signed off.
+
+## 2026-10-12 — initial native resource replication batch
+
+- Added a background server-to-PC copy coordinator after authorized resource
+  pulls, independently of outbox processing. It rotates through uploaded files
+  and completed downloaded links; it never fetches arbitrary external URLs.
+- Native code verifies the token's server identity against the active account,
+  uses only the trusted configured API origin with redirects disabled, and
+  transfers one bounded 4 MiB chunk per call. Manifest/range/ETag/length/chunk
+  digest and final whole-file digest validation are enforced.
+- SQLite persists verified offsets and errors; fsync precedes offset commit.
+  Completed bytes are atomically renamed. Interrupted publication can recover
+  by re-verifying the final file. Partial files are never reader-visible.
+- The existing capability reader now also serves verified derived copies under
+  account/session/lease/permission/revision/known-revocation checks. Pending
+  authored changes defer replication. Authored files and their outbox are not
+  removed or overwritten. Cards show available-on-PC, copying and error states.
+- Focused verification: TypeScript check, cargo check/build and current native
+  manifest unit test passed. Eighteen frontend replication/upload/folder checks,
+  nine server binary checks and five poster/receipt checks passed. One stale
+  frontend test fixture lacked the newly used localFileUrl stub; it was updated
+  and the full targeted group rerun successfully. No database test was replaced
+  with a mock; this batch did not execute PostgreSQL acceptance.
+- Owner approved restart. Closed only the verified old LabOS process, built the
+  native executable successfully and reopened it at 2026-10-12 03:03:07 (PID 9724).
+  Process reported responsive and Vite served successfully. Read-only inspection
+  showed the new copy tables initialized, with zero copied rows yet.
+- At startup verification, API connection was refused. Both labos-api and db
+  containers had exited cleanly approximately four minutes earlier, outside this
+  batch's service actions. Left them stopped as found. This is startup evidence,
+  not a controlled outage/playback acceptance pass. Native full-copy, interrupted
+  transfer, cold restart, revocation, disk-full and reconnect tests remain NOT RUN.
+- Read-only SQLite inspection now shows ZERO pending outbox changes. This closes
+  the previous eight-pending-ACK observation for findings 47–48; no queue rows
+  were manually acknowledged or deleted.
+- Still open: physical derived-file reclamation, retention/quota and encryption
+  recovery, editor copies, scoped note/folder write authority, reader seek/large
+  file compatibility and the phase-end actual PostgreSQL/desktop outage matrix.
+
+## 2026-10-12 — attachment moves: local/outbox implementation
+
+- Desktop Attach/Move now calls a guarded native command, never a direct HTTP
+  mutation or a server fallback after local failure. Attachment metadata and an
+  account-attributed stable-ID `resource/attach` intent commit together in SQLite.
+- The new server handler locks the resource, checks its confirmed revision,
+  current source/destination edit authority, project visibility and existing
+  canvas/task/experiment attachment project references. It does not change file
+  bytes, visibility, grants, or create a second resource. Existing sync receipts
+  provide retry idempotency. Older servers reject the distinct operation instead
+  of treating it as a successful empty metadata update.
+- Native availability is deliberately bounded: admins or cached direct-project
+  editors only; missing record grants fail closed. Folder trees/nested rows and
+  additional moves while another resource change is pending are not implemented.
+  Project-visible moves into notes await cached note-project authority. Ordinary
+  attachment-only pending work does not hide an already verified derived file.
+- Focused evidence: backend pure validation 3/3; frontend folder/attachment
+  boundary tests 6/6; native destination test 1/1; TypeScript, cargo check/build
+  passed. These tests do not exercise an actual database or prove offline UI
+  acceptance. Actual PostgreSQL/desktop tests remain in the phase-end sweep.
+- Required acceptance: API stopped → save attachment → refresh/cold restart;
+  reconnect → same resource ID and one receipt; replay original change ID;
+  another-device edit → conflict without overwrite; revoked permission/account
+  switch; pending upload guard; project-reference mismatch; partial bulk failure;
+  verified-file access while move is pending. Never delete authored work to pass.
+- Editor text/DOCX/PDF writes remain server-backed and OPEN. This batch does not
+  claim editor copies, physical cache reclamation, or all Phase 2 work complete.
+- Final focused regression run: fourteen frontend attachment/folder/replication/
+  receipt checks and three backend validation checks passed. Final TypeScript
+  check and native build passed; diff whitespace check passed. Native destination
+  test had passed before the operation-name-only compatibility adjustment.
+- With owner approval, reopened desktop PID 6768 at 2026-10-12 06:50:19;
+  executable build timestamp 06:48:20, process responsive, Vite HTTP 200.
+  This is process/startup evidence, not visual/offline mutation acceptance.
+  Built API image 0849f5706b399eda70b86dbdfc10e7ae45ed49ab6843f36d941dc96d4393a2fa
+  and recreated only the already-stopped API container with --no-start --no-deps.
+  API remains Created (not running); PostgreSQL remains stopped as found.
+  Existing volumes/data were preserved. The new sync handler is staged for the
+  next server start, not live-verified against PostgreSQL in this batch.
+
 ## Remaining Phase 2 work (current)
 
 October 9 owner-directed planning update: authentication/security findings and

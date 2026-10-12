@@ -1,9 +1,41 @@
 # Resource binary replication — Phase 2
 
-Status (2026-10-11): **server transfer foundation and single-file desktop staging
-implemented; live acceptance pending.** A guarded reader now serves new authored
-local files. Automatic server-to-PC replication remains open. Metadata/poster rows
-do not prove that older originals exist offline.
+Status (2026-10-12): **server transfer foundation, desktop staging and initial
+automatic server-to-PC worker implemented; live acceptance pending.** The guarded
+reader now supports both authored files and verified derived PC copies.
+Metadata/poster rows alone still do not prove originals exist offline.
+
+## October 12 — native PC-copy worker
+
+After an authorized metadata pull, a separate background coordinator rotates
+through uploaded files and completed downloaded links. Each native invocation
+verifies server-token identity against the active native account, uses the
+compiled trusted API origin (no redirects or manifest-provided URL), fetches a
+manifest and transfers at most one 4 MiB chunk. Up to eight rounds run per pass;
+missing/busy sources wait for a later metadata pass. Outbox acknowledgements do
+not wait for these copies.
+
+SQLite stores account/resource/origin/content digest, metadata revision, verified
+offset, state and errors. Chunk response revision/range/length/hash are checked;
+bytes are fsynced before offset commit. Whole-file size/hash verification precedes
+atomic rename into `resource-copies/<account>/<resource>/<sha256>.content`.
+Restart recovery validates an existing complete file after an interrupted rename
+or SQLite commit. Incomplete `.partial` files never enter the reader. A changed
+manifest resets progress without mixing content versions. Existing corrupt final
+files are preserved with an explicit recovery error, not silently overwritten.
+
+The session-capability reader checks current account/lease/permission, current
+metadata revision, known visibility denials and pending authored changes. New
+authored upload files remain in their separate storage; this worker does not
+delete or replace them. Resource cards expose verified PC availability, progress
+and copy errors. Observed credential revocation uses the existing auth lock path.
+
+Remaining: physical derived-copy reclamation on revocation/deletion, retention and
+quota policy, protected/encrypted storage recovery, native scoped editor copies,
+large-file seek compatibility, and end-to-end outage/interruption/two-account
+acceptance. Logical access denial is implemented; physical byte erasure is NOT
+claimed. The current reader still conservatively invalidates a metadata revision
+until a successful manifest refresh, even when its content hash is unchanged.
 
 ## Desktop-authored uploads — October 11 continuation
 
@@ -36,7 +68,7 @@ The parent folder is a separate create and can remain empty after failure. Each
 child has its own server receipt; server-side publication is not folder-atomic.
 Desktop folder manifests read SQLite rather than HTTP. Live acceptance is pending.
 
-Remaining boundaries: editor copies, old server-file replication,
+Remaining boundaries: editor copies, live acceptance of server-file replication,
 offline video-poster extraction and native scoped note/folder grants. Non-admin
 note/folder attachments currently fail closed. The reader supports bounded forward
 ranges, not suffix ranges; non-range reads above 32 MiB are rejected. WebView and
@@ -112,7 +144,7 @@ warming the bounded digest cache for a later request. Ended/disconnected respons
 are not written a second time. A cold very-large-file load/timeouts and worker
 content replacement still require deployment load tests.
 
-## Next native implementation — not yet delivered
+## Native implementation requirements — acceptance checklist
 
 1. Pull manifests for every authorized file/downloaded link, not only opened cards.
    Treat missing/busy sources as incomplete, not zero data or successful mirroring.

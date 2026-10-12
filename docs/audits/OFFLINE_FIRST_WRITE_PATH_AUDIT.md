@@ -691,6 +691,62 @@ VERIFICATION: TypeScript and native cargo check passed. Thirteen frontend adapte
 STATUS: IMPLEMENTED / AWAITING VERIFICATION. Folder creation is separate and may leave an empty folder on failed staging. Server publication is per-file, not folder-atomic. Non-admin scoped folder grants, staging recovery, legacy browser overwrite/race behavior, editor copies and full binary replication remain OPEN.
 ```
 
+## 47. Sync receipt contract and independent acknowledgement (2026-10-12)
+
+```text
+MODULE: Sync / uploads / download controls
+FILE: backend/src/sync-receipts.js; backend/src/routes/sync.js; desktop/src/api/sync-receipts.ts; desktop/src/api/sync.ts
+CURRENT WRITE PATH: Existing SQLite/outbox IDs are pushed or replayed; safe server receipts bind upload revisions or atomically merge download controls before the matching local ACK.
+WHY IT BYPASSES OFFLINE-FIRST: No new bypass, but the generic redacted receipt omitted native-required fields. One receipt exception prevented the entire batch from being acknowledged and hid other errors.
+RISK: Already-committed work remains pending indefinitely; misleading retry state; unsafe manual clearing or re-creation would risk loss/duplicates.
+RECOMMENDED CHANGE: Allowlist only receipt fields needed by native consumers, retain current authorization and historical-record redaction, and isolate each submitted change's confirmation.
+ACTUAL CHANGE MADE: Minimal file ID/revision receipts; download control/settings allowlists behind existing authorization; per-change ACK/failure/conflict processing; missing/duplicate replies remain pending; unknown replies ignored; session checks and finally cleanup retained. No queue reset or new change IDs.
+VERIFICATION: Seven targeted receipt regressions, nineteen related adapter/visibility checks, TypeScript check passed. Real upload replay returned original ID/revision; SQLite independently showed that upload acknowledged at 2026-10-11 18:01:55. All eight remaining deletion intents accepted by actual PostgreSQL API after finding 48; eight desktop ACKs were still pending at last read-only inspection. Computer-use approval timed out; no desktop completion claim.
+STATUS: IMPLEMENTED AND DEPLOYED. Subsequent 2026-10-12 03:03 startup/read-only SQLite check confirmed ZERO pending rows, closing queue-drain confirmation. Full outage/two-client phase acceptance remains separate.
+```
+
+## 48. Resource deletion blocked by a canvas content constraint (2026-10-12)
+
+```text
+MODULE: Resources / project canvas / deletion synchronization
+FILE: backend/src/migrations/20261012_canvas_resource_removal.sql; backend/src/canvas-resource-removal-live-probe.mjs
+CURRENT WRITE PATH: Authorized deletion through the normal sync route, PostgreSQL transaction, tombstone and stable idempotency receipt.
+WHY IT BYPASSES OFFLINE-FIRST: Not a bypass. ON DELETE SET NULL on project_blocks.resource_id contradicted block_content_matches_type, causing a permanent 23514 retry for referenced resources.
+RISK: One resource deletion never commits; dropping the canvas block to work around it would destroy authored layout and connectors.
+RECOMMENDED CHANGE: Convert the detached canvas reference to a valid text placeholder while preserving its identity, layout, title, annotations and connectors.
+ACTUAL CHANGE MADE: BEFORE UPDATE OF resource_id trigger handles FK nullification for direct or folder-cascade deletion. Existing annotation text is retained; otherwise text becomes Resource removed. No bulk data deletion or constraint relaxation.
+VERIFICATION: Actual PostgreSQL rollback probe passed direct/folder-cascade deletion with preservation assertions. The originally blocked deletion succeeded and replayed successfully using its original change ID; one receipt exists. The original block remains with its ID, x/y and Resource removed text. Server healthy after migration deployment.
+STATUS: IMPLEMENTED / SERVER VERIFIED. Subsequent 2026-10-12 03:03 read-only SQLite check confirmed ZERO pending rows. Offline canvas projection acceptance remains OPEN; no database reset performed.
+```
+
+## 49. Automatic native resource copies (2026-10-12)
+
+```text
+MODULE: Resources / offline file reads
+FILE: desktop/src-tauri/src/local_resource_replication.rs; desktop/src-tauri/src/local_resource_uploads.rs; desktop/src-tauri/src/main.rs; desktop/src/api/resource-replication.ts; desktop/src/api/resources.ts; desktop/src/api/sync.ts; desktop/src/components/ResourceFileStatus.tsx; desktop/src/pages/ResourcesPage.tsx
+CURRENT WRITE PATH: Authorized server read → native bounded verified chunk → managed PC staging + SQLite verified offset → whole-file checksum and atomic file publication → guarded local capability reader. No business/outbox/server mutation.
+WHY IT BYPASSES OFFLINE-FIRST: Previously only authored files and posters had native storage; server-only original/media bytes remained unavailable offline despite local resource metadata.
+RISK: False offline availability, partial/cross-revision files, account leakage, lost progress and copy work blocking ordinary synchronization.
+RECOMMENDED CHANGE: Account/session-bound native replication, trusted-origin requests, checksum/offset persistence, crash recovery, guarded reads and explicit device-copy status.
+ACTUAL CHANGE MADE: Separate background coordinator and native copy commands, one 4 MiB chunk per call; native server identity and local authority checks; no redirects; bounded responses; manifest/range/revision/chunk/full-file validation; fsync/offset commit; rename recovery; derived-copy reader integration; persistent errors and PC-availability/progress cards. Authored files/outbox untouched.
+VERIFICATION: TypeScript check and initial cargo check passed. Eighteen frontend coordinator/upload/folder checks, nine server binary checks, five poster/receipt checks and one native manifest validation test passed. These are focused checks, NOT native restart/resume or actual PostgreSQL outage acceptance. See PHASE2_EVIDENCE.md for build/startup checkpoint.
+STATUS: IMPLEMENTED / AWAITING LIVE ACCEPTANCE. Physical derived-file reclamation, retention/quota, encryption/recovery, editor copies and large-file playback remain OPEN. Known revocation/deletion denies logical access without generating outbound deletion or removing authored work.
+```
+
+## 50. Desktop resource attachment moves (2026-10-12)
+
+```text
+MODULE: Resources / Attach-Move / project relationships
+FILE: desktop/src/api/resources.ts; desktop/src-tauri/src/local_resource_attachments.rs; desktop/src-tauri/src/local_resource_replication.rs; desktop/src-tauri/src/main.rs; backend/src/resource-attachment.js; backend/src/routes/sync.js; desktop/src/pages/ResourcesPage.tsx
+CURRENT WRITE PATH: Desktop API → native account/session/lease/permission checks → one SQLite transaction for local attachment and resource/attach outbox intent → normal sync/idempotency route → locked PostgreSQL resource update → authorized pull.
+WHY IT BYPASSES OFFLINE-FIRST: Previous desktop Attach/Move called PUT /resources/:id/attachment directly, using navigator.onLine as the only offline gate. A server outage blocked the local operation.
+RISK: Missing offline writes, stale moves overwriting newer work, incorrect ownership/project references, false server success on an older deployment.
+RECOMMENDED CHANGE: Typed attachment intent with confirmed resource revision, atomic local save/outbox, canonical UUIDs, stable change ID, source/destination authority and project-reference checks; no HTTP fallback or file copy/deletion.
+ACTUAL CHANGE MADE: Distinct attach operation (older servers reject rather than silently ACK a metadata no-op), protocol-1 destination/revision payload, server revision conflict and parent/reference validation, native fail-closed scope checks, session-change guards, local-save UI wording. Existing verified derived bytes remain readable for the attachment-only pending intent; network copying is deferred. No authored file is removed or duplicated.
+VERIFICATION: Three backend pure validation tests and six frontend folder/attachment boundary checks passed; native destination test, TypeScript check, cargo check and initial build passed. These are not database/integration acceptance. Docker API/PostgreSQL were already stopped; no outage test is claimed.
+STATUS: IMPLEMENTED, LIVE ACCEPTANCE OPEN. Folder/nested moves, moving a resource with another pending change, non-admin shared/restricted/note edit-grant caching, and browser route parity remain open. Rejected/stale moves preserve the original pending intent for review; do not reset the queue or invent a new change ID to retry.
+```
+
 ## Repository coverage register
 
 This register prevents a single grep result from being mistaken for sign-off. It covers every TypeScript file under `desktop/src/api` and the Rust local repositories as of this review. A file may appear in more than one row when it mixes paths. The numbered findings above contain the requested nine-field assessment; the register identifies where each file is assessed. Dynamic `RequestInit` wrappers and the UI call sites were also inspected, not just literal `method:` text.

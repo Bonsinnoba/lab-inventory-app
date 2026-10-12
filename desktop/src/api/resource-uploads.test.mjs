@@ -30,6 +30,14 @@ function load(options={}){
 const file={name:'test.txt',type:'text/plain',size:3,slice:()=>({arrayBuffer:async()=>new Uint8Array([1,2,3]).buffer})};
 const change={change_id:'change',entity_type:'resource',entity_id:'resource',operation:'create',payload:{resource:{id:'resource',kind:'file'},upload:{protocol:1,size_bytes:3,sha256:'a'.repeat(64)}}};
 
+test('derived copies share the stable chunk-upload path, not a server copy endpoint',async()=>{
+  const c=load();const copy={...change,operation:'create_copy'};
+  assert.equal(c.api.isResourceUpload(copy),true);
+  assert.equal(c.api.isResourceUpload({...copy,operation:'attach'}),false);
+  await c.api.transferResourceUpload(copy,'account','native-session',()=>{});
+  assert.ok(c.http.every(call=>call.path.startsWith('/resources/uploads/change/')));
+});
+
 test('saving a desktop upload uses native staging then finalization and never HTTP',async()=>{
   const c=load(),progress=[];const r=await c.api.stageResourceFile(file,{},n=>progress.push(n));
   assert.equal(r.id,'resource');assert.equal(c.http.length,0);
