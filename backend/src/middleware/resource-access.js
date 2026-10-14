@@ -1,6 +1,7 @@
 import { pool } from '../db.js';
 import { getProjectAccess } from './project-access.js';
 import { canEditRestrictedEntity, canReadEntity, normalizeVisibility } from './visibility.js';
+import { resourceBindings } from '../resource-authority.js';
 
 /**
  * Resolve the authorization context of a resource.
@@ -14,17 +15,18 @@ import { canEditRestrictedEntity, canReadEntity, normalizeVisibility } from './v
 export async function getResourceContext(resourceId) {
   const result = await pool.query(`
     WITH RECURSIVE resource_chain AS (
-      SELECT r.*, 0 AS depth
+      SELECT r.*, 0 AS depth, ARRAY[r.id] AS visited
       FROM resources r
       WHERE r.id = $1
       UNION ALL
-      SELECT parent.*, child.depth + 1
+      SELECT parent.*, child.depth + 1, child.visited || parent.id
       FROM resources parent
       JOIN resource_chain child ON child.parent_resource_id = parent.id
+      WHERE child.depth < 31 AND NOT parent.id = ANY(child.visited)
     )
     SELECT rc.id, rc.parent_resource_id, rc.project_id, rc.item_id, rc.note_id,
            rc.uploaded_by, rc.kind, rc.name, rc.visibility, rc.depth,
-           n.project_id AS note_project_id, n.visibility AS note_visibility
+           n.id AS resolved_note_id, n.project_id AS note_project_id, n.visibility AS note_visibility
     FROM resource_chain rc
     LEFT JOIN notes n ON n.id = rc.note_id
     ORDER BY rc.depth ASC`,
@@ -34,6 +36,10 @@ export async function getResourceContext(resourceId) {
   if (!result.rowCount) return null;
 
   const rows = result.rows;
+  if (!resourceBindings(rows)) return {
+    resource: rows[0], projectId: null, invalid: true,
+    reason: 'RESOURCE_ANCESTOR_CONTEXT_INVALID',
+  };
   const projectIds = new Set();
   for (const row of rows) {
     if (row.project_id) projectIds.add(row.project_id);

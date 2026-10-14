@@ -46,12 +46,12 @@ fn validate_base(raw: &str) -> Result<String, AuthError> {
     }
     Ok(raw.trim_end_matches('/').to_owned())
 }
-fn client() -> Result<reqwest::Client, AuthError> {
+pub(crate) fn client() -> Result<reqwest::Client, AuthError> {
     reqwest::Client::builder().timeout(std::time::Duration::from_secs(5))
         .redirect(reqwest::redirect::Policy::none()).no_proxy().build()
         .map_err(|_| AuthError::invalid("Unable to initialize native authentication"))
 }
-async fn response_json<T: serde::de::DeserializeOwned>(mut response: reqwest::Response) -> Result<T, AuthError> {
+pub(crate) async fn response_json<T: serde::de::DeserializeOwned>(mut response: reqwest::Response) -> Result<T, AuthError> {
     let status = response.status();
     if status.is_server_error() { return Err(AuthError::unavailable()); }
     let mut bytes = Vec::new();

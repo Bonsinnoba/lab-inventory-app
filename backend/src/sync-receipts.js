@@ -14,7 +14,7 @@ const pick = (value, fields) => Object.fromEntries(fields
 export function syncResponseProjection(entityType, value, permissions) {
   const receipt = { acknowledged: true };
   if (!value || typeof value !== 'object') return receipt;
-  if (entityType === 'resource' && value.kind === 'file' && permissions.has('resources.create')) {
+  if (entityType === 'resource' && value.kind === 'file' && (permissions.has('resources.create') || permissions.has('resources.edit'))) {
     return { ...receipt, ...pick(value, ['id','updated_at']) };
   }
   if (permissions.has('resources.edit')) {

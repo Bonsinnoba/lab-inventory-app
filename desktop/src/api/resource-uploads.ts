@@ -22,6 +22,23 @@ export async function stageResourceFile(file:File,metadata:Record<string,unknown
   return (await stageFiles([{file,metadata}],false,onProgress))[0];
 }
 
+export async function stagePdfReplacement(resourceId:string,file:File,expectedRevision:string,onProgress?:(n:number)=>void):Promise<Resource>{
+  if(!expectedRevision)throw new Error('Reopen the editor to verify the PDF revision');
+  if(!file.name.toLowerCase().endsWith('.pdf')||file.size<5||file.size>500*1024*1024)throw new Error('Choose a PDF file no larger than 500 MiB');
+  const session=captureAccountSession();if(!session)throw new Error('Sign in before replacing files');
+  const assertCurrent=()=>{if(!isAccountSessionCurrent(session))throw new Error('Account changed while saving replacement');};
+  const expectedSessionToken=await localBackend.invoke<string>('local_authorization_guard',{expectedAccountId:session.accountId});assertCurrent();
+  const guard={expectedAccountId:session.accountId,expectedSessionToken};
+  const staged=await localBackend.invoke<{change_id:string}>('begin_local_pdf_replacement',{...guard,resourceId,expectedRevision,sizeBytes:file.size});assertCurrent();
+  for(let offset=0;offset<file.size;offset+=CHUNK){
+    const bytes=new Uint8Array(await file.slice(offset,offset+CHUNK).arrayBuffer());assertCurrent();
+    await localBackend.invoke('write_local_pdf_replacement_chunk',{...guard,changeId:staged.change_id,offset,bytes:Array.from(bytes)});assertCurrent();
+    onProgress?.(Math.floor(Math.min(file.size,offset+bytes.length)/file.size*95));
+  }
+  const result=await localBackend.invoke<Resource>('finish_local_pdf_replacement',{...guard,changeId:staged.change_id});assertCurrent();
+  await refreshLocalFileAccess().catch(()=>undefined);assertCurrent();onProgress?.(100);return result;
+}
+
 export function validateFolderPaths(files:File[],paths:string[]):string[]{
   if(!files.length||files.length>200||files.length!==paths.length)throw new Error('Select between 1 and 200 files with matching relative paths');
   const seen=new Set<string>();
@@ -70,30 +87,31 @@ async function stageFiles(entries:Array<{file:File;metadata:Record<string,unknow
 export type UploadChange={change_id:string;entity_type:string;entity_id?:string|null;operation:string;payload:unknown};
 export function isResourceUpload(change:UploadChange):boolean{
   const p=change.payload as {upload?:{protocol?:number};resource?:{kind?:string}}|null;
-  return change.entity_type==='resource'&&['create','create_copy'].includes(change.operation)&&p?.resource?.kind==='file'&&p.upload?.protocol===1;
+  return change.entity_type==='resource'&&['create','create_copy','edit_content'].includes(change.operation)&&p?.resource?.kind==='file'&&p.upload?.protocol===1;
 }
 // Only the sync worker calls this. A failed transfer leaves the authored outbox
 // record and managed PC file intact. Stable change ID + offsets make retry safe.
 export async function transferResourceUpload(change:UploadChange,accountId:string,nativeSessionToken:string,assertCurrent:()=>void):Promise<void>{
   const payload=change.payload as {resource:{id:string};upload:{sha256:string;size_bytes:number}};
   const size=payload.upload.size_bytes;
+  const base=change.operation==='edit_content'?'/resource-editor/uploads':'/resources/uploads';
   if(!Number.isSafeInteger(size)||size<0)throw new Error('Invalid saved upload size');
   assertCurrent();
-  const statusResponse=await apiFetch(`/resources/uploads/${encodeURIComponent(change.change_id)}/status`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...payload.upload,resource_id:payload.resource.id})});
+  const statusResponse=await apiFetch(`${base}/${encodeURIComponent(change.change_id)}/status`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...payload.upload,resource_id:payload.resource.id})});
   assertCurrent();if(!statusResponse.ok)throw new Error(await getApiErrorMessage(statusResponse,'File transfer status unavailable'));
   const status=await statusResponse.json() as {next_offset:number;published:boolean;initialized:boolean};assertCurrent();
   if(!Number.isSafeInteger(status.next_offset)||status.next_offset<0||status.next_offset>size||(status.next_offset!==size&&status.next_offset%CHUNK!==0))throw new Error('Invalid server upload offset');
   if(status.published||(status.initialized&&status.next_offset===size))return;
   for(let offset=status.next_offset;offset<size||offset===0;offset+=CHUNK){
     assertCurrent();
-    const bytes=await localBackend.invoke<number[]>('read_local_resource_upload_chunk',{
+    const bytes=await localBackend.invoke<number[]>(change.operation==='edit_content'?'read_local_resource_edit_chunk':'read_local_resource_upload_chunk',{
       expectedAccountId:accountId,expectedSessionToken:nativeSessionToken,changeId:change.change_id,offset,
     });
     assertCurrent();
     if(bytes.length!==Math.min(CHUNK,size-offset))throw new Error('Saved file chunk is incomplete');
     const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),45000);
     try{
-      const response=await apiFetch(`/resources/uploads/${encodeURIComponent(change.change_id)}/chunk`,{
+      const response=await apiFetch(`${base}/${encodeURIComponent(change.change_id)}/chunk`,{
         method:'POST',signal:controller.signal,headers:{'Content-Type':'application/octet-stream',
           'X-Resource-Id':payload.resource.id,'X-File-Size':String(size),'X-File-SHA256':payload.upload.sha256,'X-Chunk-Offset':String(offset)},
         body:new Uint8Array(bytes),

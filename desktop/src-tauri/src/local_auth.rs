@@ -183,7 +183,7 @@ pub fn local_authorization_guard(app:AppHandle,expected_account_id:String)->Resu
     authorization_guard(&c,&expected_account_id)
 }
 
-fn invalidate_authorization(c:&mut rusqlite::Connection,account:&str,expected_token:&str)->Result<bool,String>{
+pub(crate) fn invalidate_authorization(c:&mut rusqlite::Connection,account:&str,expected_token:&str)->Result<bool,String>{
     let tx=c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
     if authorization_guard(&tx,account)?.as_deref()!=Some(expected_token){return Ok(false)}
     // Never delete business rows, outbox entries or authorship. Only a new online

@@ -747,6 +747,174 @@ VERIFICATION: Three backend pure validation tests and six frontend folder/attach
 STATUS: IMPLEMENTED, LIVE ACCEPTANCE OPEN. Folder/nested moves, moving a resource with another pending change, non-admin shared/restricted/note edit-grant caching, and browser route parity remain open. Rejected/stale moves preserve the original pending intent for review; do not reset the queue or invent a new change ID to retry.
 ```
 
+## 51. Native PDF editor copies and Markdown reads (2026-10-12)
+
+```text
+MODULE: Resources / document editor
+FILE: desktop/src-tauri/src/local_resource_uploads.rs; desktop/src-tauri/src/local_resource_attachments.rs; desktop/src-tauri/src/main.rs; desktop/src/api/resources.ts; desktop/src/api/resource-uploads.ts; desktop/src/components/ResourceEditorModal.tsx; backend/src/resource-editor-copy.js; backend/src/routes/sync.js
+CURRENT WRITE PATH: PDF copy: guarded native source read → new managed PC file + fsync/hash → one SQLite transaction publishing the copy, upload descriptor and resource/create_copy outbox event → existing resumable upload worker → current source authorization/revision/scope checks → PostgreSQL resource/receipt transaction. Markdown opening: bounded native verified-file read, no mutation.
+WHY IT BYPASSES OFFLINE-FIRST: PDF Create Edit Copy previously called the server directly. Markdown opening also required a live server even when verified local bytes were present.
+RISK: Offline failure, accidental visibility widening, lost provenance, copied bytes mistaken for a server-saved resource, stale/revoked source authorization, retries generating duplicate server resources.
+RECOMMENDED CHANGE: Reuse managed upload storage and stable outbox/change identity; preserve source attachment/visibility/provenance; use a distinct guarded copy operation; keep originals immutable and unknown-authority actions fail-closed.
+ACTUAL CHANGE MADE: Native PDF-copy command preserves source context/visibility, assigns a new canonical resource/change UUID, commits local publication/outbox atomically after copying, and queues resumable transfer. Server create_copy validates source revision/current edit authority and preserves derived_from_resource_id in pull. Pending copy reads check known source revocation. Markdown reads are native, UTF-8-only and capped at 4 MiB. No direct HTTP fallback. UI distinguishes queued copies from server saves.
+VERIFICATION: Six backend pure validation checks, nineteen frontend boundary/upload checks, TypeScript and cargo check passed. No new database fixtures or database reset. Native PDF copy, native restart and actual PostgreSQL/offline replay acceptance remain separately tracked in PHASE2_EVIDENCE.md.
+STATUS: IMPLEMENTED / LIVE ACCEPTANCE OPEN. Markdown save, DOCX rendering/conversion/save, PDF replacement, missing cached edit grants and orphan/derived-file reclamation remain OPEN. Source with pending changes must sync before derivation; a missing verified PC file does not fall back to server copying. Failed staging can leave recovery bytes, never erase authored originals.
+```
+
+## 52. Same-resource offline Markdown saves (2026-10-12)
+
+```text
+MODULE: Resources / Markdown editor / sync
+FILE: desktop/src-tauri/src/local_resource_edits.rs; desktop/src-tauri/src/local_resource_uploads.rs; desktop/src-tauri/src/local_db.rs; desktop/src-tauri/src/main.rs; desktop/src/api/resources.ts; desktop/src/api/resource-uploads.ts; desktop/src/api/sync.ts; desktop/src/components/ResourceEditorModal.tsx; backend/src/resource-content-edit.js; backend/src/routes/resource-editor.js; backend/src/routes/sync.js; backend/src/sync-receipts.js
+CURRENT WRITE PATH: Native account/session/editor guard → immutable PC version with fsync/SHA-256 → atomic SQLite resource projection + edit version + edit_content outbox → resumable bounded file transfer → current server authority/revision check → PostgreSQL file-pointer update, required audit and idempotency receipt in one transaction.
+WHY IT BYPASSES OFFLINE-FIRST: Previous desktop Markdown save called PUT /resource-editor/:id/content directly; local bytes alone did not permit offline saving.
+RISK: Lost disconnected edits, duplicate resources when retrying as new documents, stale editor/server overwrite, mixed-account writes, broken ordering of multiple offline saves.
+RECOMMENDED CHANGE: Preserve resource UUID, assign one stable change UUID per saved version, keep immutable file bytes, chain pending saves through owned receipt revisions, and reject conflicts without deleting authored work.
+ACTUAL CHANGE MADE: Dedicated native version repository and edit_content intent; no HTTP write fallback. UI captures the opened revision and preserves text on failed saves. Server locks current row, checks current edit authority, validates format/size/UTF-8, verifies predecessor user/device/resource/operation, publishes a new immutable file, then updates the existing row. Receipts expose only ID/revision. Discarding an edit conflict retires its pending edit chain but retains physical recovery files. Automatic conflict overwrite is blocked.
+VERIFICATION: Rust cargo check and frontend TypeScript check passed. Backend pure validation/projection checks 12/12, frontend routing/transfer checks 22/22. These checks do not prove PostgreSQL mutation, native SQLite publication, actual offline playback/editing or two-device behavior; phase-end live matrix remains mandatory.
+STATUS: IMPLEMENTED / LIVE ACCEPTANCE OPEN. UTF-8 Markdown only, max 4 MiB. Verified local source and conservative cached editor authority required. Other pending resource operations (including initial upload) must sync before content editing. Conflict version export/reapply UI, missing scoped grants, physical reclamation, DOCX conversion/save and PDF replacement remain OPEN. No database reset or authored-data deletion.
+```
+
+## 53. Offline PDF replacement and pending-create editor chains (2026-10-12)
+
+```text
+MODULE: Resources / PDF editor / sync dependencies
+FILE: desktop/src-tauri/src/local_resource_edits.rs; desktop/src-tauri/src/local_db.rs; desktop/src-tauri/src/local_resource_uploads.rs; desktop/src-tauri/src/local_resource_posters.rs; desktop/src-tauri/src/main.rs; desktop/src/api/resource-uploads.ts; desktop/src/api/resources.ts; desktop/src/components/ResourceEditorModal.tsx; desktop/src/components/ResourceViewerModal.tsx; backend/src/resource-content-edit.js
+CURRENT WRITE PATH: Captured native account/session/source revision → managed 1 MiB staging chunks → complete-size/PDF-header/SHA-256 checks → one SQLite transaction publishing version/resource/outbox → resumable edit-permission transfer → guarded PostgreSQL pointer/audit/receipt transaction.
+WHY IT BYPASSES OFFLINE-FIRST: replaceResourceFile previously always constructed a multipart HTTP PUT. Newly created native files/copies also could not be edited until their initial creation synced.
+RISK: Offline edit failure; overwrite/loss of original bytes; stale revision replacement; cross-account or wrong-document predecessor; repeated creation of resources; viewers showing old content despite a successful save.
+RECOMMENDED CHANGE: Reuse stable same-resource content-edit versions and owned predecessor receipts. Keep staging private until finalization. Preserve existing bytes and immutable initial-create payloads. Refresh viewers by revision, not only ID.
+ACTUAL CHANGE MADE: Native begin/write/finish replacement commands, 500 MiB maximum, current authority/session checks, exact chunk retries, PDF signature validation, same UUID/filename, format-specific server validation without buffering the entire PDF. UI exposes edited-file upload for derived PDF copies. Content edits may follow owned native create/create_copy or edit_content receipts; discarding a create/edit conflict retires dependent pending edit intents without deleting files. Other pending metadata/attachment mutations still block editing. Viewer reads and PDF document instances refresh on revision changes.
+VERIFICATION: Backend pure validation/projection group 16/16; frontend routing/staging group 27/27; TypeScript and native compilation passed before final build. Not native-file/SQLite/PostgreSQL/outage acceptance. Full phase-end matrix must exercise create → repeated edits → replay and conflicts on actual services.
+STATUS: IMPLEMENTED / LIVE ACCEPTANCE OPEN. Browser compatibility replacement still uses the legacy HTTP route and is not included in desktop offline completion. No full PDF structural validation, antivirus guarantee, large-file viewer acceptance, staged-file reclamation, or revoked-account recovery claim. Originals and partial staging remain preserved.
+```
+
+## 54. Markdown saved-version recovery and unsaved editor protection (2026-10-12)
+
+```text
+MODULE: Resources / Markdown recovery
+FILE: desktop/src-tauri/src/local_resource_edits.rs; desktop/src-tauri/src/main.rs; desktop/src/api/resources.ts; desktop/src/components/MarkdownVersionHistory.tsx; desktop/src/components/ResourceEditorModal.tsx
+CURRENT WRITE PATH: Version review/export is a guarded read of the active author's managed file. Explicit Use in editor loads a reviewed draft; Save uses the ordinary same-ID SQLite/outbox path with the opened revision. No direct server recovery write.
+WHY IT BYPASSES OFFLINE-FIRST: Previously preserved editor files had no user-facing retrieval path; conflict discard could leave recoverable bytes inaccessible through the normal UI.
+RISK: Authored work effectively stranded; recovery that bypasses revoked permissions; accidental overwrite of current unsaved text; stale preview exported under a different session.
+RECOMMENDED CHANGE: Account/resource/version-bound native history reader, digest verification, explicit preview/export/reapply, and normal conflict/permission checks on the new save.
+ACTUAL CHANGE MADE: Lists latest 100 local Markdown versions with pending/confirmed/discarded intent states; validates byte size and SHA-256 before strict UTF-8 decode; rechecks account, lease and cached editor authority. Export/use rereads and reauthorizes. Loading a version requires confirmation before replacing unsaved editor text. Closing a dirty editor asks for confirmation; closing during a save is disabled. Current resource access is still required.
+VERIFICATION: Frontend boundary tests exercise native history routing, resource/change/session arguments, account-switch rejection and no HTTP fallback. TypeScript/native compile checks passed. Export download behavior, visual layout, real offline version history and revoked/deleted-resource recovery require separate live acceptance; not claimed passed.
+STATUS: IMPLEMENTED / LIVE ACCEPTANCE OPEN. This covers local Markdown editor versions, not PDF version export, deleted/revoked-resource recovery, another device's history, incomplete staging, or encryption/key recovery. Those retained bytes are not erased.
+```
+
+## 55. Bounded native PDF viewing (2026-10-13)
+
+```text
+MODULE: Resources / offline PDF preview
+FILE: desktop/src/api/local-pdf-range.ts; desktop/src/components/ResourcePdfPreview.tsx; desktop/src/components/ResourceViewerModal.tsx; desktop/src-tauri/src/local_resource_uploads.rs
+CURRENT WRITE PATH: Read-only native managed-file ranges. No resource write, outbox event, server mutation or local/server write fallback.
+WHY IT BYPASSES OFFLINE-FIRST: Viewer URL loading began with a whole GET that native storage rejects above 32 MiB. An existing PC copy could therefore fail to render offline; a missing local URL could also select the server URL.
+RISK: False unavailability of locally stored PDFs, unbounded buffers, mixing file versions during replacement, stale-session bytes, silent server dependence.
+RECOMMENDED CHANGE: Explicit local PDF range transport, bounded reads/queue, immutable-version pinning, native authorization per read, cancellation and honest missing-copy states.
+ACTUAL CHANGE MADE: Desktop PDF preview uses native URLs only; 1 MiB chunks, serial processing, 16 MiB per assembled PDF.js request, 64 queued requests and 500 MiB file cap. Checks status/range/size/revision; native opaque revision query rejects changed versions. HEAD is body-free for large files. UI reports errors and does not fall back to a server read. No data removed or mutation architecture changed.
+VERIFICATION: 9 new pure transport tests, combined desktop resource tests 36/36, TypeScript and cargo check passed. Not actual WebView/database/outage acceptance; queued for the phase-end real-desktop stopped-API sweep.
+STATUS: IMPLEMENTED / LIVE ACCEPTANCE OPEN. Large-file generic export/download, media suffix ranges, PDF structural safety, renderer memory/load behavior and offline DOCX are not closed by this change.
+```
+
+## 56. Desktop session restoration after local lease expiry (2026-10-13)
+
+```text
+MODULE: Authentication / startup / all offline-first domain reads
+FILE: desktop/src/api/auth.ts; desktop/src/App.tsx; desktop/src/pages/LoginPage.tsx; desktop/src/api/auth-offline.test.mjs
+CURRENT WRITE PATH: Startup reads server identity and native local session. Fresh password login alone renews the native authorization lease; business SQLite/outbox data is unchanged.
+WHY IT BYPASSES OFFLINE-FIRST: A healthy server JWT was treated as sufficient for workspace restoration even when the native lease had expired. Every local domain correctly rejected reads but the UI mislabeled them unavailable.
+RISK: Global misleading failures, pressure to reset intact data, or insecure lease extension as a workaround.
+RECOMMENDED CHANGE: Require valid same-account native access before restoring the desktop workspace, explain reauthentication, preserve pending/authored data and the agreed lease policy.
+ACTUAL CHANGE MADE: Successful server restoration now checks local_current_user, validates central identity and guards late responses. Startup shows an explicit online-sign-in notice for expired/missing access. Valid native sessions survive transient permission-refresh outages. No automatic lease renewal, native logout, data deletion or server-write fallback.
+VERIFICATION: Actual read-only SQLite session showed the administrator lease expired at 2026-10-13 07:15:39 UTC while API/database/storage health was ok. Frontend auth boundary tests 23/23 and TypeScript passed; live re-login and page-load confirmation remain open.
+STATUS: STARTUP FIX IMPLEMENTED. Legitimate online password sign-in is required to regain access. Mid-session expiry/draft-preserving reauthentication and full offline/reconnect acceptance remain separate work; no whole-security sign-off.
+```
+
+## 57. DOCX conversion boundary and bundled-runtime groundwork (2026-10-13)
+
+```text
+MODULE: Resources / DOCX editor and preview
+FILE: backend/src/docx-converter.js; backend/src/docx-worker.js; backend/src/docx-file.js; backend/src/routes/resource-editor.js; desktop/scripts/package-docx-runtime.mjs; desktop/scripts/verify-docx-runtime.mjs
+CURRENT WRITE PATH: Desktop DOCX opening/saving is still direct API-backed. API preview now uses bounded disk reads and the same isolated converter service as DOCX generation. Development runtime bundle is generated separately; no native write path is claimed yet.
+WHY IT BYPASSES OFFLINE-FIRST: Merely replicating original DOCX bytes does not supply a local conversion/editor pipeline; desktop getDocxHtml/saveDocxCopy still require the API.
+RISK: Offline failure, parser CPU/memory failures in API, unsanitized converted markup, accidental external references, host Node dependency in a purported self-contained desktop package.
+RECOMMENDED CHANGE: Owner-approved bundled isolated converter with native session/scope/revision guards, immutable managed output and atomic local copy/outbox publication. Preserve originals and stable retry identities; no server-write fallback.
+ACTUAL CHANGE MADE: Isolated/sanitized bounded API preview, shared read/write worker limit, bounded file reader and environment filtering. Added development bundle generator and integrity/relocation verification. Documented native bridge/publication contract. No changes to existing desktop DOCX persistence or outbox semantics yet.
+VERIFICATION: Windows converter tests 11/11. Generated bundle verified 4,082 files/110 package versions and round-tripped a formatted document outside the repo with empty PATH using its bundled Node. API rebuilt/deployed and healthy; no DB mutation tests or offline desktop acceptance claimed.
+STATUS: FOUNDATION IMPLEMENTED; OFFLINE DOCX STILL OPEN. Native bridge, DOCX derived-copy sync, installer/runtime provenance/signing/notices and full actual desktop/API-stopped acceptance remain.
+```
+
+## 58. Native offline DOCX preview and copy publication (2026-10-13)
+
+```text
+MODULE: Resources / DOCX preview, editor and copy synchronization
+FILE: desktop/src-tauri/src/local_docx.rs; desktop/src/api/resources.ts; desktop/src/components/ResourceEditorModal.tsx; backend/src/docx-native-worker.js; backend/src/docx-transform.js; backend/src/resource-editor-copy.js; backend/src/routes/sync.js
+CURRENT WRITE PATH: Desktop HTML -> bundled child converter -> immutable managed DOCX -> SQLite resource/upload/request mapping plus outbox transaction -> existing resumable transfer and create_copy server receipt. Preview reads managed PC bytes. Browser compatibility retains HTTP routes.
+WHY IT BYPASSES OFFLINE-FIRST: Previous desktop DOCX routes used the API even when original bytes existed on the PC. This batch removes those desktop read/write fallbacks.
+RISK: Lost offline edits, duplicate copies after response loss, stale-session disclosure, changed-source copies, parser resource exhaustion or accidental host runtime dependencies.
+RECOMMENDED CHANGE: Guarded pinned native worker, original-preserving copy, atomic publication, stable retry mapping, explicit server DOCX validation, no direct server fallback.
+ACTUAL CHANGE MADE: Implemented native read/save commands, bounded framed protocol and Windows job/process limits, packaged runtime pin, before/after authorization and revision checks, immutable output and transactional request/copy/outbox identity. Added DOCX create_copy validation without weakening PDF validation. Replays check current file authorization and cannot resurrect a deleted copy.
+VERIFICATION: 19 converter/protocol/copy-validator checks, 14 desktop adapter checks and one real native bundled-process test passed; TypeScript and debug native build passed. Initial relocated probes timed out; the final exact-entry probe passed after explicitly closing its test input handle to match Rust. Verified 4,084 files/110 package versions outside the repo with empty PATH. Updated desktop restarted with saved-edits approval; API/database/storage healthy. No database fixtures or live desktop outage acceptance implied.
+STATUS: IMPLEMENTED / ACCEPTANCE OPEN. Pending-source dependency handling, broader cached record edit grants, crash recovery of unsaved drafts, installer provenance/signing/notices and real stopped-API/reconnect/replay tests remain. Phase 2 is not signed off.
+```
+
+## Finding 59 — editor-copy predecessor chains (October 13; A5)
+
+```text
+MODULE: Resources / editor copies / outbox dependency handling
+FILE: desktop/src-tauri/src/{local_docx,local_resource_uploads,local_resource_edits,resource_dependencies,local_db}.rs; desktop/src/api/{resource-dependencies,sync}.ts; backend/src/{resource-editor-copy,routes/sync}.js
+CURRENT WRITE PATH: Verified managed source bytes → immutable copy bytes + scoped SQLite projection + outbox, with copy.previous_change_id for a pending source create/copy/content-edit → staged binary transfer → server receipt-bound authorization and copy apply.
+WHY IT BYPASSES OFFLINE-FIRST: Prior copy writers did not directly bypass the outbox, but prohibited copies until source synchronization completed. Same-entity-only upload withholding/conflict retirement could not support cross-resource copy dependencies.
+RISK: Offline copy unavailable; missing predecessor retries indefinitely; dependent copy applied against the wrong revision; foreign-device/account receipt or revoked source used as authority; discarded work lost if bytes were deleted.
+RECOMMENDED CHANGE: Explicit immutable predecessor IDs, owner/device/source receipt verification, current access/revision checks, account-scoped dependency closure for queue/discard, and preserved authored bytes.
+ACTUAL CHANGE MADE: Native PDF/DOCX source predecessor selection, server receipt resolution, bounded unconfirmed-copy ancestry authorization, transitive upload withholding, native conflict-chain blocking and explicit non-destructive dependent-intent retirement. Metadata/attachment/folder chains remain blocked, not silently treated as supported.
+VERIFICATION: 16 backend validator, 18 desktop adapter/dependency and two native pure dependency-graph checks passed (36 total); TypeScript and cargo check --offline passed. No mocked or fixture database result is presented as PostgreSQL/desktop acceptance.
+STATUS: SOURCE IMPLEMENTED / ACCEPTANCE OPEN. Not deployed or restarted this checkpoint. A5 remains PARTIAL; full outage/reconnect/replay, cached record grants and remaining dependency types remain in the fixed checklist.
+```
+
+## Finding 60 — native record edit-authority projection (October 14; A1)
+
+```text
+MODULE: Resources / native editor authorization / sync-derived cache
+FILE: backend/src/{resource-authority,routes/sync}.js; desktop/src-tauri/src/{local_resource_authority,local_resource_attachments,local_resource_edits,native_authorization,local_auth,local_db,main}.rs; desktop/src/api/{resource-authority,sync}.ts
+CURRENT WRITE PATH: Read-only server authority projection → native authenticated request to compiled origin → account/resource/scope/revision/exact-login-lease-bound SQLite cache. Domain edits still use immutable native files + SQLite/outbox → server reauthorization.
+WHY IT BYPASSES OFFLINE-FIRST: No domain write bypass was added. Earlier native editors blocked legitimate shared/restricted access and inferred direct-project edit authority from a cached project row; they lacked a native-verified record-specific decision.
+RISK: Forged renderer grants, cross-account or stale-session responses, stale positives overwriting denials, unbounded cached authority, inferred ancestor grants, or content-edit permission persisting across an unrelated scope/version change.
+RECOMMENDED CHANGE: Native-only verified positive authority, bounded complete batches, session/origin/account/lease binding, explicit denial replacement, and proven content-only continuation with server-side revision/permission rechecks.
+ACTUAL CHANGE MADE: Added bounded read-only authority endpoint, native fetching/validation/cache, serialized refresh, native-protocol adapter gating and direct-resource editor checks. Kept exact revision matching plus same-account/device native content-chain proof for the owner-delegated recommended lease policy. Note/folder inheritance remains denied until complete ancestor bindings exist; no new admin authority or permissions are granted offline.
+VERIFICATION: 20 backend pure validator, six desktop adapter/dependency and four native pure authority/chain tests passed (30 total); TypeScript and native test-target compilation passed. No DB fixtures, Docker mutations, deployment, app restart or real offline acceptance was performed.
+STATUS: SOURCE IMPLEMENTED / ACCEPTANCE OPEN; A1 remains PARTIAL. Inherited/destination authority, fresh local creation authority, wider writer audit, recovery and real PostgreSQL/offline/reconnect cases remain. Old authored bytes/outbox/version records are preserved; legacy versions without proof fail closed.
+```
+
+## Finding 61 — complete inherited resource edit bindings (October 14; A1)
+
+```text
+MODULE: Resources / inherited folder and note source-editor authority
+FILE: backend/src/{resource-authority,middleware/resource-access,routes/sync}.js; desktop/src-tauri/src/{local_resource_authority,local_resource_attachments,local_notes}.rs
+CURRENT WRITE PATH: Server-verified complete scope chain -> native trusted-origin protocol-2 fetch -> atomic account/lease/revision-bound derived SQLite authority cache. Existing native content writes still use immutable files + SQLite/outbox -> server reauthorization.
+WHY IT BYPASSES OFFLINE-FIRST: No domain bypass is introduced. Previously legitimate inherited source edits were blocked because a direct-resource grant could not prove the note/folder authority context.
+RISK: Inheriting access from a partial/cyclic chain, missing notes, changed ancestor visibility/project, cross-account snapshots or an unrelated older cached context. Source editing must not imply destination creation authority.
+RECOMMENDED CHANGE: Complete bounded server authorization bindings, strict native validation and comparison against scoped local ancestry, existing content-revision/lease checks, separate destination contracts.
+ACTUAL CHANGE MADE: Protocol-2 negotiation and four-resource batches; two server editor checks with stable binding projection; bounded cycle-safe context query; atomic grant/context cache including grant revision and lease; native complete-chain/missing/duplicate/scope checks replacing only the non-admin inherited-source blanket prohibition. Unsupported trees above 32 records deny without data deletion. Protocol-1 response shape remains compatible.
+VERIFICATION: 24 backend, seven native and six desktop pure checks passed; native test compilation and TypeScript passed. No database fixtures or PostgreSQL query acceptance; actual stopped-API desktop/restart/reconnect acceptance remains open.
+STATUS: SOURCE IMPLEMENTED / ACCEPTANCE OPEN. A1 remains PARTIAL; API-first deployment required. Destination authority, metadata/attachment/folder dependencies, new local source grants and broader authorization coverage remain. All existing bytes, outbox events and databases preserved.
+```
+
+## Finding 62 — destination verification and edit-before-move dependency (October 14; A1/A5)
+
+```text
+MODULE: Resources / upload and copy destinations / direct attachment moves
+FILE: backend/src/{resource-destination-authority,resource-attachment,routes/sync}.js; desktop/src-tauri/src/{local_resource_destinations,local_resource_authority,local_resource_uploads,local_resource_attachments,resource_dependencies,local_projects,main}.rs; desktop/src/api/{sync,resource-dependencies}.ts
+CURRENT WRITE PATH: Native-verified destination cache -> guarded native file/attachment writer -> scoped SQLite plus immutable outbox -> receipt-ordered server apply with current source/destination permissions and revision checks.
+WHY IT BYPASSES OFFLINE-FIRST: Previously project file destinations trusted renderer-fed project access, note/folder file destinations blanket-blocked non-admins, and any pending source change prevented a move even when a native file predecessor existed. No direct HTTP write fallback was added.
+RISK: Source authority incorrectly granting destination access, stale/foreign positive cache, missing destination cache on first sync, moves racing unsynced content, cross-device predecessor reuse or an old server silently ignoring dependencies.
+RECOMMENDED CHANGE: Separate native destination grants, same lease/account/scope constraints, refresh after scope-source pulls, explicit versioned move dependencies and server receipt reauthorization.
+ACTUAL CHANGE MADE: Added bounded native destination projection/cache and folder self-grant checks, replaced non-admin renderer project trust for file destinations, retained global project checks, allowed verified project-note attachments, added native predecessor capture and protocol-2 receipt resolution for a direct move after supported file creation/copy/edit. Queue graph parsing includes attachment predecessors. Unsupported later metadata/move chains still block without deleting authored work.
+VERIFICATION: 33 backend pure/receipt-double tests, 12 native pure tests and eight desktop adapter/dependency/source-order checks passed; native test compilation and TypeScript passed. No fixture database, API deployment, desktop restart or Docker mutation; actual PostgreSQL/offline acceptance remains pending.
+STATUS: SOURCE IMPLEMENTED / ACCEPTANCE OPEN. A1 and A5 remain PARTIAL. Metadata/repeated-move/tree dependencies, fresh local source/destination authority and broader security coverage remain. Existing data, files and outbox preserved; API-first deployment required.
+```
+
 ## Repository coverage register
 
 This register prevents a single grep result from being mistaken for sign-off. It covers every TypeScript file under `desktop/src/api` and the Rust local repositories as of this review. A file may appear in more than one row when it mixes paths. The numbered findings above contain the requested nine-field assessment; the register identifies where each file is assessed. Dynamic `RequestInit` wrappers and the UI call sites were also inspected, not just literal `method:` text.

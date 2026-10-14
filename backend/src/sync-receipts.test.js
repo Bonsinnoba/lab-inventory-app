@@ -2,6 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {syncResponseProjection as project} from './sync-receipts.js';
 const permissions=new Set(['resources.create','resources.edit']);
+
+test('edit-only accounts can bind file revisions without receiving private fields',()=>{
+  assert.deepEqual(project('resource',{kind:'file',id:'file',updated_at:'revision',storage_path:'private'},new Set(['resources.edit'])),{acknowledged:true,id:'file',updated_at:'revision'});
+});
 test('uploaded file receipt includes the native binding keys but no record snapshot',()=>{
   assert.deepEqual(project('resource',{kind:'file',id:'file-id',updated_at:'revision',name:'private',storage_path:'secret'},permissions),
     {acknowledged:true,id:'file-id',updated_at:'revision'});

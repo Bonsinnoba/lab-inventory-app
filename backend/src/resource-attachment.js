@@ -1,4 +1,5 @@
 import { requireResourceEditor, validateResourceParent } from './middleware/resource-access.js';
+import { predecessorRevision } from './resource-content-edit.js';
 
 function fail(status, code, message) { throw Object.assign(new Error(message), { status, code }); }
 const fields = ['item_id', 'project_id', 'note_id'];
@@ -22,6 +23,23 @@ export function checkAttachmentRevision(resource, expected) {
     fail(400, 'ATTACHMENT_REVISION_REQUIRED', 'Refresh this resource before moving it');
   if (new Date(resource.updated_at).getTime() !== Date.parse(expected))
     fail(409, 'RESOURCE_ATTACHMENT_CONFLICT', 'The resource changed on the server. Review its current attachment before retrying.');
+}
+
+export function attachmentPredecessor(move,change,user){
+  if(![1,2].includes(move.protocol))fail(400,'INVALID_ATTACHMENT_PROTOCOL','Unsupported resource attachment protocol');
+  const previous=move.previous_change_id;
+  if(previous==null)return null;
+  if(move.protocol!==2||typeof previous!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(previous)||previous.toLowerCase()===String(change.change_id).toLowerCase()||!change.__device_id||!user.userId)
+    fail(400,'INVALID_ATTACHMENT_DEPENDENCY','Invalid attachment predecessor');
+  return previous.toLowerCase();
+}
+export async function attachmentExpectedRevision(client,move,change,user){
+  const previous=attachmentPredecessor(move,change,user);
+  if(!previous)return move.expected_updated_at;
+  const prior=(await client.query('SELECT * FROM sync_idempotency WHERE change_id=$1',[previous])).rows[0];
+  // Same author/device/resource file receipt only. Current source/destination
+  // authorization and revision are still rechecked by moveResourceAttachment.
+  return predecessorRevision(prior,change,user,change.entity_id);
 }
 
 // Caller owns the transaction and the idempotency receipt. No bytes are moved,

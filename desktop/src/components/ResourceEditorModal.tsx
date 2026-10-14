@@ -31,9 +31,11 @@ import {
   saveDocxCopy,
   saveResourceText,
   createPdfEditCopy,
+  replaceResourceFile,
   isLocalResourceRuntime,
 } from '../api/resources';
 import { useToast } from '../contexts/ToastContext';
+import MarkdownVersionHistory from './MarkdownVersionHistory';
 
 interface Props {
   resource: Resource;
@@ -86,21 +88,29 @@ export default function ResourceEditorModal({ resource, onClose, onSaved }: Prop
   const pdf = isPdf(resource);
   const [content, setContent] = useState('');
   const editorRef = useRef<HTMLDivElement>(null);
+  const loadedRevision = useRef(resource.updated_at);
+  const loadedContent = useRef('');
+  const docxAttempt = useRef<{resourceId:string;revision?:string;html:string;requestId:string}|null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeTool, setActiveTool] = useState('');
+  const [replacement, setReplacement] = useState<File|null>(null);
+  const [replacementProgress, setReplacementProgress] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
     setContent('');
+    loadedContent.current = '';
+    loadedRevision.current = resource.updated_at;
+    setReplacement(null);
 
     if (markdown) {
-      getResourceText(resource.id)
+      getResourceText(resource.id, loadedRevision.current)
         .then(text => {
-          if (!cancelled) setContent(text);
+          if (!cancelled) {loadedContent.current=text;setContent(text);}
         })
         .catch((err: any) => {
           if (!cancelled) setError(err?.message || 'Unable to load Markdown file');
@@ -109,9 +119,10 @@ export default function ResourceEditorModal({ resource, onClose, onSaved }: Prop
           if (!cancelled) setLoading(false);
         });
     } else if (docx) {
-      getDocxHtml(resource.id)
+      getDocxHtml(resource.id, loadedRevision.current)
         .then(result => {
           if (!cancelled) {
+            loadedContent.current=result.html;
             setContent(result.html);
             if (editorRef.current) editorRef.current.innerHTML = result.html;
           }
@@ -169,9 +180,9 @@ export default function ResourceEditorModal({ resource, onClose, onSaved }: Prop
   const saveMarkdown = async () => {
     setSaving(true);
     try {
-      const updated = await saveResourceText(resource.id, content);
+      const updated = await saveResourceText(resource.id, content, loadedRevision.current);
       onSaved(updated);
-      showToast('Markdown saved');
+      showToast(isLocalResourceRuntime()?'Markdown saved on this PC and queued for sync':'Markdown saved');
       onClose();
     } catch (err: any) {
       showToast(err?.message || 'Failed to save Markdown', 'error');
@@ -184,9 +195,13 @@ export default function ResourceEditorModal({ resource, onClose, onSaved }: Prop
     const html = editorRef.current?.innerHTML || content;
     setSaving(true);
     try {
-      const created = await saveDocxCopy(resource.id, html);
+      const previous=docxAttempt.current;
+      if(!previous||previous.resourceId!==resource.id||previous.revision!==loadedRevision.current||previous.html!==html){
+        docxAttempt.current={resourceId:resource.id,revision:loadedRevision.current,html,requestId:crypto.randomUUID()};
+      }
+      const created = await saveDocxCopy(resource.id, html, loadedRevision.current, docxAttempt.current!.requestId);
       onSaved(created);
-      showToast('DOCX saved as a new copy');
+      showToast(isLocalResourceRuntime()?'DOCX copy saved on this PC and queued for sync':'DOCX saved as a new copy');
       onClose();
     } catch (err: any) {
       showToast(err?.message || 'Failed to save DOCX copy', 'error');
@@ -207,6 +222,22 @@ export default function ResourceEditorModal({ resource, onClose, onSaved }: Prop
     } finally {
       setSaving(false);
     }
+  };
+
+  const savePdfReplacement = async () => {
+    if(!replacement)return;
+    setSaving(true);setReplacementProgress(0);
+    try{
+      const updated=await replaceResourceFile(resource.id,replacement,loadedRevision.current,setReplacementProgress);
+      onSaved(updated);showToast(isLocalResourceRuntime()?'PDF saved on this PC and queued for sync':'PDF replaced');onClose();
+    }catch(err:any){showToast(err?.message||'Unable to save PDF; previous version preserved','error');}
+    finally{setSaving(false);}
+  };
+
+  const requestClose = () => {
+    if(saving)return;
+    if((content!==loadedContent.current||replacement)&&!window.confirm('Close this editor and discard its unsaved changes? Previously saved versions will be kept.'))return;
+    onClose();
   };
 
   const renderDocxTools = () => (
@@ -255,7 +286,7 @@ export default function ResourceEditorModal({ resource, onClose, onSaved }: Prop
   );
 
   return createPortal(
-    <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/80" onClick={onClose}>
+    <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/80" onClick={requestClose}>
       <div className="w-[95vw] h-[90vh] max-w-6xl bg-surface border border-border rounded-md overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-border bg-surface-raised">
           <div className="min-w-0">
@@ -266,10 +297,11 @@ export default function ResourceEditorModal({ resource, onClose, onSaved }: Prop
             {markdown && <button onClick={saveMarkdown} disabled={loading || saving || !!error} className="flex items-center gap-1.5 px-3 py-1.5 bg-accent text-bg rounded-sm text-sm disabled:opacity-40"><Save size={15} /> {saving ? 'Saving…' : 'Save'}</button>}
             {docx && <button onClick={saveDocx} disabled={loading || saving || !!error} className="flex items-center gap-1.5 px-3 py-1.5 bg-accent text-bg rounded-sm text-sm disabled:opacity-40"><Save size={15} /> {saving ? 'Saving…' : 'Save as Copy'}</button>}
             {pdf && <button onClick={makePdfCopy} disabled={saving} className="flex items-center gap-1.5 px-3 py-1.5 bg-accent text-bg rounded-sm text-sm disabled:opacity-40"><Copy size={15} /> {saving ? 'Creating…' : 'Create Edit Copy'}</button>}
-            <button onClick={onClose} className="p-1.5 hover:bg-surface rounded-sm text-text-secondary hover:text-text-primary" title="Close"><X size={18} /></button>
+            <button onClick={requestClose} disabled={saving} className="p-1.5 hover:bg-surface rounded-sm text-text-secondary hover:text-text-primary disabled:opacity-40" title="Close"><X size={18} /></button>
           </div>
         </div>
 
+        {markdown&&isLocalResourceRuntime()&&<MarkdownVersionHistory key={resource.id} resourceId={resource.id} onUse={setContent} disabled={loading||saving}/>}
         <div className="flex-1 min-h-0">
           {loading ? (
             <div className="h-full flex items-center justify-center text-text-secondary">Loading…</div>
@@ -283,12 +315,12 @@ export default function ResourceEditorModal({ resource, onClose, onSaved }: Prop
             </div>
           ) : markdown ? (
             <div className="h-full flex flex-col">
-              <div className="px-4 py-2 border-b border-border text-xs text-text-secondary">Edit the Markdown source directly. Saving still requires the server; offline Markdown saving is not implemented yet.</div>
+              <div className="px-4 py-2 border-b border-border text-xs text-text-secondary">{isLocalResourceRuntime()?'Saves stay on this PC and synchronize when connected. Conflicting server edits require review; saved versions are preserved.':'Edit the Markdown source directly. Saving requires a server connection.'}</div>
               <textarea value={content} onChange={e => setContent(e.target.value)} spellCheck={false} className="flex-1 w-full resize-none bg-bg text-text-primary font-mono text-sm leading-6 p-5 outline-none" />
             </div>
           ) : docx ? (
             <div className="h-full flex flex-col">
-              <div className="px-4 py-2 border-b border-border text-xs text-text-secondary flex items-center gap-2"><FileText size={14} /> Edit the document content. Use the compact tools on the left for formatting. Saving creates a new DOCX resource and keeps the original unchanged.</div>
+              <div className="px-4 py-2 border-b border-border text-xs text-text-secondary flex items-center gap-2"><FileText size={14} /><span>{isLocalResourceRuntime()?'Save as Copy creates a new DOCX on this PC and queues it for sync.':'Saving creates a new DOCX resource.'} The original stays unchanged. Complex Word features may not be preserved by this editor.</span></div>
               <div className="flex flex-1 min-h-0">
                 {renderDocxTools()}
                 <div ref={editorRef} contentEditable suppressContentEditableWarning onInput={() => setContent(editorRef.current?.innerHTML || '')} className="flex-1 min-w-0 overflow-auto bg-bg text-text-primary p-8 outline-none leading-7 prose prose-invert max-w-none" />
@@ -298,9 +330,15 @@ export default function ResourceEditorModal({ resource, onClose, onSaved }: Prop
             <div className="h-full flex items-center justify-center bg-surface-raised px-6">
               <div className="max-w-lg text-center">
                 <Copy size={40} className="mx-auto mb-4 text-text-secondary" />
-                <h4 className="text-lg font-medium text-text-primary mb-2">Create an editable PDF copy</h4>
+                <h4 className="text-lg font-medium text-text-primary mb-2">{resource.derived_from_resource_id?'Save an externally edited PDF':'Create an editable PDF copy'}</h4>
                 <p className="text-sm text-text-secondary leading-6">LabOS will duplicate the original PDF into a new resource. The original stays untouched. The duplicated PDF can then be edited externally and re-uploaded to that copy.</p>
                 <p className="text-xs text-text-secondary mt-3">{isLocalResourceRuntime()?'Requires a verified PDF on this PC and cached edit authority. The copy is saved locally and queued for synchronization; the original is unchanged.':'The original is preserved; creating the copy requires a server connection.'}</p>
+                {resource.derived_from_resource_id&&<div className="mt-6 rounded-lg border border-border bg-bg p-4 text-left">
+                  <label className="block text-sm text-text-primary" htmlFor="edited-pdf">Edited PDF file</label>
+                  <input id="edited-pdf" type="file" accept=".pdf,application/pdf" disabled={saving} onChange={e=>setReplacement(e.target.files?.[0]||null)} className="mt-2 block w-full text-sm text-text-secondary"/>
+                  <p className="mt-3 text-xs text-text-secondary">Replaces this copy's content, keeping its resource identity and filename. On desktop, previous saved bytes are retained and edits wait for any pending copy creation to synchronize.</p>
+                  <button onClick={savePdfReplacement} disabled={!replacement||saving} className="mt-4 rounded-md bg-accent px-4 py-2 text-sm text-bg disabled:opacity-40">{saving?`Saving ${replacementProgress}%…`:'Save edited PDF'}</button>
+                </div>}
               </div>
             </div>
           ) : (

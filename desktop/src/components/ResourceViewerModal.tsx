@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState, type WheelEvent } from 'react';
 import { Resource, getResourceDownloadUrl, getDocxHtml } from '../api/resources';
 import { X, Download, ChevronLeft, ChevronRight, Repeat, Maximize2, Minimize2, ZoomIn, ZoomOut, RotateCcw, PanelRight, Pencil, Image as ImageIcon, Video, Music, FileText, File as FileIcon, Folder, Link as LinkIcon } from 'lucide-react';
-import { Document, Page, pdfjs } from 'react-pdf';
+import { pdfjs } from 'react-pdf';
+import ResourcePdfPreview from './ResourcePdfPreview';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 import {useVideoPoster} from './VideoResourcePoster';
@@ -18,14 +19,14 @@ function youtubeEmbedUrl(resource: Resource) { const raw=resource.url?.trim(); i
 
 function usePaneContent(resource: Resource|null) {
   const [text,setText]=useState<string|null>(null),[docxHtml,setDocxHtml]=useState<string|null>(null),[loading,setLoading]=useState(false),[error,setError]=useState<string|null>(null);
-  useEffect(()=>{let cancelled=false;setText(null);setDocxHtml(null);setError(null);if(!resource)return;const ext=extension(resource);const load=async()=>{if(ext!=='docx'&&!isMarkdownResource(resource)&&!['txt','csv','json','xml','yaml','yml'].includes(ext))return;setLoading(true);try{if(ext==='docx'){const result=await getDocxHtml(resource.id);if(!cancelled)setDocxHtml(result.html);}else{const response=await fetch(getResourceDownloadUrl(resource.id));if(!response.ok)throw new Error(`Unable to load resource (${response.status})`);if(!cancelled)setText(await response.text());}}catch(e){if(!cancelled)setError(e instanceof Error?e.message:'Unable to load resource');}finally{if(!cancelled)setLoading(false);}};void load();return()=>{cancelled=true;};},[resource?.id]);
+  useEffect(()=>{let cancelled=false;setText(null);setDocxHtml(null);setError(null);setLoading(false);if(!resource)return;const ext=extension(resource);const load=async()=>{if(ext!=='docx'&&!isMarkdownResource(resource)&&!['txt','csv','json','xml','yaml','yml'].includes(ext))return;setLoading(true);try{if(ext==='docx'){const result=await getDocxHtml(resource.id,resource.updated_at);if(!cancelled)setDocxHtml(result.html);}else{const response=await fetch(getResourceDownloadUrl(resource.id));if(!response.ok)throw new Error(`Unable to load resource (${response.status})`);const loadedText=await response.text();if(!cancelled)setText(loadedText);}}catch(e){if(!cancelled)setError(e instanceof Error?e.message:'Unable to load resource');}finally{if(!cancelled)setLoading(false);}};void load();return()=>{cancelled=true;};},[resource?.id,resource?.updated_at]);
   return {text,docxHtml,loading,error};
 }
 function PaneContent({resource,zoom,pdfPage,setPdfPages,onWheel}:{resource:Resource|null;zoom:number;pdfPage:number;setPdfPages:(pages:number)=>void;onWheel:(e:WheelEvent<HTMLDivElement>)=>void}){
   const poster=useVideoPoster(resource);
   const content=usePaneContent(resource);if(!resource)return <div className="flex h-full items-center justify-center text-sm text-slate-500">Select a resource to compare.</div>;if(content.loading)return <div className="flex h-full items-center justify-center text-sm text-slate-400">Loading preview…</div>;if(content.error)return <div className="flex h-full items-center justify-center p-6 text-center text-sm text-red-300">{content.error}</div>;
   const ext=extension(resource),url=getResourceDownloadUrl(resource.id),youtubeUrl=resource.kind==='link'?youtubeEmbedUrl(resource):null;
-  if(ext==='pdf')return <div className="flex h-full items-start justify-center overflow-auto p-3" onWheel={onWheel}><div style={{transform:`scale(${zoom})`,transformOrigin:'top center'}}><Document file={url as unknown as File} onLoadSuccess={({numPages})=>setPdfPages(numPages)} onLoadError={()=>setPdfPages(0)}><Page pageNumber={pdfPage} renderTextLayer renderAnnotationLayer/></Document></div></div>;
+  if(ext==='pdf')return <div className="flex h-full items-start justify-center overflow-auto p-3" onWheel={onWheel}><div style={{transform:`scale(${zoom})`,transformOrigin:'top center'}}><ResourcePdfPreview key={`${resource.id}:${resource.updated_at}`} id={resource.id} revision={resource.updated_at} url={url} page={pdfPage} onPages={setPdfPages}/></div></div>;
   if(ext==='docx'&&content.docxHtml!==null)return <div className="h-full overflow-auto bg-white p-8 text-black"><div dangerouslySetInnerHTML={{__html:content.docxHtml}}/></div>;
   if(isMarkdownResource(resource)&&content.text!==null)return <pre className="h-full overflow-auto whitespace-pre-wrap p-6 text-sm leading-6 text-slate-200">{content.text}</pre>;
   if(['txt','csv','json','xml','yaml','yml'].includes(ext)&&content.text!==null)return <pre className="h-full overflow-auto whitespace-pre-wrap p-6 text-sm leading-6 text-slate-200">{content.text}</pre>;
@@ -45,7 +46,7 @@ export default function ResourceViewerModal({resource,resources=[],onClose,onEdi
   const [leftZoom,setLeftZoom]=useState(1),[rightZoom,setRightZoom]=useState(1);const [leftPdfPage,setLeftPdfPage]=useState(1),[rightPdfPage,setRightPdfPage]=useState(1);const [leftPdfPages,setLeftPdfPages]=useState(0),[rightPdfPages,setRightPdfPages]=useState(0);
   const left=list.find(r=>r.id===leftId)||resource,right=rightId?list.find(r=>r.id===rightId)||null:null;
   useEffect(()=>localStorage.setItem('labos-resource-viewer-split',isSplit?'1':'0'),[isSplit]);useEffect(()=>localStorage.setItem('labos-resource-viewer-size',size),[size]);
-  useEffect(()=>{setLeftPdfPage(1);setLeftPdfPages(0);setLeftZoom(1);},[left.id]);useEffect(()=>{setRightPdfPage(1);setRightPdfPages(0);setRightZoom(1);},[right?.id]);
+  useEffect(()=>{setLeftPdfPage(1);setLeftPdfPages(0);setLeftZoom(1);},[left.id,left.updated_at]);useEffect(()=>{setRightPdfPage(1);setRightPdfPages(0);setRightZoom(1);},[right?.id,right?.updated_at]);
   const stepList=(id:string,dir:1|-1)=>{const idx=list.findIndex(r=>r.id===id);if(idx<0||!list.length)return id;return list[(idx+dir+list.length)%list.length].id;};
   useEffect(()=>{const handler=(e:KeyboardEvent)=>{if(pickerFor){if(e.key==='Escape'){setPickerFor(null);setPickerQuery('');}return;}if(e.key==='Escape'){onClose();return;}if(e.key!=='ArrowLeft'&&e.key!=='ArrowRight')return;const active=document.activeElement;if(active instanceof HTMLInputElement||active instanceof HTMLTextAreaElement||(active instanceof HTMLElement&&active.isContentEditable))return;const dir=e.key==='ArrowLeft'?-1:1;if(!isSplit||hoveredPane==='left')setLeftId(id=>id?stepList(id,dir):id);else setRightId(id=>id?stepList(id,dir):id);};window.addEventListener('keydown',handler);return()=>window.removeEventListener('keydown',handler);},[onClose,isSplit,hoveredPane,pickerFor,list]);
   const choose=(pane:'left'|'right',id:string)=>{if(pane==='left')setLeftId(id);else setRightId(id);setPickerFor(null);setPickerQuery('');};

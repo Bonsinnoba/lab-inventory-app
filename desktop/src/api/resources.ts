@@ -5,7 +5,7 @@ import { invoke } from '@tauri-apps/api/tauri';
 import { getDownloadJobs, getLocalMediaUrl } from './mediaDownloads';
 import { isTauriRuntime } from '../lib/runtime';
 import {pullResourcePosters} from './resource-posters';
-import {stageResourceFile,stageResourceFolderFiles,refreshLocalFileAccess,localFileUrl,localFilePending} from './resource-uploads';
+import {stageResourceFile,stageResourceFolderFiles,stagePdfReplacement,refreshLocalFileAccess,localFileUrl,localFilePending} from './resource-uploads';
 
 export interface Resource {
   local_file_pending?: boolean;
@@ -109,22 +109,32 @@ export async function getResourceManifest(id: string): Promise<ResourceManifest>
 }
 export function getResourceDownloadUrl(id: string, forceDownload = false): string { if(isTauriRuntime()){const local=localFileUrl(id);if(local)return local;} if (!forceDownload && localMediaResourceIds.has(id)) return getLocalMediaUrl(id); const token = getToken(); const params = new URLSearchParams(); if (forceDownload) params.set('download', 'true'); if (token) params.set('access_token', token); const query = params.toString(); return apiUrl(`/resources/${id}/download${query ? `?${query}` : ''}`); }
 export async function getResourceAccessUrl(id: string, forceDownload = false): Promise<string> { const response = await apiFetch(`/resources/${id}/access-url`); if (!response.ok) throw new Error('Failed to create resource access URL'); const body = await response.json(); return `${body.url}${forceDownload ? (body.url.includes('?') ? '&' : '?') + 'download=true' : ''}`; }
-export async function getResourceText(id: string): Promise<string> { if(isTauriRuntime())return localEditorCommand<string>('read_local_resource_markdown',id); const response = await apiFetch(`/resource-editor/${id}/content`); if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to read resource content')); return response.text(); }
-export async function saveResourceText(id: string, content: string): Promise<Resource> { const response = await apiFetch(`/resource-editor/${id}/content`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }) }); if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to save resource content')); return response.json(); }
-export async function getDocxHtml(id: string): Promise<{ html: string; messages: Array<{ type?: string; message?: string }> }> { const response = await apiFetch(`/resource-editor/${id}/docx`); if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to open DOCX')); return response.json(); }
-export async function saveDocxCopy(id: string, html: string): Promise<Resource> { const response = await apiFetch(`/resource-editor/${id}/docx-copy`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ html }) }); if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to save DOCX copy')); return response.json(); }
+export async function getResourceText(id: string, expectedRevision?:string): Promise<string> { if(isTauriRuntime())return localEditorCommand<string>('read_local_resource_markdown',id,{expectedRevision}); const response = await apiFetch(`/resource-editor/${id}/content`); if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to read resource content')); return response.text(); }
+export async function saveResourceText(id: string, content: string, expectedRevision?:string): Promise<Resource> { if(isTauriRuntime()){if(!expectedRevision)throw new Error('Reopen the editor to verify the document revision');return localEditorCommand<Resource>('save_local_resource_markdown',id,{content,expectedRevision});} const response = await apiFetch(`/resource-editor/${id}/content`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }) }); if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to save resource content')); return response.json(); }
+export async function getDocxHtml(id: string, expectedRevision?:string): Promise<{ html: string; messages: Array<{ type?: string; message?: string }> }> { if(isTauriRuntime())return localEditorCommand('read_local_docx',id,{expectedRevision}); const response = await apiFetch(`/resource-editor/${id}/docx`); if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to open DOCX')); return response.json(); }
+export async function saveDocxCopy(id: string, html: string, expectedRevision?:string, requestId?:string): Promise<Resource> { if(isTauriRuntime()){if(!expectedRevision||!requestId)throw new Error('Reopen the editor to verify the document revision and save request');return localEditorCommand<Resource>('save_local_docx_copy',id,{html,expectedRevision,requestId});} const response = await apiFetch(`/resource-editor/${id}/docx-copy`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ html }) }); if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to save DOCX copy')); return response.json(); }
 export async function createPdfEditCopy(id: string): Promise<Resource> { if(isTauriRuntime())return localEditorCommand<Resource>('create_local_pdf_edit_copy',id); const response = await apiFetch(`/resource-editor/${id}/pdf-copy`, { method: 'POST' }); if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to create PDF edit copy')); return response.json(); }
-export async function replaceResourceFile(id: string, file: File): Promise<Resource> { const formData = new FormData(); formData.append('file', file); const response = await apiFetch(`/resource-editor/${id}/file`, { method: 'PUT', body: formData }); if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to replace resource file')); return response.json(); }
+export async function replaceResourceFile(id: string, file: File, expectedRevision?:string,onProgress?:(n:number)=>void): Promise<Resource> { if(isTauriRuntime())return stagePdfReplacement(id,file,expectedRevision||'',onProgress); const formData = new FormData(); formData.append('file', file); const response = await apiFetch(`/resource-editor/${id}/file`, { method: 'PUT', body: formData }); if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to replace resource file')); return response.json(); }
 
-async function localEditorCommand<T>(command:string,id:string):Promise<T>{
+async function localEditorCommand<T>(command:string,id:string,args:Record<string,unknown>={}):Promise<T>{
   const session=captureAccountSession();
   if(!session||!isAccountSessionCurrent(session))throw new Error('Sign in before opening resource editors');
   const expectedSessionToken=await localInvoke<string>('local_authorization_guard',{expectedAccountId:session.accountId});
   if(!isAccountSessionCurrent(session))throw new Error('Account changed while opening resource editor');
-  const result=await localInvoke<T>(command,{expectedAccountId:session.accountId,expectedSessionToken,resourceId:id});
-  if(command==='create_local_pdf_edit_copy'&&isAccountSessionCurrent(session))await refreshLocalFileAccess().catch(()=>undefined);
+  const result=await localInvoke<T>(command,{...args,expectedAccountId:session.accountId,expectedSessionToken,resourceId:id});
+  if(['create_local_pdf_edit_copy','save_local_resource_markdown','save_local_docx_copy'].includes(command)&&isAccountSessionCurrent(session))await refreshLocalFileAccess().catch(()=>undefined);
   if(!isAccountSessionCurrent(session))throw new Error('Account changed while opening resource editor');
   return result;
+}
+
+export type MarkdownSavedVersion={change_id:string;size_bytes:number;created_at:string;status:'pending'|'confirmed'|'discarded'};
+export async function listMarkdownSavedVersions(id:string):Promise<MarkdownSavedVersion[]>{
+  if(!isTauriRuntime())return[];
+  return localEditorCommand<MarkdownSavedVersion[]>('list_local_markdown_versions',id);
+}
+export async function readMarkdownSavedVersion(id:string,changeId:string):Promise<string>{
+  if(!isTauriRuntime())throw new Error('Saved versions are available only on the authoring PC');
+  return localEditorCommand<string>('read_local_markdown_version',id,{changeId});
 }
 
 export async function uploadFile(file: File, parent: { item_id?: string; project_id?: string; note_id?: string; parent_resource_id?: string }, name?: string, onProgress?: (progress: number) => void, metadata?: { category?: string; description?: string; tags?: string[] }): Promise<Resource> {

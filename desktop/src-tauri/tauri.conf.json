@@ -28,6 +28,7 @@
     "bundle": {
       "active": true,
       "targets": "all",
+      "resources": ["runtime/docx-03483d22-1e81-4f95-839a-e451bf922112/"],
       "identifier": "com.lab-inventory.app",
       "icon": ["icons/icon.ico"]
     },

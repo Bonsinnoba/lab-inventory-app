@@ -307,6 +307,11 @@ requirements, not deferred cosmetic work.
 
 ## Sequencing and acceptance
 
+October 13 delivery reset: track these existing Phase 2 commitments under the
+stable IDs in [PHASE2_DELIVERY_CHECKLIST.md](PHASE2_DELIVERY_CHECKLIST.md), not a
+separate growing backlog. Later October 10 phase-end cadence controls all older
+per-fix references below; no required outage coverage is waived or moved to Phase 3.
+
 October 10 cadence override: the owner approved implementation batches followed
 by a full phase-end test sweep, failure collection, grouped fixes and full retest.
 Quick build/critical safety checks remain during development. All references in

@@ -1,6 +1,9 @@
 import { syncResponseProjection } from '../sync-receipts.js';
-import { moveResourceAttachment } from '../resource-attachment.js';
-import { authorizePdfCopy } from '../resource-editor-copy.js';
+import { moveResourceAttachment, attachmentExpectedRevision } from '../resource-attachment.js';
+import { authorizeEditorCopy } from '../resource-editor-copy.js';
+import { applyResourceContentEdit } from '../resource-content-edit.js';
+import { authorityIds, resourceAuthority, inheritedResourceAuthority } from '../resource-authority.js';
+import { destinationRequests, destinationAuthority } from '../resource-destination-authority.js';
 import { applyInventoryMutation, authorizeInventoryImport } from '../inventory-sync.js';
 import { applyInventoryRaw } from '../inventory-apply.js';
 import { assertReservationStockFloor } from '../reservation-stock.js';
@@ -225,21 +228,22 @@ async function applyProjectEntity(client,change,user){
 
 const RESOURCE_FIELDS=['name','kind','file_type','original_filename','mime_type','size_bytes','parent_resource_id','relative_path','url','thumbnail_url','item_id','project_id','note_id','category','description','tags','visibility'];
 async function applyResourceEntity(client,change,user){
+ if(change.operation==='edit_content')return applyResourceContentEdit(client,change,user);
  const payload=object(change.payload,'Resource sync payload'),record=payload.resource||payload.record||payload,entityId=id(record.id||payload.id||change.entity_id,'Resource ID');
  // A distinct operation makes older servers reject rather than silently ACK
  // this as a metadata update with no recognized fields.
  if(change.operation==='attach'){
   const move=object(payload.attachment,'Resource attachment');
-  if(move.protocol!==1)fail(400,'INVALID_ATTACHMENT_PROTOCOL','Unsupported resource attachment protocol');
   if(record.id&&record.id!==change.entity_id)fail(400,'INVALID_SYNC_ID','Resource identity does not match the queued change');
-  return moveResourceAttachment(client,entityId,user,move.destination,move.expected_updated_at);
+  const expected=await attachmentExpectedRevision(client,move,change,user);
+  return moveResourceAttachment(client,entityId,user,move.destination,expected);
  }
  if(change.operation==='create'||change.operation==='create_copy'){
   const permissions=await getUserPermissions(user.userId,user.role);
   if(!permissions.has('resources.create'))fail(403,'PERMISSION_DENIED','Permission required: resources.create');
   if(change.operation==='create_copy'){
    if(!permissions.has('resources.edit'))fail(403,'PERMISSION_DENIED','Permission required: resources.edit');
-   await authorizePdfCopy(client,record,payload.copy,user);
+   await authorizeEditorCopy(client,record,payload.copy,user,change);
   }else if(record.derived_from_resource_id!=null)fail(400,'EDITOR_COPY_OPERATION_REQUIRED','Use a guarded editor copy intent');
   if(!['link','folder','file'].includes(String(record.kind||'')))fail(400,'UNSUPPORTED_RESOURCE_CREATE','Unsupported resource kind');
   if(record.kind==='file'){
@@ -470,6 +474,63 @@ router.get('/finance/pull',async(req,res,next)=>{
     res.json({snapshot_complete:true,sensitive_access:sensitive,transactions:transactions.rows.map(row=>transactionResponseProjection(row,permissions)),budget_periods:budget_periods.rows,funding_sources:funding_sources.rows,deleted,deleted_transactions:deleted.transaction,deleted_budget_period:deleted.budget_period,deleted_budget_periods:deleted.budget_period,deleted_funding_sources:deleted.funding_source});
   }catch(e){next(e);}
 });
+// POST carries only a bounded ID list; this endpoint never mutates lab data.
+router.post('/resources/authority',async(req,res,next)=>{
+  try {
+    const ids=authorityIds(req.body?.resource_ids);
+    const protocol=req.body?.protocol??1;
+    if(![1,2].includes(protocol)||(protocol===2&&ids.length>4))return res.status(400).json({error:{code:'INVALID_RESOURCE_AUTHORITY_REQUEST',message:'Protocol 2 requires at most four resources per request'}});
+    const permissions=await getUserPermissions(req.user.userId,req.user.role);
+    const allowed=permissions.has('resources.view')&&permissions.has('resources.edit');
+    const grants=[];
+    for(const resourceId of ids){
+      let before,after,beforeRows,afterRows,editable=false;
+      if(allowed){
+        before=(await pool.query('SELECT id,updated_at,visibility,item_id,project_id,note_id,parent_resource_id FROM resources WHERE id=$1',[resourceId])).rows[0];
+        if(before){
+          const access=await requireResourceEditor(resourceId,req.user);
+          editable=access.ok;
+          if(protocol===2){
+            beforeRows=access.context?.resources;
+            const recheck=await requireResourceEditor(resourceId,req.user);
+            editable=editable&&recheck.ok;
+            afterRows=recheck.context?.resources;
+          }
+          after=(await pool.query('SELECT id,updated_at,visibility,item_id,project_id,note_id,parent_resource_id FROM resources WHERE id=$1',[resourceId])).rows[0];
+        }
+      }
+      grants.push(protocol===2?inheritedResourceAuthority(resourceId,before,after,editable,beforeRows,afterRows):resourceAuthority(resourceId,before,after,editable));
+    }
+    res.setHeader('Cache-Control','no-store');
+    res.json({protocol,account_id:req.user.userId,grants});
+  }catch(error){next(error);}
+});
+
+// Derived destination authority; never a grant or domain mutation supplied by UI.
+router.post('/resources/destination-authority',async(req,res,next)=>{
+  try{
+    const requests=destinationRequests(req.body?.destinations);
+    const permissions=await getUserPermissions(req.user.userId,req.user.role);
+    const permitted=permissions.has('resources.view')&&(permissions.has('resources.create')||permissions.has('resources.edit'));
+    const grants=[];
+    for(const request of requests){
+      const query=request.kind==='note'?'SELECT id,project_id,visibility FROM notes WHERE id=$1':'SELECT id,visibility FROM projects WHERE id=$1';
+      let before,after,allowed=false;
+      if(permitted){
+        before=(await pool.query(query,[request.id])).rows[0];
+        if(before){
+          const access=await validateResourceParent({noteId:request.kind==='note'?request.id:null,projectId:request.kind==='project'?request.id:null,user:req.user,requireEdit:true});
+          allowed=access.ok;
+          after=(await pool.query(query,[request.id])).rows[0];
+        }
+      }
+      grants.push(destinationAuthority(request,before,after,allowed));
+    }
+    res.setHeader('Cache-Control','no-store');
+    res.json({protocol:1,account_id:req.user.userId,grants});
+  }catch(error){next(error);}
+});
+
 router.get('/resources/pull',async(req,res,next)=>{
   try{
     const permissions=await getUserPermissions(req.user.userId,req.user.role);
@@ -547,7 +608,7 @@ router.get('/projects/pull',async(req,res,next)=>{
 });
 router.get('/pull',async(req,res,next)=>{try{const raw=typeof req.query.since==='string'?req.query.since.trim():'';let cursor=null;if(raw){cursor=decodePullCursor(raw);if(!cursor){const legacy=new Date(raw);if(Number.isNaN(legacy.getTime()))return res.status(400).json({error:{code:'INVALID_SYNC_CURSOR',message:'since must be a valid inventory sync cursor'}});cursor={at:legacy.toISOString(),type:'',id:''};}}const limit=Math.min(500,Math.max(1,Number(req.query.limit||500)));const values=cursor?[cursor.at,cursor.type,cursor.id,limit+1]:[limit+1];const where=cursor?`WHERE event_at > $1 OR (event_at = $1 AND (event_type > $2 OR (event_type = $2 AND event_id > $3)))`:'';const result=await pool.query(`SELECT event_type,event_id,event_at,to_char(event_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_at,item,deleted FROM (SELECT 'item'::text AS event_type,id::text AS event_id,updated_at AS event_at,to_jsonb(items) AS item,false AS deleted FROM items UNION ALL SELECT 'delete'::text AS event_type,entity_id::text AS event_id,deleted_at AS event_at,NULL::jsonb AS item,true AS deleted FROM sync_tombstones WHERE entity_type='item') events ${where} ORDER BY event_at ASC,event_type ASC,event_id ASC LIMIT $${values.length}`,values);const rows=result.rows;const hasMore=rows.length>limit;const page=hasMore?rows.slice(0,limit):rows;const last=page[page.length-1];const nextCursor=last?encodePullCursor(last.cursor_at,last.event_type,last.event_id):(cursor?raw:null);res.setHeader('Cache-Control','no-store');res.json({items:page.filter(row=>!row.deleted).map(row=>row.item),deleted_item_ids:page.filter(row=>row.deleted).map(row=>row.event_id),next_cursor:nextCursor,has_more:hasMore,snapshot_complete:!raw&&!hasMore});}catch(error){next(error);}});
 router.post('/push',async(req,res,next)=>{const body=object(req.body,'Sync request');const deviceId=typeof body.device_id==='string'&&body.device_id.trim()?body.device_id.trim():null;const changes=Array.isArray(body.changes)?body.changes:null;if(!deviceId)return res.status(400).json({error:{code:'DEVICE_ID_REQUIRED',message:'device_id is required'}});if(!changes)return res.status(400).json({error:{code:'CHANGES_REQUIRED',message:'changes must be an array'}});if(changes.length>100)return res.status(413).json({error:{code:'SYNC_BATCH_TOO_LARGE',message:'A maximum of 100 changes can be synchronized per request'}});try{const permissions=await getUserPermissions(req.user.userId,req.user.role);const results=[];for(const raw of changes){const change=object(raw,'Sync change');if(typeof change.change_id!=='string'||!change.change_id.trim()){results.push({change_id:null,status:'rejected',error:{code:'CHANGE_ID_REQUIRED',message:'change_id is required'}});continue;}const entityType=String(change.entity_type||''),operation=String(change.operation||'');const required=entityType==='item'?(operation==='import'?null:operation==='create'?'inventory.create':['delete','bulk_delete'].includes(operation)?'inventory.delete':'inventory.edit'):['daily_preferences','notification_read'].includes(entityType)?null:entityType==='project_comment'?'projects.edit':entityType==='maintenance_record'?'inventory.edit':entityType==='note'?(operation==='create'?'notes.create':operation==='delete'?'notes.delete':'notes.edit'):knowledgeEntityType(entityType)?'projects.edit':entityType==='project_item'?'projects.edit':engineeringEntityType(entityType)?(operation==='create'?'engineering.create':operation==='delete'?'engineering.delete':'engineering.edit'):entityType==='item_movement'?'inventory.adjust_stock':['resource_download_job','media_download_settings'].includes(entityType)?'resources.edit':entityType==='resource'?(['create','create_copy'].includes(operation)?'resources.create':operation==='delete'?'resources.delete':'resources.edit'):['location','supplier','storage_container'].includes(entityType)?(operation==='create'?'inventory.create':operation==='delete'?'inventory.delete':'inventory.edit'):projectEntityType(entityType)?(operation==='create'?'projects.create':operation==='delete'?'projects.delete':'projects.edit'):FINANCE_CONFIG[entityType]?(operation==='create'?(entityType==='transaction'?(change.payload?.transaction?.direction||change.payload?.record?.direction||change.payload?.direction)==='income'?'finance.create_income':'finance.create_expense':'finance.edit'):operation==='delete'?'finance.delete':'finance.edit'):operation==='bulk_delete'?'inventory.delete':operation==='bulk_status'?'inventory.edit':'inventory.edit';if(required&&!permissions.has(required)){results.push({change_id:change.change_id,status:'rejected',error:{code:'PERMISSION_DENIED',message:`Permission required: ${required}`}});continue;}change.__role=req.user.role;change.__device_id=deviceId;const client=await pool.connect();try{await client.query('BEGIN');await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',['sync-change:'+change.change_id]);if(['supplier','storage_container'].includes(entityType)){change.entity_id=catalogUuid(change.entity_id);await authorizeCatalog(entityType,operation,req.user);}if(entityType==='item'&&operation==='import')await authorizeInventoryImport(change.payload,req.user);if(entityType==='project_comment'){change.entity_id=catalogUuid(change.entity_id);await authorizeComment(catalogUuid(change.payload?.record?.project_id),req.user,true);}if(entityType==='resource_download_job')await authorizeDownloadControl(change.payload?.resource_id||change.payload?.resourceId,req.user);const prior=await client.query('SELECT payload_json,response_json,user_id,device_id,entity_type,entity_id,operation FROM sync_idempotency WHERE change_id=$1 FOR UPDATE',[change.change_id]);if(prior.rowCount){if(String(prior.rows[0].user_id)!==String(req.user.userId)||prior.rows[0].device_id!==deviceId||prior.rows[0].entity_type!==entityType||prior.rows[0].operation!==operation||String(prior.rows[0].entity_id||'')!==String(change.entity_id||'')){await client.query('ROLLBACK');results.push({change_id:change.change_id,status:'rejected',error:{code:'IDEMPOTENCY_OWNERSHIP_MISMATCH',message:'change_id belongs to a different user, device or operation'}});continue;}const same=(await client.query('SELECT $1::jsonb = $2::jsonb AS same',[prior.rows[0].payload_json,change.payload])).rows[0].same;if(!same){await client.query('ROLLBACK');results.push({change_id:change.change_id,status:'rejected',error:{code:'IDEMPOTENCY_PAYLOAD_MISMATCH',message:'change_id was already used with a different payload'}});continue;}await client.query('COMMIT');results.push({change_id:change.change_id,status:'synced',result:syncResponseProjection(entityType,prior.rows[0].response_json,permissions)});continue;}const result=await applyChange(client,change,req.user.userId);await client.query('INSERT INTO sync_idempotency(change_id,device_id,user_id,entity_type,entity_id,operation,payload_json,response_json,response_status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,200)',[change.change_id,deviceId,req.user.userId,entityType,change.entity_id||null,operation,change.payload,result]);await client.query('COMMIT');
-      if(!(entityType==='resource'&&['create','create_copy'].includes(operation)&&change.payload?.resource?.kind==='file')&&!['item','item_movement','maintenance_record','daily_preferences','supplier','storage_container','notification_read','project_comment'].includes(entityType))await writeAuditLog({req,actorUserId:req.user.userId,action:`sync:${operation}`,entityType,entityId:typeof change.entity_id==='string'&&/^[0-9a-f-]{32,36}$/i.test(change.entity_id)?change.entity_id:null,newValue:result,deviceId,metadata:{sync_mode:'online',authorization:'server',sync_entity_id:change.entity_id||null}});
+      if(!(entityType==='resource'&&['create','create_copy','edit_content'].includes(operation)&&change.payload?.resource?.kind==='file')&&!['item','item_movement','maintenance_record','daily_preferences','supplier','storage_container','notification_read','project_comment'].includes(entityType))await writeAuditLog({req,actorUserId:req.user.userId,action:`sync:${operation}`,entityType,entityId:typeof change.entity_id==='string'&&/^[0-9a-f-]{32,36}$/i.test(change.entity_id)?change.entity_id:null,newValue:result,deviceId,metadata:{sync_mode:'online',authorization:'server',sync_entity_id:change.entity_id||null}});
       results.push({change_id:change.change_id,status:'synced',result:syncResponseProjection(entityType,result,permissions)});}catch(error){await client.query('ROLLBACK').catch(()=>{});if(error?.code==='23505'){const prior=await pool.query('SELECT payload_json,response_json,user_id,device_id,entity_type,operation FROM sync_idempotency WHERE change_id=$1',[change.change_id]);if(prior.rowCount){if(String(prior.rows[0].user_id)!==String(req.user.userId)||prior.rows[0].device_id!==deviceId||prior.rows[0].entity_type!==entityType||prior.rows[0].operation!==operation){results.push({change_id:change.change_id,status:'rejected',error:{code:'IDEMPOTENCY_OWNERSHIP_MISMATCH',message:'change_id belongs to a different user, device or operation'}});continue;}const same=(await pool.query('SELECT $1::jsonb = $2::jsonb AS same',[prior.rows[0].payload_json,change.payload])).rows[0].same;if(same){results.push({change_id:change.change_id,status:'synced',result:syncResponseProjection(entityType,prior.rows[0].response_json,permissions)});continue;}}}const status=Number(error?.status)>=400&&Number(error?.status)<500?'rejected':'failed';results.push({change_id:change.change_id,status,error:{code:error?.code||'SYNC_APPLY_FAILED',message:error?.message||'Unable to apply sync change'}});}finally{client.release();}}res.json({device_id:deviceId,accepted:results.filter(r=>r.status==='synced').length,results});}catch(error){next(error);}});
 
 const NOTE_FIELDS=['title','body','tags','item_id','project_id','visibility'];

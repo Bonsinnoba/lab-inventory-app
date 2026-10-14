@@ -3,15 +3,19 @@ import multer from 'multer';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import mammoth from 'mammoth';
-import { convertDocx } from '../docx-converter.js';
+import { convertDocx, renderDocx } from '../docx-converter.js';
+import { readDocxFile } from '../docx-file.js';
 import { pool } from '../db.js';
 import { writeAuditLog } from '../middleware/audit.js';
 import { requireResourceEditor } from '../middleware/resource-access.js';
 import { config } from '../config.js';
 import { inferFileType, resolveStoragePath } from '../storage.js';
+import resourceUploadsRouter from './resource-uploads.js';
 
 const router = Router();
+// This mount is guarded by resources.edit, not resources.create. Staging remains
+// private to the authenticated user; publication rechecks the source authority.
+router.use(resourceUploadsRouter);
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: config.maxUploadMb * 1024 * 1024, files: 1 } });
 
 function extension(resource) { return path.extname(resource.original_filename || resource.name || '').toLowerCase(); }
@@ -99,12 +103,13 @@ router.get('/:id/docx', async (req, res) => {
     const found = await getEditableResource(req.params.id, req.user);
     if (!found.resource) return res.status(found.status).json({ error: found.error });
     if (!isDocxResource(found.resource)) return res.status(400).json({ error: 'Only DOCX resources are supported' });
-    const buffer = await fs.readFile(resolveStoragePath(found.resource.storage_path));
-    const result = await mammoth.convertToHtml({ buffer }, { styleMap: [
-      "p[style-name='Title'] => h1", "p[style-name='Heading 1'] => h2", "p[style-name='Heading 2'] => h3", "p[style-name='Heading 3'] => h4",
-    ] });
-    res.json({ html: result.value, messages: result.messages || [] });
-  } catch (err) { console.error(err); res.status(500).json({ error: err.message || 'Failed to render DOCX resource' }); }
+    const buffer = await readDocxFile(resolveStoragePath(found.resource.storage_path));
+    const result = await renderDocx(buffer);
+    // Conversion can take time; do not disclose a result after known revocation.
+    const access = await requireResourceEditor(req.params.id, req.user);
+    if (!access.ok) return res.status(access.status).json({ error: access.error });
+    res.json(result);
+  } catch (err) { console.error(err); res.status(err.status || 500).json({ error: err.message || 'Failed to render DOCX resource' }); }
 });
 
 router.put('/:id/docx-copy', async (req, res) => {

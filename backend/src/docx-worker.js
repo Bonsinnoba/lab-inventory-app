@@ -1,17 +1,9 @@
-import HTMLtoDOCX from '@turbodocx/html-to-docx';
-import { validateDocxHtml } from './docx-input.js';
+import { transformDocx } from './docx-transform.js';
 
-process.once('message', async ({ html }) => {
+process.once('message', async ({ mode, html, buffer }) => {
   try {
-    const buffer = Buffer.from(await HTMLtoDOCX(validateDocxHtml(html), null, {
-      table: { row: { cantSplit: true } },
-      // 1.23.1's runtime reads lowercase `preprocessing` (its README differs).
-      // Input is already rebuilt by our validator; do not run another parser.
-      preprocessing: { skipHTMLMinify: true },
-      imageProcessing: { maxRetries: 0, maxImageSize: 2 * 1024 * 1024, maxCacheSize: 8 * 1024 * 1024, suppressSharpWarning: true },
-    }));
-    if (buffer.length > 16 * 1024 * 1024) throw new Error('Converted DOCX exceeds 16 MiB');
-    process.send({ buffer }, () => process.exit(0));
+    const result = await transformDocx(mode, mode === 'render' ? buffer : html);
+    process.send(mode === 'render' ? result : { buffer: result }, () => process.exit(0));
   } catch (error) {
     process.send({ error: error.message, status: error.status || 422 }, () => process.exit(0));
   }

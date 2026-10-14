@@ -14,10 +14,12 @@ function load(options={}){
       calls.push({command,args});if(options.failAt===command)throw Error('LOCAL_FAILED');
       if(options.switchAt===command)current=false;
       if(command==='local_authorization_guard')return 'native-session';
+      if(command==='begin_local_pdf_replacement')return {change_id:'pdf-change'};
+      if(command==='finish_local_pdf_replacement')return {id:'pdf-resource',kind:'file'};
       if(command==='begin_local_resource_upload')return {change_id:`change-${calls.filter(c=>c.command===command).length}`};
       if(command==='finish_local_resource_upload')return {id:'resource',kind:'file'};
       if(command==='finish_local_resource_upload_batch')return args.changeIds.map((id,i)=>({id:`resource-${i}`,kind:'file'}));
-      if(command==='read_local_resource_upload_chunk')return [1,2,3];
+      if(['read_local_resource_upload_chunk','read_local_resource_edit_chunk'].includes(command))return [1,2,3];
       if(command==='local_resource_file_access')return {resource:{path:'resource.capability',pending:true}};
     }}};
     if(p==='./http')return {getApiErrorMessage:async()=> 'NETWORK_FAILED',apiFetch:async(path,init)=>{
@@ -29,6 +31,15 @@ function load(options={}){
 }
 const file={name:'test.txt',type:'text/plain',size:3,slice:()=>({arrayBuffer:async()=>new Uint8Array([1,2,3]).buffer})};
 const change={change_id:'change',entity_type:'resource',entity_id:'resource',operation:'create',payload:{resource:{id:'resource',kind:'file'},upload:{protocol:1,size_bytes:3,sha256:'a'.repeat(64)}}};
+
+test('content edits transfer their immutable version under the edit permission namespace',async()=>{
+  const c=load();const edit={...change,operation:'edit_content'};
+  assert.equal(c.api.isResourceUpload(edit),true);
+  await c.api.transferResourceUpload(edit,'account','native-session',()=>{});
+  assert.ok(c.http.every(call=>call.path.startsWith('/resource-editor/uploads/change/')));
+  assert.equal(c.calls[0].command,'read_local_resource_edit_chunk');
+  assert.equal(c.calls[0].args.changeId,'change');
+});
 
 test('derived copies share the stable chunk-upload path, not a server copy endpoint',async()=>{
   const c=load();const copy={...change,operation:'create_copy'};
@@ -101,5 +112,26 @@ test('failed folder staging never individually publishes files or reports comple
     await assert.rejects(c.api.stageResourceFolderFiles('folder',[file,file],['one','two'],n=>progress.push(n)),/LOCAL_FAILED/);
     assert.equal(c.http.length,0);assert.ok(!progress.includes(100));
     assert.ok(!c.calls.some(c=>c.command==='finish_local_resource_upload'));
+  }
+});
+
+const pdfFile={name:'edited.pdf',type:'application/pdf',size:5,slice:()=>({arrayBuffer:async()=>new Uint8Array([37,80,68,70,45]).buffer})};
+test('PDF replacement stages guarded bytes then finalizes locally without HTTP',async()=>{
+  const c=load(),progress=[];const result=await c.api.stagePdfReplacement('pdf-resource',pdfFile,'opened-revision',n=>progress.push(n));
+  assert.equal(result.id,'pdf-resource');assert.equal(c.http.length,0);
+  assert.deepEqual(c.calls.map(x=>x.command),['local_authorization_guard','begin_local_pdf_replacement','write_local_pdf_replacement_chunk','finish_local_pdf_replacement','local_resource_file_access']);
+  assert.equal(c.calls[1].args.expectedRevision,'opened-revision');assert.equal(c.calls[2].args.changeId,'pdf-change');
+  assert.deepEqual([...c.calls[2].args.bytes],[37,80,68,70,45]);assert.equal(progress.at(-1),100);
+});
+test('PDF staging failure or account switch cannot publish or fall back to HTTP',async()=>{
+  for(const options of [{failAt:'begin_local_pdf_replacement'},{failAt:'write_local_pdf_replacement_chunk'},{failAt:'finish_local_pdf_replacement'},{switchAt:'write_local_pdf_replacement_chunk'}]){
+    const c=load(options),progress=[];await assert.rejects(c.api.stagePdfReplacement('pdf-resource',pdfFile,'revision',n=>progress.push(n)));
+    assert.equal(c.http.length,0);assert.ok(!progress.includes(100));
+    if(options.switchAt)assert.ok(!c.calls.some(x=>x.command==='finish_local_pdf_replacement'));
+  }
+});
+test('PDF replacement rejects missing revisions, wrong extensions and size bounds before staging',async()=>{
+  for(const [file,revision] of [[pdfFile,''],[{...pdfFile,name:'wrong.docx'},'revision'],[{...pdfFile,size:4},'revision'],[{...pdfFile,size:500*1024*1024+1},'revision']]){
+    const c=load();await assert.rejects(c.api.stagePdfReplacement('pdf',file,revision));assert.equal(c.calls.length,0);assert.equal(c.http.length,0);
   }
 });

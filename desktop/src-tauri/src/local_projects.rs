@@ -60,7 +60,7 @@ fn require_local_project_editor(project: &Value, user_id: &str) -> Result<(), St
     }
 }
 
-fn load_all(conn: &Connection) -> Result<Vec<Value>, String> {
+pub(crate) fn load_all(conn: &Connection) -> Result<Vec<Value>, String> {
     ensure(conn)?;
     let raw: Option<String> = conn.query_row(
         "SELECT value FROM sync_state WHERE key=?1", [local_db::scoped_state_key(conn, STATE_KEY)?], |r| r.get(0)

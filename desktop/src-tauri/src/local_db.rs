@@ -100,7 +100,7 @@ fn canonicalize_legacy_ids(connection: &Connection) -> Result<(), String> {
 }
 
 #[derive(Debug, Serialize)]
-pub struct LocalDatabaseStatus { pub path: String, pub device_id: String, pub schema_version: String, pub pending_sync_count: i64, pub sync_conflict_count: i64, pub unassigned_pending_sync_count: i64, pub unassigned_state_count: i64 }
+pub struct LocalDatabaseStatus { pub path: String, pub device_id: String, pub schema_version: String, pub pending_sync_count: i64, pub sync_conflict_count: i64, pub unassigned_pending_sync_count: i64, pub unassigned_state_count: i64, pub resource_authority_protocol:u32 }
 #[derive(Debug, Deserialize)]
 pub struct LocalSyncWriteInput { pub snapshot_json: String, pub expected_snapshot_json: String, pub expected_account_id: String, pub change_id: String, pub entity_type: String, pub entity_id: Option<String>, pub operation: String, pub payload_json: String, pub state_key: Option<String>, pub state_json: Option<String> }
 fn database_path(app: &AppHandle) -> Result<PathBuf, String> { let dir=app_data_dir(&app.config()).ok_or_else(|| "Unable to resolve LabOS app-data directory".to_string())?; fs::create_dir_all(&dir).map_err(|e| format!("Unable to create local data directory: {e}"))?; Ok(dir.join(DB_FILE)) }
@@ -163,7 +163,7 @@ pub fn local_database_status(app:AppHandle)->Result<LocalDatabaseStatus,String>{
     let conflicts:i64=connection.query_row("SELECT COUNT(*) FROM sync_conflicts c JOIN sync_outbox o ON o.change_id=c.change_id WHERE c.resolved_at IS NULL AND o.account_id=?1",params![account],|r|r.get(0)).map_err(|e|format!("Unable to read sync conflict state: {e}"))?;
     let unassigned:i64=connection.query_row("SELECT COUNT(*) FROM sync_outbox WHERE synced_at IS NULL AND account_id IS NULL",[],|r|r.get(0)).map_err(|e|format!("Unable to inspect legacy sync changes: {e}"))?;
     let unassigned_state_count:i64=connection.query_row("SELECT COUNT(*) FROM sync_state WHERE key NOT LIKE 'account:%' AND value NOT IN ('[]','{}')",[],|r|r.get(0)).map_err(|e|format!("Unable to inspect legacy local state: {e}"))?;
-    Ok(LocalDatabaseStatus{path:path.to_string_lossy().into_owned(),device_id,schema_version:LOCAL_SCHEMA_VERSION.to_string(),pending_sync_count:pending,sync_conflict_count:conflicts,unassigned_pending_sync_count:unassigned,unassigned_state_count})
+    Ok(LocalDatabaseStatus{path:path.to_string_lossy().into_owned(),device_id,schema_version:LOCAL_SCHEMA_VERSION.to_string(),pending_sync_count:pending,sync_conflict_count:conflicts,unassigned_pending_sync_count:unassigned,unassigned_state_count,resource_authority_protocol:1})
 }
 #[tauri::command]
 pub fn get_inventory_sync_cursor(app:AppHandle,expected_account_id:String)->Result<Option<String>,String>{let(conn,_)=open_connection(&app)?;ensure_schema(&conn)?;require_sync_account(&conn,&expected_account_id)?;let key=scoped_state_key(&conn,"inventory_sync_cursor")?;conn.query_row("SELECT value FROM sync_state WHERE key=?1",[key],|r|r.get(0)).optional().map_err(|e|format!("Unable to read inventory sync cursor: {e}"))}
@@ -176,8 +176,9 @@ pub fn list_pending_sync_changes(app:AppHandle,limit:Option<i64>,expected_accoun
     let account=active_account(&conn)?;
     if account!=expected_account_id{return Err("Account changed during sync; retry under the active account".into())}
     let limit=limit.unwrap_or(50).clamp(1,500);
-    let mut stmt=conn.prepare("SELECT o.change_id,o.device_id,o.entity_type,o.entity_id,o.operation,o.payload_json,o.created_at,o.attempt_count,o.last_error FROM sync_outbox o LEFT JOIN sync_conflicts c ON c.change_id=o.change_id AND c.resolved_at IS NULL WHERE o.synced_at IS NULL AND o.account_id=?1 AND c.change_id IS NULL ORDER BY o.created_at ASC,o.rowid ASC LIMIT ?2").map_err(|e|format!("Unable to prepare sync queue query: {e}"))?;
-    let rows=stmt.query_map(params![account,limit],|r|{let payload:String=r.get(5)?;let payload_json=serde_json::from_str::<serde_json::Value>(&payload).unwrap_or(serde_json::Value::Null);Ok(serde_json::json!({"change_id":r.get::<_,String>(0)?,"device_id":r.get::<_,String>(1)?,"entity_type":r.get::<_,String>(2)?,"entity_id":r.get::<_,Option<String>>(3)?,"operation":r.get::<_,String>(4)?,"payload":payload_json,"created_at":r.get::<_,String>(6)?,"attempt_count":r.get::<_,i64>(7)?,"last_error":r.get::<_,Option<String>>(8)?}))}).map_err(|e|format!("Unable to read sync queue: {e}"))?;
+    let blocked=serde_json::to_string(&crate::resource_dependencies::blocked_changes(&conn)?).map_err(|e|e.to_string())?;
+    let mut stmt=conn.prepare("SELECT o.change_id,o.device_id,o.entity_type,o.entity_id,o.operation,o.payload_json,o.created_at,o.attempt_count,o.last_error FROM sync_outbox o LEFT JOIN sync_conflicts c ON c.change_id=o.change_id AND c.resolved_at IS NULL WHERE o.synced_at IS NULL AND o.account_id=?1 AND c.change_id IS NULL AND o.change_id NOT IN(SELECT value FROM json_each(?3)) ORDER BY o.rowid ASC LIMIT ?2").map_err(|e|format!("Unable to prepare sync queue query: {e}"))?;
+    let rows=stmt.query_map(params![account,limit,blocked],|r|{let payload:String=r.get(5)?;let payload_json=serde_json::from_str::<serde_json::Value>(&payload).unwrap_or(serde_json::Value::Null);Ok(serde_json::json!({"change_id":r.get::<_,String>(0)?,"device_id":r.get::<_,String>(1)?,"entity_type":r.get::<_,String>(2)?,"entity_id":r.get::<_,Option<String>>(3)?,"operation":r.get::<_,String>(4)?,"payload":payload_json,"created_at":r.get::<_,String>(6)?,"attempt_count":r.get::<_,i64>(7)?,"last_error":r.get::<_,Option<String>>(8)?}))}).map_err(|e|format!("Unable to read sync queue: {e}"))?;
     rows.map(|r|r.map_err(|e|format!("Unable to decode sync queue row: {e}"))).collect()
 }
 #[tauri::command]
@@ -247,6 +248,9 @@ fn resolve_conflict(conn:&mut Connection,change_id:&str,resolution:&str)->Result
     if resolution=="keep_local" {
         let mut value:Value=serde_json::from_str(&payload).map_err(|e|e.to_string())?;
         require_conflict_permission(&tx,&entity,&operation,&value,true)?;
+        if entity=="resource"&&operation=="edit_content"&&code=="RESOURCE_EDIT_CONFLICT" {
+            return Err("Review the server version and your saved editor versions before reapplying. Automatic overwrite is not allowed.".into());
+        }
         if ["item","item_movement"].contains(&entity.as_str())&&value["inventory_protocol"]==2&&(code=="SYNC_CONFLICT"||code=="SYNC_DEPENDENCY_PENDING"){
             return Err("Accept the server version, then review and reapply your inventory edits. Automatic overwrite is not allowed.".into());
         }
@@ -264,6 +268,9 @@ fn resolve_conflict(conn:&mut Connection,change_id:&str,resolution:&str)->Result
             tx.execute("UPDATE sync_outbox SET attempt_count=0,last_error=NULL,synced_at=NULL WHERE change_id=?1",[change_id]).map_err(|e|e.to_string())?;
         }
     } else {
+        if entity=="resource"&&(operation=="edit_content"||["create","create_copy"].contains(&operation.as_str())) {
+            crate::resource_dependencies::discard_descendants(&tx,change_id,resolution)?;
+        }
         if ["item","item_movement"].contains(&entity.as_str()){
             crate::inventory_sync_state::discard_connected(&tx,change_id,resolution)?;
         }

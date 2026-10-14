@@ -3,6 +3,164 @@
 Status: **in progress, not Phase 2 sign-off**. Existing application and seeded
 PostgreSQL are preserved. Tests create scoped fixtures; no database reset.
 
+## October 14 — destination grants and attachment predecessors (A1/A5)
+
+Added read-only destination authority for note/project IDs, projected through the
+existing server parent validator. Requests are bounded, typed and canonical;
+changed scope/missing records/denials return no positive scope. Native code selects
+IDs from scoped local notes/projects plus previously cached IDs, uses the compiled
+origin and bounded authenticated client, checks account/session/exact lease, and
+atomically replaces each batch including denials. No positive decision comes from
+the renderer. Resource and destination refresh share one serialization guard.
+
+Non-admin file writers now use verified destination decisions instead of cached
+project edit flags or a blanket note restriction. Folder targets require their
+own complete resource authority. Existing global project permission restrictions
+remain, and the administrator exception is not expanded. Note destinations must
+match their verified note visibility/project binding; missing/duplicate/changed
+scope or expired/replaced leases fail closed. New unconfirmed note/project/folder
+destinations still need a separate local-creation contract. Refresh moved after
+all project/resource/note pulls; its result contributes to overall sync status.
+
+Direct resource moves now capture the last supported native create/copy/content
+predecessor in the same SQLite/outbox transaction. Protocol-2 moves resolve the
+immutable server receipt only for the same account/device/file resource, then
+run existing source/destination permission, revision and project-reference checks.
+Missing receipts retry; foreign/unsupported receipts conflict. Protocol-1 moves
+retain their original behavior; old servers reject protocol 2 instead of ignoring
+the dependency. Queue withholding and conflict dependency parsing include moves.
+No payload rewrites, file deletion, database replacement or permission extension.
+
+Limits still open: repeated moves, metadata dependency chains, content editing
+after a pending move, non-admin fresh-local-source grants and folder/tree moves.
+This is not A1/A5 closure. API-first deployment is needed; no app restart or Docker
+mutation occurred. Tests are validators/receipt-resolution doubles, not DB tests:
+33 backend and 12 native checks pass, plus eight desktop adapter/dependency/source-
+order checks. Native test compilation and TypeScript pass. Actual PostgreSQL and
+stopped-API desktop/restart/reconnect acceptance stay NOT RUN for this checkpoint.
+
+## October 14 — inherited resource authority (A1; earlier source checkpoint)
+
+The authority endpoint now negotiates protocol 2 for native callers: at most four
+resources per request, each with a complete bounded leaf-to-root resource scope
+and attached-note project/visibility binding. Protocol 1 responses retain their
+old shape for older binaries. Normal server editor authorization is checked twice
+and changed bindings or direct revisions produce metadata-free denials.
+
+The shared server context query now bounds recursion and rejects cycles, missing
+parents/notes, non-folder ancestors and ambiguous parent/project contexts. The
+maximum is 32 resource records including the leaf; an over-depth hierarchy is
+unavailable rather than silently authorized from a partial walk. Actual SQL and
+existing-data compatibility still require the phase-end PostgreSQL sweep.
+
+Native code alone fetches the bindings, retains the 64 KiB response cap and exact
+account/session/login-lease checks, and atomically caches or removes bindings
+alongside each decision. Bindings additionally carry their grant revision/lease,
+so an old-format grant refresh cannot silently reuse a different context record.
+Non-admin source editing now checks all scoped local ancestors and attached
+notes, rejects missing/duplicate/changed scope records, and retains the existing
+exact-revision or native content-only continuation proof. Note body and ancestor
+content edits do not themselves change scope; no new authority is inferred from
+those local edits. Global permissions and existing administrator policy remain.
+
+Destination authorization is intentionally separate and still unfinished. This
+does not unlock creation in notes/folders, arbitrary moves, fresh unsynced-source
+grants or metadata/attachment dependencies. Older native caches require an online
+protocol-2 refresh; deploy the compatible API first. No data reset, native restart,
+Docker state change or application deployment was performed.
+
+Critical checks: 24 backend validator tests, seven native pure authority tests and
+six desktop adapter/dependency tests pass. Native test-target compilation and
+TypeScript checking pass. These checks use no database fixtures and do not claim
+actual PostgreSQL, stopped-API desktop, cold-restart or reconnect acceptance.
+All 18 closure units remain open; A1/A5 stay PARTIAL.
+
+## October 14 — native resource edit-authority cache (A1; earlier checkpoint)
+
+Added read-only `POST /sync/resources/authority` (up to 100 canonical unique IDs).
+It uses the existing server resource-editor rules, checks the resource revision
+and direct scope around the decision, and returns no scope metadata for denied
+IDs. This is a permission projection, not a domain write or new grant endpoint.
+
+Native refresh selects resource IDs from SQLite plus previously cached IDs, uses
+the compiled trusted origin, refuses redirects/proxies through the existing
+native HTTP client, and validates bounded responses against the exact requested
+batch/account. Each 25-ID batch commits after checking the captured session and
+unchanged login lease. Refreshes are serialized to prevent an older response from
+overwriting a later denial. Confirmed disabled/revoked authentication invalidates
+the matching native session; ordinary outages preserve grants only within their
+original lease. New login leases cannot reuse the old grant cache.
+
+Non-admin editor access to direct/shared/restricted resources consumes this native
+cache instead of trusting a renderer-fed project edit flag. Global native view/edit
+permissions remain necessary. Note/folder inheritance stays blocked: direct-parent
+IDs alone do not prove a complete ancestor permission snapshot. Administrator
+behavior and destination checks are not claimed as fully audited by this change.
+
+The owner asked for the recommendation fitting LabOS after review blocked a
+blanket revision relaxation. Chosen contract: repeated content-only offline saves
+may retain the verified grant within the existing lease. Implementation keeps the
+exact-revision path and adds proof through native-published content versions,
+same account/device/resource, unchanged direct scope, matching local version/size,
+and a chain back to the verified revision or its own confirmed receipt. Arbitrary
+or cyclic chains, pending non-content mutations and retired unconfirmed versions
+do not qualify. Traversal is bounded to the newest 1,024 proof rows; older or legacy
+versions without proof fail closed without deleting authored data. The additive
+`local_revision` column is populated only by new native content publication.
+
+The sync adapter checks native protocol support so an older running binary is
+not sent an unknown command. It supplies only the captured account/session/token,
+never a renderer-selected origin or positive grant. The new native binary requires
+an online refresh before its non-admin cache-dependent operations are available.
+
+Verification: 20 backend projection/copy/content validator tests, six desktop
+authority/dependency adapter tests and four native pure authority/chain tests
+passed (30 total). TypeScript passed; native test target compiled. These are not
+PostgreSQL or desktop outage acceptance tests. No Docker/database mutations,
+fixtures, data resets, deployment or app restart were performed. A1 remains PARTIAL;
+ancestor/destination grants, fresh locally authored resource authority, broader
+native writer coverage and the phase-end real outage/reconnect matrix remain open.
+
+## October 13 — fixed delivery checklist and dependent resource copies (A5)
+
+The owner-approved scope freeze and three implementation batches are recorded in
+`PHASE2_DELIVERY_CHECKLIST.md`; no new phase or silent scope deferral was created.
+
+PDF and DOCX copy writers now permit a pending source upload/copy/content edit
+with an explicit `copy.previous_change_id`. SQLite selects that predecessor inside
+the writer's IMMEDIATE transaction; unsupported metadata/attachment intents and
+known conflicts still fail closed. Immutable file publication, scoped resource
+projection and the copy outbox intent retain the existing atomic boundary.
+DOCX's stable request mapping remains unchanged.
+
+Server copy authorization resolves the predecessor's recorded revision only after
+same-author/device/resource/file-operation checks, then checks current authority,
+source revision, format, attachment and visibility. Missing receipts retry rather
+than bypassing checks; newer source revisions conflict. Original payloads are not
+rewritten. Native copy ancestry checks retain source revocation and ordinary
+permission restrictions, with a bounded exception only for owned unconfirmed
+creations that are not yet in the server's visible-ID snapshot.
+
+The native pending queue excludes conflicted resource chains and their descendants
+before applying its batch limit. Queue order uses insertion order, avoiding wall
+clock changes putting a copy ahead of its predecessor. Explicit discard retires
+the dependent chain without deleting authored bytes or version records. During
+upload failure, the renderer also withholds transitive copies and their mutations
+while unrelated work can proceed.
+
+Focused checks (not database or outage acceptance): 16 backend copy/content
+validator tests, 18 desktop dependency/upload adapter tests and two native pure
+dependency-graph tests passed (36 total). TypeScript and `cargo check --offline`
+passed. The Rust filter ran only `resource_dependencies::tests`, not the SQLite
+fixture tests. No Docker mutations, database writes, fixtures, reseeding or app restart
+were performed for this checkpoint. The existing running native/API artifacts
+have not been updated with this code.
+
+Remaining within A5: pending metadata/attachment/folder chains, broader cached
+record grants (A1 dependency), recovery UX and actual stopped-API/reconnect/lost-ACK/
+two-client tests against the existing PostgreSQL service. This checkpoint is not
+A5 completion or Phase 2 sign-off.
+
 ## Completed implementation slices (2026-10-04)
 
 ### DOCX execution boundary (audit finding 33)
@@ -1275,7 +1433,278 @@ or outage acceptance.
   Existing volumes/data were preserved. The new sync handler is staged for the
   next server start, not live-verified against PostgreSQL in this batch.
 
+## 2026-10-12 — Docker restored; PDF-copy/Markdown-read batch
+
+- At owner request, started the existing Docker Compose services without builds,
+  resets or volume removal. Initial health at 07:07:18 UTC: API, database and
+  storage OK; both PostgreSQL and API containers healthy.
+- Native PDF editor copies now preserve originals, source attachment/visibility
+  and derived provenance. New bytes are fsynced/hashed in managed account storage;
+  upload metadata, resource and stable-ID outbox intent publish atomically. The
+  distinct create_copy operation reuses resumable transfer and idempotent sync,
+  with current source permission/revision checks before server publication.
+- Source must be a synchronized PDF with verified bytes on this PC. Copy limit
+  is 500 MiB. Cached authority is conservative: admins or direct-project editors;
+  unavailable shared/restricted/note/folder grants remain fail-closed. A known
+  source revocation blocks reading a pending derived copy while preserving bytes.
+- Markdown reads use the native guarded file reader with a 4 MiB bound and strict
+  UTF-8 decoding. No server read fallback. Saving Markdown is still server-backed;
+  the editor states this explicitly. DOCX and PDF replacement are also still OPEN.
+- Focused checks: backend validation 6/6; frontend folder/editor/upload boundary
+  tests 19/19; TypeScript and cargo check passed. These do not exercise actual
+  database mutations, real native file creation, or the phase-end outage matrix.
+- Actual acceptance still required: API stopped → PDF copy → reopen/restart/read
+  → reconnect → one derived PostgreSQL row/receipt; original bytes and visibility
+  unchanged; interrupted transfer/replay; source revision/deletion/revocation;
+  missing bytes, file-size/disk-full errors; non-admin scope and account switching;
+  Markdown Unicode/invalid UTF-8/size boundaries. Preserve all authored data.
+- Deployment/startup checkpoint: API image
+  fa4ac0350e8022ec520ab2115836e7c6c75e1fbacd85117298a622c9a6660e94
+  deployed by recreating only the API. PostgreSQL stayed running. Health at
+  07:18:33 UTC reported API/database/storage OK and both containers healthy.
+  Final frontend checks 19/19 and TypeScript passed; native build passed.
+  After explicit confirmation that edits were saved, closed desktop PID 6768
+  and reopened the new build as PID 8668 at 07:18:59. Executable build timestamp
+  07:17:20, size 22,139,392 bytes; Vite returned HTTP 200 before launch. This
+  records deployment/startup, not PDF-copy UI or database acceptance.
+
+## October 12 follow-up — same-resource offline Markdown saves
+
+- Supersedes the previous checkpoint's server-only Markdown-save boundary.
+  Desktop Markdown saves now use guarded immutable managed files, atomic SQLite
+  projection/version/outbox publication and resource/edit_content sync. The
+  resource ID does not change, so repeated saves do not create new resources.
+- Pending saves reference predecessor change IDs; the server requires a receipt
+  belonging to the same account/device/document/operation and uses its confirmed
+  revision. Current edit permission and source format are rechecked. A stale
+  server revision produces RESOURCE_EDIT_CONFLICT, not a blind replacement.
+- UI uses the revision captured when the editor opened. Stale local saves fail
+  without closing the editor or discarding the typed text. Earlier saved versions
+  stay on disk. Accept-server/dismiss retires the pending edit chain, not its files;
+  explicit export/reapply recovery UI remains open.
+- Limits: 4 MiB valid UTF-8 Markdown; verified local source; conservative cached
+  editor authority. An initial upload or other resource mutation must finish sync
+  before content editing. This does not claim offline DOCX or PDF replacement.
+- Focused verification: cargo check, TypeScript; backend pure validator/receipt
+  tests 12/12; frontend routing and transfer tests 22/22. No PostgreSQL fixture,
+  database reset, actual native editor write, outage or two-client test was run
+  for this checkpoint. These are compilation/boundary checks only.
+- Phase-end real acceptance: stop Docker API, open and save Markdown repeatedly,
+  reopen and restart offline, reconnect, confirm one resource and ordered owned
+  receipts with exact latest bytes; repeat with dropped ACK, two-device conflict,
+  revocation, disabled account, delete, account switch, missing/invalid/empty/large
+  source, full disk and conflict resolution. Verify every saved version survives.
+- Deployment/startup: native build passed (executable 22,222,336 bytes, built
+  12:16:11 UTC). After explicit saved-edit confirmation, closed verified PID 8668
+  and reopened the desktop as PID 5264 at 12:17:55; responding on inspection.
+  API image dc14fe97ac824566f85036207fac8660406f49d77282730072b88d418d33c2d5
+  deployed by recreating only labos-api. Both Docker services healthy; health at
+  12:18:09 UTC reported API/database/storage OK. PostgreSQL/storage volumes and
+  authored files were not reset or removed. Startup health is not editor/outage
+  acceptance.
+
+## October 12 — PDF replacement, offline edit chains and Markdown recovery
+
+- Replaces the previous checkpoint's server-only PDF-replacement boundary.
+  Derived PDF copies can receive an externally edited file via native 1 MiB
+  staging chunks, capped at 500 MiB. Finalization validates complete bytes and
+  PDF signature before atomically publishing the local version/resource/outbox.
+  Server publication preserves the old file and commits its new file pointer,
+  required audit and idempotency receipt together. Resource ID/filename stay fixed.
+- Markdown/PDF edit chains can now follow an owned native upload/create_copy
+  before that creation has synced. Each uses its predecessor's server receipt,
+  with same account/device/resource checks. Initial create payloads stay unchanged.
+  Non-content pending metadata/attachment operations remain an explicit boundary.
+  Discarding a creation or edit conflict also retires dependent edit intents,
+  while every managed version file remains physically preserved.
+- Native Markdown history now supplies the latest 100 local versions, including
+  retired intent versions. Review/export/use require current resource editor
+  authority and account/session checks, with SHA-256/length/UTF-8 verification.
+  Reapply is an explicit new editor save with ordinary conflict checks, never a
+  forced overwrite. Deleted/revoked-resource and PDF history recovery remain open.
+- Dirty editor closure now prompts, save-in-progress closure is blocked, and
+  viewers reload on changed revisions rather than only changed resource IDs.
+- Quick evidence: backend pure validation/projection group 16/16; frontend
+  routing/staging group 27/27; TypeScript and native compile checks passed.
+  These are not database, actual native file publication or desktop acceptance.
+- Phase-end coverage additions: offline new upload/copy → repeated MD/PDF edits
+  → cold restart → ordered reconnect, dropped acknowledgements, parent rejection,
+  dependent discard, cross-device edits, known source revocation, member scopes,
+  malicious/short PDF signature, incomplete chunks, full disk, saved Markdown
+  preview/export/reapply, dirty-modal closure, and changed-content viewer refresh.
+  Use the existing PostgreSQL and actual desktop with API stopped; preserve data.
+- Still open: offline DOCX conversion/save, full PDF structural/security checks,
+  large-file viewer compatibility, broader recovery and protected storage,
+  scoped permission caching, cleanup/retention and phase-wide acceptance.
+- Native build passed: 22,313,984-byte executable, built 19:50:15 UTC. On the
+  saved-edit restart check no existing LabOS process was reported; no process
+  termination is claimed. Launched PID 29076 at 19:52:19, responsive on inspection.
+  TypeScript and diff whitespace checks passed.
+- Built API image 845dd64e86372883bf6a98c076efcfa9144d1e5bfde59edd67fcd48ba07a4ad7
+  and recreated only the API container. Startup is NOT healthy: inspection found
+  the existing PostgreSQL container had exited cleanly about seven hours earlier.
+  API logs show database DNS/connection timeouts, not a verified migration or
+  editor mutation failure. Asked the owner whether to restore the existing DB/API
+  or retain an offline-test state. No volumes, databases or authored files removed.
+
+## October 13 — service restoration and bounded offline PDF preview
+
+- Owner approved starting the existing PostgreSQL/API with all data preserved.
+  Fresh inspection shows both existing containers healthy. At 10:09:15 UTC,
+  `/api/health` reported API, database and storage `ok`. No reset, reseed, volume
+  removal or authored-data deletion was performed. This resolves the previous
+  startup failure, not the outstanding offline acceptance matrix.
+- Found a concrete preview mismatch: native GETs without Range reject files over
+  32 MiB while the viewer handed PDF.js a URL that begins with that GET. Desktop
+  PDF preview now uses a custom local-only PDF.js range transport: 1 MiB reads,
+  serial request processing, 16 MiB maximum assembled request, 64 queued requests,
+  and a 500 MiB document limit. Browser viewing retains its existing URL path.
+- Native responses expose an opaque immutable-path/size revision, never a raw
+  filesystem path. Subsequent requests pin that revision via a query parameter;
+  native account/lease/capability/resource checks still run before/after reading.
+  HEAD can inspect large files without allocating the body. Whole GET limits
+  remain unchanged; general large-file Download/export is not fixed by this.
+- Reader validates status, exact range/length, total size and revision, rechecks
+  the captured session after reads, cancels on unmount, and reports failures
+  without a server fallback. Missing PC copies are explicit, not silently fetched
+  from the API. Streaming/autofetch are disabled for this local PDF path.
+- Checks: 9 new pure transport boundary tests; combined desktop resource group
+  36/36 passed, TypeScript and native `cargo check` passed. These tests use stubbed
+  fetch/PDF.js transport boundaries, not real file, SQLite, PostgreSQL or WebView
+  acceptance. Actual PDF.js range scheduling/rendering still needs live coverage.
+- Add to phase-end actual-desktop/API-stopped matrix: small/over-32-MiB PDF,
+  cold restart, seek/pages and split view, close during loading, account switch,
+  revoked access, same-ID replacement while open, corrupt/oversized documents,
+  missing local copy and reconnect. Preserve current files and PostgreSQL data.
+- DOCX offline conversion/save, suffix-range media compatibility, broader export/
+  recovery, protected storage and the remaining phase-wide work stay open.
+- Final checks: backend validator/receipt group 16/16 and desktop resource group
+  36/36 (52 focused checks total); native build passed. Executable is 22,326,272
+  bytes, built 10:14:09 UTC. Owner confirmed all edits saved and authorized the
+  restart. Local Vite returned HTTP 200; rebuilt desktop launched at 10:16:27 UTC
+  as PID 4232 and reported Responding=true. API/database/storage remained `ok`
+  at 10:16:40 UTC. This proves startup/process health, not visual PDF acceptance.
+
+## October 13 — all-pages unavailable after expired native lease
+
+- Owner reported Projects, Inventory and other pages unavailable after startup.
+  API health at 10:18:26 UTC was `ok` for API/database/storage. Read-only inspection
+  of the actual SQLite session showed active `balika` administrator, last server
+  password authentication 2026-10-12 07:15:39 UTC and offline expiry 2026-10-13
+  07:15:39 UTC (`lease_valid=0`). No credentials/tokens were printed or changed.
+- Root cause: successful server `/auth/me` restoration could ignore a failed
+  permission refresh and mount the workspace without verifying the native lease.
+  SQLite then correctly rejected each domain read. This is a restoration UX/auth
+  boundary defect, not evidence that local rows disappeared or the server failed.
+- Fixed online desktop restoration to also require a valid, same-account native
+  session. It checks request generation after the native await, retains valid
+  cached access during transient permission-refresh outages, and never renews
+  the password-authenticated lease from an existing JWT. Expired/missing access
+  leads to a clear online sign-in notice, not a false usable workspace.
+- Checks: auth adapter regression group 23/23 and TypeScript passed. Added expired
+  native lease + successful server response, valid native lease + refresh outage,
+  cross-account native identity, and stale response after new login cases. These
+  are frontend boundary tests; no new DB fixtures or lease edits. Native re-login
+  and restored page loads remain user/runtime confirmation, not claimed verified.
+- No native rebuild/restart, database reset, lease extension, revocation or pending
+  work deletion. A fresh online password login is the legitimate recovery path.
+  Mid-session expiry presentation and unsaved-draft-preserving reauthentication
+  still need phase-wide acceptance; this fix targets startup restoration.
+
+## October 13 — bundled DOCX decision and conversion boundary
+
+- Owner confirmed the all-pages availability issue is fixed after reauthentication.
+  This is user confirmation of recovery, not completion of the security matrix.
+- Owner selected a bundled isolated converter, retaining supported formatting,
+  rather than a reduced native text-only editor. Contract and remaining native
+  integration are in `docs/architecture/offline-docx-runtime.md`.
+- Moved server DOCX preview into the same bounded worker service as generation:
+  shared two-worker admission, 15-second deadline, 128 MiB V8 heap, 16 MiB binary/
+  4 MiB HTML limits. Native allocations are not an OS-enforced RSS bound. Bounded
+  file reads reject growth/replacement observed through size/timestamps. Preview
+  HTML is sanitized, external file access disabled, messages bounded, and resource
+  edit authority rechecked before returning. Child env excludes backend secrets.
+- Focused real converter/file tests passed 11/11 on Windows. Includes formatting,
+  tables/images, active hyperlink removal, external HTTP/file image references,
+  invalid/oversized input, shared read/write concurrency, timeout recovery and
+  disk reader limits. Initial external-image fixtures needed both relationships
+  rewritten and r:link instead of r:embed; corrected before the full rerun.
+  These are worker/file tests, not database/offline desktop acceptance.
+- Development bundler copies only runtime/converter dependency closure into a
+  unique ignored runtime directory, rejects dependency symlinks, checks versions
+  against package-lock and emits hashes. Existing bundles are preserved. Generated
+  `docx-6f634850-b1f2-4df0-b59f-d87670e23863`: 110 packages, 4,082 files,
+  125,751,105 bytes (before manifest). Uses bundled Node v24.19.0.
+- Relocation verification checked all manifest file hashes/package versions,
+  copied the bundle to a temporary directory outside the repo, emptied PATH and
+  round-tripped formatted HTML → DOCX → sanitized HTML with the bundled executable.
+  Passed; the generated temporary probe copy was removed, original bundle retained.
+  This does not certify release runtime provenance/signing/license completeness.
+- API image `d8de76be062a069794545a3ff9da18e680cc5b928366d40b7d1955d1a4a5a06f`
+  built and deployed by recreating only labos-api. Existing PostgreSQL/storage
+  untouched; health reported API/database/storage `ok` at 10:35:08 UTC.
+- The same 11 converter checks also passed inside the rebuilt Docker API (Node
+  22 image), using only temporary fixtures. No PostgreSQL queries or mutations.
+- Still OPEN: native guarded worker bridge/process-tree handling, packaged runtime
+  selection, installer/signing/notices, native DOCX local read/copy publication,
+  server DOCX derived-copy acceptance and real outage/reconnect tests. Current
+  desktop DOCX UI remains server-backed; the bundle is not wired into the app.
+
+## October 13 — native offline DOCX implementation
+
+- Shared transforms now serve API IPC and a single-process native framed worker.
+  Native bridge verifies the pinned runtime manifest and every packaged file,
+  limits input/output/concurrency/time and on Windows applies a kill-on-close
+  one-process job with a 384 MiB process-memory limit. This is not a filesystem
+  sandbox or complete hostile-document certification.
+- Desktop preview and Save as Copy now use native authorization and managed PC
+  files. Copy publication atomically records SQLite projection, upload descriptor,
+  outbox event and source/revision/HTML-bound request mapping. The original remains
+  unchanged. Server create_copy accepts explicit DOCX format and checks source
+  authority/revision/scope; existing PDF intents remain compatible.
+- Source pending writes currently block copy creation until synchronization.
+  Broader cached record edit grants and unsaved-editor crash recovery remain open.
+- Boundary checks: 19 backend converter/protocol/copy validation tests and 14
+  desktop adapter tests passed; TypeScript and cargo check passed. No database
+  tests or new user rows were involved.
+- Runtime bundle `docx-03483d22-1e81-4f95-839a-e451bf922112` contains 110 packages,
+  4,084 manifest files and 125,752,384 bytes before manifest. Manifest SHA-256:
+  `be41fdc4aa634e3a7b305c5ecd9e509b0f7d735e1cc3a894c084f29d8176295d`.
+- First relocated framed-worker probe hit its 20-second conversion timeout while
+  API/native builds were also active. Recorded as a failed cold-start check;
+  cause and final rerun must not be inferred from passing adapter tests.
+- API image built and activated, preserving existing DB/storage:
+  `84c80c66cb1a91ef8de2fcea1b8b094336d9676befdbd668a1e67720d17df22e`.
+- Actual desktop stopped-API/offline-save/restart/reconnect, existing PostgreSQL
+  publication/replay and two-client acceptance remain in the phase-end sweep.
+- Native process integration: `cargo test --offline
+  local_docx::tests::bundled_native_process_round_trip -- --nocapture` passed.
+  This uses the actual bundled executable, framed pipes and Windows process job
+  to round-trip markup and reject malformed DOCX, without any database fixture.
+- Final TypeScript and debug native build passed. After explicit saved-edits
+  confirmation the old LabOS process was closed and the new build started
+  (PID 25968, responding). Frontend returned HTTP 200; API/database/storage health
+  all reported ok at 15:46:53 UTC. Existing databases and authored files untouched.
+- Relocation timed out again without concurrent builds, including with asynchronous
+  pipes; the first failure cannot simply be attributed to build load. A diagnostic
+  outside the command sandbox also timed out. Timeout limits were not raised.
+- A diagnostic dynamic-import bootstrap round-tripped successfully outside the
+  repo. Final verification restored the exact native worker file entry point and
+  explicitly destroyed the Node test's stdin handle after its frame was written,
+  matching the Rust parent's closed input handle. This direct-entry rerun PASSED:
+  4,084 file hashes, 110 package versions, empty PATH, bundled Node v24.19.0,
+  21,191-byte generated DOCX and supported-formatting round trip. Each probe's
+  temporary copy was removed; source bundles and authored data were retained.
+  These results close this probe failure, not installer signing/provenance or
+  actual desktop/database offline acceptance.
+
 ## Remaining Phase 2 work (current)
+
+October 13 execution reset: the following broad categories are historical context.
+The single current delivery/status register is
+[PHASE2_DELIVERY_CHECKLIST.md](PHASE2_DELIVERY_CHECKLIST.md). It freezes 18 remaining
+closure items in three batches, preserves prior implementation evidence and
+requires the agreed phase-end sweep. Creating it is not a code or acceptance pass.
 
 October 9 owner-directed planning update: authentication/security findings and
 remaining local projections/files/queued effects are consolidated in

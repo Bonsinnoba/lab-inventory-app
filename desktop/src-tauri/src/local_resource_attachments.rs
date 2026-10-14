@@ -31,11 +31,7 @@ pub(crate) fn require_cached_resource_editor(conn: &rusqlite::Connection, resour
     local_auth::require_local_permission(conn, "resources.edit")?;
     let role: String = conn.query_row("SELECT u.role FROM local_users u JOIN local_session s ON s.user_id=u.id WHERE s.id=1", [], |r| r.get(0)).map_err(|e| e.to_string())?;
     if role != "admin" {
-        if resource.visibility.as_deref() == Some("restricted") || resource.note_id.is_some() || resource.parent_resource_id.is_some() {
-            return Err("This action requires record edit authority that is not cached on this PC yet".into());
-        }
-        let project = resource.project_id.as_deref().ok_or("Shared-resource edit authority is not cached on this PC yet")?;
-        crate::local_projects::require_cached_project_access(conn, project, true)?;
+        crate::local_resource_authority::require_edit(conn,resource)?;
     }
     Ok(())
 }
@@ -59,12 +55,14 @@ pub fn move_local_resource_attachment(app: AppHandle, expected_account_id: Strin
     if resource.parent_resource_id.is_some() || resource.kind == "folder" {
         return Err("Folder trees and nested resources require folder management".into());
     }
-    // Until uploader identity and record edit grants are cached, a visible row
-    // alone is not enough authority for a non-admin shared/restricted move.
-    require_cached_resource_editor(&tx, resource)?;
+    // Source authority and destination authority are independent checks.
+    crate::resource_dependencies::require_editor_access(&tx, resource)?;
     crate::local_resource_uploads::parent_guard(&tx, &serde_json::to_value(&destination).map_err(|e| e.to_string())?)?;
-    if resource.visibility.as_deref() == Some("project") && destination.project_id.is_none() {
-        return Err("Keep this project-visible resource attached to a project; note-project authority is not cached here yet".into());
+    let note_project=if let Some(note_id)=&destination.note_id{
+        crate::local_notes::load(&tx)?.iter().find(|n|n["id"].as_str()==Some(note_id.as_str())).and_then(|n|n["project_id"].as_str()).map(str::to_owned)
+    }else{None};
+    if resource.visibility.as_deref() == Some("project") && destination.project_id.is_none() && note_project.is_none() {
+        return Err("Keep this project-visible resource attached to a project or a verified project note".into());
     }
     let denied: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_resource_poster_denials')", [], |r| r.get(0)).map_err(|e| e.to_string())?;
@@ -76,9 +74,9 @@ pub fn move_local_resource_attachment(app: AppHandle, expected_account_id: Strin
     if resource.item_id == destination.item_id && resource.project_id == destination.project_id && resource.note_id == destination.note_id {
         return Ok(resource.clone());
     }
-    let pending: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM active_sync_outbox WHERE synced_at IS NULL AND entity_type='resource' AND entity_id=?1)",
-        [&id], |r| r.get(0)).map_err(|e| e.to_string())?;
-    if pending { return Err("This resource has an unsynchronized change. Keep it saved and sync before moving it again".into()); }
+    // A saved native create/copy/content edit has an immutable receipt identity.
+    // Other pending metadata/move operations still require explicit reconciliation.
+    let previous=crate::resource_dependencies::source_predecessor(&tx,&id)?;
     let revision = resource.updated_at.clone();
     resource.item_id = destination.item_id.clone();
     resource.project_id = destination.project_id.clone();
@@ -89,7 +87,7 @@ pub fn move_local_resource_attachment(app: AppHandle, expected_account_id: Strin
     let result = resource.clone();
     local_resources::write_resources(&tx, &resources)?;
     let device: String = tx.query_row("SELECT device_id FROM device_identity WHERE id=1", [], |r| r.get(0)).map_err(|e| e.to_string())?;
-    let payload = json!({"id":id,"attachment":{"protocol":1,"expected_updated_at":revision,"destination":destination}});
+    let payload = json!({"id":id,"attachment":{"protocol":if previous.is_some(){2}else{1},"expected_updated_at":revision,"destination":destination,"previous_change_id":previous}});
     tx.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES(?1,?2,'resource',?3,'attach',?4)",
         params![uuid::Uuid::new_v4().to_string(),device,id,payload.to_string()]).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;

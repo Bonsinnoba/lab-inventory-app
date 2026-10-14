@@ -23,6 +23,11 @@ mod local_resource_posters;
 mod local_resource_uploads;
 mod local_resource_replication;
 mod local_resource_attachments;
+mod local_resource_edits;
+mod resource_dependencies;
+mod local_resource_authority;
+mod local_resource_destinations;
+mod local_docx;
 mod local_comments;
 mod local_engineering;
 use tauri::Manager;
@@ -31,6 +36,7 @@ fn main() {
     tauri::Builder::default().setup(|app|{local_db::initialize(&app.handle()).map_err(|e|Box::<dyn std::error::Error>::from(std::io::Error::new(std::io::ErrorKind::Other,e)))?;local_inventory::initialize(&app.handle()).map_err(|e|Box::<dyn std::error::Error>::from(std::io::Error::new(std::io::ErrorKind::Other,e)))?;Ok(())}).register_uri_scheme_protocol("labos-file",local_resource_uploads::serve_file).invoke_handler(tauri::generate_handler![local_resource_uploads::local_resource_file_access,local_resource_uploads::bind_local_resource_upload_receipts,local_resource_uploads::begin_local_resource_upload,local_resource_uploads::write_local_resource_upload_chunk,local_resource_uploads::finish_local_resource_upload,local_resource_uploads::finish_local_resource_upload_batch,local_resource_uploads::read_local_resource_upload_chunk,local_db::local_database_status,local_auth::local_auth_status,local_auth::cache_server_user,local_auth::local_login,local_auth::local_current_user,local_auth::local_current_permissions,local_auth::cache_server_permissions,local_auth::local_logout,local_auth::local_change_password,local_auth::local_update_profile,local_db::get_inventory_sync_cursor,local_db::save_local_snapshot_with_sync,local_db::list_pending_sync_changes,local_db::list_sync_conflicts,local_db::record_sync_conflict,local_db::resolve_sync_conflict,local_db::mark_sync_changes_synced,local_db::record_sync_failure,local_db::apply_server_inventory_pull,local_inventory::list_local_inventory_movements,local_inventory::cache_local_inventory_movements,local_inventory::save_local_inventory_movement,local_excel::import_local_inventory_rows,local_inventory_cache::get_local_inventory_snapshot,local_inventory_cache::cache_local_inventory_snapshot,local_projects::list_local_projects,local_projects::get_local_project,local_projects::create_local_project,local_projects::update_local_project,local_projects::delete_local_project,local_projects::list_local_project_workspace,local_projects::get_local_project_canvas,local_projects::create_local_project_block,local_projects::update_local_project_block,local_projects::delete_local_project_block,local_projects::create_local_project_connector,local_projects::delete_local_project_connector,local_projects::create_local_project_task,
         local_projects::get_local_project_task_experiments,
         local_auth::local_authorization_guard,
+        local_resource_authority::refresh_local_resource_authority,
         local_auth::invalidate_local_authorization,
         local_maintenance::list_local_maintenance,
         local_comments::list_local_comments,
@@ -45,6 +51,16 @@ fn main() {
         local_resource_attachments::move_local_resource_attachment,
         local_resource_uploads::read_local_resource_markdown,
         local_resource_uploads::create_local_pdf_edit_copy,
+        local_docx::read_local_docx,
+        local_docx::save_local_docx_copy,
+        local_resource_edits::save_local_resource_markdown,
+        local_resource_edits::begin_local_pdf_replacement,
+        local_resource_edits::write_local_pdf_replacement_chunk,
+        local_resource_edits::finish_local_pdf_replacement,
+        local_resource_edits::list_local_markdown_versions,
+        local_resource_edits::read_local_markdown_version,
+        local_resource_edits::read_local_resource_edit_chunk,
+        local_resource_edits::bind_local_resource_edit_receipts,
         local_resource_posters::cache_local_resource_poster,
         local_downloads::queue_local_download,
         local_downloads::control_local_download,

@@ -1,5 +1,15 @@
 # LabOS remaining work: three execution phases
 
+## October 13 delivery reset — controlling remaining-work checklist
+
+The owner approved frozen scope, three substantial Phase 2 implementation batches
+and one phase-end acceptance sweep. Track remaining delivery exclusively in
+[PHASE2_DELIVERY_CHECKLIST.md](PHASE2_DELIVERY_CHECKLIST.md): 18 stable closure IDs
+mapped to the existing requirements. This document retains scope/history; do not
+grow another parallel remaining-work list. No promised feature is moved to Phase 3.
+Earlier per-change outage wording below is superseded by the October 10 cadence:
+outage coverage remains mandatory, but occurs in the full phase-end sweep.
+
 This replaces the *remaining-work schedule* in the older five-phase ledger;
 it does not erase its implementation history or change the offline-first
 architecture. Each phase is one end-to-end work package, not a code-only

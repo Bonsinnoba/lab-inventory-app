@@ -21,7 +21,7 @@ fn ensure(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-fn load(conn: &Connection) -> Result<Vec<Value>, String> {
+pub(crate) fn load(conn: &Connection) -> Result<Vec<Value>, String> {
     ensure(conn)?;
     let raw: Option<String> = conn.query_row("SELECT value FROM sync_state WHERE key=?1", [local_db::scoped_state_key(conn, STATE_KEY)?], |r| r.get(0))
         .optional().map_err(|e| format!("Unable to read local notes: {e}"))?;

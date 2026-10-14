@@ -5,6 +5,8 @@ import {pullDownloadSnapshot} from './downloads-local';
 import {pullResourcePosters} from './resource-posters';
 import {pullResourceFiles} from './resource-replication';
 import {isResourceUpload,transferResourceUpload} from './resource-uploads';
+import {withoutBlockedResources} from './resource-dependencies';
+import {refreshResourceAuthority} from './resource-authority';
 import type {Resource} from './resources';
 import { invoke } from '@tauri-apps/api/tauri';
 import { apiFetch, getApiErrorMessage } from './http';
@@ -86,6 +88,10 @@ async function runSync():Promise<number>{
   let syncSucceeded=true;
   const blockedUploads=new Set<string>();
   for(const change of changes.filter(isResourceUpload)){
+    if(!withoutBlockedResources([change],blockedUploads).length){
+      if(change.entity_id)blockedUploads.add(change.entity_id);
+      continue;
+    }
     try{
       assertSyncSession();const context=await captureServerRequest(token);assertSyncSession();
       if(!context.nativeSessionToken)throw new Error('Native upload session unavailable');
@@ -100,7 +106,7 @@ async function runSync():Promise<number>{
   }
   // Withhold dependent edits/deletes for a file whose create is not ready;
   // independent domain changes can still synchronize in this pass.
-  changes=changes.filter(c=>!(c.entity_type==='resource'&&blockedUploads.has(c.entity_id||'')));
+  changes=withoutBlockedResources(changes,blockedUploads);
   if(changes.length){
     const deviceId=changes[0].device_id;
     try{
@@ -119,7 +125,7 @@ async function runSync():Promise<number>{
             assertSyncSession();
             if(isResourceUpload(change)){
               if(!downloadContext.nativeSessionToken||!isServerRequestCurrent(downloadContext))throw new Error('Upload acknowledgement session changed');
-              await invoke('bind_local_resource_upload_receipts',{expectedAccountId:accountId,expectedSessionToken:downloadContext.nativeSessionToken,results:[result]});
+              await invoke(change.operation==='edit_content'?'bind_local_resource_edit_receipts':'bind_local_resource_upload_receipts',{expectedAccountId:accountId,expectedSessionToken:downloadContext.nativeSessionToken,results:[result]});
               assertSyncSession();
             }
             if(['resource_download_job','media_download_settings'].includes(change.entity_type)){
@@ -180,7 +186,13 @@ async function runSync():Promise<number>{
   const engineeringPullSucceeded=await runPullStep('Engineering pull',pullServerEngineering);
   const knowledgePullSucceeded=await runPullStep('Knowledge pull',pullServerKnowledge);
   const notesPullSucceeded=await runPullStep('Notes pull',pullServerNotes);
-  const pullSucceeded=downloadsPullSucceeded&&activityPullSucceeded&&commentPullSucceeded&&notificationPullSucceeded&&catalogPullSucceeded&&inventoryPullSucceeded&&maintenancePullSucceeded&&preferencesPullSucceeded&&projectPullSucceeded&&resourcePullSucceeded&&financePullSucceeded&&locationPullSucceeded&&engineeringPullSucceeded&&knowledgePullSucceeded&&notesPullSucceeded;
+  // Refresh after all three scope sources: newly pulled notes need destination
+  // grants in this pass, not only after a second successful synchronization.
+  const authorityPullSucceeded=await runPullStep('Resource authority',async()=>{
+    await refreshResourceAuthority(currentSyncSession!.token,assertSyncSession);
+    return true;
+  });
+  const pullSucceeded=authorityPullSucceeded&&downloadsPullSucceeded&&activityPullSucceeded&&commentPullSucceeded&&notificationPullSucceeded&&catalogPullSucceeded&&inventoryPullSucceeded&&maintenancePullSucceeded&&preferencesPullSucceeded&&projectPullSucceeded&&resourcePullSucceeded&&financePullSucceeded&&locationPullSucceeded&&engineeringPullSucceeded&&knowledgePullSucceeded&&notesPullSucceeded;
   if(!pullSucceeded){syncSucceeded=false;publish({status:'error',lastError:runtimeState.lastError||'Unable to download the latest server changes'});scheduleRetry();}
   if(syncSucceeded&&pullSucceeded){clearRetryState();publish({status:'idle',lastSuccessAt:new Date().toISOString(),lastError:null});}
   else if(runtimeState.status!=='error')publish({status:'error',lastError:runtimeState.lastError||'Some changes could not be synchronized'});

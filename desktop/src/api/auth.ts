@@ -154,6 +154,8 @@ export async function register(username: string, password: string, role?: 'admin
   return response.json();
 }
 
+export const DESKTOP_REAUTH_REQUIRED = 'Local access has expired or is no longer available. Sign in online again to refresh this device. Your saved work and pending changes are preserved.';
+
 export async function getCurrentUser(token: string): Promise<{ user: User; token?: string }> {
   if (!token.startsWith('local:')) {
     try {
@@ -165,6 +167,13 @@ export async function getCurrentUser(token: string): Promise<{ user: User; token
       if (!response.ok) throw new Error('Failed to get current user');
       const result = await response.json() as { user: User };
       if (isTauriRuntime()) {
+        // A valid server JWT is not a valid native lease. Permission refresh
+        // deliberately cannot renew the password-authenticated offline lease.
+        // Never restore a workspace whose SQLite reads will all be rejected.
+        const local = await localInvoke<User | null>('local_current_user');
+        if (!isServerRequestCurrent(context)) throw new Error('Session changed during account restoration');
+        if (!local) throw new Error(DESKTOP_REAUTH_REQUIRED);
+        if (localUser(local).id !== result.user.id) throw new Error('Cached session belongs to another account; sign in again');
         try {
           await cachePermissions(result.user, context);
         } catch {
@@ -196,7 +205,7 @@ export async function getCurrentUser(token: string): Promise<{ user: User; token
   if (local?.authenticated && local.user && local.token?.startsWith('local:')) {
     return { user: local.user, token: local.token };
   }
-  throw new Error('Local session is unavailable');
+  throw new Error(DESKTOP_REAUTH_REQUIRED);
 }
 
 export async function changePassword(current_password: string, new_password: string): Promise<void> {

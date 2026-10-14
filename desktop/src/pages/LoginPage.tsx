@@ -4,9 +4,10 @@ import { LogIn, Eye, EyeOff } from 'lucide-react';
 
 interface LoginPageProps {
   onLoginSuccess: (user: any, token: string) => void;
+  notice?: string | null;
 }
 
-export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
+export default function LoginPage({ onLoginSuccess, notice }: LoginPageProps) {
   const [authStatusReady, setAuthStatusReady] = useState(false);
   const [isTauriLocal, setIsTauriLocal] = useState(false);
   const [username, setUsername] = useState('');
@@ -56,6 +57,7 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
             </p>
           </div>
 
+          {notice && <div role="status" className="mb-6 rounded-sm border border-accent/40 bg-accent/10 p-4 text-sm text-text-primary">{notice}</div>}
           {error && (
             <div className="mb-6 p-4 bg-status-danger/10 border border-status-danger rounded-sm text-status-danger text-sm">
               {error}

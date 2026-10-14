@@ -29,6 +29,8 @@ export default function SyncStatus(){
   useEffect(()=>{void refresh();const unsubscribe=subscribeSyncStatus(setRuntime);const timer=window.setInterval(()=>void refresh(),5000);const online=()=>void refresh();const offline=()=>setRuntime(getSyncRuntimeState());window.addEventListener('online',online);window.addEventListener('offline',offline);return()=>{unsubscribe();window.clearInterval(timer);window.removeEventListener('online',online);window.removeEventListener('offline',offline);};},[]);
   const sync=async()=>{setBusy(true);try{await syncPendingChanges(true);window.dispatchEvent(new Event('labos:manual-sync-complete'));}finally{setBusy(false);await refresh();}};
   const resolve=async(id:string,resolution:'keep_local'|'accept_server'|'dismiss')=>{
+    const conflict=conflicts.find(c=>c.change_id===id);
+    if(resolution!=='keep_local'&&conflict?.entity_type==='resource'&&['create','create_copy','edit_content'].includes(conflict.operation)&&!window.confirm('Stop syncing this resource change and the pending copies or edits that depend on it? Saved file bytes will be retained for recovery, but these changes will no longer be sent to the server.'))return;
     if(resolution!=='keep_local'&&['item','item_movement','maintenance_record','daily_preferences','supplier','storage_container','project_comment'].includes(conflicts.find(c=>c.change_id===id)?.entity_type??'')&&!window.confirm('Discard pending changes to this record and connected inventory items/shared batches, then restore server values?'))return;
     setBusy(true);
     try{await resolveSyncConflict(id,resolution);await syncPendingChanges(true);window.dispatchEvent(new Event('labos:manual-sync-complete'));}

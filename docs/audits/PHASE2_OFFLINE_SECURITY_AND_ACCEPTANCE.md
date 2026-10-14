@@ -1,5 +1,10 @@
 # Phase 2: offline completeness, authentication and mandatory outage testing
 
+Remaining delivery/status is tracked in
+[PHASE2_DELIVERY_CHECKLIST.md](PHASE2_DELIVERY_CHECKLIST.md), approved October 13.
+This document remains the detailed offline/security contract and acceptance
+procedure, not a second expanding backlog. Follow the phase-end cadence below.
+
 Owner directive: consolidate the October 9 offline/security discussion into
 Phase 2. October 10 supersedes the original per-change testing cadence: batch
 implementation, retaining quick build and critical safety checks, then run the

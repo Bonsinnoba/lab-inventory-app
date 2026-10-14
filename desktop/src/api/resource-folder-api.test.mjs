@@ -11,7 +11,7 @@ function load({failMove=false,switchOnGuard=false,switchOnMove=false,failEditor=
     if(p==='../lib/runtime')return{isTauriRuntime:()=>true};
     if(p==='./auth')return{captureAccountSession:()=>({accountId:'account'}),isAccountSessionCurrent:()=>current};
     if(p==='./http')return{apiFetch:()=>{throw Error('Unexpected HTTP');}};
-    if(p==='./resource-uploads')return{stageResourceFolderFiles:async(...args)=>{calls.push({command:'stageFolder',args});return[];},refreshLocalFileAccess:async()=>{},localFilePending:()=>false,localFileUrl:()=>null};
+    if(p==='./resource-uploads')return{stageResourceFolderFiles:async(...args)=>{calls.push({command:'stageFolder',args});return[];},stagePdfReplacement:async(...args)=>{calls.push({command:'stagePdf',args});return{id:args[0]};},refreshLocalFileAccess:async()=>{},localFilePending:()=>false,localFileUrl:()=>null};
     if(p==='@tauri-apps/api/tauri')return{invoke:async(command,args)=>{
       calls.push({command,args});
       if(command==='get_local_resource')return{id:'folder',name:'Designs',kind:'folder'};
@@ -19,9 +19,12 @@ function load({failMove=false,switchOnGuard=false,switchOnMove=false,failEditor=
       if(command==='create_local_resource_folder')return{id:'folder'};
       if(command==='local_authorization_guard'){if(switchOnGuard)current=false;return 'native-session';}
       if(command==='move_local_resource_attachment'){if(failMove)throw Error('SQLite write failed');if(switchOnMove)current=false;return{id:args.resourceId,project_id:args.destination.project_id};}
-      if(['create_local_pdf_edit_copy','read_local_resource_markdown'].includes(command)){
+      if(['create_local_pdf_edit_copy','read_local_resource_markdown','save_local_resource_markdown','list_local_markdown_versions','read_local_markdown_version','read_local_docx','save_local_docx_copy'].includes(command)){
         if(failEditor)throw Error('Local source unavailable');if(switchOnEditor)current=false;
-        return command==='read_local_resource_markdown'?'# Local document':{id:'copy',kind:'file',derived_from_resource_id:args.resourceId};
+        if(command==='read_local_docx')return{html:'<p>Local DOCX</p>',messages:[]};
+        if(command==='list_local_markdown_versions')return[{change_id:'version',status:'discarded'}];
+        if(command==='read_local_markdown_version')return '# Preserved';
+        return command==='read_local_resource_markdown'?'# Local document':{id:command==='save_local_resource_markdown'?args.resourceId:'copy',kind:'file',derived_from_resource_id:args.resourceId};
       }
       throw Error(command);
     }};
@@ -32,6 +35,22 @@ function load({failMove=false,switchOnGuard=false,switchOnMove=false,failEditor=
 test('desktop folder upload delegates to native staging before constructing HTTP',async()=>{
   const c=load();await c.api.uploadFolderFiles('folder',[],[]);
   assert.equal(c.calls[0].command,'stageFolder');assert.equal(c.calls[0].args[0],'folder');
+});
+
+test('DOCX desktop reads and copies use native authorization and stable retry arguments without HTTP',async()=>{
+  const c=load();assert.equal((await c.api.getDocxHtml('source','revision')).html,'<p>Local DOCX</p>');
+  assert.equal(c.calls[1].command,'read_local_docx');assert.equal(c.calls[1].args.expectedRevision,'revision');
+  await c.api.saveDocxCopy('source','<p>Edit</p>','revision','same-request');
+  await c.api.saveDocxCopy('source','<p>Edit</p>','revision','same-request');
+  const saves=c.calls.filter(c=>c.command==='save_local_docx_copy');assert.equal(saves.length,2);
+  for(const call of saves){assert.equal(call.args.requestId,'same-request');assert.equal(call.args.expectedAccountId,'account');assert.equal(call.args.expectedSessionToken,'native-session');assert.equal(call.args.expectedRevision,'revision');assert.equal(call.args.html,'<p>Edit</p>');}
+  const missing=load();await assert.rejects(missing.api.saveDocxCopy('source','html'),/Reopen/);assert.equal(missing.calls.length,0);
+});
+test('DOCX failures and account switches do not fall back to server reads or writes',async()=>{
+  for(const option of [{failEditor:true},{switchOnGuard:true},{switchOnEditor:true}]){
+    const c=load(option);await assert.rejects(c.api.saveDocxCopy('source','html','revision','request'),/Local source unavailable|Account changed/);
+    const read=load(option);await assert.rejects(read.api.getDocxHtml('source','revision'),/Local source unavailable|Account changed/);
+  }
 });
 test('desktop folder creation passes camel-case native parent arguments',async()=>{
   const c=load();await c.api.createFolder('Designs',{project_id:'project'});
@@ -74,5 +93,32 @@ test('editor file failures and account switches do not fall back to the server',
     const changed=load({switchOnGuard:true});await assert.rejects(changed.api[method]('source'),/Account changed/);
     assert.equal(changed.calls.length,1);
     const after=load({switchOnEditor:true});await assert.rejects(after.api[method]('source'),/Account changed/);
+  }
+});
+
+test('Markdown saves use the captured revision and same resource identity without HTTP',async()=>{
+  const c=load();const result=await c.api.saveResourceText('source','# Saved','revision');
+  assert.equal(result.id,'source');assert.equal(c.calls[1].command,'save_local_resource_markdown');
+  assert.equal(c.calls[1].args.expectedRevision,'revision');assert.equal(c.calls[1].args.content,'# Saved');
+  assert.equal(c.calls[1].args.expectedSessionToken,'native-session');
+  const missing=load();await assert.rejects(missing.api.saveResourceText('source','text'),/Reopen/);assert.equal(missing.calls.length,0);
+});
+test('failed or switched-session Markdown saves never fall back to server writes',async()=>{
+  for(const option of [{failEditor:true},{switchOnGuard:true},{switchOnEditor:true}]){
+    const c=load(option);await assert.rejects(c.api.saveResourceText('source','text','revision'),/Local source unavailable|Account changed/);
+  }
+});
+
+test('desktop PDF replacement delegates to native staging, with the opened revision',async()=>{
+  const c=load();const file={name:'edited.pdf'};const result=await c.api.replaceResourceFile('existing',file,'revision');
+  assert.equal(result.id,'existing');assert.equal(c.calls[0].command,'stagePdf');assert.equal(c.calls[0].args[2],'revision');
+});
+test('saved-version review reauthorizes and passes account, resource and version identities',async()=>{
+  const c=load();assert.equal((await c.api.listMarkdownSavedVersions('source'))[0].status,'discarded');
+  assert.equal(await c.api.readMarkdownSavedVersion('source','version'),'# Preserved');
+  assert.equal(c.calls[3].args.changeId,'version');assert.equal(c.calls[3].args.resourceId,'source');assert.equal(c.calls[3].args.expectedSessionToken,'native-session');
+  for(const method of ['listMarkdownSavedVersions','readMarkdownSavedVersion']){
+    const changed=load({switchOnEditor:true});await assert.rejects(changed.api[method]('source','version'),/Account changed/);
+    const failed=load({failEditor:true});await assert.rejects(failed.api[method]('source','version'),/Local source unavailable/);
   }
 });

@@ -175,6 +175,54 @@ account/resource identity, with explicit incomplete/stale states.
 
 ## Acceptance still required
 
+The October 12 editor slice uses the same managed upload store for PDF copies:
+`resource/create_copy` holds a new resource/change identity, a protocol-1 upload
+descriptor, and a source ID/revision. The server rechecks source edit authority,
+attachment and visibility before inserting the derived resource and receipt.
+Original bytes are never overwritten. Markdown opening reads verified native
+bytes (UTF-8, at most 4 MiB). The follow-up Markdown writer saves immutable
+versions under the same resource ID, publishing local metadata and an
+`resource/edit_content` intent in one SQLite transaction. Each pending save
+references its predecessor's change ID; the server uses that owned receipt's
+revision for compare-and-swap. Transfer uses the resources.edit boundary and
+the existing resumable upload protocol. A stale server revision is a conflict,
+never an automatic overwrite. Discarding a conflicted edit chain preserves all
+physical versions. Markdown now has account-guarded saved-version review, export
+and explicit loading into the editor for a new reviewed save. This is not a
+forced overwrite or recovery after lost authorization. The latest 100 local
+Markdown versions are listed; older bytes are retained.
+Opening captures a revision; saving from a stale editor leaves its text intact.
+Pending native file creation/copy can now precede content edits in the same
+receipt chain; the original create payload stays immutable. Pending metadata or
+attachment operations still block content editing. Verified local bytes and
+cached editor authority are required.
+The October 13 source implementation extends the same receipt chain to PDF/DOCX
+copies of pending uploads/copies/content edits. `copy.previous_change_id` is bound
+to the authenticated author/device/source and resolved before checking the live
+source revision. Native queue selection holds conflicted descendants before its
+batch limit; upload failures withhold transitive copies in the current pass.
+Discard confirmation explicitly covers dependent copies/edits; intent retirement
+preserves all authored bytes. Metadata/folder/attachment chains and recovery UI
+remain open; this follow-up has not yet been deployed or outage-tested.
+PDF replacement now stages 1 MiB chunks locally (maximum 500 MiB), validates the
+PDF header, and uses edit_content with format=pdf. Metadata, editor version and
+outbox publication are atomic; prior bytes and the resource identity/filename
+are preserved. Partial staging is not published; invalid or stale saves leave
+the existing resource unchanged. Header validation is not a complete PDF parser
+or safety certification. Desktop PDF viewing now uses a native-only PDF.js range
+transport rather than a whole-file GET: 1 MiB chunks, serial processing, at most
+16 MiB per assembled request and 64 queued requests, with a 500 MiB document cap.
+The native reader returns an opaque immutable-path/size revision; subsequent
+ranges pin it and recheck native authority. This prevents combining saved file
+versions during a preview, not tampering by a hostile filesystem administrator.
+The client validates ranges/revisions/lengths and cancels on closure/session
+change. Missing local copies are explicit with no desktop PDF server fallback.
+Large-file PDF.js/WebView rendering, media suffix ranges and general Download/
+export remain acceptance/work items. DOCX conversion/save now uses the native
+bundled worker and local copy/outbox path on desktop; see offline-docx-runtime.md
+for the current boundaries. Real desktop outage/reconnect acceptance remains OPEN.
+Local staging failures preserve possible recovery bytes; reclamation is still open.
+
 The focused file/handler checks do not exercise PostgreSQL. The phase-end sweep
 must use the existing PostgreSQL service and actual desktop with Docker API stopped:
 uploads, completed downloaded media, images/PDF/audio/video, large/empty files,

@@ -38,7 +38,7 @@ test('cold restoration uses native validated session token and central identity,
 });
 test('expired or missing native session cannot restore even if an old token exists',async()=>{
   const c=load({invoke:async()=>({authenticated:false,bootstrapped:true,user:null,token:null})});
-  await assert.rejects(c.auth.getCurrentUser('local:old'),/unavailable/);
+  await assert.rejects(c.auth.getCurrentUser('local:old'),/Sign in online again/);
 });
 test('unlinked local account is never promoted to server identity',async()=>{
   const c=load({invoke:async()=>({user:{...cached,central_user_id:null},token:'local:x'})});
@@ -152,10 +152,56 @@ test('startup during authentication-service outage retains authorized native ide
 test('native refresh revocation after successful me cannot restore the authenticated UI',async()=>{
   const c=load({fetch:async()=>new Response(JSON.stringify({user:serverUser})),invoke:async(name)=>{
     if(name==='local_authorization_guard')return 'guard';
+    if(name==='local_current_user')return cached;
     if(name==='cache_server_permissions')throw 'AUTH_REVOKED: cached access revoked';
     throw Error('Unexpected IPC '+name);
   }});
   c.auth.setToken('jwt');c.auth.setStoredUser(serverUser);
   await assert.rejects(c.auth.getCurrentUser('jwt'),/Session changed/);
   assert.equal(c.auth.getToken(),null);assert.equal(c.events.includes('labos:auth-expired'),true);
+});
+
+test('healthy server JWT cannot restore a desktop whose native lease expired',async()=>{
+  const ipc=[];
+  const c=load({fetch:async()=>new Response(JSON.stringify({user:serverUser})),invoke:async(name)=>{
+    ipc.push(name);if(name==='local_authorization_guard')return 'guard';
+    if(name==='local_current_user')return null;
+    throw Error('Unexpected IPC '+name);
+  }});
+  c.auth.setToken('jwt');c.auth.setStoredUser(serverUser);
+  await assert.rejects(c.auth.getCurrentUser('jwt'),/Sign in online again/);
+  assert.equal(ipc.includes('cache_server_permissions'),false);
+  // Only the startup UI decides to show sign-in; this check neither logs out
+  // native auth nor invalidates/deletes the cache, lease, outbox or business rows.
+  assert.equal(c.auth.getToken(),'jwt');assert.equal(c.events.includes('labos:auth-expired'),false);
+});
+
+test('healthy server and matching native lease restore despite transient permission-refresh failure',async()=>{
+  const c=load({fetch:async()=>new Response(JSON.stringify({user:serverUser})),invoke:async(name)=>{
+    if(name==='local_authorization_guard')return 'guard';
+    if(name==='local_current_user')return cached;
+    if(name==='cache_server_permissions')throw Error('temporary network outage');
+    throw Error(name);
+  }});
+  c.auth.setToken('jwt');c.auth.setStoredUser(serverUser);
+  assert.equal((await c.auth.getCurrentUser('jwt')).user.id,'server-account');
+});
+
+test('server success cannot restore a different native account',async()=>{
+  const c=load({fetch:async()=>new Response(JSON.stringify({user:serverUser})),invoke:async(name)=>
+    name==='local_authorization_guard'?'guard':{...cached,central_user_id:'other'}});
+  c.auth.setToken('jwt');c.auth.setStoredUser(serverUser);
+  await assert.rejects(c.auth.getCurrentUser('jwt'),/another account/);
+});
+
+test('late native lease response cannot restore or clear a newer login',async()=>{
+  let complete;
+  const c=load({fetch:async()=>new Response(JSON.stringify({user:serverUser})),invoke:async(name)=>
+    name==='local_authorization_guard'?'guard':new Promise(resolve=>complete=resolve)});
+  c.auth.setToken('jwt');c.auth.setStoredUser(serverUser);
+  const pending=c.auth.getCurrentUser('jwt');
+  while(!complete)await new Promise(resolve=>setTimeout(resolve,0));
+  c.auth.setToken('new-jwt');c.auth.setStoredUser({...serverUser,id:'other'});
+  complete(null);await assert.rejects(pending,/Session changed/);
+  assert.equal(c.auth.getToken(),'new-jwt');assert.equal(c.auth.getStoredUser().id,'other');
 });

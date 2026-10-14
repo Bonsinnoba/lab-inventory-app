@@ -8,7 +8,7 @@ use crate::{local_auth, local_db, local_resources};
 const CHUNK: usize = 1024 * 1024;
 const MAX_FILE: u64 = 500 * 1024 * 1024;
 fn err(e:impl std::fmt::Display)->String { e.to_string() }
-fn schema(c:&Connection)->Result<(),String>{
+pub(crate) fn schema(c:&Connection)->Result<(),String>{
     c.execute_batch("CREATE TABLE IF NOT EXISTS local_resource_uploads(account_id TEXT NOT NULL,change_id TEXT NOT NULL,resource_id TEXT NOT NULL,resource_json TEXT NOT NULL,size_bytes INTEGER NOT NULL,sha256 TEXT,server_revision TEXT,state TEXT NOT NULL DEFAULT 'staging',PRIMARY KEY(account_id,change_id),UNIQUE(account_id,resource_id));").map_err(err)
 }
 fn guard(c:&Connection,account:&str,session:&str)->Result<(),String>{
@@ -17,13 +17,13 @@ fn guard(c:&Connection,account:&str,session:&str)->Result<(),String>{
     let current:String=c.query_row("SELECT session_token FROM local_session WHERE id=1",[],|r|r.get(0)).map_err(err)?;
     if current!=session{return Err("Session changed while saving file".into())} Ok(())
 }
-fn file_path(app:&AppHandle,account:&str,change:&str)->Result<PathBuf,String>{
+pub(crate) fn file_path(app:&AppHandle,account:&str,change:&str)->Result<PathBuf,String>{
     let account=uuid::Uuid::parse_str(account).map_err(err)?.to_string();
     let change=uuid::Uuid::parse_str(change).map_err(err)?.to_string();
     let root=tauri::api::path::app_data_dir(&app.config()).ok_or("Missing LabOS data directory")?;
     Ok(root.join("resource-files").join(account).join(change).join("content"))
 }
-fn hash_file(path:&std::path::Path)->Result<String,String>{
+pub(crate) fn hash_file(path:&std::path::Path)->Result<String,String>{
     let mut f=fs::File::open(path).map_err(err)?;let mut hash=Sha256::new();let mut buffer=vec![0;CHUNK];
     loop{let n=f.read(&mut buffer).map_err(err)?;if n==0{break}hash.update(&buffer[..n]);}
     Ok(format!("{:x}",hash.finalize()))
@@ -36,15 +36,24 @@ pub(crate) fn parent_guard(c:&Connection,record:&Value)->Result<(),String>{
     let parents=["item_id","project_id","note_id","parent_resource_id"];
     if parents.iter().filter(|k|record[**k].as_str().is_some()).count()>1{return Err("Choose one resource attachment destination".into())}
     for key in parents{if let Some(id)=record[key].as_str(){uuid::Uuid::parse_str(id).map_err(err)?;}}
-    if let Some(id)=record["project_id"].as_str(){crate::local_projects::require_cached_project_access(c,id,true)?;}
-    // Scoped note/folder edit grants are not yet available to this native writer.
-    // Fail closed for non-admins rather than infer authority from a visible row.
-    if record["note_id"].as_str().is_some()||record["parent_resource_id"].as_str().is_some(){
-        let role:String=c.query_row("SELECT u.role FROM local_users u JOIN local_session s ON s.user_id=u.id WHERE s.id=1",[],|r|r.get(0)).map_err(err)?;
-        if role!="admin"{return Err("Offline file attachments to notes/folders require cached edit authority; use the unattached library for now".into())}
+    let role:String=c.query_row("SELECT u.role FROM local_users u JOIN local_session s ON s.user_id=u.id WHERE s.id=1",[],|r|r.get(0)).map_err(err)?;
+    if let Some(id)=record["project_id"].as_str(){
+        if role=="admin"{crate::local_projects::require_cached_project_access(c,id,true)?;}
+        else{
+            local_auth::require_local_permission(c,"projects.view")?;
+            local_auth::require_local_permission(c,"projects.edit")?;
+            crate::local_resource_destinations::require_destination(c,"project",id)?;
+        }
+    }
+    if let Some(id)=record["note_id"].as_str(){
+        if role!="admin"{crate::local_resource_destinations::require_destination(c,"note",id)?;}
+        else if !crate::local_notes::load(c)?.iter().any(|n|n["id"].as_str()==Some(id)){return Err("Note unavailable on this PC".into())}
     }
     if let Some(id)=record["parent_resource_id"].as_str(){
-        if !local_resources::read_resources(c)?.iter().any(|r|r.id==id&&r.kind=="folder"){return Err("Folder unavailable on this PC".into())}
+        let folder=local_resources::read_resources(c)?.into_iter().find(|r|r.id==id&&r.kind=="folder").ok_or("Folder unavailable on this PC")?;
+        // A source-file grant is not a destination grant. Verify the folder
+        // itself, including its complete inherited scope and current lease.
+        if role!="admin"{crate::local_resource_authority::require_edit(c,&folder)?;}
     }
     Ok(())
 }
@@ -91,9 +100,7 @@ fn readable_file(c:&Connection,resource_id:&str)->Result<(String,String,String,u
         local_auth::require_local_permission(c,"resources.create")?;parent_guard(c,&serde_json::to_value(&record).map_err(err)?)?;
         if let Some(source_id)=&record.derived_from_resource_id{
             let source=local_resources::read_resources(c)?.into_iter().find(|r|r.id==*source_id).ok_or("Source access is no longer available")?;
-            crate::local_resource_attachments::require_cached_resource_editor(c,&source)?;
-            let denied:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM local_resource_poster_denials WHERE account_id=?1 AND resource_id=?2)",params![account,source_id],|r|r.get(0)).unwrap_or(true);
-            if denied{return Err("Source resource access was revoked; the authored copy is preserved".into())}
+            crate::resource_dependencies::require_editor_access(c,&source)?;
         }
     }
     else if revision.as_deref()!=Some(record.updated_at.as_str()){return Err("Local file needs revision verification".into())}
@@ -108,7 +115,8 @@ fn capability(c:&Connection,id:&str)->Result<String,String>{
     let token:String=c.query_row("SELECT session_token FROM local_session WHERE id=1",[],|r|r.get(0)).map_err(err)?;
     Ok(format!("{:x}",Sha256::digest(format!("labos-file:{token}:{id}").as_bytes())))
 }
-fn resolved_file(app:&AppHandle,c:&Connection,id:&str)->Result<(PathBuf,String,u64),String>{
+pub(crate) fn resolved_file(app:&AppHandle,c:&Connection,id:&str)->Result<(PathBuf,String,u64),String>{
+    if let Ok(file)=crate::local_resource_edits::readable(app,c,id){return Ok(file)}
     if let Ok((account,change,mime,size))=readable_file(c,id){
         let path=file_path(app,&account,&change)?;
         if fs::metadata(&path).map(|m|m.len()==size).unwrap_or(false){return Ok((path,mime,size))}
@@ -121,14 +129,15 @@ fn editor_source(c:&Connection,account:&str,session:&str,id:&str)->Result<local_
     let token:String=c.query_row("SELECT session_token FROM local_session WHERE id=1",[],|r|r.get(0)).map_err(err)?;
     if token!=session{return Err("Session changed while opening editor resource".into())}
     let resource=local_resources::read_resources(c)?.into_iter().find(|r|r.id==id).ok_or("Resource unavailable on this PC")?;
-    crate::local_resource_attachments::require_cached_resource_editor(c,&resource)?;
+    crate::resource_dependencies::require_editor_access(c,&resource)?;
     Ok(resource)
 }
 
 #[tauri::command]
-pub fn read_local_resource_markdown(app:AppHandle,expected_account_id:String,expected_session_token:String,resource_id:String)->Result<String,String>{
+pub fn read_local_resource_markdown(app:AppHandle,expected_account_id:String,expected_session_token:String,resource_id:String,expected_revision:Option<String>)->Result<String,String>{
     let c=local_db::open_local_connection(&app)?;schema(&c)?;
     let source=editor_source(&c,&expected_account_id,&expected_session_token,&resource_id)?;
+    if expected_revision.as_ref().is_some_and(|r|*r!=source.updated_at){return Err("Resource changed; refresh before opening the editor".into())}
     let name=source.original_filename.as_deref().unwrap_or(&source.name).to_lowercase();
     if source.kind!="file"||source.file_type!="text"||!(name.ends_with(".md")||name.ends_with(".markdown")){return Err("Only Markdown files can be opened as source text".into())}
     let (path,_,size)=resolved_file(&app,&c,&resource_id).map_err(|_|"A verified file copy is not available on this PC yet")?;
@@ -148,8 +157,7 @@ pub fn create_local_pdf_edit_copy(app:AppHandle,expected_account_id:String,expec
     let source=editor_source(&tx,&expected_account_id,&expected_session_token,&resource_id)?;
     let original=source.original_filename.as_deref().unwrap_or(&source.name);
     if source.kind!="file"||source.file_type!="pdf"||!original.to_lowercase().ends_with(".pdf"){return Err("Only PDF resources can be copied for editing".into())}
-    let pending:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM active_sync_outbox WHERE entity_type='resource' AND entity_id=?1 AND synced_at IS NULL)",[&resource_id],|r|r.get(0)).map_err(err)?;
-    if pending{return Err("Sync the source resource's pending changes before creating a derived copy".into())}
+    let previous=crate::resource_dependencies::source_predecessor(&tx,&resource_id)?;
     let (source_path,_,size)=resolved_file(&app,&tx,&resource_id).map_err(|_|"A verified PDF copy is not available on this PC yet")?;
     if size>MAX_FILE{return Err("PDF exceeds the 500 MiB local copy limit".into())}
     parent_guard(&tx,&serde_json::to_value(&source).map_err(err)?)?;
@@ -176,7 +184,7 @@ pub fn create_local_pdf_edit_copy(app:AppHandle,expected_account_id:String,expec
     let digest=hash_file(&target)?;
     guard(&tx,&expected_account_id,&expected_session_token)?;
     if resolved_file(&app,&tx,&resource_id)?.0!=source_path{return Err("Source resource changed while copying".into())}
-    let payload=json!({"resource":record,"copy":{"protocol":1,"source_id":source.id,"source_updated_at":source.updated_at},"upload":{"protocol":1,"sha256":digest,"size_bytes":size}});
+    let payload=json!({"resource":record,"copy":{"protocol":1,"source_id":source.id,"source_updated_at":source.updated_at,"previous_change_id":previous},"upload":{"protocol":1,"sha256":digest,"size_bytes":size}});
     let device:String=tx.query_row("SELECT device_id FROM device_identity WHERE id=1",[],|r|r.get(0)).map_err(err)?;
     tx.execute("INSERT INTO local_resource_uploads(account_id,change_id,resource_id,resource_json,size_bytes,sha256,state) VALUES(?1,?2,?3,?4,?5,?6,'ready')",params![expected_account_id,change,id,serde_json::to_string(&record).map_err(err)?,size as i64,digest]).map_err(err)?;
     let mut resources=local_resources::read_resources(&tx)?;resources.push(record.clone());local_resources::write_resources(&tx,&resources)?;
@@ -188,6 +196,11 @@ pub fn local_resource_file_access(app:AppHandle,expected_account_id:String)->Res
     let c=local_db::open_local_connection(&app)?;schema(&c)?;local_db::require_sync_account(&c,&expected_account_id)?;local_auth::require_local_permission(&c,"resources.view")?;
     let mut files=serde_json::Map::new();
     for record in local_resources::read_resources(&c)?{
+        if crate::local_resource_edits::readable(&app,&c,&record.id).is_ok(){
+            let pending:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM active_sync_outbox WHERE entity_type='resource' AND entity_id=?1 AND operation='edit_content' AND synced_at IS NULL)",[&record.id],|r|r.get(0)).map_err(err)?;
+              files.insert(record.id.clone(),json!({"path":format!("{}.{}",record.id,capability(&c,&record.id)?),"pending":pending}));
+              continue;
+        }
         if crate::local_resource_replication::readable(&app,&c,&record.id).is_ok(){
             files.insert(record.id.clone(),json!({"path":format!("{}.{}",record.id,capability(&c,&record.id)?),"pending":false}));
         }
@@ -224,13 +237,17 @@ pub fn serve_file(app:&AppHandle,request:&tauri::http::Request)->Result<tauri::h
         let c=local_db::open_local_connection(app)?;schema(&c)?;
         if capability(&c,parts[0])?!=parts[1]{return Err("Local resource session changed".into())}
         let (file_path,mime,size)=resolved_file(app,&c,parts[0])?;
+        // Managed file paths identify immutable versions. Pin a multi-request
+        // viewer to one version without exposing the underlying filesystem path.
+        let revision=format!("{:x}",Sha256::digest(format!("{}:{size}",file_path.to_string_lossy()).as_bytes()));
+        if url.query_pairs().any(|(key,value)|key=="revision"&&value!=revision){return Err("Local file revision changed".into())}
         let range=request.headers().get("range").and_then(|v|v.to_str().ok());
         let (start,end)=if let Some(range)=range{
             let pair=range.strip_prefix("bytes=").ok_or("Invalid range")?.split_once('-').ok_or("Invalid range")?;
             let start=pair.0.parse::<u64>().map_err(err)?;
             let requested=if pair.1.is_empty(){size.saturating_sub(1)}else{pair.1.parse::<u64>().map_err(err)?};
             if start>=size||requested<start{return Err("Invalid range".into())}(start,requested.min(size-1).min(start+4*1024*1024-1))
-        }else{if size>32*1024*1024{return Err("Large files require ranged access".into())}(0,size.saturating_sub(1))};
+        }else{if request.method().as_str()!="HEAD"&&size>32*1024*1024{return Err("Large files require ranged access".into())}(0,size.saturating_sub(1))};
         let length=if size==0{0}else{end-start+1};
         let mut file=fs::File::open(&file_path).map_err(err)?;
         if file.metadata().map_err(err)?.len()!=size{return Err("Local file changed".into())}
@@ -239,6 +256,7 @@ pub fn serve_file(app:&AppHandle,request:&tauri::http::Request)->Result<tauri::h
         let mime=if mime.starts_with("image/")||mime.starts_with("audio/")||mime.starts_with("video/")||mime=="application/pdf"{mime}else{"text/plain".into()};
         let origin=request.headers().get("origin").and_then(|v|v.to_str().ok()).filter(|o|["http://localhost:1420","http://127.0.0.1:1420","tauri://localhost","http://tauri.localhost","https://tauri.localhost"].contains(o)).unwrap_or("http://tauri.localhost");
         let mut builder=tauri::http::ResponseBuilder::new().status(if range.is_some(){206}else{200}).header("Content-Type",mime).header("Cache-Control","no-store").header("Accept-Ranges","bytes").header("Content-Length",length.to_string()).header("Access-Control-Allow-Origin",origin).header("Access-Control-Expose-Headers","Content-Range, Content-Length, Accept-Ranges").header("Content-Security-Policy","default-src 'none'; sandbox").header("X-Content-Type-Options","nosniff");
+        builder=builder.header("X-LabOS-File-Revision",revision).header("Access-Control-Expose-Headers","Content-Range, Content-Length, Accept-Ranges, X-LabOS-File-Revision");
         if range.is_some(){builder=builder.header("Content-Range",format!("bytes {start}-{end}/{size}"));}
         builder.body(bytes).map_err(err)
     })();

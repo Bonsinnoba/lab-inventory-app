@@ -40,7 +40,7 @@ import LoginPage from "./pages/LoginPage";
 import CommandPalette from "./components/CommandPalette";
 const LabIntelligencePage = lazy(() => import("./pages/LabIntelligencePage"));
 const DownloadsPage = lazy(() => import("./pages/DownloadsPage"));
-import { getToken, setToken, removeToken, getStoredUser, setStoredUser, removeStoredUser, getCurrentUser, getCurrentPermissions, logout, captureAccountSession, isAccountSessionCurrent } from "./api/auth";
+import { getToken, setToken, removeToken, getStoredUser, setStoredUser, removeStoredUser, getCurrentUser, getCurrentPermissions, logout, captureAccountSession, isAccountSessionCurrent, DESKTOP_REAUTH_REQUIRED } from "./api/auth";
 import type { User } from "./api/auth";
 import { getDailyUsePreferences } from './api/system';
 import { syncPendingChanges } from './api/sync';
@@ -58,6 +58,7 @@ function AppContent() {
   const [user, setUser] = useState<User | null>(null);
   const [permissions, setPermissions] = useState<string[]>([]);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [signInNotice, setSignInNotice] = useState<string | null>(null);
   const [rightPanelContent, setRightPanelContent] = useState<DockableContent>('assistant');
   const [musicDockOpen, setMusicDockOpen] = useState(false);
   const [musicMinimized, setMusicMinimized] = useState(false);
@@ -172,8 +173,9 @@ function AppContent() {
           refreshPermissions();
           setIsAuthenticated(true);
         })
-        .catch(() => {
+        .catch((error) => {
           if (!unchanged()) return;
+          if (error instanceof Error && error.message === DESKTOP_REAUTH_REQUIRED) setSignInNotice(error.message);
           removeToken();
           removeStoredUser();
         });
@@ -189,11 +191,14 @@ function AppContent() {
         refreshPermissions();
         setIsAuthenticated(true);
       })
-      .catch(() => undefined);
+      .catch((error) => {
+        if (unchanged() && error instanceof Error && error.message === DESKTOP_REAUTH_REQUIRED) setSignInNotice(error.message);
+      });
     return () => { active = false; };
   }, []);
 
   const handleLoginSuccess = (u: User, t: string) => {
+    setSignInNotice(null);
     setToken(t);
     setStoredUser(u);
     setUser(u);
@@ -231,7 +236,7 @@ function AppContent() {
     return 'Inventory';
   };
 
-  if (!isAuthenticated) return <LoginPage onLoginSuccess={handleLoginSuccess} />;
+  if (!isAuthenticated) return <LoginPage onLoginSuccess={handleLoginSuccess} notice={signInNotice} />;
 
   const rightPanelTitles: Record<Exclude<DockableContent, null>, string> = {
     assistant: 'Lab Assistant',

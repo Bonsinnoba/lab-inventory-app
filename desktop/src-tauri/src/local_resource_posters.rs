@@ -2,7 +2,7 @@ use rusqlite::{params,OptionalExtension,Connection,TransactionBehavior};
 use tauri::AppHandle;
 use crate::{local_auth,local_db,local_resources};
 
-fn schema(c:&Connection)->Result<(),String>{
+pub(crate) fn schema(c:&Connection)->Result<(),String>{
     c.execute_batch("CREATE TABLE IF NOT EXISTS local_resource_posters(account_id TEXT NOT NULL,resource_id TEXT NOT NULL,revision TEXT NOT NULL,bytes BLOB NOT NULL,PRIMARY KEY(account_id,resource_id)); CREATE TABLE IF NOT EXISTS local_resource_poster_denials(account_id TEXT NOT NULL,resource_id TEXT NOT NULL,PRIMARY KEY(account_id,resource_id));").map_err(|e|e.to_string())
 }
 fn authorize(c:&Connection,account:&str,id:&str,revision:&str)->Result<(),String>{
