@@ -285,15 +285,14 @@ pub fn create_local_resource_folder(app: AppHandle, name: String, item_id: Optio
 }
 
 #[tauri::command]
-pub fn update_local_resource_metadata(app: AppHandle, id: String, category: Option<String>, description: Option<String>, tags: Option<Vec<String>>) -> Result<LocalResource, String> {
-    let mut conn=open_local_connection(&app)?; ensure_schema(&conn)?; let mut resources=read_resources(&conn)?;
+pub fn update_local_resource_metadata(app: AppHandle, id: String, expected_account_id:String, expected_session_token:String, category: Option<String>, description: Option<String>, tags: Option<Vec<String>>) -> Result<LocalResource, String> {
+    let provided=(category.is_some(),description.is_some(),tags.is_some());
     let (category,description,tags)=metadata(category,description,tags);
-    let timestamp=now(&conn)?;
-    let resource=resources.iter_mut().find(|r|r.id==id).ok_or_else(||"Resource not found".to_string())?;
-    resource.category=Some(category); resource.description=Some(description); resource.tags=tags; resource.updated_at=timestamp;
-    let result=resource.clone();
-    save_with_change(&mut conn, &resources, &id, "update", &serde_json::json!({"resource": result}))?;
-    Ok(result)
+    let mut fields=serde_json::Map::new();
+    if provided.0{fields.insert("category".into(),serde_json::json!(category));}
+    if provided.1{fields.insert("description".into(),serde_json::json!(description));}
+    if provided.2{fields.insert("tags".into(),serde_json::json!(tags));}
+    crate::local_resource_attachments::edit_metadata(app,expected_account_id,expected_session_token,id,Value::Object(fields))
 }
 
 #[tauri::command]

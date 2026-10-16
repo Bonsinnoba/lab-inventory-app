@@ -25,9 +25,27 @@ export default function InventoryMovementPanel({ item }: Props) {
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['item', item.id] }); queryClient.invalidateQueries({ queryKey: ['items'] }); queryClient.invalidateQueries({ queryKey: ['item-movements', item.id] }); setReason(''); setQuantity('1'); setToLocation(''); showToast('Inventory movement recorded'); },
     onError: (err: any) => showToast(err?.message || 'Failed to record movement', 'error'),
   });
+  const getMovementBadgeClass = (mType: MovementType) => {
+    if (['receive', 'return', 'repair_in'].includes(mType)) {
+      return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
+    }
+    if (['checkout', 'consume', 'damage', 'loss', 'repair_out'].includes(mType)) {
+      return 'bg-rose-500/10 text-rose-400 border-rose-500/20';
+    }
+    return 'bg-surface-raised text-text-secondary border-border';
+  };
+
   return <div className="space-y-5">
     <div className="bg-surface border border-border rounded-md p-5">
-      <div className="flex items-center justify-between mb-4"><div><h3 className="text-section-header font-ui font-semibold">Stock Movement</h3><p className="text-xs text-text-secondary mt-1">Current quantity: <span className="font-mono text-text-primary">{formatQuantity(item.current_quantity)} {item.unit || ''}</span>{item.storage_location ? <> · Location: <span className="text-text-primary">{item.storage_location}</span></> : null}</p></div></div>
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h3 className="text-section-header font-ui font-semibold">Physical Stock Movements</h3>
+          <p className="text-xs text-text-secondary mt-1">
+            Physical stock on-hand: <span className="font-mono text-text-primary font-medium">{formatQuantity(item.current_quantity)} {item.unit || ''}</span>
+            {item.storage_location ? <> · Primary container: <span className="text-text-primary">{item.storage_location}</span></> : null}
+          </p>
+        </div>
+      </div>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <select value={type} onChange={e => setType(e.target.value as MovementType)} className="bg-bg border border-border rounded-sm px-3 py-2 text-sm">{options.map(o => <option key={o.type} value={o.type}>{o.label}</option>)}</select>
         <input type="number" min="0.001" step="any" value={quantity} onChange={e => setQuantity(e.target.value)} className="bg-bg border border-border rounded-sm px-3 py-2 text-sm" placeholder="Quantity" />
@@ -35,11 +53,36 @@ export default function InventoryMovementPanel({ item }: Props) {
       </div>
       {type === 'transfer' && <input value={reason} onChange={e => setReason(e.target.value)} className="mt-3 w-full bg-bg border border-border rounded-sm px-3 py-2 text-sm" placeholder="Reason (optional)" />}
       <button onClick={() => mutation.mutate()} disabled={mutation.isPending || !quantity || (type === 'transfer' && !toLocation.trim()) || (type === 'adjust' && !reason.trim())} className="mt-4 px-4 py-2 bg-accent text-bg rounded-sm text-sm font-medium disabled:opacity-50">{mutation.isPending ? 'Recording...' : 'Record Movement'}</button>
-      <p className="text-xs text-text-secondary mt-3">An item has one primary storage container. A transfer changes that free-form container label; partial quantities do not create separate per-location stock.</p>
+      <p className="text-xs text-text-secondary mt-3">Physical movement updates on-hand storeroom stock. Administrative assignment on the item detail does not deduct physical stock.</p>
     </div>
     <div className="bg-surface border border-border rounded-md overflow-hidden">
       <div className="px-5 py-4 border-b border-border"><h3 className="font-ui font-semibold">Movement History</h3></div>
-      {movements.length === 0 ? <p className="p-5 text-sm text-text-secondary">No stock movements recorded yet.</p> : <div className="divide-y divide-border">{movements.map(m => <div key={m.id} className="p-4 flex items-start gap-4"><div className="w-8 h-8 rounded-full bg-surface-raised border border-border flex items-center justify-center text-accent">{m.movement_type === 'transfer' ? <ArrowRightLeft size={15}/> : <Wrench size={15}/>}</div><div className="min-w-0 flex-1"><div className="flex justify-between gap-3"><span className="font-medium capitalize">{m.movement_type.replace('_',' ')}</span><span className="font-mono text-sm">{formatQuantity(m.quantity_before)} → {formatQuantity(m.quantity_after)}</span></div><p className="text-xs text-text-secondary mt-1">{new Date(m.created_at).toLocaleString()}{m.performed_by_username ? ` · ${m.performed_by_username}` : ''}{m.reason ? ` · ${m.reason}` : ''}</p>{m.movement_type === 'transfer' && <p className="text-xs text-text-secondary mt-1">{m.from_storage_location || 'Unassigned'} → {m.to_storage_location || 'Unassigned'}</p>}</div></div>)}</div>}
+      {movements.length === 0 ? (
+        <p className="p-5 text-sm text-text-secondary">No stock movements recorded yet.</p>
+      ) : (
+        <div className="divide-y divide-border">
+          {movements.map(m => (
+            <div key={m.id} className="p-4 flex items-start gap-4">
+              <div className="w-8 h-8 rounded-full bg-surface-raised border border-border flex items-center justify-center text-accent">
+                {m.movement_type === 'transfer' ? <ArrowRightLeft size={15}/> : <Wrench size={15}/>}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex justify-between items-center gap-3">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium capitalize text-sm">{m.movement_type.replace('_',' ')}</span>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded border uppercase tracking-wider font-mono ${getMovementBadgeClass(m.movement_type)}`}>
+                      {['receive', 'return', 'repair_in'].includes(m.movement_type) ? 'Inflow' : ['transfer'].includes(m.movement_type) ? 'Relocation' : 'Outflow'}
+                    </span>
+                  </div>
+                  <span className="font-mono text-sm">{formatQuantity(m.quantity_before)} → {formatQuantity(m.quantity_after)}</span>
+                </div>
+                <p className="text-xs text-text-secondary mt-1">{new Date(m.created_at).toLocaleString()}{m.performed_by_username ? ` · ${m.performed_by_username}` : ''}{m.reason ? ` · ${m.reason}` : ''}</p>
+                {m.movement_type === 'transfer' && <p className="text-xs text-text-secondary mt-1">{m.from_storage_location || 'Unassigned'} → {m.to_storage_location || 'Unassigned'}</p>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   </div>;
 }

@@ -1,11 +1,15 @@
 import { localBackend } from './local-backend';
 import { captureAccountSession,isAccountSessionCurrent,captureServerRequest,isServerRequestCurrent,getToken } from './auth';
 import { apiFetch } from './http';
-import type { DownloadJob,DownloadSettings,DownloadQuality } from './mediaDownloads';
-export interface DownloadSnapshot {jobs:DownloadJob[];settings:DownloadSettings|null;snapshot_complete:boolean;last_synced_at:string|null;pending_removal_count?:number;}
+import { downloadFailureMessage } from './download-presentation';
+import type { DownloadJob,DownloadSettings,DownloadQuality,MediaToolsStatus } from './mediaDownloads';
+import type { Resource } from './resources';
+export interface DownloadSnapshot {jobs:DownloadJob[];settings:DownloadSettings|null;snapshot_complete:boolean;last_synced_at:string|null;pending_removal_count?:number;tools_status?:MediaToolsStatus|null;resource_links?:Resource[];}
 function session(){const s=captureAccountSession();if(!s)throw new Error('Sign in to use downloads');return s;}
 export async function readDownloadSnapshot():Promise<DownloadSnapshot>{
-  const s=session();const value=await localBackend.invoke<DownloadSnapshot>('get_local_download_snapshot',{expectedAccountId:s.accountId});
+  const s=session();let value:DownloadSnapshot;
+  try{value=await localBackend.invoke<DownloadSnapshot>('get_local_download_snapshot',{expectedAccountId:s.accountId});}
+  catch(error){throw new Error(downloadFailureMessage(error,'Unable to read the local download snapshot'));}
   if(!isAccountSessionCurrent(s))throw new Error('Account changed while reading downloads');
   if(!value||!Array.isArray(value.jobs)||typeof value.snapshot_complete!=='boolean')throw new Error('Invalid local download snapshot');return value;
 }

@@ -129,7 +129,20 @@ export default function ItemDetailPage() {
             </div>
             <div className="space-y-4 min-w-0">
               <div><label className="block text-text-secondary text-sm mb-1">Location</label>{isEditing ? <><input type="text" value={editForm.storage_location ?? item.storage_location ?? ''} onChange={e => setEditForm({ ...editForm, storage_location: e.target.value })} placeholder="e.g. Toolbox A, Components Cabinet, Drawer 3" className="w-full bg-bg border border-border rounded-sm px-3 py-2 text-text-primary text-sm focus:outline-none focus:border-accent" /><p className="text-xs text-text-secondary mt-1">Use your real storage container name. No predefined locations, bins, or racks are required.</p></> : <p className="text-text-primary">{item.storage_location || 'No location'}</p>}</div>
-              <div><label className="block text-text-secondary text-sm mb-1">Assigned To</label>{isEditing && currentUser?.role === 'admin' ? <select value={editForm.assigned_to || item.assigned_to || ''} onChange={e => setEditForm({ ...editForm, assigned_to: e.target.value || null })} className="w-full bg-bg border border-border rounded-sm px-3 py-2 text-text-primary text-sm focus:outline-none focus:border-accent"><option value="">Unassigned</option>{managedUsers.filter(user => user.is_active).map(user => <option key={user.id} value={user.id}>{user.username}</option>)}</select> : <p className="text-text-primary">{item.assigned_to_username || 'Unassigned'}</p>}</div>
+              <div>
+                <label className="block text-text-secondary text-sm mb-1">Assigned Custodian</label>
+                {isEditing && currentUser?.role === 'admin' ? (
+                  <select value={editForm.assigned_to || item.assigned_to || ''} onChange={e => setEditForm({ ...editForm, assigned_to: e.target.value || null })} className="w-full bg-bg border border-border rounded-sm px-3 py-2 text-text-primary text-sm focus:outline-none focus:border-accent">
+                    <option value="">Unassigned</option>
+                    {managedUsers.filter(user => user.is_active).map(user => <option key={user.id} value={user.id}>{user.username}</option>)}
+                  </select>
+                ) : (
+                  <div>
+                    <p className="text-text-primary">{item.assigned_to_username || 'Unassigned'}</p>
+                    <p className="text-[11px] text-text-secondary mt-0.5">Administrative custodian · Not a physical deduction</p>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
@@ -137,7 +150,42 @@ export default function ItemDetailPage() {
 
           {(isEditing || item.supplier || item.part_number) && <div className="item-detail-supplier grid grid-cols-2 gap-4 pt-2 border-t border-border"><div><label className="block text-text-secondary text-sm mb-1">Supplier</label>{isEditing ? <input value={editForm.supplier ?? item.supplier ?? ''} onChange={e => setEditForm({ ...editForm, supplier: e.target.value || null })} className="w-full bg-bg border border-border rounded-sm px-3 py-2 text-text-primary text-sm focus:outline-none focus:border-accent" /> : <p className="text-text-primary">{item.supplier}</p>}</div><div><label className="block text-text-secondary text-sm mb-1">Part Number</label>{isEditing ? <input value={editForm.part_number ?? item.part_number ?? ''} onChange={e => setEditForm({ ...editForm, part_number: e.target.value || null })} className="w-full bg-bg border border-border rounded-sm px-3 py-2 text-text-primary text-sm focus:outline-none focus:border-accent" /> : <p className="text-text-primary">{item.part_number}</p>}</div></div>}
 
-          <div className="item-detail-quantity grid grid-cols-2 gap-4"><div><label className="block text-text-secondary text-sm mb-1">Current Quantity</label><p className="text-text-primary font-mono">{formatQuantity(item.current_quantity)} {item.unit || ''}</p><p className="text-xs text-text-secondary mt-1">Use Movements to change stock so every adjustment is recorded.</p></div><div><label className="block text-text-secondary text-sm mb-1">Initial Quantity</label>{isEditing ? <input type="number" value={editForm.initial_quantity ?? item.initial_quantity} onChange={e => setEditForm({ ...editForm, initial_quantity: parseInt(e.target.value) || 0 })} className="w-full bg-bg border border-border rounded-sm px-3 py-2 text-text-primary text-sm focus:outline-none focus:border-accent" /> : <p className="text-text-primary font-mono">{formatQuantity(item.initial_quantity)} {item.unit || ''}</p>}</div></div>
+          <div className="item-detail-quantity grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-text-secondary text-sm mb-1">Current Physical Stock</label>
+              <p className="text-text-primary font-mono text-base font-semibold">{formatQuantity(item.current_quantity)} {item.unit || ''}</p>
+              <p className="text-xs text-text-secondary mt-1">On-hand storeroom stock. Use Movements to record additions, checkouts, or consumption.</p>
+            </div>
+            <div>
+              <label className="block text-text-secondary text-sm mb-1">Initial Quantity</label>
+              {isEditing ? <input type="number" value={editForm.initial_quantity ?? item.initial_quantity} onChange={e => setEditForm({ ...editForm, initial_quantity: parseInt(e.target.value) || 0 })} className="w-full bg-bg border border-border rounded-sm px-3 py-2 text-text-primary text-sm focus:outline-none focus:border-accent" /> : <p className="text-text-primary font-mono">{formatQuantity(item.initial_quantity)} {item.unit || ''}</p>}
+            </div>
+          </div>
+
+          <div className="item-detail-valuation grid grid-cols-2 gap-4 pt-2 border-t border-border">
+            <div>
+              <label className="block text-text-secondary text-sm mb-1">Unit Cost</label>
+              {isEditing ? (
+                <input type="number" step="0.01" value={editForm.unit_cost ?? item.unit_cost ?? ''} onChange={e => setEditForm({ ...editForm, unit_cost: e.target.value ? parseFloat(e.target.value) : undefined })} className="w-full bg-bg border border-border rounded-sm px-3 py-2 text-text-primary text-sm focus:outline-none focus:border-accent" />
+              ) : (
+                <div>
+                  <p className="text-text-primary font-mono">{item.unit_cost != null ? `$${Number(item.unit_cost).toFixed(2)}` : '—'}</p>
+                  <p className="text-[11px] text-text-secondary mt-0.5">Recorded acquisition cost</p>
+                </div>
+              )}
+            </div>
+            <div>
+              <label className="block text-text-secondary text-sm mb-1">Replacement / Salvage Value</label>
+              {isEditing ? (
+                <input type="number" step="0.01" value={editForm.replacement_cost ?? item.replacement_cost ?? ''} onChange={e => setEditForm({ ...editForm, replacement_cost: e.target.value ? parseFloat(e.target.value) : undefined })} className="w-full bg-bg border border-border rounded-sm px-3 py-2 text-text-primary text-sm focus:outline-none focus:border-accent" />
+              ) : (
+                <div>
+                  <p className="text-text-primary font-mono">{item.replacement_cost != null ? `$${Number(item.replacement_cost).toFixed(2)}` : '—'}</p>
+                  <p className="text-[11px] text-text-secondary mt-0.5">Recorded recovery / replacement valuation · Not cash received</p>
+                </div>
+              )}
+            </div>
+          </div>
 
           {(item.condition_notes || isEditing) && <div className="item-detail-condition"><label className="block text-text-secondary text-sm mb-1">Condition Notes</label>{isEditing ? <textarea value={editForm.condition_notes ?? item.condition_notes ?? ''} onChange={e => setEditForm({ ...editForm, condition_notes: e.target.value })} className="w-full bg-bg border border-border rounded-sm px-3 py-2 text-text-primary text-sm focus:outline-none focus:border-accent" rows={2} /> : <p className="text-text-primary">{item.condition_notes}</p>}</div>}
 
@@ -165,7 +213,32 @@ export default function ItemDetailPage() {
           <div><label className="block text-text-secondary text-sm mb-1">Notes (optional)</label><textarea value={transactionForm.notes} onChange={e => setTransactionForm({ ...transactionForm, notes: e.target.value })} className="w-full bg-bg border border-border rounded-sm px-3 py-2 text-text-primary text-sm focus:outline-none focus:border-accent" rows={2} /></div>
           <div className="flex gap-2"><button type="submit" disabled={transactionMutation.isPending} className="flex-1 px-4 py-2 bg-accent text-bg rounded-sm hover:bg-accent-dim transition-colors text-sm font-medium disabled:opacity-50">{transactionMutation.isPending ? 'Saving...' : 'Save Transaction'}</button><button type="button" onClick={() => setShowTransactionForm(false)} className="px-4 py-2 bg-surface border border-border rounded-sm hover:bg-surface-raised transition-colors text-sm">Cancel</button></div>
         </form>}
-        {transactions && transactions.length > 0 ? <div className="space-y-2">{transactions.map(tx => <div key={tx.id} className="p-3 bg-surface-raised border border-border rounded-sm"><div className="flex justify-between"><span className="text-text-primary capitalize">{tx.type.replace('_', ' ')}</span><span className={`font-mono ${tx.direction === 'income' ? 'text-status-ok' : 'text-text-primary'}`}>{tx.direction === 'income' ? '+' : '-'}${parseFloat(String(tx.amount)).toFixed(2)}</span></div><div className="text-xs text-text-secondary mt-1">{new Date(tx.date).toLocaleDateString()}{tx.vendor ? ` · ${tx.vendor}` : ''}</div></div>)}</div> : <p className="text-text-secondary text-sm">No transactions yet.</p>}
+        {transactions && transactions.length > 0 ? (
+          <div className="space-y-2">
+            {transactions.map(tx => (
+              <div key={tx.id} className="p-3 bg-surface-raised border border-border rounded-sm">
+                <div className="flex justify-between items-center">
+                  <div className="flex items-center gap-2">
+                    <span className="text-text-primary font-medium capitalize">{tx.type.replace('_', ' ')}</span>
+                    <span className={`text-[11px] px-2 py-0.5 rounded-full border ${
+                      tx.direction === 'income' 
+                        ? 'bg-status-ok/10 border-status-ok/30 text-status-ok' 
+                        : 'bg-surface border-border text-text-secondary'
+                    }`}>
+                      {tx.direction === 'income' ? 'Cash / Allocation Inflow' : 'Actual Cash Outflow'}
+                    </span>
+                  </div>
+                  <span className={`font-mono text-sm font-semibold ${tx.direction === 'income' ? 'text-status-ok' : 'text-text-primary'}`}>
+                    {tx.direction === 'income' ? '+' : '-'}${parseFloat(String(tx.amount)).toFixed(2)}
+                  </span>
+                </div>
+                <div className="text-xs text-text-secondary mt-1">
+                  {new Date(tx.date).toLocaleDateString()}{tx.vendor ? ` · ${tx.vendor}` : ''}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : <p className="text-text-secondary text-sm">No transactions yet.</p>}
       </div>}
 
       {activeTab === 'history' && <div className="bg-surface border border-border rounded-md p-6"><h3 className="text-section-header font-ui font-semibold mb-4">Change History</h3><ItemHistoryPanel itemId={itemId!} /></div>}

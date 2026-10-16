@@ -3,6 +3,387 @@
 Status: **in progress, not Phase 2 sign-off**. Existing application and seeded
 PostgreSQL are preserved. Tests create scoped fixtures; no database reset.
 
+## October 16 — coordinated desktop frontend/API deployment
+
+### Follow-up: A6 queue-reader failure and existing-resource recovery
+
+- Runtime root cause reproduced against the actual desktop SQLite database:
+  `active_sync_outbox` is a view and does not expose implicit `rowid`.
+  `pending()` ordered by `o.rowid`, so every native download projection failed,
+  including settings/tools/history and the pre-enqueue read. A valid, complete
+  server snapshot existed with zero jobs; the active account had no download
+  intentions. Saved resource metadata was not proof of a queued request.
+- Native fix joins the account-filtered view to its base outbox table solely to
+  obtain insertion order. Account/lease filtering, immutable events and atomic
+  enqueue remain; no schema migration, reset or HTTP-write fallback.
+- Existing supported link cards now offer Queue download / View queue. Retry
+  uses the saved resource ID, not resource creation. Initial link-save/queue
+  partial failure explicitly says the link was saved and points to this action.
+  Download queries are account-generation keyed; native string failures become
+  readable errors and do not claim that no snapshot was ever synchronized.
+- Checks: 26 focused frontend adapter/presentation/component checks passed;
+  TypeScript passed; Vite built 2,250 modules. Scoped diff whitespace check passed
+  (unrelated pre-existing visual-agent whitespace remains outside these files).
+- Native 9 Downloads tests passed, including two opt-in tests against the real
+  desktop database: read-only full snapshot/other-account rejection and a real
+  enqueue/read/retry transaction that was explicitly rolled back. Same-resource
+  uppercase-UUID retry returned the same job ID and one pending event; rollback
+  verification found no test job left behind. The API was stopped for this run
+  and restored in a finally block; PostgreSQL/storage stayed intact. SQLite is
+  required to reproduce this native query defect, not a PostgreSQL substitute.
+  An earlier sandboxed read probe failed accessing WAL files; the approved
+  read-only rerun passed. These are not full PostgreSQL worker acceptance tests.
+- Owner confirmed all edits saved and restart. Updated native build and native
+  window offline-read verification are pending below; full A6 remains PARTIAL.
+
+- Root cause of the browser/Tauri assistant mismatch: Cargo enables
+  `custom-protocol` by default. Tauri codegen therefore embeds `distDir`, even in
+  the debug executable, instead of loading `devPath`. The October 13 executable
+  retained old frontend assets. Native-window inspection before rebuild confirmed
+  the boxed options button, header context text and old scoped-context footer.
+  A current Vite page did not establish desktop freshness.
+- Added `desktop/package.json` command `build:desktop:debug` to serialize
+  TypeScript/Vite build before native compilation; documented the distinction in
+  `docs/DESKTOP_FRONTEND_BUILD.md`. No change to the embedded/offline deployment mode.
+- TypeScript passed. The first sandboxed Vite attempt failed reading its config;
+  the escalated build passed (2,248 modules). An early native compile overlapped
+  frontend generation; a second native compile was explicitly started after the
+  assets completed. Only that final executable is eligible for launch verification.
+- Owner confirmed saved edits/restart and matching API deployment while preserving
+  all data. Old API workers were stopped before replacement. Existing PostgreSQL
+  and storage volumes were retained. API image:
+  `d3f18cda2f32457b6c92ebd092ba42f03ccb471cd927e5518ef0d519f2f1874a`.
+  Its 29 focused confirmation/queue/worker/process/tool tests passed in a disposable
+  no-network container without data volumes. These are not DB acceptance tests.
+- Predeployment PostgreSQL custom-format backup:
+  `deploy/backups/20261016-ui-sync/postgres.dump` (git-ignored), SHA-256
+  `0A4C9CE1BE02BD084ADAF3F9B55A547FEC30FAB1A8F315B7648D175E23FBBC40`.
+  Archive listing succeeded (497 TOC entries); this is not a restore test. This
+  backup contains database records, not a new backup of stored file bytes.
+- Migration `20261014_download_worker_attempt` applied successfully. Read-only
+  actual PostgreSQL checks confirmed its ledger entry, UUID `worker_run_id` column
+  and `download_job_tombstones` table. API/database/storage health returned 200/ok;
+  existing download job count was zero before deployment. No reset or reseed.
+- Built frontend entry: `index-H0zixElD.js`, SHA-256
+  `74DF7EE55C1A8661E881A53E6F525FF8DC4C011F6E58EA603200DF232D08305A`.
+  Styles: `index-GIIW4lsi.css`, SHA-256
+  `12CFCA2C3990126A324CAF164AE1EB57B4A46EEA19B45AAAC93B5FF3F585D0BC`.
+- Final native build passed; executable SHA-256:
+  `527B486648C47184B0F5876E73765901FC6327D7248FACC9F90DD769D594E1CD`.
+  Launch verification resumed October 16 after the earlier interrupted/blocked
+  attempts. Native PID 29520 opened successfully. Screenshot and accessibility
+  inspection of `https://tauri.localhost/#/downloads` confirmed the new bottom-left
+  context selector, separate read-only badge and compact header options; the old
+  scoped-context footer is absent. This verifies the embedded visual update, not
+  all visual-agent changes or context-selector interactions.
+- At 06:54:46 UTC, API health reported API/database/storage ok and both existing
+  containers were healthy. The desktop sync indicator changed to "Synced just
+  now", but Downloads still reported unavailable settings, queue, history and
+  tool status. This remains an observed A6 defect, not an empty queue or a passed
+  acceptance check. No database or file reset was performed.
+- Phase 2 offline/reconnect, historical receipt and
+  dashboard parity acceptance remain separate and open. Visual-agent scope and
+  semantic corrections are still tracked in its PRIMARY_REVIEW, not approved here.
+
+## October 16 — exact file-intent confirmation (A1/A5 prerequisite)
+
+- File confirmation now negotiates protocol 2 explicitly. The server returns a
+  digest of the committed payload only when its upload protocol, resource identity,
+  content hash and size are valid and consistent with the historical result.
+  Protocol-1 clients retain the existing response shape; mutation receipts are
+  unchanged. Raw payloads and storage paths are not disclosed.
+- The updated native verifier requires protocol 2 and compares that digest with
+  the exact saved outbox payload, including content hash and predecessor intent.
+  Matching resource ID/size alone is insufficient. Protocol downgrade, missing
+  proof and altered intent leave work pending; there is no generic-ACK fallback.
+  The trusted API origin is rechecked after the network request before commit,
+  alongside the existing native session/lease and pending-work checks.
+- Verification: backend confirmation tests **10 passed**; native
+  `local_resource_authority::tests` **19 passed** (native test build passed);
+  frontend confirmation adapter tests **5 passed**. Backend syntax and scoped
+  diff whitespace checks passed. These are 34 focused pure/adapter checks, not
+  database or full desktop acceptance tests.
+- No receipt-history migration or legacy ACK reconciliation was added. This
+  hardens new pending-file confirmations; it does not upgrade old stored receipts
+  or finish mixed content/attachment chains. A1/A5 remain PARTIAL. Actual PostgreSQL,
+  stopped-API cold restart and lost-response/reconnect acceptance remain NOT RUN.
+- Existing desktop executable and frontend were started at the owner's request;
+  API and PostgreSQL containers reported healthy. No new native executable/API
+  deployment, database reset or pending-work cleanup. The opened desktop is not
+  evidence that this source change is deployed. Updated native code needs the
+  compatible API before protocol-2 confirmation can succeed.
+- Separate visual contributor review: see
+  `../visual-agent-reports/phase3/20261015T204138Z-visual-01/PRIMARY_REVIEW.md`.
+  It requests scope/semantic/reporting corrections and grants only bounded UI
+  follow-up permissions. That work is not credited as primary Phase 2 completion.
+
+## October 15 — native mutation receipts and direct-chain partial ACKs (A1/A5)
+
+- Server confirmation now supports owned attach/edit-metadata receipts, returning
+  digests of the original payload and projected result rather than raw historical
+  descriptions/tags. Shared canonical JSON/Unicode fixtures cover native/server
+  digest parity; maximum metadata keeps receipts below 1 KiB before authority.
+- A new native confirmation command reads its own immutable mutation provenance,
+  fetches receipt/current authority from the trusted API, checks exact identity,
+  intent/result, device, session/lease and unchanged native work, then atomically
+  stores an origin-bound receipt, ACK and authority. Current denial may accompany
+  confirmation of a legitimate historical write; it is not an edit grant.
+- Generic ACK is blocked without native mutation proof. Renderer passes only
+  change identity and session, never a positive receipt or grant. Old native/API
+  versions and transport failures retain the original outbox intent for retry.
+- Direct move/metadata chains reconstruct verified acknowledged predecessors,
+  validate the complete immutable chain, and use the latest confirmed scope and
+  revision as the current-authority anchor. Pending destinations are rechecked.
+  Saved payloads, timestamps and bytes are not rebased or deleted. File-creation/
+  content prefixes, unproven legacy acknowledgements and nested moves remain open.
+- Focused checks: server confirmation **8 passed**, sync adapter **5 passed**.
+  `cargo test --manifest-path desktop/src-tauri/Cargo.toml -j 1 local_resource_
+  -- --nocapture`: **32 pure checks passed**, including receipt/chain/digest cases
+  (45 focused checks total for this slice). Early builds were interrupted after
+  Windows tool stalls; the completed native test build, `cargo check` and desktop
+  `tsc --noEmit` passed. Backend syntax and `git diff --check` also passed.
+- No database tests were substituted with doubles: these are pure/adapter checks.
+  Actual PostgreSQL, cold-restart stopped-API, partial-ACK/lost-response and
+  authorization races remain NOT RUN. No deployment, restart or data cleanup.
+- Status: bounded A1/A5 subcheck IMPLEMENTED — AWAITING VERIFICATION; parent items
+  remain PARTIAL. Native/API/frontend must be updated together before acceptance.
+
+## October 15 — download PC-copy presentation and cached previews (A6)
+
+- Downloads reads resource metadata and copy observations through native commands,
+  separately from its saved server queue. Completed job filenames never establish
+  PC readiness. Labels describe the current resource, not a historical job artifact.
+- A native status failure produces unknown status, preserving independently
+  authorized metadata; metadata failure never falls back to HTTP. Session switches
+  reject in-flight results, and query identity includes account/generation.
+- Desktop queue/history previews use cached native posters only. Missing/broken
+  previews render a placeholder without server/external fallback. The shared poster
+  hook no longer returns the preceding resource/account URL before effect cleanup.
+- Native copy status checks revision and server origin for copying as well as ready
+  states. Stale copies report zero current verified bytes and unknown current size;
+  no files or pending work are deleted. Existing ready checks validate authorization,
+  origin/revision and file presence/size; this is not a new per-render full-file hash.
+- Verification: `node --test src/api/download-device-state.test.mjs
+  src/api/media-download-tools.test.mjs src/components/download-resource-preview.test.mjs`
+  from desktop: **15 passed**. These are adapter/presentation doubles, not database
+  or mounted UI tests. `cargo test --manifest-path desktop/src-tauri/Cargo.toml
+  local_resource_replication::tests -- --nocapture`: **2 pure checks passed** and
+  native compilation passed. Desktop `tsc --noEmit` passed.
+- Status: bounded A6 subcheck IMPLEMENTED — AWAITING VERIFICATION. Actual PostgreSQL,
+  stopped-API desktop cold restart, file removal/revision/revocation races and visual
+  acceptance remain NOT RUN. No deployment, migration, app restart or data cleanup.
+
+## October 15 — attempt-owned downloads and cross-device history removal (A6)
+
+Source changes, not a deployed build or phase acceptance pass:
+
+- Added nullable `worker_run_id` and scoped `download_job_tombstones` in an additive
+  migration. Historical markers are derived only from committed matching deletion
+  receipts and only for absent job rows; no inferred deletion or row reset.
+- Each execution holds a dedicated PostgreSQL advisory session lock until its
+  process/publication finishes. Recovery obtains that same lock nonblocking before
+  resetting an abandoned attempt, never a live upgraded worker's job. A separate
+  claim transaction lock serializes concurrency-limit checks. Release destroys the
+  dedicated session, including uncertain-transaction cases, rather than returning
+  an advisory-locked client to the pool.
+- Run IDs bind progress, stop callbacks and publication. Worker `updated_at` uses
+  a strictly advancing clock-based timestamp to avoid transaction-start timestamps
+  making newer terminal state appear older than prior progress. Requester active
+  state/current role, global edit permission and scoped resource edit access are
+  rechecked; changed/deleted source and already-published media cannot be overwritten.
+- Attempt-specific media/artwork filenames preserve previous attempts after
+  interruption or uncertain COMMIT. No automatic partial-file deletion remains in
+  this worker. Optional thumbnail extraction is capped at 15 seconds; artwork is
+  promoted without overwrite only during guarded publication. Existing metadata
+  is retained if artwork fails. This is not a claim that every thumbnail consumer
+  or locally uploaded video poster issue is resolved.
+- The process adapter bounds captured output to 65,536 UTF-16 code units per
+  stream and partial lines to 8,192, serializes/coalesces progress callbacks, and clears only its own
+  tracked child. Stop handling targets the attempt and process group/tree, with
+  forced escalation. Authority/database observer failures stop network processes;
+  they are not stored as a proven permission revocation.
+- Server history deletion now stores a resource-scoped marker in the same
+  transaction as deletion/audit/receipt. Retired job UUIDs cannot be reused.
+  Authorized snapshots expose markers; native UUID-normalized union keeps them
+  across late pulls/acknowledgements. This removes history only, not resource bytes.
+
+Focused checks: 19 Node pure/process-double tests passed, plus seven native pure
+download validator/merge checks; native compilation, backend syntax and diff
+checks passed. No database double was used as PostgreSQL evidence. The additive
+migration, actual SQL/advisory-lock behavior, two-worker concurrency, process-tree
+termination on Windows/Linux, outage/cold restart, late receipt/removal races and
+revocation cases remain NOT RUN for final integrated acceptance. No database was
+changed and no API/app restart was performed.
+
+Deployment must stop all old-version workers first, apply the migration, then
+start compatible API/desktop builds. Old workers do not acquire the new leases.
+Pending resource mixed/partial-ACK chains are unchanged in this checkpoint. These
+two A6 subchecks await verification; A6 and Phase 2 remain open. Retained attempt
+file reclamation belongs to the approved non-destructive A2 retention work.
+
+## October 14 — approved policies and independent A6 implementation
+
+The owner approved owner-held encrypted recovery, quantity-first custody with
+optional serials, canonical project demand/explicit settlement, quarantined
+salvage with reviewed recovery value, and consented server transcription first.
+The delivery checklist records the complete contracts and separates implementation
+subchecks from whole-item acceptance. Approval alone does not mark code complete.
+
+A6 tool-status cache: diagnostic binaries run through bounded parallel `execFile`
+probes (2.5-second timeout, bounded output), coalesced and cached for 60 seconds.
+The snapshot includes an optional completion-timestamped report. Native validation
+keeps only known bounded fields and canonical calendar-valid UTC timestamps;
+missing, invalid or older optional diagnostics preserve the previous same-account
+report. Existing permission-denial snapshot eviction applies to tools as well.
+Desktop reads have no HTTP fallback and label saved observations explicitly.
+
+A6 browser enqueue: browser storage saves an origin/account/normalized-payload
+request ID before sending. Reload, network errors, server errors, malformed JSON
+and stale-account responses preserve that identity. A successful current-account
+receipt clears it. Storage failure/corruption blocks sending rather than silently
+creating another request. This browser journal is not the native desktop outbox.
+The API requires an idempotency UUID, uses the existing advisory lock/receipt table,
+rechecks current access, binds owner/device namespace/entity/operation/payload,
+and commits a new job, required creation audit and receipt in one transaction.
+An already active job is returned without a fictitious second creation audit;
+retry after completion/removal returns the recorded result instead of recreating.
+
+Focused checks: 24 Node pure/adapter checks and five native pure validator/merge
+checks passed (29 total); native compilation, combined TypeScript checking,
+backend syntax and diff whitespace checks passed. No test database, API outage,
+app restart or deployment occurred.
+Actual PostgreSQL SQL/concurrency, cold-start offline persistence, revocation and
+reconnect acceptance remain NOT RUN. API and browser must deploy together because
+enqueue now requires an idempotency key. The new native tool cache also needs the
+coordinated desktop build. These are two ready subchecks, not whole A6 closure.
+
+## October 14 — guarded native metadata and repeated attachment moves (A1/A5)
+
+Added `local_resource_mutations`, an additive native-only provenance table:
+before/after snapshots, immutable payload, account/device/resource/operation and
+change ID. New direct moves and metadata patches commit this record alongside the
+local resource projection and outbox event in the same IMMEDIATE transaction.
+No IPC command accepts provenance from a renderer, and pulls do not populate it.
+
+An uninterrupted pending move/metadata chain is validated against the current
+local record and original cached authority. UUIDs, device, operation, exact saved
+payload, every predecessor and permitted field projection must agree. Current
+ancestor/note bindings and every intervening destination remain checked. Only the
+native-proven leaf is projected to its original scope for that comparison. This
+does not relax content-edit/copy authority. Conflicted, unproven, partial-ACK,
+mixed-content or excessively long chains remain blocked with work preserved.
+
+Metadata writes previously used a broad generic `update` with only the generic
+local permission check and no revision dependency; omitted metadata arguments
+also reset existing values. The new `edit_metadata` path captures account/session,
+checks record edit authority, validates category/description/tags, preserves
+unspecified fields and retains its observed revision until server reconciliation.
+Visibility, attachment, identity and file-byte fields cannot enter this patch.
+The UI checks the native mutation capability, with no old-binary/HTTP fallback.
+
+Server `edit_metadata` requires the current editor permission and observed or
+owned predecessor revision, applies only whitelisted fields and a monotonic
+millisecond revision, and writes the required audit inside the sync transaction.
+Protocol-3 attachment moves can follow move/metadata receipts from the same
+author/device/resource. Older servers reject the new operation/protocol. Existing
+immutable generic `update` events are retained, not silently upgraded; their
+legacy reconciliation remains open. Browser metadata writes are unchanged.
+
+Native and desktop dependency graphs now recognize metadata predecessors.
+Explicit discard retires dependent intents for moves/metadata as well as file
+operations, preserving provenance/bytes. Revision-conflict handling never silently
+rewrites the expected revision. Independent work remains eligible to sync.
+
+Checks: 24 backend pure/receipt-double tests, 26 local-resource native pure tests,
+two native dependency-graph tests and 23 desktop adapter/dependency tests passed
+(75 total). Native test-target compilation, TypeScript and diff checks passed.
+No database fixture/test, Docker mutation, deployment, restart or authored-file
+cleanup occurred. The native SQL transaction, real PostgreSQL permission/apply,
+interrupted ACK, stopped-server/cold-restart and reconnect gates remain NOT RUN.
+
+Next boundaries: partial-ACK continuation; mixed content/create/move chains;
+content editing after a move; legacy intent recovery; unsynced destinations and
+nested-folder moves. A1/A5 and the phase remain PARTIAL, not signed off.
+
+## October 14 — native-verified file confirmation and authority handoff (A1/A5)
+
+Investigation found that the old edit receipt binder reran the current local
+editor guard before recording a historical server success. A queued attachment
+change could therefore make confirmation fail repeatedly. Upload receipt binding
+also set the confirmed revision separately from the outbox ACK and authority
+refresh, creating an interruption window for a fresh authored file.
+
+Added read-only `/sync/resources/confirm`: bounded change IDs plus one resource
+and device; server receipt lookup checks author/device/resource/type/operation and
+returns only historical identity/revision/size. Missing, foreign or unsupported
+receipts return no historical metadata. The response includes the normal current
+protocol-2 resource authority projection, including explicit denials. Confirmation
+is not an edit grant and does not replay or mutate domain work on the server.
+
+Native code selects the pending file versions itself (oldest 100 per resource),
+uses the compiled origin/bounded no-redirect client, and validates exact batch,
+account, operations and native file sizes. It rechecks the same pending versions,
+session and login lease under an IMMEDIATE transaction, then commits verified
+receipt records, version bindings, outbox ACKs and the current authority cache
+together. Confirmation and ordinary authority refresh share serialization.
+Verified historical successes also resolve their existing sync-conflict entries
+in that transaction. Late failure/conflict callbacks cannot reopen an already
+ACKed file event with matching native confirmation proof; unrelated and
+unconfirmed changes retain the existing failure handling. This transaction/race
+behavior still needs the phase-end runtime acceptance test.
+Unconfirmed versions retain their original IDs; subsequent bounded batches drain
+larger histories. No original event payload or authored file is overwritten.
+
+If no later intent remains and the current local version/scope exactly matches a
+confirmed version and current server authority, its revision advances atomically.
+Otherwise local work is preserved. Pending native content can trace through a
+native-verified creation receipt when creation is ACKed before a later edit.
+Current access denial can still acknowledge historical owned work, but never
+becomes a positive grant. Independent receipt handling remains intact.
+
+The renderer now supplies only change identity and current session credentials;
+old file bind commands fail with a migration message and generic file ACKs require
+native confirmation proof. Old binaries cannot use a weaker fallback: they leave
+events pending and require the coordinated build. API-first deployment is needed.
+
+Targeted results: 37 backend validator checks, 19 native pure checks and 14 desktop
+adapter/receipt/dependency checks passed (70 total). TypeScript/native compilation
+passed separately. No database fixtures, actual PostgreSQL queries, Docker
+mutations, app restarts or deployment performed. Actual stopped-API/cold-restart,
+lost-response/transaction interruption and reconnect acceptance remain NOT RUN.
+General metadata/repeated-move/folder chains and post-move content revision
+handoff remain open; no Phase 2 or A1/A5 sign-off is claimed.
+
+## October 14 — native-authored pending file editor authority (A1/A5; earlier checkpoint)
+
+The native editor path now recognizes fresh files from a same-account/device,
+ready native upload joined to its unsynced create/create_copy outbox entry, with
+no confirmed server revision. It requires the existing active lease and current
+resource view/edit/create permissions. A renderer-created resource row or generic
+outbox event alone is insufficient. The immutable creation payload must match
+the native upload record, scope/type/source identity must match current state,
+and destination authority is checked again. Copies still walk the full source
+ancestry with bounded cycle/revocation checks.
+
+Repeated content saves can trace back to that creation revision through native
+content versions. Only the exact proven creation is exempted from the generic
+non-content pending-operation prohibition. Conflicts/foreign devices, retired
+creations, unsupported metadata/move intents and unproven changed versions remain
+denied; no existing bytes/events are removed. Attachment moves use this same
+source guard before applying the previously added predecessor contract.
+
+Once creation is acknowledged, this unconfirmed-creation path no longer applies;
+verified server authority is required. The ACK-to-authority-refresh interruption
+case remains an explicit phase-end verification/recovery boundary, not a claimed
+pass. Unsynced destination grants and repeated metadata/move chains also remain.
+No deployment, application restart, database mutation or Docker state change.
+
+Verification: all 15 targeted native tests passed, including the three new pure
+creation-proof tests; native test-target compilation passed. The preceding 33
+backend and eight desktop checks and TypeScript check also passed (56 targeted
+checks total across this work). No database fixtures or desktop offline acceptance
+is represented by these pure checks.
+
 ## October 14 — destination grants and attachment predecessors (A1/A5)
 
 Added read-only destination authority for note/project IDs, projected through the

@@ -12,6 +12,7 @@ export async function createDownloadJob(client,change,user){
   const resource=(await client.query('SELECT * FROM resources WHERE id=$1 FOR UPDATE',[resourceId])).rows[0];
   if(!resource)fail(404,'RESOURCE_NOT_FOUND','Resource not found');
   if(resource.kind!=='link'||!resource.url)fail(400,'INVALID_DOWNLOAD_RESOURCE','Only URL resources can be downloaded');
+  if((await client.query('SELECT 1 FROM download_job_tombstones WHERE job_id=$1',[jobId])).rowCount)fail(409,'DOWNLOAD_ID_RETIRED','This download identity was removed; queue a new request');
   const existing=(await client.query("SELECT * FROM resource_download_jobs WHERE resource_id=$1 AND status IN ('queued','scheduled','downloading','paused') ORDER BY created_at,id LIMIT 1",[resourceId])).rows[0];
   if(existing)return existing;
   if(resource.local_media_path)fail(409,'MEDIA_ALREADY_DOWNLOADED','This resource already has a server video copy');

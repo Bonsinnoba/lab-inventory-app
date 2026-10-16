@@ -1,10 +1,12 @@
 import { isLocalResourceRuntime } from '../api/resources';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getResources, uploadFile, createLink, deleteResource, getResourceDownloadUrl, Resource } from '../api/resources';
+import { getResources, uploadFile, createLink, deleteResource, Resource } from '../api/resources';
 import { useState, useRef } from 'react';
 import { Upload, Link as LinkIcon, File, Folder, Trash2, Play } from 'lucide-react';
 import ResourceViewerModal from './ResourceViewerModal';
 import VideoResourcePoster from './VideoResourcePoster';
+import ResourceImageThumbnail from './ResourceImageThumbnail';
+import ResourceFileStatus from './ResourceFileStatus';
 import { useToast } from '../contexts/ToastContext';
 
 interface ResourcesPanelProps {
@@ -45,6 +47,7 @@ export default function ResourcesPanel({ parent }: ResourcesPanelProps) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['resources', parent] });
       setShowLinkModal(false);
+      queryClient.invalidateQueries({ queryKey: ['media-downloads'] });
       setLinkUrl('');
       setLinkName('');
       showToast('Link added');
@@ -95,9 +98,13 @@ export default function ResourcesPanel({ parent }: ResourcesPanelProps) {
 
   const renderResourceCard = (resource: Resource) => {
     const thumbnailUrl = resource.thumbnail_url;
-    const downloadUrl = getResourceDownloadUrl(resource.id);
 
     const renderThumbnail = () => {
+      // A downloaded video remains kind=link. Prefer its authorized local poster
+      // over the original remote link artwork, just like the main Resources page.
+      if (resource.file_type === 'video' || resource.local_media_filename) {
+        return <VideoResourcePoster resource={resource}/>;
+      }
       if (resource.kind === 'folder') {
         return (
           <div className="w-full h-full flex items-center justify-center bg-surface-raised">
@@ -123,18 +130,8 @@ export default function ResourcesPanel({ parent }: ResourcesPanelProps) {
         );
       }
 
-      if (resource.file_type === 'image' && !thumbnailUrl) {
-        return (
-          <img
-            src={downloadUrl}
-            alt={resource.name}
-            className="w-full h-full object-cover"
-          />
-        );
-      }
-
-      if (resource.file_type === 'video') {
-        return <VideoResourcePoster resource={resource}/>;
+      if (resource.file_type === 'image') {
+        return <ResourceImageThumbnail resource={resource}/>;
       }
 
       if (resource.file_type === 'audio') {
@@ -176,6 +173,7 @@ export default function ResourcesPanel({ parent }: ResourcesPanelProps) {
           <div className="text-xs text-text-secondary mt-1">
             {resource.size_bytes ? `${(resource.size_bytes / 1024 / 1024).toFixed(2)} MB` : ''}
           </div>
+          <ResourceFileStatus resource={resource}/>
         </div>
         <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1">
           <button

@@ -419,16 +419,18 @@ pub fn local_resource_copy_status(
     schema(&c)?;
     local_db::require_sync_account(&c, &expected_account_id)?;
     local_auth::require_local_permission(&c, "resources.view")?;
+    let origin = native_authorization::trusted_base().map_err(|e| e.message)?;
     let mut result = serde_json::Map::new();
     for r in local_resources::read_resources(&c)? {
         if authorize(&c, &expected_account_id, &r.id, None).is_err() {
             continue;
         }
-        let row:Option<(String,i64,i64,Option<String>)>=c.query_row("SELECT state,verified_bytes,size_bytes,last_error FROM local_resource_copies WHERE account_id=?1 AND resource_id=?2",params![expected_account_id,r.id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(err)?;
+        let row:Option<(String,i64,i64,Option<String>,String,String)>=c.query_row("SELECT state,verified_bytes,size_bytes,last_error,revision,origin FROM local_resource_copies WHERE account_id=?1 AND resource_id=?2",params![expected_account_id,r.id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(err)?;
         let last_error:Option<String>=c.query_row("SELECT message FROM local_resource_copy_errors WHERE account_id=?1 AND resource_id=?2",params![expected_account_id,r.id],|r|r.get(0)).optional().map_err(err)?;
-        if let Some((state, bytes, size, error)) = row {
-            let available = readable(&app, &c, &r.id).is_ok();
-            result.insert(r.id,json!({"state":if state=="ready"&&!available{"needs_verification"}else{state.as_str()},"verified_bytes":bytes,"size_bytes":size,"error":last_error.or(error)}));
+        if let Some((state, bytes, size, error, revision, copy_origin)) = row {
+            let identity_current = revision == r.updated_at && copy_origin == origin;
+            let available = identity_current && state == "ready" && readable(&app, &c, &r.id).is_ok();
+            result.insert(r.id,json!({"state":copy_display_state(&state,identity_current,available),"verified_bytes":if identity_current{bytes}else{0},"size_bytes":if identity_current{Some(size)}else{None},"error":last_error.or(error)}));
         } else if let Some(message) = last_error {
             result.insert(
                 r.id,
@@ -439,9 +441,25 @@ pub fn local_resource_copy_status(
     Ok(Value::Object(result))
 }
 
+fn copy_display_state(state: &str, identity_current: bool, available: bool) -> &str {
+    if !identity_current { "stale" }
+    else if state == "ready" && !available { "needs_verification" }
+    else { state }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn copy_presentation_requires_current_identity_and_readable_file() {
+        assert_eq!(copy_display_state("ready", true, true), "ready");
+        assert_eq!(copy_display_state("ready", true, false), "needs_verification");
+        assert_eq!(copy_display_state("copying", true, false), "copying");
+        for state in ["ready", "copying", "incomplete"] {
+            assert_eq!(copy_display_state(state, false, true), "stale");
+            assert_eq!(copy_display_state(state, false, false), "stale");
+        }
+    }
     #[test]
     fn manifest_rejects_identity_digest_size_and_header_injection() {
         let mut m = Manifest {

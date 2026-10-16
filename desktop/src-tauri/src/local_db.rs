@@ -100,7 +100,7 @@ fn canonicalize_legacy_ids(connection: &Connection) -> Result<(), String> {
 }
 
 #[derive(Debug, Serialize)]
-pub struct LocalDatabaseStatus { pub path: String, pub device_id: String, pub schema_version: String, pub pending_sync_count: i64, pub sync_conflict_count: i64, pub unassigned_pending_sync_count: i64, pub unassigned_state_count: i64, pub resource_authority_protocol:u32 }
+pub struct LocalDatabaseStatus { pub path: String, pub device_id: String, pub schema_version: String, pub pending_sync_count: i64, pub sync_conflict_count: i64, pub unassigned_pending_sync_count: i64, pub unassigned_state_count: i64, pub resource_authority_protocol:u32, pub resource_confirmation_protocol:u32, pub resource_mutation_protocol:u32, pub resource_mutation_confirmation_protocol:u32 }
 #[derive(Debug, Deserialize)]
 pub struct LocalSyncWriteInput { pub snapshot_json: String, pub expected_snapshot_json: String, pub expected_account_id: String, pub change_id: String, pub entity_type: String, pub entity_id: Option<String>, pub operation: String, pub payload_json: String, pub state_key: Option<String>, pub state_json: Option<String> }
 fn database_path(app: &AppHandle) -> Result<PathBuf, String> { let dir=app_data_dir(&app.config()).ok_or_else(|| "Unable to resolve LabOS app-data directory".to_string())?; fs::create_dir_all(&dir).map_err(|e| format!("Unable to create local data directory: {e}"))?; Ok(dir.join(DB_FILE)) }
@@ -163,7 +163,7 @@ pub fn local_database_status(app:AppHandle)->Result<LocalDatabaseStatus,String>{
     let conflicts:i64=connection.query_row("SELECT COUNT(*) FROM sync_conflicts c JOIN sync_outbox o ON o.change_id=c.change_id WHERE c.resolved_at IS NULL AND o.account_id=?1",params![account],|r|r.get(0)).map_err(|e|format!("Unable to read sync conflict state: {e}"))?;
     let unassigned:i64=connection.query_row("SELECT COUNT(*) FROM sync_outbox WHERE synced_at IS NULL AND account_id IS NULL",[],|r|r.get(0)).map_err(|e|format!("Unable to inspect legacy sync changes: {e}"))?;
     let unassigned_state_count:i64=connection.query_row("SELECT COUNT(*) FROM sync_state WHERE key NOT LIKE 'account:%' AND value NOT IN ('[]','{}')",[],|r|r.get(0)).map_err(|e|format!("Unable to inspect legacy local state: {e}"))?;
-    Ok(LocalDatabaseStatus{path:path.to_string_lossy().into_owned(),device_id,schema_version:LOCAL_SCHEMA_VERSION.to_string(),pending_sync_count:pending,sync_conflict_count:conflicts,unassigned_pending_sync_count:unassigned,unassigned_state_count,resource_authority_protocol:1})
+    Ok(LocalDatabaseStatus{path:path.to_string_lossy().into_owned(),device_id,schema_version:LOCAL_SCHEMA_VERSION.to_string(),pending_sync_count:pending,sync_conflict_count:conflicts,unassigned_pending_sync_count:unassigned,unassigned_state_count,resource_authority_protocol:1,resource_confirmation_protocol:1,resource_mutation_protocol:1,resource_mutation_confirmation_protocol:1})
 }
 #[tauri::command]
 pub fn get_inventory_sync_cursor(app:AppHandle,expected_account_id:String)->Result<Option<String>,String>{let(conn,_)=open_connection(&app)?;ensure_schema(&conn)?;require_sync_account(&conn,&expected_account_id)?;let key=scoped_state_key(&conn,"inventory_sync_cursor")?;conn.query_row("SELECT value FROM sync_state WHERE key=?1",[key],|r|r.get(0)).optional().map_err(|e|format!("Unable to read inventory sync cursor: {e}"))}
@@ -232,7 +232,17 @@ fn require_conflict_permission(conn:&Connection,entity:&str,operation:&str,paylo
     Ok(())
 }
 #[tauri::command]
-pub fn record_sync_conflict(app:AppHandle,change_id:String,entity_type:String,entity_id:Option<String>,operation:String,payload_json:String,error_code:String,error_message:String)->Result<(),String>{let mut conn=open_local_connection(&app)?;ensure_schema(&conn)?;serde_json::from_str::<Value>(&payload_json).map_err(|e|format!("Invalid conflict payload: {e}"))?;let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|format!("Unable to begin conflict record: {e}"))?;require_owned_change(&tx,&change_id)?;tx.execute("INSERT INTO sync_conflicts(change_id,entity_type,entity_id,operation,payload_json,error_code,error_message) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(change_id) DO UPDATE SET error_code=excluded.error_code,error_message=excluded.error_message,resolved_at=NULL,resolution=NULL",params![change_id,entity_type,entity_id,operation,payload_json,error_code,error_message]).map_err(|e|format!("Unable to record sync conflict: {e}"))?;tx.commit().map_err(|e|format!("Unable to commit sync conflict: {e}"))?;Ok(())}
+pub fn record_sync_conflict(app:AppHandle,change_id:String,entity_type:String,entity_id:Option<String>,operation:String,payload_json:String,error_code:String,error_message:String)->Result<(),String>{
+    let mut conn=open_local_connection(&app)?;ensure_schema(&conn)?;
+    serde_json::from_str::<Value>(&payload_json).map_err(|e|format!("Invalid conflict payload: {e}"))?;
+    let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|format!("Unable to begin conflict record: {e}"))?;
+    require_owned_change(&tx,&change_id)?;
+    // A delayed push failure cannot undo a native-verified historical success.
+    if !crate::local_resource_authority::is_confirmed_file_change(&tx,&change_id)?{
+        tx.execute("INSERT INTO sync_conflicts(change_id,entity_type,entity_id,operation,payload_json,error_code,error_message) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(change_id) DO UPDATE SET error_code=excluded.error_code,error_message=excluded.error_message,resolved_at=NULL,resolution=NULL",params![change_id,entity_type,entity_id,operation,payload_json,error_code,error_message]).map_err(|e|format!("Unable to record sync conflict: {e}"))?;
+    }
+    tx.commit().map_err(|e|format!("Unable to commit sync conflict: {e}"))?;Ok(())
+}
 #[tauri::command]
 pub fn resolve_sync_conflict(app:AppHandle,change_id:String,resolution:String)->Result<(),String>{
     let mut conn=open_local_connection(&app)?;ensure_schema(&conn)?;
@@ -251,6 +261,9 @@ fn resolve_conflict(conn:&mut Connection,change_id:&str,resolution:&str)->Result
         if entity=="resource"&&operation=="edit_content"&&code=="RESOURCE_EDIT_CONFLICT" {
             return Err("Review the server version and your saved editor versions before reapplying. Automatic overwrite is not allowed.".into());
         }
+        if entity=="resource"&&["attach","edit_metadata"].contains(&operation.as_str())&&["RESOURCE_ATTACHMENT_CONFLICT","RESOURCE_METADATA_CONFLICT","RESOURCE_EDIT_CONFLICT"].contains(&code.as_str()){
+            return Err("Review the server state and preserved resource intentions before reapplying. Automatic revision overwrite is not allowed.".into());
+        }
         if ["item","item_movement"].contains(&entity.as_str())&&value["inventory_protocol"]==2&&(code=="SYNC_CONFLICT"||code=="SYNC_DEPENDENCY_PENDING"){
             return Err("Accept the server version, then review and reapply your inventory edits. Automatic overwrite is not allowed.".into());
         }
@@ -268,7 +281,7 @@ fn resolve_conflict(conn:&mut Connection,change_id:&str,resolution:&str)->Result
             tx.execute("UPDATE sync_outbox SET attempt_count=0,last_error=NULL,synced_at=NULL WHERE change_id=?1",[change_id]).map_err(|e|e.to_string())?;
         }
     } else {
-        if entity=="resource"&&(operation=="edit_content"||["create","create_copy"].contains(&operation.as_str())) {
+        if entity=="resource"&&["edit_content","create","create_copy","attach","edit_metadata"].contains(&operation.as_str()) {
             crate::resource_dependencies::discard_descendants(&tx,change_id,resolution)?;
         }
         if ["item","item_movement"].contains(&entity.as_str()){
@@ -297,6 +310,7 @@ pub(crate) fn mark_changes_synced(conn:&mut Connection,change_ids:Vec<String>)->
     let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
     let account=active_account(&tx)?;let mut inventory_changed=false;
     for id in change_ids{
+        crate::local_resource_authority::require_verified_file_confirmation(&tx,&id)?;
         let kind:String=tx.query_row("SELECT entity_type FROM sync_outbox WHERE change_id=?1 AND account_id=?2",params![id,account],|r|r.get(0)).map_err(|_|"Sync change does not belong to the active account")?;
         inventory_changed|=kind=="item"||kind=="item_movement";
         tx.execute("UPDATE sync_outbox SET synced_at=CURRENT_TIMESTAMP,last_error=NULL WHERE change_id=?1 AND account_id=?2",params![id,account]).map_err(|e|e.to_string())?;
@@ -307,7 +321,17 @@ pub(crate) fn mark_changes_synced(conn:&mut Connection,change_ids:Vec<String>)->
     tx.commit().map_err(|e|e.to_string())
 }
 #[tauri::command]
-pub fn record_sync_failure(app:AppHandle,change_id:String,error:String)->Result<(),String>{let mut conn=open_local_connection(&app)?;ensure_schema(&conn)?;let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|format!("Unable to begin sync failure record: {e}"))?;let account=active_account(&tx)?;let updated=tx.execute("UPDATE sync_outbox SET attempt_count=attempt_count+1,last_attempt_at=CURRENT_TIMESTAMP,last_error=?2 WHERE change_id=?1 AND account_id=?3",params![change_id,error,account]).map_err(|e|format!("Unable to record sync failure: {e}"))?;if updated!=1{return Err("Sync change does not belong to the active account".into())}tx.commit().map_err(|e|format!("Unable to commit sync failure: {e}"))?;Ok(())}
+pub fn record_sync_failure(app:AppHandle,change_id:String,error:String)->Result<(),String>{
+    let mut conn=open_local_connection(&app)?;ensure_schema(&conn)?;
+    let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|format!("Unable to begin sync failure record: {e}"))?;
+    require_owned_change(&tx,&change_id)?;
+    let account=active_account(&tx)?;
+    if !crate::local_resource_authority::is_confirmed_file_change(&tx,&change_id)?{
+        let updated=tx.execute("UPDATE sync_outbox SET attempt_count=attempt_count+1,last_attempt_at=CURRENT_TIMESTAMP,last_error=?2 WHERE change_id=?1 AND account_id=?3",params![change_id,error,account]).map_err(|e|format!("Unable to record sync failure: {e}"))?;
+        if updated!=1{return Err("Sync change does not belong to the active account".into())}
+    }
+    tx.commit().map_err(|e|format!("Unable to commit sync failure: {e}"))?;Ok(())
+}
 #[tauri::command]
 pub fn apply_server_inventory_pull(app:AppHandle,items_json:String,deleted_item_ids:Vec<String>,next_cursor:String,expected_account_id:String)->Result<(),String>{let incoming=crate::inventory_sync_state::decode(&items_json)?;let mut conn=open_local_connection(&app)?;ensure_schema(&conn)?;crate::inventory_sync_state::merge(&mut conn,&expected_account_id,incoming,deleted_item_ids,Some(&next_cursor))}
 

@@ -182,7 +182,15 @@ export async function attachExistingResource(id: string, destination: {item_id?:
 }
 export async function updateResourceMetadata(id: string, metadata: { category?: string; description?: string; tags?: string[] }): Promise<Resource> {
   if (isTauriRuntime()) {
-    return localInvoke<Resource>('update_local_resource_metadata', { id, ...metadata });
+    const session=captureAccountSession();
+    if(!session||!isAccountSessionCurrent(session))throw new Error('Sign in before editing resource metadata');
+    const status=await localInvoke<{resource_mutation_protocol?:number}>('local_database_status');
+    if(status?.resource_mutation_protocol!==1)throw new Error('Resource metadata editing requires an updated desktop build');
+    const expectedSessionToken=await localInvoke<string>('local_authorization_guard',{expectedAccountId:session.accountId});
+    if(!isAccountSessionCurrent(session))throw new Error('Account changed while editing resource metadata');
+    const resource=await localInvoke<Resource>('update_local_resource_metadata', { id, ...metadata,expectedAccountId:session.accountId,expectedSessionToken });
+    if(!isAccountSessionCurrent(session))throw new Error('Account changed while editing resource metadata');
+    return resource;
   }
   const response = await apiFetch(`/resources/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(metadata) });
   if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to update resource metadata'));

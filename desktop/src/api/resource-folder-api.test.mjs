@@ -4,7 +4,7 @@ import ts from 'typescript';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-function load({failMove=false,switchOnGuard=false,switchOnMove=false,failEditor=false,switchOnEditor=false}={}){
+function load({failMove=false,switchOnGuard=false,switchOnMove=false,failEditor=false,switchOnEditor=false,mutationProtocol=1}={}){
   const exports={},calls=[];let current=true;
   const source=ts.transpileModule(readFileSync(new URL('./resources.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
   vm.runInNewContext(source,{exports,URLSearchParams,XMLHttpRequest:class{constructor(){throw Error('Unexpected HTTP upload');}},require:p=>{
@@ -14,6 +14,8 @@ function load({failMove=false,switchOnGuard=false,switchOnMove=false,failEditor=
     if(p==='./resource-uploads')return{stageResourceFolderFiles:async(...args)=>{calls.push({command:'stageFolder',args});return[];},stagePdfReplacement:async(...args)=>{calls.push({command:'stagePdf',args});return{id:args[0]};},refreshLocalFileAccess:async()=>{},localFilePending:()=>false,localFileUrl:()=>null};
     if(p==='@tauri-apps/api/tauri')return{invoke:async(command,args)=>{
       calls.push({command,args});
+      if(command==='local_database_status')return{resource_mutation_protocol:mutationProtocol};
+      if(command==='update_local_resource_metadata'){if(failEditor)throw Error('SQLite write failed');if(switchOnEditor)current=false;return{id:args.id,description:args.description};}
       if(command==='get_local_resource')return{id:'folder',name:'Designs',kind:'folder'};
       if(command==='list_local_resources')return[{id:'file',name:'part.txt',kind:'file',relative_path:'rev1/part.txt',size_bytes:3}];
       if(command==='create_local_resource_folder')return{id:'folder'};
@@ -31,6 +33,15 @@ function load({failMove=false,switchOnGuard=false,switchOnMove=false,failEditor=
     return{};
   }});return{api:exports,calls,switch:()=>{current=false;}};
 }
+
+test('metadata writes capture the native session and never fall back to HTTP',async()=>{
+  const c=load();await c.api.updateResourceMetadata('resource',{description:'saved'});
+  const call=c.calls.find(c=>c.command==='update_local_resource_metadata');assert.deepEqual(JSON.parse(JSON.stringify(call.args)),{id:'resource',description:'saved',expectedAccountId:'account',expectedSessionToken:'native-session'});
+  for(const option of [{failEditor:true},{switchOnGuard:true},{switchOnEditor:true}]){
+    const failed=load(option);await assert.rejects(failed.api.updateResourceMetadata('resource',{tags:[]}),/SQLite write failed|Account changed/);
+  }
+  const old=load({mutationProtocol:0});await assert.rejects(old.api.updateResourceMetadata('resource',{description:'saved'}),/updated desktop/);assert.equal(old.calls.length,1);
+});
 
 test('desktop folder upload delegates to native staging before constructing HTTP',async()=>{
   const c=load();await c.api.uploadFolderFiles('folder',[],[]);

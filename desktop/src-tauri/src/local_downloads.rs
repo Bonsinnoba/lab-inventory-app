@@ -5,6 +5,162 @@ use crate::{local_auth,local_db,local_resources};
 const KEY:&str="download_snapshot";
 const FIELDS:[&str;7]=["enabled","mode","window_start","window_end","concurrent_downloads","default_quality","max_retries"];
 
+// The server emits canonical UTC timestamps. Validate before lexical comparison;
+// optional diagnostics must never invalidate the queue/settings snapshot.
+fn valid_tool_time(at:&str)->bool{
+    let b=at.as_bytes();
+    if b.len()!=24||b[4]!=b'-'||b[7]!=b'-'||b[10]!=b'T'||b[13]!=b':'||b[16]!=b':'||b[19]!=b'.'||b[23]!=b'Z'{return false}
+    if b.iter().enumerate().any(|(i,c)|![4,7,10,13,16,19,23].contains(&i)&&!c.is_ascii_digit()){return false}
+    let number=|a:usize,z:usize|at[a..z].parse::<u32>().unwrap_or(u32::MAX);
+    let year=number(0,4);let month=number(5,7);let day=number(8,10);
+    let leap=year%4==0&&(year%100!=0||year%400==0);
+    let days=match month{1|3|5|7|8|10|12=>31,4|6|9|11=>30,2=>if leap{29}else{28},_=>0};
+    year>0&&day>0&&day<=days&&number(11,13)<24&&number(14,16)<60&&number(17,19)<60
+}
+fn tool_status(value:&Value)->Option<Value>{
+    let at=value["checked_at"].as_str()?;
+    if !valid_tool_time(at){return None}
+    let mut result=json!({"checked_at":at,"production":value["production"].as_bool()?});
+    for key in ["yt_dlp","ffmpeg","node"]{
+        let entry=&value[key];let path=entry["path"].as_str()?;
+        if path.is_empty()||path.len()>4096{return None}
+        let mut tool=json!({"path":path,"available":entry["available"].as_bool()?});
+        if let Some(error)=entry.get("error"){
+            let error=error.as_str()?;if error.chars().count()>500{return None}tool["error"]=json!(error);
+        }
+        result[key]=tool;
+    }Some(result)
+}
+fn merge_tool_status(incoming:&Value,previous:&Value)->Value{
+    match (tool_status(incoming),tool_status(previous)){
+        (Some(next),Some(prior))=>if next["checked_at"].as_str()<prior["checked_at"].as_str(){prior}else{next},
+        (Some(next),None)=>next,(None,Some(prior))=>prior,(None,None)=>Value::Null,
+    }
+}
+
+fn merge_removed_jobs(incoming:&Value,previous:&Value)->Result<Value,String>{
+    let mut ids=std::collections::BTreeSet::new();
+    for value in [previous,incoming]{
+        if value.is_null(){continue}
+        for id in value.as_array().ok_or("Invalid download removal snapshot")?{
+            let canonical=uuid::Uuid::parse_str(id.as_str().ok_or("Invalid removed download ID")?).map_err(|_|"Invalid removed download UUID")?.to_string();
+            ids.insert(canonical);
+        }
+    }
+    Ok(json!(ids))
+}
+
+#[cfg(test)]
+mod tests{
+    use super::*;
+    fn report(at:&str)->Value{json!({"checked_at":at,"production":false,"yt_dlp":{"path":"yt-dlp","available":true},"ffmpeg":{"path":"ffmpeg","available":false,"error":"missing"},"node":{"path":"node","available":true}})}
+    #[test]
+    fn tool_dates_are_canonical_and_calendar_valid(){
+        assert!(valid_tool_time("2024-02-29T23:59:59.999Z"));
+        for at in ["2026-02-29T00:00:00.000Z","2026-04-31T00:00:00.000Z","2026-10-14T24:00:00.000Z","2026-10-14T00:60:00.000Z","2026-10-14T00:00:60.000Z","2026-10-14T00:00:00Z","2026-10-14T00:00:00.000+00:00","é026-10-14T00:00:00.00Z"]{assert!(!valid_tool_time(at),"{at}");}
+    }
+    #[test]
+    fn optional_failure_or_old_server_preserves_last_check(){
+        let prior=report("2026-10-14T10:00:00.000Z");
+        assert_eq!(merge_tool_status(&Value::Null,&prior),prior);
+        assert_eq!(merge_tool_status(&json!({"node":false}),&prior),prior);
+        assert!(merge_tool_status(&Value::Null,&Value::Null).is_null());
+    }
+    #[test]
+    fn older_check_cannot_overwrite_newer_observation(){
+        let prior=report("2026-10-14T10:00:00.000Z");let next=report("2026-10-14T10:01:00.000Z");
+        assert_eq!(merge_tool_status(&prior,&next),next);
+        assert_eq!(merge_tool_status(&next,&prior),next);
+    }
+    #[test]
+    fn invalid_or_unbounded_diagnostics_are_ignored(){
+        let good=report("2026-10-14T10:00:00.000Z");
+        for (field,value) in [("path",json!("x".repeat(4097))),("available",json!("true")),("error",json!("x".repeat(501)))]{
+            let mut bad=good.clone();bad["node"][field]=value;assert!(tool_status(&bad).is_none());
+        }
+        let mut bad=good.clone();bad["production"]=Value::Null;assert!(tool_status(&bad).is_none());
+    }
+    #[test]
+    fn projection_strips_unknown_fields_and_keeps_negative_results(){
+        let mut input=report("2026-10-14T10:00:00.000Z");input["cached"]=json!(false);input["node"]["extra"]=json!("ignored");
+        let result=tool_status(&input).unwrap();assert!(result.get("cached").is_none());assert!(result["node"].get("extra").is_none());assert_eq!(result["ffmpeg"]["available"],false);
+    }
+    #[test]
+    fn removal_identity_is_monotonic_and_normalized(){
+        let id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let previous=json!([id]);let incoming=json!([id.to_uppercase(),"bbbbbbbbbbbb4bbb8bbbbbbbbbbbbbbb"]);
+        assert_eq!(merge_removed_jobs(&incoming,&previous).unwrap(),json!([id,"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]));
+        assert_eq!(merge_removed_jobs(&Value::Null,&previous).unwrap(),previous);
+        assert_eq!(merge_removed_jobs(&json!([]),&previous).unwrap(),previous);
+    }
+    #[test]
+    fn invalid_removal_snapshot_fails_without_clearing_history(){
+        for bad in [json!({}),json!([null]),json!(["not-a-uuid"])]{assert!(merge_removed_jobs(&bad,&json!([])).is_err());}
+    }
+
+    // Opt-in regression against the real desktop database, never a reset/seed.
+    // PostgreSQL cannot reproduce SQLite view rowid behavior. Keep this read-only
+    // and run it with a valid logged-in account; server tests still use real PG.
+    #[test]
+    #[ignore = "requires LABOS_READONLY_DOWNLOAD_DB pointing to the existing desktop SQLite database"]
+    fn existing_desktop_download_snapshot_is_readable(){
+        let path=std::env::var("LABOS_READONLY_DOWNLOAD_DB").expect("Explicit desktop DB path required");
+        let c=Connection::open_with_flags(path,rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        c.execute_batch("PRAGMA query_only=ON; BEGIN;").unwrap();
+        let account=local_db::active_account(&c).expect("Sign in with a valid local lease before this probe");
+        let before:i64=c.query_row("SELECT total_changes()",[],|r|r.get(0)).unwrap();
+        let changes=pending(&c).expect("Download outbox projection must be readable, including when empty");
+        let mut prior=0_i64;
+        for change in &changes{
+            let (sequence,owner):(i64,String)=c.query_row("SELECT rowid,account_id FROM sync_outbox WHERE change_id=?1",[change["change_id"].as_str().unwrap()],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+            assert_eq!(owner,account,"Other-account intents must not appear");
+            assert!(sequence>prior,"Preserve insertion order");prior=sequence;
+        }
+        let snapshot=view(&c,&account).expect("The same native reader used by queue, settings and tools must succeed");
+        assert!(snapshot["jobs"].is_array());
+        assert!(snapshot["snapshot_complete"].is_boolean());
+        let links=snapshot["resource_links"].as_array().expect("Saved links must be exposed without creating download jobs");
+        let resources=local_resources::read_resources(&c).unwrap();
+        assert_eq!(links.len(),resources.iter().filter(|r|r.kind=="link").count());
+        for link in links{assert_eq!(link["kind"],"link");assert!(resources.iter().any(|r|link["id"]==r.id));}
+        assert!(view(&c,"not-the-current-account").is_err());
+        let after:i64=c.query_row("SELECT total_changes()",[],|r|r.get(0)).unwrap();
+        assert_eq!(before,after,"Read probe must not modify data");
+        c.execute_batch("ROLLBACK;").unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires LABOS_ROLLBACK_DOWNLOAD_DB; existing DB transaction is always rolled back"]
+    fn existing_desktop_enqueue_retries_without_duplicate_and_rolls_back(){
+        let path=std::env::var("LABOS_ROLLBACK_DOWNLOAD_DB").expect("Explicit rollback-probe DB path required");
+        // No CREATE flag: this must be the existing app database, not a fixture.
+        let mut c=Connection::open_with_flags(path,rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE).unwrap();
+        c.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+        let tx=c.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
+        let account=local_db::active_account(&tx).unwrap();
+        let snapshot=view(&tx,&account).unwrap();
+        let resource=local_resources::read_resources(&tx).unwrap().into_iter().find(|r|
+            r.kind=="link"&&r.url.is_some()&&r.local_media_filename.is_none()&&
+            !snapshot["jobs"].as_array().unwrap().iter().any(|j|j["resource_id"]==r.id)
+        ).expect("Probe requires an existing undownloaded link with no job");
+        let before=pending(&tx).unwrap().len();
+        assert!(queue_in_transaction(&tx,"different-account",&resource.id,None,None).is_err());
+        let schedule=Some("2099-12-10T12:00:00.000Z".to_string());
+        let first=queue_in_transaction(&tx,&account,&resource.id,Some("720p".into()),schedule.clone()).unwrap();
+        let retry=queue_in_transaction(&tx,&account,&resource.id.to_uppercase(),Some("720p".into()),schedule).unwrap();
+        assert_eq!(first["id"],retry["id"],"Retry reuses the existing pending job");
+        assert_eq!(first["scheduled_for"],"2099-12-10T12:00:00.000Z");
+        assert_eq!(first["status"],"scheduled");
+        assert_eq!(first["sync_state"],"pending_sync");
+        assert_eq!(pending(&tx).unwrap().len(),before+1);
+        assert_eq!(view(&tx,&account).unwrap()["jobs"].as_array().unwrap().iter().filter(|j|j["id"]==first["id"]).count(),1);
+        let job_id=first["id"].as_str().unwrap().to_owned();
+        tx.rollback().unwrap();
+        let count:i64=c.query_row("SELECT COUNT(*) FROM sync_outbox WHERE entity_type='resource_download_job' AND entity_id=?1",[job_id],|r|r.get(0)).unwrap();
+        assert_eq!(count,0,"Probe must not leave a download request behind");
+    }
+}
+
 fn authorize(c:&Connection,account:&str)->Result<(),String>{local_db::require_sync_account(c,account)?;local_auth::require_local_permission(c,"resources.edit")}
 fn guard(c:&Connection,account:&str,token:&str)->Result<(),String>{
     local_db::require_sync_account(c,account)?;
@@ -28,7 +184,10 @@ fn older_job(c:&Connection,incoming:&Value,previous:&Value)->Result<bool,String>
     }
 }
 fn pending(c:&Connection)->Result<Vec<Value>,String>{
-    let mut stmt=c.prepare("SELECT o.change_id,o.entity_type,o.entity_id,o.payload_json,o.created_at,o.last_error,c.error_code,o.operation FROM active_sync_outbox o LEFT JOIN sync_conflicts c ON c.change_id=o.change_id AND c.resolved_at IS NULL WHERE o.synced_at IS NULL AND o.entity_type IN ('resource_download_job','media_download_settings') ORDER BY o.rowid").map_err(|e|e.to_string())?;
+    // A view has no implicit rowid. Keep account/lease filtering in the view,
+    // but obtain insertion order from the underlying table (also used by push).
+    // Timestamps alone cannot order multiple intentions written in one second.
+    let mut stmt=c.prepare("SELECT o.change_id,o.entity_type,o.entity_id,o.payload_json,o.created_at,o.last_error,c.error_code,o.operation FROM active_sync_outbox o JOIN sync_outbox sequence ON sequence.change_id=o.change_id LEFT JOIN sync_conflicts c ON c.change_id=o.change_id AND c.resolved_at IS NULL WHERE o.synced_at IS NULL AND o.entity_type IN ('resource_download_job','media_download_settings') ORDER BY sequence.rowid").map_err(|e|e.to_string())?;
     let rows=stmt.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,Option<String>>(5)?,r.get::<_,Option<String>>(6)?,r.get::<_,String>(7)?))).map_err(|e|e.to_string())?;
     rows.map(|row|{let(id,entity,record,raw,at,error,conflict,operation)=row.map_err(|e|e.to_string())?;let payload:Value=serde_json::from_str(&raw).map_err(|e|e.to_string())?;Ok(json!({"change_id":id,"entity_type":entity,"entity_id":record,"payload":payload,"created_at":at,"error":error,"conflict":conflict,"operation":operation}))}).collect()
 }
@@ -88,6 +247,10 @@ fn view(c:&Connection,account:&str)->Result<Value,String>{
         snapshot["settings"]["sync_conflict"]=json!(snapshot["settings"]["sync_conflict"]==true||!edit["conflict"].is_null());
     }
     snapshot["pending_removal_count"]=json!(edits.iter().filter(|e|e["entity_type"]=="resource_download_job"&&e["operation"]=="delete"&&e["conflict"].is_null()).count());
+    // The saved resource is the durable intake record. Expose all locally
+    // authorized links (including attachments/folders), without creating jobs on
+    // read. Scheduling in Downloads creates the ordinary outbox request.
+    snapshot["resource_links"]=json!(resources.iter().filter(|r|r.kind=="link").collect::<Vec<_>>());
     Ok(snapshot)
 }
 fn enqueue(c:&Connection,account:&str,entity:&str,id:&str,payload:&Value)->Result<(),String>{
@@ -139,8 +302,13 @@ fn control(c:&mut Connection,account:&str,job_id:&str,expected_version:i64,actio
     tx.commit().map_err(|e|e.to_string())?;Ok(result)
 }
 pub(crate) fn queue(c:&mut Connection,account:&str,resource_id:&str,quality:Option<String>,scheduled_for:Option<String>)->Result<Value,String>{
+    let tx=c.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+    let result=queue_in_transaction(&tx,account,resource_id,quality,scheduled_for)?;
+    tx.commit().map_err(|e|e.to_string())?;Ok(result)
+}
+fn queue_in_transaction(tx:&rusqlite::Transaction<'_>,account:&str,resource_id:&str,quality:Option<String>,scheduled_for:Option<String>)->Result<Value,String>{
     let resource_id=uuid::Uuid::parse_str(resource_id).map_err(|_|"Invalid resource UUID")?.to_string();
-    let tx=c.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;authorize(&tx,account)?;
+    authorize(tx,account)?;
     let resource=local_resources::read_resources(&tx)?.into_iter().find(|r|r.id==resource_id).ok_or("Resource unavailable locally")?;
     if resource.kind!="link"||resource.url.is_none(){return Err("Only link resources can be queued".into())}
     if resource.local_media_filename.is_some(){return Err("This resource is already downloaded on the server".into())}
@@ -154,10 +322,15 @@ pub(crate) fn queue(c:&mut Connection,account:&str,resource_id:&str,quality:Opti
     let id=local_db::new_uuid();
     enqueue(&tx,account,"resource_download_job",&id,&json!({"resource_id":resource_id,"quality":quality,"scheduled_for":scheduled_for}))?;
     let result=view(&tx,account)?["jobs"].as_array().unwrap().iter().find(|j|j["id"]==id).cloned().ok_or("Queued job not visible")?;
-    tx.commit().map_err(|e|e.to_string())?;Ok(result)
+    Ok(result)
 }
 #[tauri::command]
-pub fn get_local_download_snapshot(app:AppHandle,expected_account_id:String)->Result<Value,String>{view(&local_db::open_local_connection(&app)?,&expected_account_id)}
+pub fn get_local_download_snapshot(app:AppHandle,expected_account_id:String)->Result<Value,String>{
+    let mut c=local_db::open_local_connection(&app)?;
+    let tx=c.transaction().map_err(|e|e.to_string())?;
+    let result=view(&tx,&expected_account_id)?;
+    tx.commit().map_err(|e|e.to_string())?;Ok(result)
+}
 #[tauri::command]
 pub fn queue_local_download(app:AppHandle,expected_account_id:String,resource_id:String,quality:Option<String>,scheduled_for:Option<String>)->Result<Value,String>{queue(&mut local_db::open_local_connection(&app)?,&expected_account_id,&resource_id,quality,scheduled_for)}
 #[tauri::command]
@@ -201,7 +374,8 @@ pub fn apply_server_download_snapshot(app:AppHandle,expected_account_id:String,e
             job["sync_state"]=json!("server");
         }
         // Confirmed removals survive a late, pre-removal full snapshot.
-        snapshot["removed_job_ids"]=current["removed_job_ids"].clone();
+        snapshot["tools_status"]=merge_tool_status(&snapshot["tools_status"],&current["tools_status"]);
+        snapshot["removed_job_ids"]=merge_removed_jobs(&snapshot["removed_job_ids"],&current["removed_job_ids"])?;
         let removed=snapshot["removed_job_ids"].as_array().cloned().unwrap_or_default();
         snapshot["jobs"].as_array_mut().unwrap().retain(|j|!removed.contains(&j["id"]));
         write(&tx,&snapshot)?;
@@ -221,7 +395,9 @@ pub fn acknowledge_local_download_changes(app:AppHandle,expected_account_id:Stri
             let mut job=result["result"].clone();
             let expected=uuid::Uuid::parse_str(payload["resource_id"].as_str().unwrap_or("")).map_err(|_|"Invalid queued resource UUID")?;
             let received=uuid::Uuid::parse_str(job["resource_id"].as_str().unwrap_or("")).map_err(|_|"Invalid received resource UUID")?;
-            if received!=expected||uuid::Uuid::parse_str(job["id"].as_str().unwrap_or("")).is_err(){return Err("Download receipt does not match its resource".into())}
+            let received_job=uuid::Uuid::parse_str(job["id"].as_str().unwrap_or("")).map_err(|_|"Invalid received download UUID")?;
+            if received!=expected{return Err("Download receipt does not match its resource".into())}
+            job["id"]=json!(received_job.to_string());job["resource_id"]=json!(received.to_string());
             if operation!="create"&&job["id"]!=entity_id{return Err("Download receipt does not match its job".into())}
             if job["control_version"].as_i64().unwrap_or(-1)<0{return Err("Invalid download receipt version".into())}
             job["sync_state"]=json!("server");

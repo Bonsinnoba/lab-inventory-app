@@ -7,6 +7,7 @@
     "dev": "vite",
     "dev:tauri": "tauri dev",
     "build": "tsc && vite build",
+    "build:desktop:debug": "npm run build && cargo build --manifest-path src-tauri/Cargo.toml -j 1",
     "build:web": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",

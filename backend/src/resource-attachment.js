@@ -26,17 +26,27 @@ export function checkAttachmentRevision(resource, expected) {
 }
 
 export function attachmentPredecessor(move,change,user){
-  if(![1,2].includes(move.protocol))fail(400,'INVALID_ATTACHMENT_PROTOCOL','Unsupported resource attachment protocol');
+  if(![1,2,3].includes(move.protocol))fail(400,'INVALID_ATTACHMENT_PROTOCOL','Unsupported resource attachment protocol');
   const previous=move.previous_change_id;
   if(previous==null)return null;
-  if(move.protocol!==2||typeof previous!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(previous)||previous.toLowerCase()===String(change.change_id).toLowerCase()||!change.__device_id||!user.userId)
+  if(![2,3].includes(move.protocol)||typeof previous!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(previous)||previous.toLowerCase()===String(change.change_id).toLowerCase()||!change.__device_id||!user.userId)
     fail(400,'INVALID_ATTACHMENT_DEPENDENCY','Invalid attachment predecessor');
   return previous.toLowerCase();
 }
 export async function attachmentExpectedRevision(client,move,change,user){
+  return mutationExpectedRevision(client,move,change,user,['file','link']);
+}
+export async function mutationExpectedRevision(client,move,change,user,kinds){
   const previous=attachmentPredecessor(move,change,user);
   if(!previous)return move.expected_updated_at;
   const prior=(await client.query('SELECT * FROM sync_idempotency WHERE change_id=$1',[previous])).rows[0];
+  if(move.protocol===3&&['attach','edit_metadata'].includes(prior?.operation)){
+    if(prior.change_id!==previous||prior.user_id!==user.userId||prior.device_id!==change.__device_id||prior.entity_type!=='resource'||prior.entity_id!==change.entity_id||prior.response_json?.id!==change.entity_id||!kinds.includes(prior.response_json?.kind))
+      fail(409,'RESOURCE_ATTACHMENT_CONFLICT','Attachment predecessor does not belong to this resource, author and device');
+    const revision=prior.response_json.updated_at;
+    if(typeof revision!=='string'||!Number.isFinite(Date.parse(revision)))fail(409,'RESOURCE_ATTACHMENT_CONFLICT','Earlier attachment confirmation is incomplete');
+    return revision;
+  }
   // Same author/device/resource file receipt only. Current source/destination
   // authorization and revision are still rechecked by moveResourceAttachment.
   return predecessorRevision(prior,change,user,change.entity_id);
@@ -68,6 +78,6 @@ export async function moveResourceAttachment(client, resourceId, user, destinati
       fail(409, 'RESOURCE_PROJECT_MISMATCH', 'This resource is still referenced by another project. Review those references first.');
   }
   if (fields.every(k => (resource[k] || null) === destination[k])) return resource;
-  return (await client.query(`UPDATE resources SET item_id=$1,project_id=$2,note_id=$3,updated_at=clock_timestamp()
+  return (await client.query(`UPDATE resources SET item_id=$1,project_id=$2,note_id=$3,updated_at=GREATEST(date_trunc('milliseconds',clock_timestamp()),date_trunc('milliseconds',updated_at)+interval '1 millisecond')
     WHERE id=$4 RETURNING *`, [destination.item_id, destination.project_id, destination.note_id, resourceId])).rows[0];
 }

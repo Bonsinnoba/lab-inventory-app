@@ -216,15 +216,8 @@ pub fn local_resource_file_access(app:AppHandle,expected_account_id:String)->Res
 }
 #[tauri::command]
 pub fn bind_local_resource_upload_receipts(app:AppHandle,expected_account_id:String,expected_session_token:String,results:Vec<Value>)->Result<(),String>{
-    let mut c=local_db::open_local_connection(&app)?;schema(&c)?;
-    let tx=c.transaction_with_behavior(TransactionBehavior::Immediate).map_err(err)?;guard(&tx,&expected_account_id,&expected_session_token)?;
-    for result in results{
-        let change=result["change_id"].as_str().ok_or("Missing upload receipt")?;
-        let resource=result["result"]["id"].as_str().ok_or("Missing resource receipt ID")?;
-        let revision=result["result"]["updated_at"].as_str().ok_or("Missing resource revision")?;
-        let changed=tx.execute("UPDATE local_resource_uploads SET server_revision=?1 WHERE account_id=?2 AND change_id=?3 AND resource_id=?4 AND state='ready' AND EXISTS(SELECT 1 FROM active_sync_outbox o WHERE o.change_id=?3 AND o.synced_at IS NULL)",params![revision,expected_account_id,change,resource]).map_err(err)?;
-        if changed!=1{return Err("Upload acknowledgement does not match the authored file".into())}
-    }tx.commit().map_err(err)
+    let _=(app,expected_account_id,expected_session_token,results);
+    Err("Use native server-verified file confirmation; renderer receipts cannot bind file revisions".into())
 }
 
 // No unguarded file:// or broad asset access. Every media range rechecks the

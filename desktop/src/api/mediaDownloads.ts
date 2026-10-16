@@ -3,6 +3,7 @@ import { getToken } from './auth';
 import { isTauriRuntime } from '../lib/runtime';
 import {readDownloadSnapshot,enqueueLocalDownload,saveLocalDownloadSettings,downloadSettingsPatch,controlLocalDownload,type DownloadAction} from './downloads-local';
 import { captureAccountSession,isAccountSessionCurrent } from './auth';
+import { browserEnqueueIdentity } from './download-enqueue-retry';
 export {readDownloadSnapshot} from './downloads-local';
 
 export interface DownloadJob {
@@ -18,7 +19,7 @@ export interface DownloadJob {
 }
 export interface DownloadSettings { enabled: boolean; mode: 'manual'|'scheduled'|'always'; window_start: string; window_end: string; concurrent_downloads: number; default_quality: string; max_retries: number; sync_version:number; pending_sync?:boolean; sync_conflict?:boolean; }
 export interface MediaToolStatus { available: boolean; path: string; error?: string; }
-export interface MediaToolsStatus { yt_dlp: MediaToolStatus; ffmpeg: MediaToolStatus; node: MediaToolStatus; production: boolean; }
+export interface MediaToolsStatus { yt_dlp: MediaToolStatus; ffmpeg: MediaToolStatus; node: MediaToolStatus; production: boolean; checked_at?:string; cached?:boolean; }
 export type DownloadQuality = 'best'|'1080p'|'720p'|'480p';
 
 export function getLocalMediaUrl(id: string) { const token=getToken(); return apiUrl(`/media-downloads/${id}/media${token ? `?access_token=${encodeURIComponent(token)}` : ''}`); }
@@ -29,8 +30,20 @@ export async function getDownloadJobs(): Promise<DownloadJob[]> {
 }
 export async function queueVideoDownload(resource_id:string, quality?:DownloadQuality, scheduled_for?:string):Promise<DownloadJob>{
   if(isTauriRuntime())return enqueueLocalDownload(resource_id,quality,scheduled_for);
-  const r=await apiFetch('/media-downloads/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({resource_id,quality,scheduled_for})});
-  if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to queue video download'));return r.json();
+  const session=captureAccountSession();if(!session)throw new Error('Sign in before queuing downloads');
+  const compact=resource_id.replaceAll('-','').toLowerCase();
+  if(!/^[0-9a-f]{32}$/.test(compact))throw new Error('Invalid resource UUID');
+  resource_id=`${compact.slice(0,8)}-${compact.slice(8,12)}-${compact.slice(12,16)}-${compact.slice(16,20)}-${compact.slice(20)}`;
+  const payload={resource_id,quality:quality??null,scheduled_for:scheduled_for?new Date(scheduled_for).toISOString():null,priority:0};
+  const identity=browserEnqueueIdentity(apiUrl('/media-downloads/queue'),session.accountId,payload);
+  const r=await apiFetch('/media-downloads/queue',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':identity.key},body:JSON.stringify(payload)});
+  // Keep identity on every failure (including timeout, throttling and lost JSON).
+  // Deliberately changed payloads get another identity; retrying unchanged does not.
+  if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to queue video download'));
+  const result=await r.json();
+  if(!result?.id||result.resource_id!==resource_id)throw new Error('Invalid download receipt; retry with the saved request identity');
+  if(!isAccountSessionCurrent(session))throw new Error('Account changed while queuing download');
+  identity.complete();return result;
 }
 export type DownloadEdits=Partial<Pick<DownloadJob,'status'|'quality'|'scheduled_for'|'priority'>>;
 const uncertainControls=new Map<string,string>();
@@ -70,5 +83,12 @@ export async function saveDownloadSettings(settings:Partial<DownloadSettings>):P
   if(!r.ok){if(r.status>=400&&r.status<500)uncertainSettings.delete(signature);throw new Error(await getApiErrorMessage(r,'Failed to save download settings'));}
   const result=await r.json();uncertainSettings.delete(signature);if(!isAccountSessionCurrent(session))throw new Error('Account changed while saving settings');return result;
 }
-export async function getMediaToolsStatus():Promise<MediaToolsStatus>{const r=await apiFetch('/media-downloads/tools/status');if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to inspect media tools'));return r.json();}
+export async function getMediaToolsStatus():Promise<MediaToolsStatus>{
+  if(isTauriRuntime()){
+    const snapshot=await readDownloadSnapshot();
+    if(!snapshot.tools_status)throw new Error('Server tool status has not been synchronized to this PC yet');
+    return {...snapshot.tools_status,cached:true};
+  }
+  const r=await apiFetch('/media-downloads/tools/status');if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to inspect media tools'));return r.json();
+}
 export async function downloadYouTubeThumbnail(id:string){const r=await apiFetch(`/media-downloads/${id}/thumbnail`,{method:'POST'});if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to download thumbnail'));return r.json();}

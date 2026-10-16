@@ -22,7 +22,7 @@ export default function ProjectPlanningReview({project,canEdit}:{project:Project
   <p className="text-xs text-text-secondary mt-1">Prepare your BOM, Requirements, budget and proposed dates before submitting. Submitting does not reserve inventory. Admin approval activates the project.</p>
   {review.isLoading&&<p className="text-xs mt-3">Loading central review state…</p>}
   {review.isError&&<p className="text-xs mt-3 text-status-warning" role="alert">Central review is unavailable. Connect and synchronize this project before submitting or approving it.</p>}
-  {state&&<p className="text-sm mt-3">Review status: <strong className="capitalize">{state.replace('_',' ')}</strong></p>}
+  {state&&<div className="flex items-center gap-2 mt-3 text-sm"><span className="text-text-secondary">Review status:</span><span className={`px-2 py-0.5 rounded-full border text-xs font-medium capitalize ${state === 'approved' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : state === 'submitted' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' : state === 'changes_requested' ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' : 'bg-surface-raised text-text-secondary border-border'}`}>{state.replace('_',' ')}</span></div>}
   {state&&canEdit&&<div className="mt-3">
    <label className="block text-xs text-text-secondary mb-1" htmlFor="project-review-note">Review note (required when requesting changes)</label>
    <textarea id="project-review-note" value={note} onChange={e=>setNote(e.target.value)} maxLength={2000} rows={2} className="w-full bg-bg border border-border rounded-sm p-2 text-sm" placeholder="Planning notes or reasons for decision"/>

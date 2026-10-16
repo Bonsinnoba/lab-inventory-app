@@ -42,6 +42,7 @@ export async function applyDownloadControl(client,change,user){
     result={...job,control_outcome:'already_completed'};
   }else if(p.action==='remove'){
     if(job.status==='downloading')fail(409,'SYNC_CONFLICT','Wait for the worker to finish pausing or cancelling before removal');
+    await client.query('INSERT INTO download_job_tombstones(job_id,resource_id) VALUES($1,$2) ON CONFLICT(job_id) DO NOTHING',[id,resourceId]);
     await client.query('DELETE FROM resource_download_jobs WHERE id=$1',[id]);
     result={id,resource_id:resourceId,deleted:true,control_version:job.control_version+1};
   }else{

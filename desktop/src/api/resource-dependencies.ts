@@ -10,8 +10,8 @@ export function withoutBlockedResources<T extends Change>(changes:T[], blockedRe
     grew=false;
     for(const change of changes){
       if(change.entity_type!=='resource'||blocked.has(change.change_id))continue;
-      const payload=change.payload as {copy?:{source_id?:string;previous_change_id?:string};edit?:{previous_change_id?:string};attachment?:{previous_change_id?:string}}|null;
-      const previous=payload?.copy?.previous_change_id??payload?.edit?.previous_change_id??payload?.attachment?.previous_change_id;
+      const payload=change.payload as {copy?:{source_id?:string;previous_change_id?:string};edit?:{previous_change_id?:string};attachment?:{previous_change_id?:string};metadata?:{previous_change_id?:string}}|null;
+      const previous=payload?.copy?.previous_change_id??payload?.edit?.previous_change_id??payload?.attachment?.previous_change_id??payload?.metadata?.previous_change_id;
       if(resources.has(change.entity_id??'')||(previous&&blocked.has(previous))||(payload?.copy?.source_id&&resources.has(payload.copy.source_id))){
         blocked.add(change.change_id);
         if(change.entity_id)resources.add(change.entity_id);

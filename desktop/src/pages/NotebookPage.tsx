@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getNotes, getAllTags, createNote, updateNote, deleteNote, Note } from '../api/notes';
 import { getProjects, Project } from '../api/projects';
 import {
-  Plus, Search, X, Trash2, Tag as TagIcon, Mic, Volume2, Sigma, Save, Square,
+  Plus, Search, X, Trash2, Tag as TagIcon, Mic, Volume2, Sigma, Save, Square, Pause, Play,
   ChevronLeft, ChevronRight,
 } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
@@ -24,6 +24,7 @@ export default function NotebookPage() {
   const [isListCollapsed, setIsListCollapsed] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
   const { data: projects = [] } = useQuery<Project[]>({ queryKey: ['projects-for-notebook'], queryFn: getProjects, staleTime: 30000 });
   const bodyRef = useRef<HTMLTextAreaElement>(null);
   const recognitionRef = useRef<any>(null);
@@ -147,19 +148,49 @@ export default function NotebookPage() {
   // permissions needed, so this works reliably wherever the app runs.
   const handleReadAloud = () => {
     if (isSpeaking) {
-      window.speechSynthesis.cancel();
+      if (isPaused) {
+        window.speechSynthesis.resume();
+        setIsPaused(false);
+        return;
+      }
+      window.speechSynthesis.pause();
+      setIsPaused(true);
+      return;
+    }
+
+    let textToRead = '';
+    const el = bodyRef.current;
+    if (el && el.selectionStart != null && el.selectionEnd != null && el.selectionStart !== el.selectionEnd) {
+      textToRead = el.value.substring(el.selectionStart, el.selectionEnd).trim();
+    }
+    if (!textToRead) {
+      textToRead = `${draft.title ? draft.title + '. ' : ''}${draft.body}`.trim();
+    }
+
+    if (!textToRead) {
+      showToast('Nothing to read — this note or selection is empty', 'error');
+      return;
+    }
+
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(textToRead);
+    utterance.onend = () => {
       setIsSpeaking(false);
-      return;
-    }
-    if (!draft.body.trim()) {
-      showToast('Nothing to read — this note is empty', 'error');
-      return;
-    }
-    const utterance = new SpeechSynthesisUtterance(`${draft.title}. ${draft.body}`);
-    utterance.onend = () => setIsSpeaking(false);
-    utterance.onerror = () => setIsSpeaking(false);
+      setIsPaused(false);
+    };
+    utterance.onerror = () => {
+      setIsSpeaking(false);
+      setIsPaused(false);
+    };
     setIsSpeaking(true);
+    setIsPaused(false);
     window.speechSynthesis.speak(utterance);
+  };
+
+  const handleStopReadAloud = () => {
+    window.speechSynthesis.cancel();
+    setIsSpeaking(false);
+    setIsPaused(false);
   };
 
   // Voice dictation. Unlike read-aloud, this needs microphone access and
@@ -326,11 +357,20 @@ export default function NotebookPage() {
                 </button>
                 <button
                   onClick={handleReadAloud}
-                  title="Read aloud"
+                  title={!isSpeaking ? 'Read aloud (reads selected text, or entire note)' : isPaused ? 'Continue reading' : 'Pause reading'}
                   className={`p-1.5 rounded-sm transition-colors ${isSpeaking ? 'bg-accent/20 text-accent' : 'hover:bg-surface-raised text-text-secondary hover:text-text-primary'}`}
                 >
-                  {isSpeaking ? <Square size={16} /> : <Volume2 size={16} />}
+                  {!isSpeaking ? <Volume2 size={16} /> : isPaused ? <Play size={16} /> : <Pause size={16} />}
                 </button>
+                {isSpeaking && (
+                  <button
+                    onClick={handleStopReadAloud}
+                    title="Stop reading"
+                    className="p-1.5 rounded-sm hover:bg-surface-raised text-text-secondary hover:text-status-danger transition-colors"
+                  >
+                    <Square size={16} />
+                  </button>
+                )}
                 <button
                   onClick={() => setShowSymbolPicker(true)}
                   title="Insert symbol"
@@ -358,13 +398,13 @@ export default function NotebookPage() {
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-6">
+            <div className="flex-1 min-h-0 flex flex-col">
               <textarea
                 ref={bodyRef}
                 placeholder="Start writing…"
                 value={draft.body}
                 onChange={(e) => setDraft({ ...draft, body: e.target.value })}
-                className="w-full h-full min-h-[300px] bg-transparent text-text-primary placeholder:text-text-secondary focus:outline-none resize-none leading-relaxed"
+                className="w-full flex-1 min-h-0 p-6 bg-transparent text-text-primary placeholder:text-text-secondary focus:outline-none resize-none leading-relaxed overflow-y-auto"
               />
             </div>
 

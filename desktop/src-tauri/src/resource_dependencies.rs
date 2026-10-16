@@ -63,7 +63,7 @@ fn pending(c:&Connection)->Result<Vec<Intent>,String>{
     rows.map(|row|{
         let (id,entity,raw,conflicted)=row.map_err(err)?;
         let payload:Value=serde_json::from_str(&raw).map_err(err)?;
-        let previous=payload["copy"]["previous_change_id"].as_str().or_else(||payload["edit"]["previous_change_id"].as_str()).or_else(||payload["attachment"]["previous_change_id"].as_str()).map(str::to_owned);
+        let previous=payload["copy"]["previous_change_id"].as_str().or_else(||payload["edit"]["previous_change_id"].as_str()).or_else(||payload["attachment"]["previous_change_id"].as_str()).or_else(||payload["metadata"]["previous_change_id"].as_str()).map(str::to_owned);
         Ok(Intent{id,entity:entity.unwrap_or_default(),previous,conflicted})
     }).collect()
 }

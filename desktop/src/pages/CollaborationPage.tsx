@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Bell, Check, History, MessageSquare, RefreshCw, Users } from 'lucide-react';
+import { Bell, Check, Clock, History, MessageSquare, RefreshCw, Users } from 'lucide-react';
 import { getActivity, getNotifications, markAllNotificationsRead, markNotificationRead } from '../api/collaboration';
 import Pagination, { usePagination } from '../components/Pagination';
 
@@ -37,8 +37,9 @@ export default function CollaborationPage() {
       <p className="text-sm text-status-danger">Some collaboration data could not be loaded.</p><p className="text-xs text-text-secondary mt-1">Available sections remain visible. Missing totals are unknown, not zero.</p>
       <button type="button" onClick={retry} className={`${button} mt-3`}>Try again</button>
     </div>}
-    {activityReady&&activity.data?.last_synced_at&&<aside role="status" className="rounded-md border border-border p-3 text-xs text-text-secondary">
-      Local activity snapshot from {new Date(activity.data.last_synced_at).toLocaleString()}. New server events appear after synchronization; this timestamp is not refreshed by local reads.
+    {activityReady&&activity.data?.last_synced_at&&<aside role="status" className="rounded-md border border-border bg-surface-raised/40 p-3 text-xs text-text-secondary flex items-center gap-2">
+      <Clock size={14} className="text-accent shrink-0"/>
+      <span>Local activity snapshot from {new Date(activity.data.last_synced_at).toLocaleString()}. New server events appear after synchronization; this timestamp is not refreshed by local reads.</span>
     </aside>}
     {(read.error||readAll.error)&&<p role="alert" className="text-sm text-status-danger">The read acknowledgement could not be saved. Your notifications remain available; retry the action.</p>}
     <div className="grid sm:grid-cols-3 gap-3">{[

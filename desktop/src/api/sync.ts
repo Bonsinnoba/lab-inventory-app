@@ -7,6 +7,7 @@ import {pullResourceFiles} from './resource-replication';
 import {isResourceUpload,transferResourceUpload} from './resource-uploads';
 import {withoutBlockedResources} from './resource-dependencies';
 import {refreshResourceAuthority} from './resource-authority';
+import {confirmResourceChange,confirmResourceMutation} from './resource-confirmation';
 import type {Resource} from './resources';
 import { invoke } from '@tauri-apps/api/tauri';
 import { apiFetch, getApiErrorMessage } from './http';
@@ -123,10 +124,14 @@ async function runSync():Promise<number>{
           assertSession:assertSyncSession,
           acknowledge:async(change,result)=>{
             assertSyncSession();
+            if(change.entity_type==='resource'&&['attach','edit_metadata'].includes(change.operation)){
+              await confirmResourceMutation(change.change_id,token,assertSyncSession);
+              return;
+            }
             if(isResourceUpload(change)){
-              if(!downloadContext.nativeSessionToken||!isServerRequestCurrent(downloadContext))throw new Error('Upload acknowledgement session changed');
-              await invoke(change.operation==='edit_content'?'bind_local_resource_edit_receipts':'bind_local_resource_upload_receipts',{expectedAccountId:accountId,expectedSessionToken:downloadContext.nativeSessionToken,results:[result]});
-              assertSyncSession();
+              await confirmResourceChange(change.change_id,token,assertSyncSession);
+              // Native receipt binding, authority cache and ACK commit together.
+              return;
             }
             if(['resource_download_job','media_download_settings'].includes(change.entity_type)){
               if(!downloadContext.nativeSessionToken||!isServerRequestCurrent(downloadContext))throw new Error('Download acknowledgement session changed');

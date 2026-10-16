@@ -32,3 +32,10 @@ test('attachment predecessor is withheld together with failed content transfer',
   assert.deepEqual(filter(changes,new Set(['a'])).map(c=>c.change_id),['other']);
   assert.deepEqual(filter(changes,new Set()),changes);
 });
+
+test('metadata predecessors join the dependency graph without changing saved payloads',()=>{
+  const changes=[change('metadata','b',{metadata:{protocol:1,previous_change_id:'edit'}}),change('edit','a'),change('other','c')];
+  const before=JSON.stringify(changes);
+  assert.deepEqual(filter(changes,new Set(['a'])).map(c=>c.change_id),['other']);
+  assert.equal(JSON.stringify(changes),before);
+});

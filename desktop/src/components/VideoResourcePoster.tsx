@@ -6,10 +6,11 @@ import {captureAccountSession,isAccountSessionCurrent} from '../api/auth';
 import {isTauriRuntime} from '../lib/runtime';
 
 export function useVideoPoster(resource:Resource|null){
-  const [url,setUrl]=useState<string>();
+  const [preview,setPreview]=useState<{key:string;url:string|undefined}>();
   const account=captureAccountSession();
+  const key=JSON.stringify([resource?.id,resource?.updated_at||resource?.created_at,account?.accountId,account?.generation]);
   useEffect(()=>{
-    let disposed=false,objectUrl:string|undefined,sequence=0;const session=captureAccountSession();setUrl(undefined);
+    let disposed=false,objectUrl:string|undefined,sequence=0;const session=captureAccountSession();setPreview(undefined);
     const load=async()=>{
       const request=++sequence;
       if(!resource||!session)return;
@@ -18,15 +19,17 @@ export function useVideoPoster(resource:Resource|null){
         if(disposed||request!==sequence||!isAccountSessionCurrent(session))return;
         if(objectUrl)URL.revokeObjectURL(objectUrl);
         objectUrl=next?URL.createObjectURL(next):undefined;
-        setUrl(isTauriRuntime()?objectUrl:serverPosterUrl(resource));
-      }catch{if(!disposed&&request===sequence)setUrl(undefined);}
+        setPreview({key,url:isTauriRuntime()?objectUrl:serverPosterUrl(resource)});
+      }catch{if(!disposed&&request===sequence)setPreview(undefined);}
     };
-    const clear=()=>{sequence++;if(objectUrl)URL.revokeObjectURL(objectUrl);objectUrl=undefined;setUrl(undefined);};
+    const clear=()=>{sequence++;if(objectUrl)URL.revokeObjectURL(objectUrl);objectUrl=undefined;setPreview(undefined);};
     void load();window.addEventListener('labos-posters-updated',load);
     window.addEventListener('labos:auth-expired',clear);window.addEventListener('labos-user-updated',clear);
     return()=>{disposed=true;window.removeEventListener('labos-posters-updated',load);window.removeEventListener('labos:auth-expired',clear);window.removeEventListener('labos-user-updated',clear);if(objectUrl)URL.revokeObjectURL(objectUrl);};
-  },[resource?.id,resource?.updated_at,account?.accountId,account?.generation]);
-  return url;
+  },[key]);
+  // Do not expose the preceding resource/account's URL for the render before
+  // effect cleanup. Blob URLs are revoked on replacement, revocation and unmount.
+  return account&&isAccountSessionCurrent(account)&&preview?.key===key?preview.url:undefined;
 }
 export default function VideoResourcePoster({resource}:{resource:Resource}){
   const url=useVideoPoster(resource);const [failed,setFailed]=useState(false);

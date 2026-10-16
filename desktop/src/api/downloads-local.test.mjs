@@ -10,9 +10,10 @@ function load(options={}){
     if(p==='./auth')return{captureAccountSession:()=>options.signedOut?null:{accountId:'a'},isAccountSessionCurrent:()=>current,
       captureServerRequest:async()=>({accountId:'a',nativeSessionToken:'guard'}),isServerRequestCurrent:()=>current,getToken:()=> 'jwt'};
     if(p==='./local-backend')return{localBackend:{invoke:async(command,args)=>{
-      calls.push({command,args});if(options.nativeError)throw Error('LOCAL_FAILURE');if(options.switchAccount)current=false;
+      calls.push({command,args});if(options.nativeStringError)throw options.nativeStringError;if(options.nativeError)throw Error('LOCAL_FAILURE');if(options.switchAccount)current=false;
       return options.value??{jobs:[],settings:null,snapshot_complete:false,last_synced_at:null};
     }}};
+    if(p==='./download-presentation')return{downloadFailureMessage:(e,f)=>typeof e==='string'?e:e?.message||f};
     if(p==='./http')return{apiFetch:async path=>{http.push(path);if(options.networkError)throw Error('NETWORK_FAILURE');return{ok:options.status===undefined,status:options.status??200,json:async()=>options.body??{}}}};
     throw Error(p);
   }});return{api:exports,calls,http};
@@ -23,6 +24,12 @@ test('desktop scheduled enqueue is local and keeps its schedule',async()=>{
 });
 test('local save failure never retries through a server write',async()=>{
   const c=load({nativeError:true});await assert.rejects(c.api.saveLocalDownloadSettings({enabled:false,sync_version:3}),/LOCAL_FAILURE/);assert.equal(c.http.length,0);
+});
+
+test('native string read failures remain errors, not missing snapshots or server fallbacks',async()=>{
+  const c=load({nativeStringError:'no such column: o.rowid'});
+  await assert.rejects(c.api.readDownloadSnapshot(),/no such column: o.rowid/);
+  assert.equal(c.calls.length,1);assert.equal(c.http.length,0);
 });
 test('settings save carries expected version and only shared settings fields',async()=>{
   const c=load();await c.api.saveLocalDownloadSettings({enabled:false,sync_version:3,pending_sync:true,sync_conflict:false});

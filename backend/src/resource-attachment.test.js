@@ -40,3 +40,23 @@ test('missing attachment predecessor waits; foreign and metadata receipts cannot
   const base={user_id:user.userId,device_id:'device',entity_type:'resource',entity_id:id,operation:'edit_content',response_json:{id,kind:'file',updated_at:'2026-10-14T12:00:00.000Z'}};
   for(const patch of [{user_id:'other'},{device_id:'other'},{entity_id:previous},{operation:'attach'},{operation:'update'},{response_json:{id,kind:'file'}}])await assert.rejects(()=>attachmentExpectedRevision({query:async()=>({rows:[{...base,...patch}]})},move,change,user),e=>e.status===409);
 });
+
+test('protocol 3 resolves repeated file and link moves after moves or metadata edits',async()=>{
+  for(const kind of ['file','link'])for(const operation of ['attach','edit_metadata']){
+    const move={protocol:3,previous_change_id:previous,expected_updated_at:'2026-10-14T10:00:00.000Z'};
+    const receipt={change_id:previous,user_id:user.userId,device_id:'device',entity_type:'resource',entity_id:id,operation,response_json:{id,kind,updated_at:'2026-10-14T12:00:00.001Z'}};
+    const before=JSON.stringify(move);
+    assert.equal(await attachmentExpectedRevision({query:async()=>({rows:[receipt]})},move,change,user),receipt.response_json.updated_at);
+    assert.equal(JSON.stringify(move),before);
+    assert.throws(()=>checkAttachmentRevision({updated_at:'2026-10-14T12:00:00.002Z'},receipt.response_json.updated_at),e=>e.status===409);
+  }
+});
+test('repeated moves reject foreign, malformed, folder and unsupported predecessor receipts',async()=>{
+  const move={protocol:3,previous_change_id:previous};
+  const base={change_id:previous,user_id:user.userId,device_id:'device',entity_type:'resource',entity_id:id,operation:'attach',response_json:{id,kind:'file',updated_at:'2026-10-14T12:00:00.000Z'}};
+  for(const patch of [{change_id:id},{user_id:'other'},{device_id:'other'},{entity_id:previous},{entity_type:'project'},{operation:'update'},{response_json:{id:previous,kind:'file',updated_at:base.response_json.updated_at}},{response_json:{id,kind:'folder',updated_at:base.response_json.updated_at}},{response_json:{id,kind:'file',updated_at:'invalid'}}]){
+    await assert.rejects(()=>attachmentExpectedRevision({query:async()=>({rows:[{...base,...patch}]})},move,change,user),e=>e.status===409);
+  }
+  await assert.rejects(()=>attachmentExpectedRevision({query:async()=>({rows:[]})},move,change,user),e=>e.status===503);
+  await assert.rejects(()=>attachmentExpectedRevision({query:async()=>({rows:[base]})},{...move,protocol:2},change,user),e=>e.status===409);
+});

@@ -9,8 +9,7 @@ import { ensureYouTubeThumbnail, getMediaToolStatus } from '../media-downloads.j
 import { controlDownloadHttp } from '../download-job-control.js';
 import { resolveStoragePath } from '../storage.js';
 import { downloadSettingsPayload, updateDownloadSettingsHttp } from '../download-settings-sync.js';
-import { createDownloadJob } from '../download-queue-create.js';
-import { randomUUID } from 'node:crypto';
+import { enqueueDownloadHttp } from '../download-queue-http.js';
 
 const router = Router();
 const requireDownloadPermission = hasPermission('resources.edit');
@@ -18,27 +17,26 @@ const settingsPayload=downloadSettingsPayload;
 router.get('/snapshot',requireDownloadPermission,async(req,res)=>{
   try{
     const at=new Date().toISOString();
-    const [jobs,settings]=await Promise.all([
+    const [jobs,settings,tombstones]=await Promise.all([
       pool.query('SELECT j.*,r.name AS resource_name,r.url AS resource_url,r.thumbnail_url,r.local_media_filename,r.local_media_size_bytes FROM resource_download_jobs j JOIN resources r ON r.id=j.resource_id ORDER BY j.created_at DESC,j.id'),
       pool.query('SELECT * FROM media_download_settings WHERE id=1'),
+      pool.query('SELECT t.job_id,t.resource_id FROM download_job_tombstones t JOIN resources r ON r.id=t.resource_id'),
     ]);
     const visible=[];for(const job of jobs.rows)if((await requireResourceRead(job.resource_id,req.user)).ok)visible.push(job);
+    const removed=[];for(const tombstone of tombstones.rows)if((await requireResourceRead(tombstone.resource_id,req.user)).ok)removed.push(tombstone.job_id);
     res.setHeader('Cache-Control','no-store');
-    res.json({jobs:visible,settings:settingsPayload(settings.rows[0]),last_synced_at:at,snapshot_complete:true});
+    // Tool diagnostics are optional: their failure cannot erase queue/settings.
+    const tools=await getMediaToolStatus().catch(()=>null);
+    res.json({jobs:visible,settings:settingsPayload(settings.rows[0]),last_synced_at:at,snapshot_complete:true,tools_status:tools,removed_job_ids:removed});
   }catch(error){res.status(500).json({error:'Unable to synchronize download snapshot'});}
 });
 router.get('/settings', requireDownloadPermission, async (_req,res)=>{ try { const r=await pool.query('SELECT * FROM media_download_settings WHERE id=1'); res.json(settingsPayload(r.rows[0])); } catch(err){res.status(500).json({error:err.message||'Failed to fetch download settings'});} });
 router.put('/settings',requireDownloadPermission,async(req,res)=>{try{res.json(await updateDownloadSettingsHttp(pool,req));}catch(error){res.status(error.status||500).json({error:{code:error.code||'DOWNLOAD_SETTINGS_ERROR',message:error.message}});}});
-router.get('/tools/status', requireDownloadPermission, async (_req,res)=>{ try { res.json(await getMediaToolStatus()); } catch(err){res.status(500).json({error:err.message||'Failed to inspect media tools'});} });
+router.get('/tools/status', requireDownloadPermission, async (_req,res)=>{ try { res.setHeader('Cache-Control','no-store');res.json(await getMediaToolStatus()); } catch(err){res.status(500).json({error:err.message||'Failed to inspect media tools'});} });
 router.get('/queue', requireDownloadPermission, async(req,res)=>{ try { const r=await pool.query(`SELECT j.*,r.name AS resource_name,r.url AS resource_url,r.thumbnail_url,r.local_media_filename,r.local_media_size_bytes FROM resource_download_jobs j JOIN resources r ON r.id=j.resource_id ORDER BY CASE WHEN j.status IN ('downloading','paused') THEN 0 WHEN j.status IN ('queued','scheduled') THEN 1 ELSE 2 END,j.priority DESC,j.scheduled_for NULLS FIRST,j.created_at DESC`); const visible=[];for(const job of r.rows){if((await requireResourceRead(job.resource_id,req.user)).ok)visible.push(job)}res.json(visible); } catch(err){res.status(500).json({error:err.message||'Failed to fetch download queue'});} });
 router.post('/queue',requireDownloadPermission,async(req,res)=>{
-  const client=await pool.connect();
-  try{
-    await client.query('BEGIN');
-    const job=await createDownloadJob(client,{operation:'create',entity_id:randomUUID(),payload:req.body},req.user);
-    await client.query('COMMIT');res.status(201).json(job);
-  }catch(error){await client.query('ROLLBACK').catch(()=>{});res.status(error.status||400).json({error:{code:error.code||'DOWNLOAD_QUEUE_ERROR',message:error.message}});}
-  finally{client.release();}
+  try{res.status(201).json(await enqueueDownloadHttp(pool,req));}
+  catch(error){res.status(error.status||500).json({error:{code:error.code||'DOWNLOAD_QUEUE_ERROR',message:error.message}});}
 });
 const controlRoute=(action,operation)=>(async(req,res)=>{
   try{

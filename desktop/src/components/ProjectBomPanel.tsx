@@ -43,12 +43,58 @@ export default function ProjectBomPanel({ projectId, canEdit }: { projectId: str
   });
 
   const validForm = (value: BomForm) => value.name.trim().length > 0 && Number.isFinite(Number(value.required_quantity)) && Number(value.required_quantity) > 0 && value.preferred_item_id !== value.alternative_item_id;
-  const renderSelect = (value: string, onChange: (value: string) => void, label: string) => (
-    <select aria-label={label} value={value} onChange={(e) => onChange(e.target.value)} className={input}>
-      <option value="">{label}</option>
-      {linkedItems.map((item) => <option key={item.id} value={item.id}>{item.name}{item.sku ? ` · ${item.sku}` : ''}</option>)}
-    </select>
-  );
+  const getSortedItems = (componentName: string, partNumber?: string) => {
+    const qName = componentName.trim().toLowerCase();
+    const qPart = (partNumber || '').trim().toLowerCase();
+    if (!qName && !qPart) return linkedItems;
+    return [...linkedItems].sort((a, b) => {
+      const aName = a.name.toLowerCase();
+      const bName = b.name.toLowerCase();
+      const aPart = (a.part_number || '').toLowerCase();
+      const bPart = (b.part_number || '').toLowerCase();
+      const aSku = (a.sku || '').toLowerCase();
+      const bSku = (b.sku || '').toLowerCase();
+
+      const score = (name: string, part: string, sku: string) => {
+        let s = 0;
+        if (qName) {
+          if (name === qName) s += 100;
+          else if (name.startsWith(qName)) s += 50;
+          else if (name.includes(qName)) s += 20;
+          if (sku.includes(qName) || part.includes(qName)) s += 15;
+        }
+        if (qPart) {
+          if (part && part === qPart) s += 80;
+          else if (part && part.includes(qPart)) s += 30;
+          if (sku && sku.includes(qPart)) s += 25;
+        }
+        return s;
+      };
+
+      const scoreA = score(aName, aPart, aSku);
+      const scoreB = score(bName, bPart, bSku);
+      if (scoreA !== scoreB) return scoreB - scoreA;
+      return aName.localeCompare(bName);
+    });
+  };
+
+  const renderSelect = (value: string, onChange: (value: string) => void, label: string, targetName: string = '', targetPart: string = '') => {
+    const sorted = getSortedItems(targetName, targetPart);
+    return (
+      <select aria-label={label} value={value} onChange={(e) => onChange(e.target.value)} className={input}>
+        <option value="">{label}</option>
+        {sorted.map((item) => {
+          const q = targetName.trim().toLowerCase();
+          const isMatch = q && (item.name.toLowerCase().includes(q) || (item.part_number && item.part_number.toLowerCase().includes(q)));
+          return (
+            <option key={item.id} value={item.id}>
+              {isMatch ? '★ ' : ''}{item.name}{item.sku ? ` · ${item.sku}` : ''}{isMatch ? ' (Matching)' : ''}
+            </option>
+          );
+        })}
+      </select>
+    );
+  };
 
   return (
     <section className="bg-surface border border-border rounded-md overflow-hidden">
@@ -63,8 +109,8 @@ export default function ProjectBomPanel({ projectId, canEdit }: { projectId: str
           <input value={form.part_number} onChange={(e) => setForm({ ...form, part_number: e.target.value })} placeholder="Part number" className={input} />
           <input type="number" min="0.001" step="any" value={form.required_quantity} onChange={(e) => setForm({ ...form, required_quantity: e.target.value })} placeholder="Required quantity" className={input} />
           <input value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} placeholder="Unit (pcs, kg…)" className={input} />
-          {renderSelect(form.preferred_item_id, (value) => setForm({ ...form, preferred_item_id: value }), 'Preferred inventory match')}
-          {renderSelect(form.alternative_item_id, (value) => setForm({ ...form, alternative_item_id: value }), 'Alternative inventory match')}
+          {renderSelect(form.preferred_item_id, (value) => setForm({ ...form, preferred_item_id: value }), 'Preferred inventory match', form.name, form.part_number)}
+          {renderSelect(form.alternative_item_id, (value) => setForm({ ...form, alternative_item_id: value }), 'Alternative inventory match', form.name, form.part_number)}
           <input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Notes (optional)" className={input} />
           <button disabled={!validForm(form) || create.isPending} className="inline-flex items-center justify-center gap-2 px-3 py-2 bg-accent text-bg rounded-sm text-sm disabled:opacity-50"><Plus size={15} />{create.isPending ? 'Adding…' : 'Add line'}</button>
         </div>
@@ -80,8 +126,8 @@ export default function ProjectBomPanel({ projectId, canEdit }: { projectId: str
                 <input value={editForm.part_number} onChange={(e) => setEditForm({ ...editForm, part_number: e.target.value })} placeholder="Part number" className={input} />
                 <input type="number" min="0.001" step="any" value={editForm.required_quantity} onChange={(e) => setEditForm({ ...editForm, required_quantity: e.target.value })} placeholder="Required quantity" className={input} />
                 <input value={editForm.unit} onChange={(e) => setEditForm({ ...editForm, unit: e.target.value })} placeholder="Unit" className={input} />
-                {renderSelect(editForm.preferred_item_id, (value) => setEditForm({ ...editForm, preferred_item_id: value }), 'Preferred inventory match')}
-                {renderSelect(editForm.alternative_item_id, (value) => setEditForm({ ...editForm, alternative_item_id: value }), 'Alternative inventory match')}
+                {renderSelect(editForm.preferred_item_id, (value) => setEditForm({ ...editForm, preferred_item_id: value }), 'Preferred inventory match', editForm.name, editForm.part_number)}
+                {renderSelect(editForm.alternative_item_id, (value) => setEditForm({ ...editForm, alternative_item_id: value }), 'Alternative inventory match', editForm.name, editForm.part_number)}
                 <input value={editForm.notes} onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })} placeholder="Notes" className={input} />
                 <div className="flex gap-2"><button type="button" disabled={!validForm(editForm) || update.isPending} onClick={() => update.mutate()} className="inline-flex items-center justify-center gap-2 px-3 py-2 bg-accent text-bg rounded-sm text-sm disabled:opacity-50"><Save size={15} />Save</button><button type="button" onClick={() => setEditingId(null)} className="inline-flex items-center justify-center gap-2 px-3 py-2 border border-border rounded-sm text-sm"><X size={15} />Cancel</button></div>
               </div>
@@ -93,7 +139,7 @@ export default function ProjectBomPanel({ projectId, canEdit }: { projectId: str
             const enough = preferred >= required || alternative >= required;
             return <div key={line.id} className="p-4 md:p-5 flex flex-col lg:flex-row lg:items-center gap-4">
               <div className="min-w-0 flex-1"><div className="font-medium text-sm truncate">{line.name}</div><div className="text-xs text-text-secondary mt-1">{line.part_number || 'No part number'} · Required {line.required_quantity} {line.unit || ''}</div>{line.notes && <div className="text-xs text-text-secondary mt-2 line-clamp-2">{line.notes}</div>}</div>
-              <div className="text-sm lg:min-w-[270px]"><div className={`font-medium ${enough ? 'text-status-ok' : 'text-status-danger'}`}>{enough ? 'Stock coverage available' : 'Insufficient stock'}</div><div className="text-xs text-text-secondary mt-1">Preferred: {linkedItems.find(item => item.id === line.preferred_item_id)?.name || line.preferred_item_name || 'Unmatched'} · {preferred} available</div><div className="text-xs text-text-secondary">Alternative: {linkedItems.find(item => item.id === line.alternative_item_id)?.name || line.alternative_item_name || 'Unmatched'} · {alternative} available</div></div>
+              <div className="text-sm lg:min-w-[270px]"><div className="flex items-center gap-2"><span className={`inline-flex items-center px-2 py-0.5 rounded-full border text-xs font-medium ${enough ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border-rose-500/20'}`}>{enough ? 'Stock coverage available' : 'Insufficient stock'}</span></div><div className="text-xs text-text-secondary mt-1.5">Preferred: {linkedItems.find(item => item.id === line.preferred_item_id)?.name || line.preferred_item_name || 'Unmatched'} · <span className="font-mono">{preferred}</span> in physical stock</div><div className="text-xs text-text-secondary">Alternative: {linkedItems.find(item => item.id === line.alternative_item_id)?.name || line.alternative_item_name || 'Unmatched'} · <span className="font-mono">{alternative}</span> in physical stock</div></div>
               {canEdit && <div className="flex items-center gap-2 shrink-0"><button type="button" onClick={() => { setEditingId(line.id); setEditForm(formFromLine(line)); }} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs border border-border rounded-sm hover:border-accent"><Pencil size={13} />Edit</button><button type="button" onClick={() => setPendingDelete({id:line.id,name:line.name})} disabled={remove.isPending} className="p-1.5 text-text-secondary hover:text-status-danger" title="Remove BOM line" aria-label={`Remove ${line.name}`}><Trash2 size={15} /></button></div>}
             </div>;
           })}

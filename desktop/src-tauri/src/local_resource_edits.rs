@@ -155,17 +155,8 @@ pub fn read_local_resource_edit_chunk(app:AppHandle,expected_account_id:String,e
 
 #[tauri::command]
 pub fn bind_local_resource_edit_receipts(app:AppHandle,expected_account_id:String,expected_session_token:String,results:Vec<Value>)->Result<(),String>{
-    let mut c=local_db::open_local_connection(&app)?;schema(&c)?;
-    let tx=c.transaction_with_behavior(TransactionBehavior::Immediate).map_err(err)?;
-    for result in results{
-        let change=result["change_id"].as_str().ok_or("Missing edit receipt")?;
-        let id=result["result"]["id"].as_str().ok_or("Missing edit resource ID")?;
-        let revision=result["result"]["updated_at"].as_str().ok_or("Missing edit revision")?;
-        guard(&tx,&expected_account_id,Some(&expected_session_token),id)?;
-        let n=tx.execute("UPDATE local_resource_edits SET server_revision=?1 WHERE account_id=?2 AND change_id=?3 AND resource_id=?4 AND EXISTS(SELECT 1 FROM active_sync_outbox WHERE change_id=?3 AND synced_at IS NULL)",params![revision,expected_account_id,change,id]).map_err(err)?;
-        if n!=1{return Err("Edit receipt does not match saved work".into())}
-    }
-    tx.commit().map_err(err)
+    let _=(app,expected_account_id,expected_session_token,results);
+    Err("Use native server-verified file confirmation; renderer receipts cannot bind file revisions".into())
 }
 
 #[tauri::command]

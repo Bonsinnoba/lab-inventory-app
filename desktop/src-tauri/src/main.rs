@@ -37,6 +37,8 @@ fn main() {
         local_projects::get_local_project_task_experiments,
         local_auth::local_authorization_guard,
         local_resource_authority::refresh_local_resource_authority,
+        local_resource_authority::confirm_local_resource_changes,
+        local_resource_authority::confirm_local_resource_mutation,
         local_auth::invalidate_local_authorization,
         local_maintenance::list_local_maintenance,
         local_comments::list_local_comments,

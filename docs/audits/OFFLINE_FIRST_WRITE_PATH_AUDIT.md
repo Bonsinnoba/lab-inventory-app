@@ -915,7 +915,117 @@ VERIFICATION: 33 backend pure/receipt-double tests, 12 native pure tests and eig
 STATUS: SOURCE IMPLEMENTED / ACCEPTANCE OPEN. A1 and A5 remain PARTIAL. Metadata/repeated-move/tree dependencies, fresh local source/destination authority and broader security coverage remain. Existing data, files and outbox preserved; API-first deployment required.
 ```
 
+## Finding 63 — native creation provenance before first sync (October 14; A1/A5)
+
+```text
+MODULE: Resources / native editor access to fresh authored files and copies
+FILE: desktop/src-tauri/src/{local_resource_authority,resource_dependencies,local_resource_attachments}.rs
+CURRENT WRITE PATH: Same-account/device native ready upload plus unsynced creation proof -> current lease/permissions/destination/source checks -> immutable native content version plus SQLite/outbox -> existing server receipt chain.
+WHY IT BYPASSES OFFLINE-FIRST: No bypass introduced. Previously a non-admin's new native file needed a server edit grant before editing, even though no server resource existed yet.
+RISK: Confusing renderer metadata with native authorship, extending rights to confirmed/downloaded files, hiding a copy's source, carrying rights across changed scope or using unsupported pending work as a content proof.
+RECOMMENDED CHANGE: Narrow native creation provenance, current permission/lease and destination checks, preserved source ancestry, native-only content continuation; no synthetic server grant.
+ACTUAL CHANGE MADE: Added ready-upload/outbox account/device/operation/ack checks, exact immutable creation record/payload validation, unchanged scope/type/source checks, conflict-aware predecessor validation and native content-chain continuation. Source moves share this guard. No file or event deletion.
+VERIFICATION: All 15 targeted native tests and native test-target compilation passed, including three new pure creation-proof tests. The preceding 33 backend/eight desktop checks and TypeScript check passed (56 targeted checks total). PostgreSQL/stopped-API desktop acceptance not run.
+STATUS: SOURCE IMPLEMENTED / ACCEPTANCE OPEN. ACK-to-verified-server-authority interruption, unsynced destination authority, repeated metadata/move chains and full lifecycle acceptance remain. A1/A5 remain PARTIAL; not deployed.
+```
+
+## Finding 64 — file acknowledgement trust and atomic authority transition (October 14; A1/A5)
+
+```text
+MODULE: Resource file create/copy/content confirmation and native authority handoff
+FILE: backend/src/{resource-confirmation,routes/sync}.js; desktop/src-tauri/src/{local_resource_authority,local_resource_uploads,local_resource_edits,local_db,main}.rs; desktop/src/api/{resource-confirmation,sync}.ts
+CURRENT WRITE PATH: Server applies existing outbox intent -> native reads owned server receipt/current authority -> atomic scoped SQLite receipt/version/ACK/authority update. Domain payload and immutable file bytes remain unchanged.
+WHY IT BYPASSES OFFLINE-FIRST: Prior renderer-provided receipt binding and generic ACK were separate operations, and edit binding rechecked mutable local edit scope. This could stall confirmation after an attachment change or strand fresh-file editing between ACK and authority refresh.
+RISK: Unverified/foreign receipts retiring work, partial acknowledgement, changed-session replies, current access denial blocking historical confirmation, overwritten newer local edits or permission expansion through historical success.
+RECOMMENDED CHANGE: Native trusted-origin receipt verification, exact owned native event matching, bounded batches, atomic ACK/current authority, explicit denial preservation and no renderer receipt fallback.
+ACTUAL CHANGE MADE: Read-only confirmation endpoint; native same-resource pending selection and receipt validation; serialized account/session/lease/pending-work rechecks; atomic verified receipt/native version/ACK/authority storage; safe final revision projection and native creation-receipt bridge for pending content; disabled legacy renderer binders and gated generic file ACKs. Verified confirmations resolve old conflicts atomically, and delayed failure/conflict callbacks cannot reopen those confirmed file events. Confirmation never grants access based on historical success.
+VERIFICATION: 37 backend, 19 native and 14 desktop targeted pure/adapter checks passed (70 total). TypeScript/native compilation passed separately. Actual PostgreSQL/offline/crash/reconnect acceptance, including late-response transaction races, is not represented by these checks.
+STATUS: SOURCE IMPLEMENTED / ACCEPTANCE OPEN. Not deployed; API-first coordinated build required. Remaining metadata/repeated-move/folder chains and post-move content handoff remain. Existing authored files, databases and immutable payloads preserved; no Phase 2 closure.
+```
+
+## Finding 65 — metadata revision safety and repeated native resource mutations (October 14; A1/A5)
+
+```text
+MODULE: Resources / metadata patches and direct attachment move chains
+FILE: backend/src/{resource-metadata,resource-attachment,routes/sync}.js; desktop/src-tauri/src/{local_resource_attachments,local_resource_authority,local_resources,resource_dependencies,local_db}.rs; desktop/src/api/{resources,resource-dependencies}.ts
+CURRENT WRITE PATH: Captured account/native session -> verified source and destination authority -> atomic local projection/native provenance/immutable outbox -> owned predecessor receipt/current server editor check/revision check -> transactional metadata/audit/idempotency apply.
+WHY IT BYPASSES OFFLINE-FIRST: No new bypass. Previous metadata writes queued a broad resource update without a record-specific native permission/revision guard; omitted fields reset existing values. A first offline move changed local scope and prevented a second move from matching the original grant.
+RISK: Stale metadata overwrites, altered attachment/visibility through broad payloads, foreign or fabricated predecessors, extending source permission into a destination, stale-account writes, stranded dependent intents and duplicate audit effects.
+RECOMMENDED CHANGE: One native-proven move/metadata chain, strict field patches, exact predecessor ownership, source/destination reauthorization, atomic local/outbox writes and revision-checked server effects; preserve legacy payloads instead of rewriting them.
+ACTUAL CHANGE MADE: Added native mutation provenance, guarded repeated direct moves and metadata patches, captured metadata session and native capability checks, protocol-3 attachment predecessor handling, explicit edit_metadata server apply with transactional audit and monotonic revision, metadata dependency parsing and descendant discard. Unspecified fields and all saved versions remain intact. No local failure invokes HTTP.
+VERIFICATION: 24 backend pure/receipt-double, 28 native pure and 23 desktop adapter/dependency checks passed (75 total). TypeScript/native compilation and diff checks passed. No actual database or stopped-API desktop acceptance in this checkpoint.
+STATUS: SOURCE IMPLEMENTED / ACCEPTANCE OPEN. A1/A5 remain PARTIAL. Partial ACKs, mixed content/create chains, post-move content, legacy intent recovery, unsynced destinations and nested-folder moves remain. API-first coordinated deployment required; no restart or data cleanup performed.
+```
+
+## Finding 66 — durable download diagnostics and browser enqueue retry identity (October 14; A6)
+
+```text
+MODULE: Downloads / server-tool observations and browser enqueue
+FILE: backend/src/{media-tool-status,download-queue-http,routes/media-downloads,media-downloads}.js; desktop/src-tauri/src/local_downloads.rs; desktop/src/api/{downloads-local,mediaDownloads,download-enqueue-retry}.ts; desktop/src/pages/DownloadsPage.tsx
+CURRENT WRITE PATH: Desktop queue/settings remain native SQLite + outbox. Server diagnostic observations enter the account-scoped SQLite snapshot through sync, not a domain outbox. Browser enqueue persists request identity before HTTP -> current server authorization -> transaction/advisory lock -> job/audit/owned receipt -> confirmed browser result.
+WHY IT BYPASSES OFFLINE-FIRST: Previously tool inspection always contacted the server despite local queues/settings. Browser enqueue used a fresh server UUID on each attempt and deduplicated only currently active jobs, so a lost response followed by retry after completion could create another job. No desktop server-write fallback is added.
+RISK: Offline diagnostic failure, unbounded diagnostic subprocesses, stale reports replacing newer observations, duplicate download jobs/audit effects, cross-account receipt replay and lost request identity after reload.
+RECOMMENDED CHANGE: Optional validated timestamped native diagnostic cache with bounded probes; stable browser request UUID and transactionally stored owned receipt; current permissions on replay; keep native enqueue on the outbox.
+ACTUAL CHANGE MADE: Bounded/coalesced diagnostic probes, optional snapshot projection with same-account newest-valid merge, native-only desktop tool reads and last-check labels. Browser identity persists across failures/reload and fails closed on storage errors; API now requires a key, normalizes payload, checks receipt binding and commits job/audit/receipt atomically. Existing active job reuse creates no additional creation audit. No authored data or old queued event is removed.
+VERIFICATION: 24 Node pure/adapter and five native pure checks passed; native compilation passed. No actual database, browser runtime or stopped-API desktop acceptance yet. Coordinated API/browser/native deployment required.
+STATUS: TWO BOUNDED SUBCHECKS IMPLEMENTED — AWAITING VERIFICATION. A6 remains PARTIAL for worker/queue/file-readiness reconciliation, completion/cancel races and tombstone/revocation cleanup. No deployment, reset or full phase sign-off.
+```
+
+## Finding 67 — worker attempt ownership and shared download removal identity (October 15; A6)
+
+```text
+MODULE: Downloads / server worker, publication and history reconciliation
+FILE: backend/src/{media-downloads,media-process,download-worker-state,download-worker-access,download-job-control,download-queue-create,routes/media-downloads}.js; backend/src/migrations/20261014_download_worker_attempt.sql; desktop/src-tauri/src/local_downloads.rs
+CURRENT WRITE PATH: Existing SQLite/outbox controls -> server authorization/receipt transaction -> leased attempt claim -> attempt-fenced progress and resource/job publication -> scoped snapshot back to SQLite. History removal -> transactional tombstone -> authorized snapshot -> monotonic native removal set.
+WHY IT BYPASSES OFFLINE-FIRST: No new bypass. Startup reset every running job without ownership; old callbacks identified only a job, not an execution. History removal markers existed only on the deleting PC, so another PC could reintroduce deleted history from a late historical receipt. Worker permissions were not rechecked after enqueue.
+RISK: Stolen attempts, stale progress/publication, wrong-process cancellation, overwritten or deleted attempt bytes after uncertain commit, execution under revoked access, misleading terminal-state ordering and resurrected removed history.
+RECOMMENDED CHANGE: Dedicated per-job lease, immutable attempt identity, current authorization/source guards, monotonic state observations, preserved attempt files and shared permission-scoped removal markers. Never conflate deleting history with deleting a resource/file.
+ACTUAL CHANGE MADE: Additive run-ID/tombstone schema; live-lease-aware recovery and serialized scheduler claims; run-ID progress/stop/publication fences; current requester checks; separate preserved attempt filenames; optional bounded thumbnails and bounded/coalesced process output; monotonic timestamps; transactional history markers/backfill from committed receipts; reject retired identities; native canonical removal union and receipt UUID normalization.
+VERIFICATION: 19 Node pure/process-double and seven native pure checks passed, with native compilation/backend syntax/diff checks. Actual PostgreSQL SQL/locks, two workers, stopped-API desktop/reconnect, termination and receipt/revocation races remain NOT RUN. No migration, restart or data cleanup executed.
+STATUS: TWO BOUNDED A6 SUBCHECKS IMPLEMENTED — AWAITING VERIFICATION. A6 remains PARTIAL for remaining PC-file readiness/legacy/revocation consumers. A2 owns retained-byte reclamation. Coordinated migration/API/native deployment required; stop old workers before enabling the new lease protocol.
+```
+
+## Finding 68 — download previews and PC readiness presentation (October 15; A6)
+
+```text
+MODULE: Downloads / current resource PC-copy presentation
+FILE: desktop/src/api/download-device-state.ts; desktop/src/pages/DownloadsPage.tsx; desktop/src/components/{DownloadResourcePreview,VideoResourcePoster}.tsx; desktop/src-tauri/src/local_resource_replication.rs
+CURRENT WRITE PATH: No new domain writes. Native authorized SQLite metadata/copy observations -> desktop status and cached native poster -> display, independently of server queue completion.
+WHY IT BYPASSES OFFLINE-FIRST: Download thumbnails still used direct HTTP URLs in desktop. Server completion had no per-resource PC-readiness distinction; copying observations could describe a superseded revision or different server.
+RISK: Broken offline previews, misleading local readiness/progress, and briefly displaying a previous account/resource poster during effect cleanup.
+RECOMMENDED CHANGE: Native-only desktop previews and account-bound observations; explicit unknown/stale states; keep server completion distinct from current-resource PC readiness.
+ACTUAL CHANGE MADE: Native metadata/copy reader with account-switch guards and independent status failure; local-only desktop preview component with placeholder; history readiness labels; origin/revision-aware copy states and stale progress suppression; identity-bound poster URLs. Existing browser route retained. No new file grants, downloads, deletions or outbox mutations.
+VERIFICATION: 15 TypeScript adapter/presentation checks and two Rust pure checks passed; TypeScript/native compilation passed. No real database, mounted UI, cold-restart outage or file/revocation race tests executed in this slice.
+STATUS: BOUNDED A6 SUBCHECK IMPLEMENTED — AWAITING VERIFICATION. A6 remains PARTIAL for remaining consumer/legacy/revocation reconciliation. Native/frontend build deployment and phase acceptance remain pending; authored data preserved.
+```
+
+## Finding 69 — native confirmation of resource mutations and partial acknowledged chains (October 15; A1/A5)
+
+```text
+MODULE: Resource attachment/metadata synchronization and offline continuation
+FILE: backend/src/{resource-confirmation,routes/sync}.js; desktop/src-tauri/src/{local_resource_authority,local_resource_attachments,local_db,main}.rs; desktop/src/api/{resource-confirmation,sync}.ts
+CURRENT WRITE PATH: Native SQLite record + immutable mutation provenance + outbox -> server apply/owned receipt -> native fetch of exact receipt/current authority -> atomic local receipt/authority/ACK -> validated pending-chain continuation.
+WHY IT BYPASSES OFFLINE-FIRST: No new domain write bypass. Attach/metadata used generic renderer-triggered ACK while file writes already had native confirmation. Removing the first pending event broke local chain provenance, blocking later authoring after a partial sync.
+RISK: Unverified ACK flags mistaken for authority, lost continuity after partial ACK, metadata overwritten by receipt reconciliation, or old scope permission carried across a move.
+RECOMMENDED CHANGE: Native-fetched, account/device/origin/intent/result-bound receipts; keep historical success separate from current permission. Reconstruct acknowledged predecessors without modifying queued payloads and recheck current anchor/pending destinations.
+ACTUAL CHANGE MADE: Compact canonical SHA-256 receipt bindings; native mutation confirmation and atomic ACK/authority store; generic ACK guard and renderer capability check; verified-prefix chain reconstruction and latest-confirmed authority anchor. Missing/foreign/altered/legacy proof fails closed. No files or saved intentions removed.
+VERIFICATION: Server confirmation 8 checks, sync adapter 5 checks and native pure digest/receipt/chain suite 32 checks passed (45 total). Native test build, cargo check, TypeScript, backend syntax and diff checks passed after retrying Windows tool stalls. Real PostgreSQL and stopped-API acceptance NOT RUN.
+STATUS: BOUNDED A1/A5 SUBCHECK IMPLEMENTED — AWAITING VERIFICATION. Mixed file-prefix chains, legacy acknowledgements without native receipts, content-after-move and nested moves remain code obligations. No deployment/restart/reset.
+```
+
 ## Repository coverage register
+
+### Finding 70 — Pending file receipts need exact intent binding
+
+MODULE: Resources / native file synchronization confirmation (A1/A5).
+FILE: `backend/src/resource-confirmation.js`, `backend/src/routes/sync.js`, `desktop/src-tauri/src/local_resource_authority.rs`.
+CURRENT WRITE PATH: Immutable native upload/edit outbox -> server publication/idempotency receipt -> native confirmation -> atomic local ACK/projection/authority update.
+WHY IT BYPASSES OFFLINE-FIRST: Not a new HTTP fallback; a receipt-integrity gap in the existing ACK path. Protocol 1 matched identity/operation/size but did not bind the complete historical upload intent to its saved local payload.
+RISK: Same-sized mismatched content or changed predecessor intent could pass the narrower receipt check. A changed trusted origin during the request also needed a final commit check.
+RECOMMENDED CHANGE: Negotiate digest-bound file confirmations, verify against the unchanged native payload, recheck origin/session/lease, and preserve original work when proof is absent. Do not infer legacy proof or rewrite pending events.
+ACTUAL CHANGE MADE: Protocol 2 returns a bounded canonical payload digest for valid owned upload receipts; the native verifier checks exact payload/resource/hash/size, rejects downgrades, and rechecks origin before commit. Old clients retain protocol-1 response compatibility. No stored receipt-history migration or mixed-chain expansion in this slice.
+VERIFICATION: 10 backend pure checks, 19 native authority pure checks and 5 frontend adapter checks passed; native test build, backend syntax and scoped whitespace checks passed. Actual PostgreSQL, cold restart/server-stop/reconnect and deployment NOT RUN.
+STATUS: Narrow confirmation hardening IMPLEMENTED — AWAITING INTEGRATED VERIFICATION. Legacy ACK reconciliation, origin-bound historical file receipts and mixed file/mutation chains remain open; A1/A5 remain PARTIAL.
 
 This register prevents a single grep result from being mistaken for sign-off. It covers every TypeScript file under `desktop/src/api` and the Rust local repositories as of this review. A file may appear in more than one row when it mixes paths. The numbered findings above contain the requested nine-field assessment; the register identifies where each file is assessed. Dynamic `RequestInit` wrappers and the UI call sites were also inspected, not just literal `method:` text.
 
