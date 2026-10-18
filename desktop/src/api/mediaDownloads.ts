@@ -17,7 +17,7 @@ export interface DownloadJob {
   control_version?:number; pending_action?:DownloadAction; requested_patch?:Record<string,unknown>; sync_error?:string; control_outcome?:'already_completed';
   sync_state?:'pending_sync'|'conflict'|'server';
 }
-export interface DownloadSettings { enabled: boolean; mode: 'manual'|'scheduled'|'always'; window_start: string; window_end: string; concurrent_downloads: number; default_quality: string; max_retries: number; sync_version:number; pending_sync?:boolean; sync_conflict?:boolean; }
+export interface DownloadSettings { enabled: boolean; mode: 'manual'|'scheduled'|'always'; window_start: string; window_end: string; concurrent_downloads: number; default_quality: DownloadQuality; max_retries: number; sync_version:number; pending_sync?:boolean; sync_conflict?:boolean; }
 export interface MediaToolStatus { available: boolean; path: string; error?: string; }
 export interface MediaToolsStatus { yt_dlp: MediaToolStatus; ffmpeg: MediaToolStatus; node: MediaToolStatus; production: boolean; checked_at?:string; cached?:boolean; }
 export type DownloadQuality = 'best'|'1080p'|'720p'|'480p';

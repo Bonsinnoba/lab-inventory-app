@@ -10,22 +10,29 @@ export function useVideoPoster(resource:Resource|null){
   const account=captureAccountSession();
   const key=JSON.stringify([resource?.id,resource?.updated_at||resource?.created_at,account?.accountId,account?.generation]);
   useEffect(()=>{
-    let disposed=false,objectUrl:string|undefined,sequence=0;const session=captureAccountSession();setPreview(undefined);
+    let disposed=false,objectUrl:string|undefined,sequence=0,previousBytes:Uint8Array|undefined;const session=captureAccountSession();
+    const clear=()=>{sequence++;if(objectUrl)URL.revokeObjectURL(objectUrl);objectUrl=undefined;previousBytes=undefined;setPreview(undefined);};
     const load=async()=>{
       const request=++sequence;
       if(!resource||!session)return;
       try{
         const next=isTauriRuntime()?await readResourcePoster(resource):null;
+        const bytes=next?new Uint8Array(await next.arrayBuffer()):undefined;
         if(disposed||request!==sequence||!isAccountSessionCurrent(session))return;
-        if(objectUrl)URL.revokeObjectURL(objectUrl);
+        // Sync revalidates previews, but identical bytes must keep the same img
+        // and blob URL. Never reuse bytes across resource/revision/session keys.
+        if(bytes&&previousBytes&&bytes.length===previousBytes.length&&bytes.every((value,index)=>value===previousBytes![index]))return;
+        const oldUrl=objectUrl;
+        previousBytes=bytes;
         objectUrl=next?URL.createObjectURL(next):undefined;
         setPreview({key,url:isTauriRuntime()?objectUrl:serverPosterUrl(resource)});
-      }catch{if(!disposed&&request===sequence)setPreview(undefined);}
+        if(oldUrl)URL.revokeObjectURL(oldUrl);
+      }catch{if(!disposed&&request===sequence)clear();}
     };
-    const clear=()=>{sequence++;if(objectUrl)URL.revokeObjectURL(objectUrl);objectUrl=undefined;setPreview(undefined);};
+    const userUpdated=()=>{if(!isAccountSessionCurrent(session))clear();else void load();};
     void load();window.addEventListener('labos-posters-updated',load);
-    window.addEventListener('labos:auth-expired',clear);window.addEventListener('labos-user-updated',clear);
-    return()=>{disposed=true;window.removeEventListener('labos-posters-updated',load);window.removeEventListener('labos:auth-expired',clear);window.removeEventListener('labos-user-updated',clear);if(objectUrl)URL.revokeObjectURL(objectUrl);};
+    window.addEventListener('labos:auth-expired',clear);window.addEventListener('labos-user-updated',userUpdated);
+    return()=>{disposed=true;window.removeEventListener('labos-posters-updated',load);window.removeEventListener('labos:auth-expired',clear);window.removeEventListener('labos-user-updated',userUpdated);if(objectUrl)URL.revokeObjectURL(objectUrl);};
   },[key]);
   // Do not expose the preceding resource/account's URL for the render before
   // effect cleanup. Blob URLs are revoked on replacement, revocation and unmount.

@@ -1013,6 +1013,20 @@ VERIFICATION: Server confirmation 8 checks, sync adapter 5 checks and native pur
 STATUS: BOUNDED A1/A5 SUBCHECK IMPLEMENTED — AWAITING VERIFICATION. Mixed file-prefix chains, legacy acknowledgements without native receipts, content-after-move and nested moves remain code obligations. No deployment/restart/reset.
 ```
 
+### Finding 71 — Downloads reader and link-to-intake contract
+
+```text
+MODULE: Resources / Downloads (A4/A6)
+FILE: desktop/src-tauri/src/local_downloads.rs; desktop/src/api/{download-intake,downloads-local}.ts; desktop/src/components/DownloadIntake.tsx; desktop/src/pages/{ResourcesPage,DownloadsPage}.tsx
+CURRENT WRITE PATH: Add link -> SQLite resource + resource outbox; Downloads derives Awaiting schedule from saved links. Schedule -> native queue transaction + download outbox -> server scheduler. Browser retains its authorized HTTP branch.
+WHY IT BYPASSES OFFLINE-FIRST: Original reader ordered an account-filtered SQLite view by a nonexistent rowid; this broke local queue/settings/tools reads and enqueue. UI also made Downloads visibility depend on a second optional enqueue after link creation.
+RISK: Saved links missing from Downloads, misleading missing-snapshot messages, duplicate resources on user retry, or unintended automatic worker execution if discovery is implemented as a write.
+RECOMMENDED CHANGE: Read insertion order from the base outbox while preserving active-account view filters. Derive intake from saved local resources; schedule only in Downloads. Do not create jobs during reads or add resource-card recovery buttons.
+ACTUAL CHANGE MADE: Fixed reader; transaction-consistent local link/job projection; UUID-normalized intake excluding downloaded resources and represented jobs; removed Resources queue buttons/checkbox. Existing links appear automatically. Native image preview consumers also fail locally without falling through to HTTP.
+VERIFICATION: Initial reader fix passed actual SQLite read and rollback-only enqueue/retry tests with API stopped, and native cold-start inspection. Corrected intake has 28 focused frontend checks, TypeScript, Vite and 9 native tests passing, including actual stopped-API link-read/scheduled-retry rollback. Rebuilt native executable deployed; Resources queue buttons confirmed absent. Downloads UI acceptance blocked by automation-helper invalid window bounds; no worker/reconnect sign-off.
+STATUS: BOUNDED IMPLEMENTATION, NOT A6 OR PHASE 2 SIGN-OFF. Complete server worker/reconnect/two-client acceptance remains open. See dated PHASE2_EVIDENCE.md for subsequent deployment evidence.
+```
+
 ## Repository coverage register
 
 ### Finding 70 — Pending file receipts need exact intent binding

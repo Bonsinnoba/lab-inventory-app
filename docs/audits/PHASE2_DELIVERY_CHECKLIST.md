@@ -48,6 +48,12 @@ for implementation. A parent remains PARTIAL until all its required code exists.
 
 ## Batch A — offline, security and resources
 
+October 18 primary A1/B6 subcheck: H1-4 account-bound inventory history/custody/
+assignee response guards and failed-query display masking are implemented in
+source (53 contract/component checks PASS), awaiting integrated desktop verification.
+Online read-refresh decoupling and the other B6 behaviors remain open. No parent
+state changed. Evidence: `docs/handoffs/phase2-parallel/PRIMARY_INVENTORY_READ_GUARDS_2026-10-18.md`.
+
 | ID | State | Required closure behavior / remaining boundary |
 | --- | --- | --- |
 | A1 | PARTIAL | Finish native account/lease/project/record permission coverage, cached resource edit grants (including notes/folders/restricted records), legacy cache trust and stale-response isolation. Preserve existing native-verified auth/revocation/backoff; add draft-preserving mid-session reauthentication. Review CSP, direct transports and token-bearing media paths. No permission or lease bypass. |
@@ -141,7 +147,7 @@ a deployed-build or integrated-acceptance claim.
 | A6 | Attempt-owned worker lifecycle, cancellation/completion guards and current requester authorization | IMPLEMENTED — AWAITING VERIFICATION | October 15: dedicated job leases, run-ID fences, preserved attempt files and bounded process/thumbnail handling. Actual PostgreSQL/process-race acceptance remains. |
 | A6 | Cross-device download-history removal markers | IMPLEMENTED — AWAITING VERIFICATION | October 15: transactional server markers and native monotonic merge prevent old receipts/pulls from reviving removed history; resource/file deletion is separate. |
 | A6 | Downloads-page PC-copy status and local preview routing | IMPLEMENTED — AWAITING VERIFICATION | October 15: native-only metadata/copy observations; server completion is separate from current-resource PC availability; no desktop HTTP thumbnail fallback; stale revision/origin copies are not current. Real stopped-API/cold-restart/account-switch verification remains. |
-| A6 | October 16 queue-reader defect and saved-link enqueue recovery | IMPLEMENTED — AWAITING VERIFICATION | Fixed view `rowid` query using account-filtered view plus base-table insertion order. Actual desktop SQLite reader and rollback-only enqueue/retry checks pass with API stopped. Saved resources now expose queue/retry without recreating the resource; local read failures are not mislabeled as missing snapshots. Updated desktop build/UI check in progress; end-to-end server media execution remains separate. |
+| A6 | October 16 queue-reader defect and automatic saved-link intake | DEPLOYED — AWAITING INTEGRATED VERIFICATION | Native view `rowid` fix deployed. Replacement automatically lists saved media links in Downloads as Awaiting schedule; scheduling there uses existing outbox/identity. 28 focused frontend checks, TypeScript and 9 native tests pass, including actual SQLite read/scheduled-retry rollback with API stopped. Rebuilt app running; Resources buttons confirmed removed. Downloads UI inspection blocked by computer-use helper's invalid window bounds. Worker/reconnect acceptance remains open. |
 | A6 | Remaining consumers, legacy removal reconciliation and revocation cleanup | CODE REMAINING | Complete remaining consumers and retained-byte policy; no new owner decision required. Historical deletions without receipts are not guessed. |
 | A2 | Recoverable encryption, non-destructive migration/restore and retention | CODE REMAINING | Owner-held recovery is approved. Implement key/data backup verification and recovery; approval alone is not a migration. |
 | A3/A4 | Remaining composite snapshot completeness and file/thumbnail consumer coverage | CODE REMAINING | Continue existing projections/replication; no unresolved policy choice. |
@@ -184,6 +190,15 @@ gate needs a reason. All gates start NOT RUN for this new integrated closure swe
    fixtures and sanitized results. No unit/browser-only substitute for desktop.
 
 ## Status and next execution
+
+October 17 primary review checkpoint: the A6/A4 downloaded-link pull omission has
+a bounded source fix and 18 passing unit/contract checks; deployment and actual
+PostgreSQL/Tauri outage/reconnect verification remain open. Both helper deliveries
+have CHANGES REQUESTED in `docs/handoffs/phase2-parallel/PRIMARY_REVIEW_2026-10-17.md`.
+Custody/salvage correctness, audio ownership and combined build failures prevent
+promoting any B/C parent. The owner and primary now take over review/polish; a
+helper report labelled complete is not accepted phase status. No closure count
+is reduced by this checkpoint.
 
 Baseline: 18 open closure items (12 PARTIAL, 6 PLANNED); none yet IMPLEMENTED in
 full or CLOSED under this remaining-work checklist. Phase-wide sweep: NOT RUN.

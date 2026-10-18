@@ -70,8 +70,8 @@ export function inventoryHttpMutation(operation,{movement=false,storageOnly=fals
       let payload;
       if(movement){
         payload={id:catalogUuid(body.id),item_id:id};
-        for(const field of ['movement_type','quantity','to_storage_location','to_location_id','project_id','reason','reference'])if(Object.hasOwn(body,field))payload[field]=body[field];
-        if(payload.movement_type==='transfer'&&!String(payload.to_storage_location||'').trim()&&!payload.to_location_id)fail(400,'TRANSFER_LOCATION_REQUIRED','A destination is required for transfers');
+        for(const field of ['movement_type','quantity','to_storage_location','to_location_id','project_id','reason','reference','recipient_id','custody_id','settlement_type','transfer_recipient_id','task_id','experiment_id','requirement_id','reservation_id','serial_number','notes'])if(Object.hasOwn(body,field))payload[field]=body[field];
+        if(payload.movement_type==='transfer'&&!String(payload.to_storage_location||'').trim()&&!payload.to_location_id&&!payload.custody_id)fail(400,'TRANSFER_LOCATION_REQUIRED','A destination is required for transfers');
       }else if(bulk){
         payload={ids};if(operation==='bulk_status'){if(!statuses.has(body.status))fail(400,'INVALID_ITEM_STATUS','Invalid status');payload.status=body.status;}
       }else if(operation==='create')payload={...record(body,true,false),id};

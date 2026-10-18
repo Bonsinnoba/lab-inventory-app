@@ -15,3 +15,52 @@ export async function getLocalItemMovements(id:string):Promise<ItemMovement[]|nu
 export async function createLocalItemMovement(id:string,movement:{movement_type:MovementType;quantity:number;to_storage_location?:string;to_location_id?:string;project_id?:string;reason?:string;reference?:string;}):Promise<{item:Item;movement:ItemMovement}|null>{const session=captureAccountSession();const local=await getLocalInventorySnapshot();if(!local)return null;if(!isAccountSessionCurrent(session))throw new Error('Account changed while preparing inventory edit');const index=local.findIndex(item=>item.id===id);if(index<0)throw new Error('Item not found in local inventory');const quantity=Number(movement.quantity);if(!Number.isFinite(quantity)||quantity<=0)throw new Error('Quantity must be greater than zero');const allowed:MovementType[]=['receive','checkout','return','consume','adjust','transfer','damage','loss','repair_out','repair_in'];if(!allowed.includes(movement.movement_type))throw new Error('Invalid movement type');const incoming=new Set<MovementType>(['receive','return','repair_in']);const outgoing=new Set<MovementType>(['checkout','consume','damage','loss','repair_out']);const before=Number(local[index].current_quantity);let after=before;if(incoming.has(movement.movement_type))after+=quantity;else if(outgoing.has(movement.movement_type))after-=quantity;else if(movement.movement_type==='adjust')after=quantity;if(after<0)throw new Error('Movement would make stock negative');if(movement.movement_type==='transfer'&&!movement.to_storage_location?.trim()&&!movement.to_location_id)throw new Error('A destination location is required for transfers');const now=new Date().toISOString();const movementRecord:ItemMovement={id:crypto.randomUUID(),item_id:id,movement_type:movement.movement_type,quantity,quantity_before:before,quantity_after:after,from_location_id:local[index].location_id??null,to_location_id:movement.to_location_id??null,from_storage_location:local[index].storage_location??null,to_storage_location:movement.movement_type==='transfer'?(movement.to_storage_location?.trim()||null):(local[index].storage_location??null),project_id:movement.project_id??null,reason:movement.reason??null,reference:movement.reference??null,created_at:now};const updated:Item={...local[index],current_quantity:after,storage_location:movementRecord.to_storage_location,location_id:movement.to_location_id??local[index].location_id,updated_at:now};const next=[...local];next[index]=updated;await invoke('save_local_inventory_movement',{input:{snapshot_json:JSON.stringify(next),expected_snapshot_json:JSON.stringify(local),expected_account_id:session.accountId,movement_json:JSON.stringify(movementRecord),change_id:crypto.randomUUID().replaceAll('-',''),item_id:id}});if(!isAccountSessionCurrent(session))throw new Error('Account changed while saving movement');return{item:updated,movement:movementRecord};}
 export async function getLocalInventoryOrRemote(remoteLoader:()=>Promise<Item[]>,filters?:{type?:string;status?:string;location?:string;location_id?:string;low_stock?:boolean}):Promise<Item[]>{const local=await getLocalInventorySnapshot();if(local!==null)return applyInventoryFilters(local,filters);const session=captureAccountSession();const remote=await remoteLoader();if(!isAccountSessionCurrent(session))throw new Error('Account changed while loading inventory');await cacheLocalInventorySnapshot(remote,session);return applyInventoryFilters(remote,filters);}
 function applyInventoryFilters(items:Item[],filters?:{type?:string;status?:string;location?:string;location_id?:string;low_stock?:boolean}):Item[]{if(!filters)return items;const query=filters.location?.trim().toLowerCase();return items.filter(item=>{if(filters.type&&item.type!==filters.type)return false;if(filters.status&&item.status!==filters.status)return false;if(filters.location_id&&item.location_id!==filters.location_id)return false;if(filters.low_stock&&item.status!=='low_stock'&&!(item.current_quantity<=0))return false;if(query&&!`${item.storage_location||''}`.toLowerCase().includes(query))return false;return true;});}
+
+export async function getLocalItemCustody(id: string): Promise<any[] | null> {
+  if (!isLocalBackendAvailable()) return null;
+  const raw = await invoke<string[] | null>('list_local_item_custody', { itemId: id });
+  return raw === null ? null : raw.map(value => JSON.parse(value));
+}
+
+export async function cacheLocalItemCustody(id: string, records: any[], session: AccountSession | null = captureAccountSession()): Promise<void> {
+  if (!isLocalBackendAvailable()) return;
+  if (!isAccountSessionCurrent(session)) throw new Error('Account changed before caching custody');
+  await invoke('cache_local_item_custody', { itemId: id, recordsJson: JSON.stringify(records), expectedAccountId: session.accountId });
+}
+
+export async function getLocalAssigneeDirectory(): Promise<any[] | null> {
+  if (!isLocalBackendAvailable()) return null;
+  const raw = await invoke<string[] | null>('list_local_assignee_directory');
+  return raw === null ? null : raw.map(value => JSON.parse(value));
+}
+
+export async function cacheLocalAssigneeDirectory(directory: any[], session: AccountSession | null = captureAccountSession()): Promise<void> {
+  if (!isLocalBackendAvailable()) return;
+  if (!isAccountSessionCurrent(session)) throw new Error('Account changed before caching assignee directory');
+  await invoke('cache_local_assignee_directory', { directoryJson: JSON.stringify(directory), expectedAccountId: session.accountId });
+}
+
+export async function getLocalItemFieldHistory(id: string): Promise<any[] | null> {
+  if (!isLocalBackendAvailable()) return null;
+  const raw = await invoke<string[] | null>('list_local_item_field_history', { itemId: id });
+  return raw === null ? null : raw.map(value => JSON.parse(value));
+}
+
+export async function cacheLocalItemFieldHistory(id: string, history: any[], session: AccountSession | null = captureAccountSession()): Promise<void> {
+  if (!isLocalBackendAvailable()) return;
+  if (!isAccountSessionCurrent(session)) throw new Error('Account changed before caching field history');
+  await invoke('cache_local_item_field_history', { itemId: id, historyJson: JSON.stringify(history), expectedAccountId: session.accountId });
+}
+
+export async function getLocalItemAssignmentHistory(id: string): Promise<any[] | null> {
+  if (!isLocalBackendAvailable()) return null;
+  const raw = await invoke<string[] | null>('list_local_item_assignment_history', { itemId: id });
+  return raw === null ? null : raw.map(value => JSON.parse(value));
+}
+
+export async function cacheLocalItemAssignmentHistory(id: string, history: any[], session: AccountSession | null = captureAccountSession()): Promise<void> {
+  if (!isLocalBackendAvailable()) return;
+  if (!isAccountSessionCurrent(session)) throw new Error('Account changed before caching assignment history');
+  await invoke('cache_local_item_assignment_history', { itemId: id, historyJson: JSON.stringify(history), expectedAccountId: session.accountId });
+}
+

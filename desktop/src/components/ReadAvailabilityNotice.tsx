@@ -9,7 +9,7 @@ export default function ReadAvailabilityNotice({availability}:{availability?:Rea
   return <aside role="status" className="rounded-md border border-border bg-surface-raised/40 p-3 text-xs text-text-secondary space-y-1.5">
     <div className="flex items-center gap-2">
       <Clock size={14} className="text-accent shrink-0" />
-      <span>Local snapshot · read at {new Date(availability.readAt).toLocaleTimeString()}. May include unsynced changes; server freshness and lab-wide completeness are not verified.</span>
+      <span title={`Last local read: ${new Date(availability.readAt).toLocaleString()}`}>Local snapshot. May include unsynced changes; server freshness and lab-wide completeness are not verified.</span>
     </div>
     {!!missing.length&&<div className="flex items-start gap-2 pt-1 border-t border-border/60 text-status-warning">
       <AlertCircle size={14} className="shrink-0 mt-0.5" />

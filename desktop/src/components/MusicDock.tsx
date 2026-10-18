@@ -3,6 +3,7 @@ import { ListMusic, Pause, Play, SkipBack, SkipForward, Trash2, Upload, Volume2,
 import { parseBlob } from 'music-metadata';
 import { useToast } from '../contexts/ToastContext';
 import { useMusicDefaults } from '../hooks/useMusicDefaults';
+import audioFocusCoordinator, { type SuspensionReason } from '../lib/audioFocus';
 
 type Track = { id: string; name: string; blob: Blob; artwork?: Blob; artworkChecked?: boolean; addedAt?: number; lastModified?: number; collectionId?: string; collectionName?: string; relativePath?: string };
 type Playlist = { id: string; name: string; trackIds: string[]; createdAt: number };
@@ -25,11 +26,90 @@ export default function MusicDock({ onClose, onMinimize, onRestore, minimized = 
   const artworkProcessing = useRef(new Set<string>());
   const [tracks, setTracks] = useState<Track[]>([]); const [playlists, setPlaylists] = useState<Playlist[]>([]); const [currentId, setCurrentId] = useState<string | null>(null); const [queue, setQueue] = useState<string[]>([]); const [tab, setTab] = useState<'library' | 'queue' | 'playlists'>('library'); const [playing, setPlaying] = useState(false); const [volume, setVolume] = useState(.65); const [duration, setDuration] = useState(0); const [position, setPosition] = useState(0); const [search, setSearch] = useState(''); const [shuffle, setShuffle] = useState(false); const [repeat, setRepeat] = useState<RepeatMode>('off'); const [newPlaylist, setNewPlaylist] = useState(''); const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null); const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(null); const [libraryOpen, setLibraryOpen] = useState(false); const [importProgress, setImportProgress] = useState<string | null>(null); const [loading, setLoading] = useState(true); const [error, setError] = useState(false);
   const resumeAfterPause = useRef(false); const current = tracks.find(t => t.id === currentId) || null; const visibleTracks = useMemo(() => tracks.filter(t => t.name.toLowerCase().includes(search.toLowerCase())), [tracks, search]); const collections = useMemo<Collection[]>(() => { const grouped = new Map<string, Collection>(); tracks.forEach(track => { const id = track.collectionId || 'imported-files'; const collection = grouped.get(id) || { id, name: track.collectionName || 'Imported files', tracks: [] }; collection.tracks.push(track); grouped.set(id, collection); }); return [...grouped.values()].sort((a,b) => a.name.localeCompare(b.name)); }, [tracks]); const selectedCollection = collections.find(collection => collection.id === selectedCollectionId) || null; const collectionTracks = selectedCollection?.tracks.filter(track => track.name.toLowerCase().includes(search.toLowerCase())) || []; const queueTracks = queue.map(id => tracks.find(t => t.id === id)).filter(Boolean) as Track[]; const selectedPlaylist = playlists.find(p => p.id === selectedPlaylistId) || null; const src = current ? (urls.current.get(current.id) || (urls.current.set(current.id, URL.createObjectURL(current.blob)), urls.current.get(current.id)!)) : '';
+
+  // Audio focus state
+  const focusOwner = useRef<{ id: string; generation: number } | null>(null);
+  const suspensionReason = useRef<SuspensionReason | null>(null);
+  const savedPlaybackState = useRef<{ position: number; playing: boolean } | null>(null);
   const load = async () => { try { setError(false); const [ts, ps] = await Promise.all([readStore<Track>(TRACK_STORE), readStore<Playlist>(PLAYLIST_STORE)]); ts.sort((a, b) => (a.addedAt || 0) - (b.addedAt || 0)); setTracks(ts); setPlaylists(ps); setCurrentId(id => id || ts[0]?.id || null); } catch { setError(true); } finally { setLoading(false); } };
   useMusicDefaults(setVolume);
   useEffect(() => { load(); return () => { urls.current.forEach(URL.revokeObjectURL); artworkUrls.current.forEach(URL.revokeObjectURL); }; }, []);
   useEffect(() => { if (!libraryOpen) return; const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setLibraryOpen(false); }; window.addEventListener('keydown', closeOnEscape); return () => window.removeEventListener('keydown', closeOnEscape); }, [libraryOpen]);
-  useEffect(() => { const pause = () => { if (autoPause && audio.current && !audio.current.paused) { resumeAfterPause.current = true; audio.current.pause(); } }; const resume = () => { if (resumeAfterPause.current && audio.current && current) { resumeAfterPause.current = false; audio.current.play().catch(() => undefined); } }; window.addEventListener('labos:pause-music', pause); window.addEventListener('labos:resume-music', resume); return () => { window.removeEventListener('labos:pause-music', pause); window.removeEventListener('labos:resume-music', resume); }; }, [autoPause, current]);
+  useEffect(() => {
+    // Subscribe to audio focus state changes
+    const unsubscribe = audioFocusCoordinator.subscribe((state) => {
+      const currentOwner = state.currentOwner;
+      const isMusicOwner = currentOwner?.type === 'music' && currentOwner?.id === focusOwner.current?.id;
+
+      if (!isMusicOwner && audio.current && !audio.current.paused) {
+        // Preempted by higher priority audio source
+        savedPlaybackState.current = {
+          position: audio.current.currentTime,
+          playing: true,
+        };
+        suspensionReason.current = 'automatic';
+        audio.current.pause();
+        setPlaying(false);
+      } else if (isMusicOwner && suspensionReason.current === 'automatic' && savedPlaybackState.current) {
+        // Resuming after automatic suspension
+        const saved = savedPlaybackState.current;
+        savedPlaybackState.current = null;
+        suspensionReason.current = null;
+        if (audio.current && saved.playing) {
+          audio.current.currentTime = saved.position;
+          audio.current.play().catch(() => setPlaying(false));
+        }
+      }
+    });
+
+    // Legacy event listeners for backward compatibility with TTS
+    const pause = () => {
+      if (autoPause && audio.current && !audio.current.paused) {
+        savedPlaybackState.current = {
+          position: audio.current.currentTime,
+          playing: true,
+        };
+        suspensionReason.current = 'automatic';
+        audio.current.pause();
+      }
+    };
+    const resume = () => {
+      if (suspensionReason.current === 'automatic' && savedPlaybackState.current && audio.current && current) {
+        const saved = savedPlaybackState.current;
+        savedPlaybackState.current = null;
+        suspensionReason.current = null;
+        audio.current.currentTime = saved.position;
+        audio.current.play().catch(() => undefined);
+      }
+    };
+    window.addEventListener('labos:pause-music', pause);
+    window.addEventListener('labos:resume-music', resume);
+
+    // Acquire audio focus when component mounts and music is playing
+    if (playing && !focusOwner.current) {
+      const { id, generation } = audioFocusCoordinator.acquire({
+        type: 'music',
+        id: 'music-dock',
+        allowPreempt: true,
+      });
+      focusOwner.current = { id, generation };
+    }
+
+    return () => {
+      unsubscribe();
+      window.removeEventListener('labos:pause-music', pause);
+      window.removeEventListener('labos:resume-music', resume);
+      // Release audio focus on unmount
+      if (focusOwner.current) {
+        audioFocusCoordinator.release({
+          id: focusOwner.current.id,
+          generation: focusOwner.current.generation,
+          suspensionReason: 'close',
+        });
+        focusOwner.current = null;
+      }
+    };
+  }, [autoPause, playing, current]);
   useEffect(() => { if (audio.current) audio.current.volume = volume; }, [volume]); useEffect(() => { if (!audio.current) return; audio.current.volume = volume; if (!src) { audio.current.removeAttribute('src'); audio.current.load(); return; } audio.current.src = src; audio.current.load(); setPosition(0); setDuration(0); if (playing) audio.current.play().catch(() => setPlaying(false)); }, [src]);
   useEffect(() => {
     const pending = tracks.filter(track => !track.artworkChecked && !artworkProcessing.current.has(track.id));
@@ -50,7 +130,49 @@ export default function MusicDock({ onClose, onMinimize, onRestore, minimized = 
       }
     })();
   }, [tracks]);
-  const playTrack = async (id: string) => { setCurrentId(id); setPlaying(true); setTimeout(() => audio.current?.play().catch(() => setPlaying(false)), 0); }; const toggle = async () => { if (!audio.current || !current) return; if (audio.current.paused) { try { await audio.current.play(); } catch { showToast('Unable to play this track', 'error'); } } else audio.current.pause(); };
+  const playTrack = async (id: string) => {
+    setCurrentId(id);
+    setPlaying(true);
+    suspensionReason.current = null;
+
+    // Acquire audio focus
+    if (!focusOwner.current) {
+      const { id: focusId, generation } = audioFocusCoordinator.acquire({
+        type: 'music',
+        id: 'music-dock',
+        allowPreempt: true,
+      });
+      focusOwner.current = { id: focusId, generation };
+    }
+
+    setTimeout(() => audio.current?.play().catch(() => setPlaying(false)), 0);
+  };
+
+  const toggle = async () => {
+    if (!audio.current || !current) return;
+    if (audio.current.paused) {
+      // Manual play - acquire focus if needed
+      if (!focusOwner.current) {
+        const { id, generation } = audioFocusCoordinator.acquire({
+          type: 'music',
+          id: 'music-dock',
+          allowPreempt: true,
+        });
+        focusOwner.current = { id, generation };
+      }
+      suspensionReason.current = null;
+      try {
+        await audio.current.play();
+      } catch {
+        showToast('Unable to play this track', 'error');
+      }
+    } else {
+      // Manual pause - set suspension reason
+      suspensionReason.current = 'manual';
+      savedPlaybackState.current = null;
+      audio.current.pause();
+    }
+  };
   const advance = () => { if (!currentId) return; if (repeat === 'one') { if (audio.current) { audio.current.currentTime = 0; audio.current.play().catch(() => setPlaying(false)); } return; } if (queue.length) { const next = queue[0]; setQueue(q => q.slice(1)); setCurrentId(next); setPlaying(true); return; } if (!tracks.length) return setPlaying(false); const index = tracks.findIndex(t => t.id === currentId); const nextId = shuffle ? tracks[Math.floor(Math.random() * tracks.length)]?.id : tracks[index + 1]?.id || (repeat === 'all' ? tracks[0]?.id : undefined); if (nextId) { setCurrentId(nextId); setPlaying(true); } else setPlaying(false); };
   const previous = () => { const i = currentId ? tracks.findIndex(t => t.id === currentId) : -1; if (i > 0) playTrack(tracks[i - 1].id); }; const addToQueue = (id: string) => setQueue(q => q.includes(id) ? q : [...q, id]); const moveQueue = (id: string, delta: number) => setQueue(q => { const i = q.indexOf(id), j = i + delta; if (i < 0 || j < 0 || j >= q.length) return q; const n = [...q]; [n[i], n[j]] = [n[j], n[i]]; return n; });
   const importFiles = async (files: File[], folderImport: boolean) => {
@@ -108,7 +230,26 @@ export default function MusicDock({ onClose, onMinimize, onRestore, minimized = 
   const addCollectionToQueue = (collectionTracks: Track[]) => { setQueue(q => [...q, ...collectionTracks.map(track => track.id).filter(id => !q.includes(id))]); };
   const playCollection = (collectionTracks: Track[], shouldShuffle = false) => { if (!collectionTracks.length) return; const ordered = shouldShuffle ? [...collectionTracks].sort(() => Math.random() - 0.5) : collectionTracks; setQueue(ordered.slice(1).map(track => track.id)); void playTrack(ordered[0].id); };
   const createPlaylistFromCollection = async (collection: Collection) => { const playlist: Playlist = { id: crypto.randomUUID(), name: collection.name, trackIds: collection.tracks.map(track => track.id), createdAt: Date.now() }; try { await writeStore(PLAYLIST_STORE, playlist); setPlaylists(value => [...value, playlist]); setSelectedPlaylistId(playlist.id); setTab('playlists'); showToast(`Created playlist “${playlist.name}”`); } catch (cause) { showToast(cause instanceof Error ? `Unable to create playlist: ${cause.message}` : 'Unable to create playlist.', 'error'); } };
-  const remove = async (id: string) => { try { if (id === currentId) audio.current?.pause(); await removeStore(TRACK_STORE, id); const url = urls.current.get(id); if (url) { URL.revokeObjectURL(url); urls.current.delete(id); } const artworkUrl = artworkUrls.current.get(id); if (artworkUrl) { URL.revokeObjectURL(artworkUrl); artworkUrls.current.delete(id); } setQueue(q => q.filter(x => x !== id)); const next = playlists.map(p => ({ ...p, trackIds: p.trackIds.filter(x => x !== id) })); await Promise.all(next.map(p => writeStore(PLAYLIST_STORE, p))); setPlaylists(next); if (id === currentId) setCurrentId(null); await load(); } catch { showToast('Unable to remove this track', 'error'); } };
+  const remove = async (id: string) => {
+    try {
+      if (id === currentId) {
+        suspensionReason.current = 'track_change';
+        savedPlaybackState.current = null;
+        audio.current?.pause();
+      }
+      await removeStore(TRACK_STORE, id);
+      const url = urls.current.get(id);
+      if (url) { URL.revokeObjectURL(url); urls.current.delete(id); }
+      const artworkUrl = artworkUrls.current.get(id);
+      if (artworkUrl) { URL.revokeObjectURL(artworkUrl); artworkUrls.current.delete(id); }
+      setQueue(q => q.filter(x => x !== id));
+      const next = playlists.map(p => ({ ...p, trackIds: p.trackIds.filter(x => x !== id) }));
+      await Promise.all(next.map(p => writeStore(PLAYLIST_STORE, p)));
+      setPlaylists(next);
+      if (id === currentId) setCurrentId(null);
+      await load();
+    } catch { showToast('Unable to remove this track', 'error'); }
+  };
   const createPlaylist = async () => { const name = newPlaylist.trim(); if (!name) return; const p = { id: crypto.randomUUID(), name, trackIds: [], createdAt: Date.now() }; await writeStore(PLAYLIST_STORE, p); setPlaylists(ps => [...ps, p]); setSelectedPlaylistId(p.id); setNewPlaylist(''); }; const addToPlaylist = async (trackId: string, playlistId: string) => { const p = playlists.find(x => x.id === playlistId); if (!p || p.trackIds.includes(trackId)) return; const next = { ...p, trackIds: [...p.trackIds, trackId] }; await writeStore(PLAYLIST_STORE, next); setPlaylists(ps => ps.map(x => x.id === p.id ? next : x)); }; const deletePlaylist = async (id: string) => { await removeStore(PLAYLIST_STORE, id); setPlaylists(ps => ps.filter(p => p.id !== id)); if (selectedPlaylistId === id) setSelectedPlaylistId(null); }; const removeFromPlaylist = async (trackId: string) => { if (!selectedPlaylist) return; const next = { ...selectedPlaylist, trackIds: selectedPlaylist.trackIds.filter(x => x !== trackId) }; await writeStore(PLAYLIST_STORE, next); setPlaylists(ps => ps.map(p => p.id === next.id ? next : p)); };
   const art = (small = false, track?: Track) => { let artworkSrc: string | undefined; if (track?.artwork) { artworkSrc = artworkUrls.current.get(track.id); if (!artworkSrc) { artworkSrc = URL.createObjectURL(track.artwork); artworkUrls.current.set(track.id, artworkSrc); } } return <div className={`${small ? 'music-artwork-mini w-10 h-10 rounded-lg' : 'music-artwork w-[min(70%,190px)] aspect-square rounded-2xl'} shrink-0 border border-border text-accent flex items-center justify-center overflow-hidden shadow-lg`}>{artworkSrc ? <img src={artworkSrc} alt="" className="h-full w-full object-cover"/> : <Music2 size={small ? 17 : 34} strokeWidth={1.4} />}</div>; }; const volumeControl = <div className="shrink-0 px-4 py-3 flex items-center gap-2 text-[10px] text-text-secondary"><Volume2 size={15}/><input aria-label="Volume" className="flex-1 accent-current" type="range" min="0" max="1" step="0.01" value={volume} onChange={e => setVolume(Number(e.target.value))}/><span className="w-8 text-right tabular-nums">{Math.round(volume*100)}%</span></div>; const audioElement = <audio ref={audio} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onTimeUpdate={e => setPosition(e.currentTarget.currentTime)} onLoadedMetadata={e => setDuration(e.currentTarget.duration)} onEnded={advance} onError={() => setPlaying(false)} />;
   if (minimized) return <div className="fixed right-[68px] bottom-5 z-[80] group" aria-label="Minimized music player"><div className="absolute right-0 bottom-full mb-2 pointer-events-none opacity-0 translate-y-1 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-150"><div className="rounded-lg border border-border bg-surface-raised px-3 py-2 shadow-xl whitespace-nowrap"><div className="text-[10px] uppercase tracking-[0.16em] text-text-secondary">Music</div><div className="text-xs font-semibold max-w-48 truncate">{current?.name || 'Nothing playing'}</div></div></div><button type="button" onClick={onRestore} className="relative w-12 h-12 rounded-full border border-border bg-surface-raised text-text-primary shadow-xl flex items-center justify-center hover:bg-surface focus:outline-none focus:ring-2 focus:ring-accent/60" title="Restore music player" aria-label="Restore music player"><Music2 size={19}/>{playing && <span className="absolute -right-0.5 -top-0.5 w-3 h-3 rounded-full bg-accent border-2 border-surface-raised" aria-hidden="true"/>}</button>{audioElement}</div>;

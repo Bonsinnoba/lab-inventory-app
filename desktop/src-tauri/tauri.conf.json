@@ -1,8 +1,8 @@
 {
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "",
     "beforeBuildCommand": "npm run build",
-    "devPath": "http://localhost:1420",
+    "devPath": "../dist",
     "distDir": "../dist"
   },
   "package": {

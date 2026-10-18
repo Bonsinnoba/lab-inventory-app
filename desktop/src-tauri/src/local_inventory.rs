@@ -22,6 +22,45 @@ fn ensure_movement_schema(conn: &Connection) -> Result<(), String> {
         );
         CREATE INDEX IF NOT EXISTS idx_local_inventory_movement_records_item
             ON local_inventory_movement_records(item_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS local_inventory_custody_records (
+            custody_id TEXT PRIMARY KEY,
+            item_id TEXT NOT NULL,
+            account_id TEXT,
+            custody_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_local_inventory_custody_item
+            ON local_inventory_custody_records(account_id,item_id,created_at);
+
+        CREATE TABLE IF NOT EXISTS local_assignee_directory (
+            user_id TEXT PRIMARY KEY,
+            account_id TEXT,
+            directory_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_local_assignee_directory_account
+            ON local_assignee_directory(account_id);
+
+        CREATE TABLE IF NOT EXISTS local_inventory_field_history (
+            id TEXT PRIMARY KEY,
+            item_id TEXT NOT NULL,
+            account_id TEXT,
+            history_json TEXT NOT NULL,
+            changed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_local_field_history_item
+            ON local_inventory_field_history(account_id,item_id,changed_at);
+
+        CREATE TABLE IF NOT EXISTS local_inventory_assignment_history (
+            id TEXT PRIMARY KEY,
+            item_id TEXT NOT NULL,
+            account_id TEXT,
+            history_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_local_assignment_history_item
+            ON local_inventory_assignment_history(account_id,item_id,created_at);
         "#,
     )
     .map_err(|err| format!("Unable to initialize local inventory movement cache: {err}"))?;
@@ -231,6 +270,354 @@ pub(crate) fn save_movement(conn:&mut Connection,input:LocalMovementWriteInput)-
 
     tx.commit()
         .map_err(|e| format!("Unable to commit local movement transaction: {e}"))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_local_item_custody(
+    app: AppHandle,
+    item_id: String,
+) -> Result<Option<Vec<String>>, String> {
+    let conn = connection(&app)?;
+    let item_id = crate::inventory_sync_state::canonical_id(&item_id)?;
+    ensure_movement_schema(&conn)?;
+    local_auth::require_local_permission(&conn, "inventory.view")?;
+    let account_id = local_db::active_account(&conn)?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT custody_json
+             FROM local_inventory_custody_records
+             WHERE item_id=?1 AND account_id=?2
+             ORDER BY created_at DESC",
+        )
+        .map_err(|e| format!("Unable to prepare local custody query: {e}"))?;
+
+    let rows = stmt
+        .query_map(params![item_id, account_id], |row| row.get(0))
+        .map_err(|e| format!("Unable to read local custody: {e}"))?;
+
+    let values = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Unable to decode local custody: {e}"))?;
+
+    let downloaded: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sync_state WHERE key=?1)",
+        [local_db::scoped_state_key(&conn, &format!("inventory_custody_{item_id}"))?],
+        |r| r.get(0),
+    ).map_err(|e| e.to_string())?;
+
+    Ok(if values.is_empty() && !downloaded { None } else { Some(values) })
+}
+
+#[tauri::command]
+pub fn cache_local_item_custody(
+    app: AppHandle,
+    item_id: String,
+    records_json: String,
+    expected_account_id: String,
+) -> Result<(), String> {
+    let mut conn = connection(&app)?;
+    let item_id = crate::inventory_sync_state::canonical_id(&item_id)?;
+    let values: Vec<serde_json::Value> = serde_json::from_str(&records_json)
+        .map_err(|e| format!("Invalid custody records JSON: {e}"))?;
+    ensure_movement_schema(&conn)?;
+
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| format!("Unable to begin custody cache transaction: {e}"))?;
+    local_db::require_sync_account(&tx, &expected_account_id)?;
+    local_auth::require_local_permission(&tx, "inventory.view")?;
+    let account_id = local_db::active_account(&tx)?;
+
+    tx.execute(
+        "DELETE FROM local_inventory_custody_records WHERE item_id=?1 AND account_id=?2",
+        params![&item_id, &account_id],
+    )
+    .map_err(|e| format!("Unable to replace custody cache: {e}"))?;
+
+    for record in values {
+        let id = record
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Custody record id is required".to_string())?;
+        let id = crate::inventory_sync_state::canonical_id(id)?;
+        tx.execute(
+            "INSERT INTO local_inventory_custody_records(custody_id, item_id, custody_json, account_id)
+             VALUES (?1, ?2, ?3, ?4) ON CONFLICT(custody_id) DO UPDATE SET custody_json=excluded.custody_json",
+            params![format!("account:{account_id}:{id}"), &item_id, record.to_string(), &account_id],
+        )
+        .map_err(|e| format!("Unable to cache custody record: {e}"))?;
+    }
+
+    tx.execute(
+        "INSERT INTO sync_state(key,value) VALUES(?1,'complete') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [local_db::scoped_state_key(&tx, &format!("inventory_custody_{item_id}"))?],
+    )
+    .map_err(|e| e.to_string())?;
+
+    tx.commit()
+        .map_err(|e| format!("Unable to commit custody cache: {e}"))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_local_assignee_directory(app: AppHandle) -> Result<Option<Vec<String>>, String> {
+    let conn = connection(&app)?;
+    ensure_movement_schema(&conn)?;
+    local_auth::require_local_permission(&conn, "inventory.view")?;
+    let account_id = local_db::active_account(&conn)?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT directory_json
+             FROM local_assignee_directory
+             WHERE account_id=?1
+             ORDER BY updated_at DESC",
+        )
+        .map_err(|e| format!("Unable to prepare local assignee directory query: {e}"))?;
+
+    let rows = stmt
+        .query_map(params![account_id], |row| row.get(0))
+        .map_err(|e| format!("Unable to read local assignee directory: {e}"))?;
+
+    let values = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Unable to decode local assignee directory: {e}"))?;
+
+    let downloaded: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sync_state WHERE key=?1)",
+        [local_db::scoped_state_key(&conn, "assignee_directory")?],
+        |r| r.get(0),
+    ).map_err(|e| e.to_string())?;
+
+    Ok(if values.is_empty() && !downloaded { None } else { Some(values) })
+}
+
+#[tauri::command]
+pub fn cache_local_assignee_directory(
+    app: AppHandle,
+    directory_json: String,
+    expected_account_id: String,
+) -> Result<(), String> {
+    let mut conn = connection(&app)?;
+    let values: Vec<serde_json::Value> = serde_json::from_str(&directory_json)
+        .map_err(|e| format!("Invalid assignee directory JSON: {e}"))?;
+    ensure_movement_schema(&conn)?;
+
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| format!("Unable to begin assignee directory transaction: {e}"))?;
+    local_db::require_sync_account(&tx, &expected_account_id)?;
+    local_auth::require_local_permission(&tx, "inventory.view")?;
+    let account_id = local_db::active_account(&tx)?;
+
+    tx.execute(
+        "DELETE FROM local_assignee_directory WHERE account_id=?1",
+        params![&account_id],
+    )
+    .map_err(|e| format!("Unable to replace assignee directory: {e}"))?;
+
+    for user in values {
+        let id = user
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "User id is required".to_string())?;
+        let id = crate::inventory_sync_state::canonical_id(id)?;
+        tx.execute(
+            "INSERT INTO local_assignee_directory(user_id, account_id, directory_json)
+             VALUES (?1, ?2, ?3) ON CONFLICT(user_id) DO UPDATE SET directory_json=excluded.directory_json",
+            params![format!("account:{account_id}:{id}"), &account_id, user.to_string()],
+        )
+        .map_err(|e| format!("Unable to cache assignee directory user: {e}"))?;
+    }
+
+    tx.execute(
+        "INSERT INTO sync_state(key,value) VALUES(?1,'complete') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [local_db::scoped_state_key(&tx, "assignee_directory")?],
+    )
+    .map_err(|e| e.to_string())?;
+
+    tx.commit()
+        .map_err(|e| format!("Unable to commit assignee directory: {e}"))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_local_item_field_history(
+    app: AppHandle,
+    item_id: String,
+) -> Result<Option<Vec<String>>, String> {
+    let conn = connection(&app)?;
+    let item_id = crate::inventory_sync_state::canonical_id(&item_id)?;
+    ensure_movement_schema(&conn)?;
+    local_auth::require_local_permission(&conn, "inventory.view")?;
+    let account_id = local_db::active_account(&conn)?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT history_json
+             FROM local_inventory_field_history
+             WHERE item_id=?1 AND account_id=?2
+             ORDER BY changed_at DESC",
+        )
+        .map_err(|e| format!("Unable to prepare field history query: {e}"))?;
+
+    let rows = stmt
+        .query_map(params![item_id, account_id], |row| row.get(0))
+        .map_err(|e| format!("Unable to read local field history: {e}"))?;
+
+    let values = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Unable to decode field history: {e}"))?;
+
+    let downloaded: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sync_state WHERE key=?1)",
+        [local_db::scoped_state_key(&conn, &format!("inventory_field_history_{item_id}"))?],
+        |r| r.get(0),
+    ).map_err(|e| e.to_string())?;
+
+    Ok(if values.is_empty() && !downloaded { None } else { Some(values) })
+}
+
+#[tauri::command]
+pub fn cache_local_item_field_history(
+    app: AppHandle,
+    item_id: String,
+    history_json: String,
+    expected_account_id: String,
+) -> Result<(), String> {
+    let mut conn = connection(&app)?;
+    let item_id = crate::inventory_sync_state::canonical_id(&item_id)?;
+    let values: Vec<serde_json::Value> = serde_json::from_str(&history_json)
+        .map_err(|e| format!("Invalid field history JSON: {e}"))?;
+    ensure_movement_schema(&conn)?;
+
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| format!("Unable to begin field history transaction: {e}"))?;
+    local_db::require_sync_account(&tx, &expected_account_id)?;
+    local_auth::require_local_permission(&tx, "inventory.view")?;
+    let account_id = local_db::active_account(&tx)?;
+
+    tx.execute(
+        "DELETE FROM local_inventory_field_history WHERE item_id=?1 AND account_id=?2",
+        params![&item_id, &account_id],
+    )
+    .map_err(|e| format!("Unable to replace field history: {e}"))?;
+
+    for entry in values {
+        let id = entry
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "History entry id is required".to_string())?;
+        tx.execute(
+            "INSERT INTO local_inventory_field_history(id, item_id, history_json, account_id)
+             VALUES (?1, ?2, ?3, ?4) ON CONFLICT(id) DO UPDATE SET history_json=excluded.history_json",
+            params![format!("account:{account_id}:{id}"), &item_id, entry.to_string(), &account_id],
+        )
+        .map_err(|e| format!("Unable to cache field history: {e}"))?;
+    }
+
+    tx.execute(
+        "INSERT INTO sync_state(key,value) VALUES(?1,'complete') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [local_db::scoped_state_key(&tx, &format!("inventory_field_history_{item_id}"))?],
+    )
+    .map_err(|e| e.to_string())?;
+
+    tx.commit()
+        .map_err(|e| format!("Unable to commit field history: {e}"))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_local_item_assignment_history(
+    app: AppHandle,
+    item_id: String,
+) -> Result<Option<Vec<String>>, String> {
+    let conn = connection(&app)?;
+    let item_id = crate::inventory_sync_state::canonical_id(&item_id)?;
+    ensure_movement_schema(&conn)?;
+    local_auth::require_local_permission(&conn, "inventory.view")?;
+    let account_id = local_db::active_account(&conn)?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT history_json
+             FROM local_inventory_assignment_history
+             WHERE item_id=?1 AND account_id=?2
+             ORDER BY created_at DESC",
+        )
+        .map_err(|e| format!("Unable to prepare assignment history query: {e}"))?;
+
+    let rows = stmt
+        .query_map(params![item_id, account_id], |row| row.get(0))
+        .map_err(|e| format!("Unable to read assignment history: {e}"))?;
+
+    let values = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Unable to decode assignment history: {e}"))?;
+
+    let downloaded: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sync_state WHERE key=?1)",
+        [local_db::scoped_state_key(&conn, &format!("inventory_assignment_history_{item_id}"))?],
+        |r| r.get(0),
+    ).map_err(|e| e.to_string())?;
+
+    Ok(if values.is_empty() && !downloaded { None } else { Some(values) })
+}
+
+#[tauri::command]
+pub fn cache_local_item_assignment_history(
+    app: AppHandle,
+    item_id: String,
+    history_json: String,
+    expected_account_id: String,
+) -> Result<(), String> {
+    let mut conn = connection(&app)?;
+    let item_id = crate::inventory_sync_state::canonical_id(&item_id)?;
+    let values: Vec<serde_json::Value> = serde_json::from_str(&history_json)
+        .map_err(|e| format!("Invalid assignment history JSON: {e}"))?;
+    ensure_movement_schema(&conn)?;
+
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| format!("Unable to begin assignment history transaction: {e}"))?;
+    local_db::require_sync_account(&tx, &expected_account_id)?;
+    local_auth::require_local_permission(&tx, "inventory.view")?;
+    let account_id = local_db::active_account(&tx)?;
+
+    tx.execute(
+        "DELETE FROM local_inventory_assignment_history WHERE item_id=?1 AND account_id=?2",
+        params![&item_id, &account_id],
+    )
+    .map_err(|e| format!("Unable to replace assignment history: {e}"))?;
+
+    for entry in values {
+        let id = entry
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Assignment history entry id is required".to_string())?;
+        tx.execute(
+            "INSERT INTO local_inventory_assignment_history(id, item_id, history_json, account_id)
+             VALUES (?1, ?2, ?3, ?4) ON CONFLICT(id) DO UPDATE SET history_json=excluded.history_json",
+            params![format!("account:{account_id}:{id}"), &item_id, entry.to_string(), &account_id],
+        )
+        .map_err(|e| format!("Unable to cache assignment history: {e}"))?;
+    }
+
+    tx.execute(
+        "INSERT INTO sync_state(key,value) VALUES(?1,'complete') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [local_db::scoped_state_key(&tx, &format!("inventory_assignment_history_{item_id}"))?],
+    )
+    .map_err(|e| e.to_string())?;
+
+    tx.commit()
+        .map_err(|e| format!("Unable to commit assignment history: {e}"))?;
 
     Ok(())
 }

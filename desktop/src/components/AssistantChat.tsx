@@ -5,6 +5,7 @@ import { getProjects, Project } from '../api/projects';
 import { createNote } from '../api/notes';
 import { useQuery } from '@tanstack/react-query';
 import { useToast } from '../contexts/ToastContext';
+import audioFocusCoordinator, { type SuspensionReason } from '../lib/audioFocus';
 
 interface ChatMessage { role: 'user' | 'model'; content: string; }
 interface SourceRef { type: string; id: string; title: string; }
@@ -47,12 +48,29 @@ export default function AssistantChat({ fullPage = false, onClose }: Props) {
   const [context,setContext]=useState<ContextState>({scope:'none',projectId:null,customTools:[]}); const [isOnline,setIsOnline]=useState(()=>typeof navigator==='undefined'||navigator.onLine); const scrollRef=useRef<HTMLDivElement>(null); const composerInputRef=useRef<HTMLTextAreaElement>(null);
   const {data:projects=[]}=useQuery<Project[]>({queryKey:['assistant-projects'],queryFn:getProjects,enabled:showContext&&context.scope!=='none',staleTime:30000});
 
+  // Audio focus state for TTS
+  const ttsFocusOwner = useRef<{ id: string; generation: number } | null>(null);
+
   const loadConversations=async()=>{try{const r=await apiFetch('/assistant/conversations');if(r.ok)setConversations(await r.json());}catch{}};
   useEffect(()=>{ apiFetch('/assistant/capabilities').then(async r=>r.ok&&setCapabilities(await r.json())).catch(()=>null); apiFetch('/assistant/preferences').then(async r=>{if(r.ok){const p=await r.json();setContext({scope:p.context_scope||'none',projectId:p.context_project_id||null,customTools:Array.isArray(p.context_tools)?p.context_tools:[]});}}).catch(()=>null); loadConversations(); },[]);
   useEffect(()=>{if(!showAssistantMenu)return;const onPointerDown=(event:PointerEvent)=>{if(!assistantMenuRef.current?.contains(event.target as Node))setShowAssistantMenu(false);};const onKeyDown=(event:KeyboardEvent)=>{if(event.key==='Escape'){event.preventDefault();setShowAssistantMenu(false);}};document.addEventListener('pointerdown',onPointerDown);window.addEventListener('keydown',onKeyDown);return()=>{document.removeEventListener('pointerdown',onPointerDown);window.removeEventListener('keydown',onKeyDown);};},[showAssistantMenu]);
   useEffect(()=>{if(!showJumpMenu)return;const onPointerDown=(event:PointerEvent)=>{if(!jumpMenuRef.current?.contains(event.target as Node))setShowJumpMenu(false);};const onKeyDown=(event:KeyboardEvent)=>{if(event.key==='Escape'){event.preventDefault();setShowJumpMenu(false);jumpButtonRef.current?.focus();}};document.addEventListener('pointerdown',onPointerDown);window.addEventListener('keydown',onKeyDown);return()=>{document.removeEventListener('pointerdown',onPointerDown);window.removeEventListener('keydown',onKeyDown);};},[showJumpMenu]);
   useEffect(()=>{if(!showContext&&!showHistory)return;const onKeyDown=(event:KeyboardEvent)=>{if(event.key==='Escape'){event.preventDefault();setShowContext(false);setShowHistory(false);}};window.addEventListener('keydown',onKeyDown);return()=>window.removeEventListener('keydown',onKeyDown);},[showContext,showHistory]);
   useEffect(()=>{const on=()=>setIsOnline(true),off=()=>setIsOnline(false);window.addEventListener('online',on);window.addEventListener('offline',off);return()=>{window.removeEventListener('online',on);window.removeEventListener('offline',off)}},[]);
+
+  // Cleanup TTS audio focus on unmount
+  useEffect(()=>{
+    return()=>{
+      if(ttsFocusOwner.current){
+        audioFocusCoordinator.release({
+          id: ttsFocusOwner.current.id,
+          generation: ttsFocusOwner.current.generation,
+          suspensionReason: 'close',
+        });
+        ttsFocusOwner.current = null;
+      }
+    };
+  },[]);
   useEffect(()=>{scrollRef.current?.scrollTo({top:scrollRef.current.scrollHeight,behavior:'smooth'});},[messages,toolStatus]);
   useEffect(()=>{const textarea=composerInputRef.current;if(!textarea)return;const maxHeight=162;textarea.style.height='auto';const contentHeight=textarea.scrollHeight;textarea.style.height=`${Math.max(54,Math.min(contentHeight,maxHeight))}px`;textarea.style.overflowY=contentHeight>maxHeight?'auto':'hidden';},[input]);
 
@@ -68,7 +86,59 @@ export default function AssistantChat({ fullPage = false, onClose }: Props) {
     }catch(e){setError(e instanceof Error?e.message:'Assistant is unavailable right now');setMessages(v=>v.map((m,i)=>i===v.length-1&&m.role==='model'&&!m.content?{...m,content:'Unable to complete the request.'}:m));}finally{setIsStreaming(false);setToolStatus(null);}
   };
 
-  const readAloud=(text:string,index:number)=>{if(speakingIndex===index){window.speechSynthesis.cancel();window.dispatchEvent(new CustomEvent('labos:resume-music'));setSpeakingIndex(null);return;}window.speechSynthesis.cancel();window.dispatchEvent(new CustomEvent('labos:pause-music',{detail:{reason:'tts'}}));const u=new SpeechSynthesisUtterance(text);u.onend=()=>{window.dispatchEvent(new CustomEvent('labos:resume-music',{detail:{reason:'tts'}}));setSpeakingIndex(null)};u.onerror=()=>{window.dispatchEvent(new CustomEvent('labos:resume-music',{detail:{reason:'tts'}}));setSpeakingIndex(null)};setSpeakingIndex(index);window.speechSynthesis.speak(u);};
+  const readAloud=(text:string,index:number)=>{
+    if(speakingIndex===index){
+      // Stop TTS - release audio focus
+      window.speechSynthesis.cancel();
+      if(ttsFocusOwner.current){
+        audioFocusCoordinator.release({
+          id: ttsFocusOwner.current.id,
+          generation: ttsFocusOwner.current.generation,
+          suspensionReason: 'manual',
+        });
+        ttsFocusOwner.current = null;
+      }
+      setSpeakingIndex(null);
+      return;
+    }
+
+    // Start TTS - acquire audio focus
+    window.speechSynthesis.cancel();
+    const { id, generation } = audioFocusCoordinator.acquire({
+      type: 'tts',
+      id: 'assistant-tts',
+      allowPreempt: true,
+    });
+    ttsFocusOwner.current = { id, generation };
+
+    const u=new SpeechSynthesisUtterance(text);
+    u.onend=()=>{
+      // Release audio focus on completion
+      if(ttsFocusOwner.current){
+        audioFocusCoordinator.release({
+          id: ttsFocusOwner.current.id,
+          generation: ttsFocusOwner.current.generation,
+          suspensionReason: 'automatic',
+        });
+        ttsFocusOwner.current = null;
+      }
+      setSpeakingIndex(null);
+    };
+    u.onerror=()=>{
+      // Release audio focus on error
+      if(ttsFocusOwner.current){
+        audioFocusCoordinator.release({
+          id: ttsFocusOwner.current.id,
+          generation: ttsFocusOwner.current.generation,
+          suspensionReason: 'error',
+        });
+        ttsFocusOwner.current = null;
+      }
+      setSpeakingIndex(null);
+    };
+    setSpeakingIndex(index);
+    window.speechSynthesis.speak(u);
+  };
   const exportToNotes=async(text:string)=>{try{await createNote({title:`Assistant response — ${new Date().toLocaleString()}`,body:text,tags:['assistant']});showToast('Response exported to Notes');}catch(e){showToast(e instanceof Error?e.message:'Failed to export response','error');}};
   const allowedCustom=useMemo(()=>capabilities?.tools||customOptions.map(x=>x[0]),[capabilities]);
   const responsePrompts=useMemo(()=>{

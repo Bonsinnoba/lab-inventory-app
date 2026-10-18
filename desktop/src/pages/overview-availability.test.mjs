@@ -20,6 +20,7 @@ function render(page,queries){
       if(p.includes('ToastContext'))return{useToast:()=>({showToast:()=>{}})};
       if(p.endsWith('Pagination'))return{default:()=>null,usePagination:rows=>({pagedItems:rows,page:1,pageSize:10,totalPages:1})};
       if(p.endsWith('ReadAvailabilityNotice'))return load('../components/ReadAvailabilityNotice.tsx');
+      if(p.endsWith('useManualRefresh'))return load('../hooks/useManualRefresh.ts');
       if(p.endsWith('read-availability'))return load('../api/read-availability.ts');
       if(p.startsWith('../api/'))return{};
       if(p==='./auth')return{};

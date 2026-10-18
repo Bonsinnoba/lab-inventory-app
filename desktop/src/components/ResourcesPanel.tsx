@@ -166,14 +166,17 @@ export default function ResourcesPanel({ parent }: ResourcesPanelProps) {
         <div className="aspect-video">
           {renderThumbnail()}
         </div>
-        <div className="p-3">
+        <div className="p-2.5">
           <div className="text-sm text-text-primary truncate" title={resource.name}>
             {resource.name}
+          </div>
+          <div className="flex items-center gap-2 mt-1.5">
+            <span className="text-[11px] text-text-tertiary capitalize">{resource.kind==='link'?'Link':resource.file_type||resource.kind}</span>
+            <ResourceFileStatus resource={resource}/>
           </div>
           <div className="text-xs text-text-secondary mt-1">
             {resource.size_bytes ? `${(resource.size_bytes / 1024 / 1024).toFixed(2)} MB` : ''}
           </div>
-          <ResourceFileStatus resource={resource}/>
         </div>
         <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1">
           <button

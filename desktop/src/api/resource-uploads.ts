@@ -6,12 +6,17 @@ import { convertFileSrc } from '@tauri-apps/api/tauri';
 
 const CHUNK=1024*1024;
 let fileAccess:{session:ReturnType<typeof captureAccountSession>;files:Record<string,{path:string;pending:boolean}>}|null=null;
+let fileAccessRequest=0;
 export async function refreshLocalFileAccess():Promise<void>{
-  fileAccess=null;
+  const request=++fileAccessRequest;
   const session=captureAccountSession();if(!session){fileAccess=null;return;}
-  const files=await localBackend.invoke<Record<string,{path:string;pending:boolean}>>('local_resource_file_access',{expectedAccountId:session.accountId});
-  if(!isAccountSessionCurrent(session))throw new Error('Account changed while reading local file access');
-  fileAccess={session,files};
+  // Keep the current session's capabilities visible during the read. The native
+  // protocol still checks authorization on every request; failure clears access.
+  try{
+    const files=await localBackend.invoke<Record<string,{path:string;pending:boolean}>>('local_resource_file_access',{expectedAccountId:session.accountId});
+    if(!isAccountSessionCurrent(session))throw new Error('Account changed while reading local file access');
+    if(request===fileAccessRequest)fileAccess={session,files};
+  }catch(error){if(request===fileAccessRequest)fileAccess=null;throw error;}
 }
 export function localFileUrl(id:string):string|null{
   if(!fileAccess||!isAccountSessionCurrent(fileAccess.session))return null;

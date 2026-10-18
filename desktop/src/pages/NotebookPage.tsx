@@ -9,6 +9,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useToast } from '../contexts/ToastContext';
 import SymbolPickerModal from '../components/SymbolPickerModal';
 import NoteRevisionsPanel from '../components/NoteRevisionsPanel';
+import audioFocusCoordinator, { type SuspensionReason } from '../lib/audioFocus';
 
 type Draft = { id: string | 'new' | null; title: string; body: string; tags: string[]; project_id?: string | null };
 const EMPTY_DRAFT: Draft = { id: null, title: '', body: '', tags: [], project_id: null };
@@ -28,6 +29,10 @@ export default function NotebookPage() {
   const { data: projects = [] } = useQuery<Project[]>({ queryKey: ['projects-for-notebook'], queryFn: getProjects, staleTime: 30000 });
   const bodyRef = useRef<HTMLTextAreaElement>(null);
   const recognitionRef = useRef<any>(null);
+
+  // Audio focus state for TTS and microphone
+  const ttsFocusOwner = useRef<{ id: string; generation: number } | null>(null);
+  const micFocusOwner = useRef<{ id: string; generation: number } | null>(null);
 
   const { data: notes = [], isLoading, error } = useQuery<Note[]>({
     queryKey: ['notes', { tag: selectedTag, search: searchQuery }],
@@ -173,12 +178,39 @@ export default function NotebookPage() {
     }
 
     window.speechSynthesis.cancel();
+
+    // Acquire audio focus for TTS
+    const { id, generation } = audioFocusCoordinator.acquire({
+      type: 'tts',
+      id: 'notebook-tts',
+      allowPreempt: true,
+    });
+    ttsFocusOwner.current = { id, generation };
+
     const utterance = new SpeechSynthesisUtterance(textToRead);
     utterance.onend = () => {
+      // Release audio focus on completion
+      if(ttsFocusOwner.current){
+        audioFocusCoordinator.release({
+          id: ttsFocusOwner.current.id,
+          generation: ttsFocusOwner.current.generation,
+          suspensionReason: 'automatic',
+        });
+        ttsFocusOwner.current = null;
+      }
       setIsSpeaking(false);
       setIsPaused(false);
     };
     utterance.onerror = () => {
+      // Release audio focus on error
+      if(ttsFocusOwner.current){
+        audioFocusCoordinator.release({
+          id: ttsFocusOwner.current.id,
+          generation: ttsFocusOwner.current.generation,
+          suspensionReason: 'error',
+        });
+        ttsFocusOwner.current = null;
+      }
       setIsSpeaking(false);
       setIsPaused(false);
     };
@@ -189,6 +221,15 @@ export default function NotebookPage() {
 
   const handleStopReadAloud = () => {
     window.speechSynthesis.cancel();
+    // Release audio focus on manual stop
+    if(ttsFocusOwner.current){
+      audioFocusCoordinator.release({
+        id: ttsFocusOwner.current.id,
+        generation: ttsFocusOwner.current.generation,
+        suspensionReason: 'manual',
+      });
+      ttsFocusOwner.current = null;
+    }
     setIsSpeaking(false);
     setIsPaused(false);
   };
@@ -207,9 +248,26 @@ export default function NotebookPage() {
 
     if (isListening) {
       recognitionRef.current?.stop();
+      // Release microphone focus
+      if(micFocusOwner.current){
+        audioFocusCoordinator.release({
+          id: micFocusOwner.current.id,
+          generation: micFocusOwner.current.generation,
+          suspensionReason: 'manual',
+        });
+        micFocusOwner.current = null;
+      }
       setIsListening(false);
       return;
     }
+
+    // Acquire microphone focus (highest priority)
+    const { id, generation } = audioFocusCoordinator.acquire({
+      type: 'microphone',
+      id: 'notebook-dictation',
+      allowPreempt: true,
+    });
+    micFocusOwner.current = { id, generation };
 
     const recognition = new SpeechRecognition();
     recognition.continuous = true;
@@ -222,9 +280,29 @@ export default function NotebookPage() {
     };
     recognition.onerror = () => {
       showToast('Voice input stopped unexpectedly', 'error');
+      // Release microphone focus on error
+      if(micFocusOwner.current){
+        audioFocusCoordinator.release({
+          id: micFocusOwner.current.id,
+          generation: micFocusOwner.current.generation,
+          suspensionReason: 'error',
+        });
+        micFocusOwner.current = null;
+      }
       setIsListening(false);
     };
-    recognition.onend = () => setIsListening(false);
+    recognition.onend = () => {
+      // Release microphone focus on end
+      if(micFocusOwner.current){
+        audioFocusCoordinator.release({
+          id: micFocusOwner.current.id,
+          generation: micFocusOwner.current.generation,
+          suspensionReason: 'automatic',
+        });
+        micFocusOwner.current = null;
+      }
+      setIsListening(false);
+    };
 
     recognitionRef.current = recognition;
     setIsListening(true);
@@ -232,6 +310,15 @@ export default function NotebookPage() {
       recognition.start();
     } catch {
       showToast('Could not start voice input', 'error');
+      // Release microphone focus on failure
+      if(micFocusOwner.current){
+        audioFocusCoordinator.release({
+          id: micFocusOwner.current.id,
+          generation: micFocusOwner.current.generation,
+          suspensionReason: 'error',
+        });
+        micFocusOwner.current = null;
+      }
       setIsListening(false);
     }
   };
@@ -240,6 +327,23 @@ export default function NotebookPage() {
     return () => {
       recognitionRef.current?.stop();
       window.speechSynthesis.cancel();
+      // Release audio focus on unmount
+      if(ttsFocusOwner.current){
+        audioFocusCoordinator.release({
+          id: ttsFocusOwner.current.id,
+          generation: ttsFocusOwner.current.generation,
+          suspensionReason: 'close',
+        });
+        ttsFocusOwner.current = null;
+      }
+      if(micFocusOwner.current){
+        audioFocusCoordinator.release({
+          id: micFocusOwner.current.id,
+          generation: micFocusOwner.current.generation,
+          suspensionReason: 'close',
+        });
+        micFocusOwner.current = null;
+      }
     };
   }, []);
 

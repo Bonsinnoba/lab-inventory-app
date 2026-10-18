@@ -1,8 +1,8 @@
 import type { ReportsOverview } from './reports';
 
 export function buildReportsCsv(data:ReportsOverview):string {
+  const source=data.availability?'Local authorized snapshot; may include unsynced changes; server freshness and completeness unverified':'Server report';
   const rows:unknown[][]=[['Section','Category','Status','Unit','Count','Quantity','Availability','Source','Generated at']];
-  const source=data.availability?'Local authorized snapshot; may include unsynced changes; server completeness unverified':'Server report';
   for(const key of ['projects','inventory','tasks','experiments','resources','activity'] as const) {
     const availability=data.availability?.sections[key]??'available';
     // Empty and unavailable sections still have an explicit export row. A blank

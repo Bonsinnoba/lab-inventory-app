@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { getItemAssignmentHistory, getItemHistory } from '../api/items';
 import { History } from 'lucide-react';
+import { captureAccountSession } from '../api/auth';
 
 const FIELD_LABELS: Record<string, string> = {
   status: 'Status',
@@ -20,17 +21,21 @@ const FIELD_LABELS: Record<string, string> = {
 };
 
 export default function ItemHistoryPanel({ itemId }: { itemId: string }) {
-  const { data: history, isLoading } = useQuery({
-    queryKey: ['itemHistory', itemId],
+  const session = captureAccountSession();
+  const fieldQuery = useQuery({
+    queryKey: ['itemHistory', itemId, session?.accountId, session?.generation],
     queryFn: () => getItemHistory(itemId),
   });
-  const { data: assignmentHistory = [] } = useQuery({ queryKey: ['itemAssignmentHistory', itemId], queryFn: () => getItemAssignmentHistory(itemId) });
+  const assignmentQuery = useQuery({ queryKey: ['itemAssignmentHistory', itemId, session?.accountId, session?.generation], queryFn: () => getItemAssignmentHistory(itemId) });
+  // React Query retains prior data on errors; never render it after a denied read.
+  const history = fieldQuery.isError ? undefined : fieldQuery.data;
+  const assignmentHistory = assignmentQuery.isError ? [] : (assignmentQuery.data ?? []);
 
-  if (isLoading) {
+  if (fieldQuery.isLoading || assignmentQuery.isLoading) {
     return <div className="text-text-secondary text-sm py-4">Loading history…</div>;
   }
 
-  if ((!history || history.length === 0) && assignmentHistory.length === 0) {
+  if (!fieldQuery.isError && !assignmentQuery.isError && (!history || history.length === 0) && assignmentHistory.length === 0) {
     return (
       <div className="text-text-secondary text-sm py-8 text-center">
         No changes recorded yet — history starts logging from the next edit.
@@ -40,6 +45,8 @@ export default function ItemHistoryPanel({ itemId }: { itemId: string }) {
 
   return (
     <div className="space-y-4">
+      {fieldQuery.isError && <div role="alert" className="text-sm text-status-error">Field history is unavailable. Check your access or offline snapshot. <button type="button" onClick={() => void fieldQuery.refetch()} className="underline">Retry</button></div>}
+      {assignmentQuery.isError && <div role="alert" className="text-sm text-status-error">Assignment history is unavailable. Check your access or offline snapshot. <button type="button" onClick={() => void assignmentQuery.refetch()} className="underline">Retry</button></div>}
       {assignmentHistory.length > 0 && <section><h3 className="text-sm font-semibold mb-2">Assignment history</h3><div className="space-y-2">{assignmentHistory.map((entry) => <div key={entry.id} className="flex items-start gap-3 p-3 bg-surface-raised border border-border rounded-sm"><History size={14} className="text-text-secondary mt-0.5 flex-shrink-0" /><div className="text-sm"><p>{entry.actor_username || 'System'} {entry.action === 'UPDATE' ? 'updated' : entry.action.toLowerCase()} the assignment{entry.old_assignee_username ? ` from ${entry.old_assignee_username}` : ''}{entry.new_assignee_username ? ` to ${entry.new_assignee_username}` : ' to unassigned'}.</p><p className="text-xs text-text-secondary mt-1 font-mono">{new Date(entry.created_at).toLocaleString()}</p></div></div>)}</div></section>}
       {history && history.length > 0 && <section><h3 className="text-sm font-semibold mb-2">Field history</h3><div className="space-y-2">
       {history.map((entry) => (

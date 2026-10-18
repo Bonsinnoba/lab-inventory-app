@@ -6,6 +6,12 @@ interface Props {
   onClose: () => void;
 }
 
+/**
+ * MusicMiniPlayer is a read-only minimized widget that displays the current
+ * music playback state. It does not own audio focus - the main MusicPlayer/MusicDock
+ * components handle focus acquisition. This component only polls the DOM to sync
+ * state and proxies button clicks to the main player.
+ */
 export default function MusicMiniPlayer({ onRestore, onClose }: Props) {
   const container = useRef<HTMLDivElement | null>(null);
   const [playing, setPlaying] = useState(false);

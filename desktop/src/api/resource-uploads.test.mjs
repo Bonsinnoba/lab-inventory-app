@@ -20,7 +20,7 @@ function load(options={}){
       if(command==='finish_local_resource_upload')return {id:'resource',kind:'file'};
       if(command==='finish_local_resource_upload_batch')return args.changeIds.map((id,i)=>({id:`resource-${i}`,kind:'file'}));
       if(['read_local_resource_upload_chunk','read_local_resource_edit_chunk'].includes(command))return [1,2,3];
-      if(command==='local_resource_file_access')return {resource:{path:'resource.capability',pending:true}};
+      if(command==='local_resource_file_access')return options.fileAccess?options.fileAccess():{resource:{path:'resource.capability',pending:true}};
     }}};
     if(p==='./http')return {getApiErrorMessage:async()=> 'NETWORK_FAILED',apiFetch:async(path,init)=>{
       http.push({path,init});if(options.networkFail)throw Error('NETWORK_FAILED');
@@ -84,6 +84,38 @@ test('confirmed transfer resumes without replaying acknowledged bytes; invalid o
 test('local media URLs are capabilities for the captured account session',async()=>{
   const c=load();await c.api.refreshLocalFileAccess();assert.equal(c.api.localFileUrl('resource'),'http://labos-file.localhost/resource.capability');assert.equal(c.api.localFilePending('resource'),true);
   c.switch();assert.equal(c.api.localFileUrl('resource'),null);assert.equal(c.api.localFilePending('resource'),false);
+});
+
+test('background capability refresh retains the same URL until an atomic replacement',async()=>{
+  let finish;const options={};const c=load(options);
+  await c.api.refreshLocalFileAccess();const original=c.api.localFileUrl('resource');
+  options.fileAccess=()=>new Promise(resolve=>{finish=resolve;});
+  const pending=c.api.refreshLocalFileAccess();
+  assert.equal(c.api.localFileUrl('resource'),original);
+  finish({resource:{path:'resource.capability',pending:false}});await pending;
+  assert.equal(c.api.localFileUrl('resource'),original);assert.equal(c.api.localFilePending('resource'),false);
+  options.fileAccess=()=>({});await c.api.refreshLocalFileAccess();
+  assert.equal(c.api.localFileUrl('resource'),null);
+});
+
+test('capability failures fail closed and older reads cannot restore removed access',async()=>{
+  const options={};const c=load(options);await c.api.refreshLocalFileAccess();
+  let finish;options.fileAccess=()=>new Promise(resolve=>{finish=resolve;});
+  const older=c.api.refreshLocalFileAccess();
+  options.fileAccess=()=>{throw Error('permission denied');};
+  await assert.rejects(c.api.refreshLocalFileAccess(),/permission denied/);
+  assert.equal(c.api.localFileUrl('resource'),null);
+  finish({resource:{path:'old.capability',pending:false}});await older;
+  assert.equal(c.api.localFileUrl('resource'),null);
+});
+
+test('account changes during capability refresh never expose the previous account URL',async()=>{
+  const options={};const c=load(options);await c.api.refreshLocalFileAccess();
+  let finish;options.fileAccess=()=>new Promise(resolve=>{finish=resolve;});
+  const pending=c.api.refreshLocalFileAccess();c.switch();
+  assert.equal(c.api.localFileUrl('resource'),null);
+  finish({resource:{path:'old.capability',pending:false}});
+  await assert.rejects(pending,/Account changed/);assert.equal(c.api.localFileUrl('resource'),null);
 });
 
 test('folder files stage completely before one native batch finalization, with no HTTP',async()=>{

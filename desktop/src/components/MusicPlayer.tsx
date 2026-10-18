@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ListMusic, Pause, Play, SkipBack, SkipForward, Trash2, Upload, Volume2, X, Minimize2, Shuffle, Repeat, Repeat1, Plus, Library, FolderPlus, ChevronUp, ChevronDown } from 'lucide-react';
 import { useToast } from '../contexts/ToastContext';
 import { useMusicDefaults } from '../hooks/useMusicDefaults';
+import audioFocusCoordinator, { type SuspensionReason } from '../lib/audioFocus';
 
 type Track = { id: string; name: string; blob: Blob; addedAt?: number };
 type Playlist = { id: string; name: string; trackIds: string[]; createdAt: number };
@@ -108,6 +109,11 @@ export default function MusicPlayer({ open, onClose, minimized, onMinimize, onRe
   const minimizedHoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const minimizedWidgetRef = useRef<HTMLDivElement | null>(null);
 
+  // Audio focus state
+  const focusOwner = useRef<{ id: string; generation: number } | null>(null);
+  const suspensionReason = useRef<SuspensionReason | null>(null);
+  const savedPlaybackState = useRef<{ position: number; playing: boolean } | null>(null);
+
   const current = tracks.find(t => t.id === currentId) || null;
   const src = current ? (urls.current.get(current.id) || (urls.current.set(current.id, URL.createObjectURL(current.blob)), urls.current.get(current.id)!)) : '';
   const visibleTracks = useMemo(() => tracks.filter(t => t.name.toLowerCase().includes(search.toLowerCase())), [tracks, search]);
@@ -145,25 +151,80 @@ export default function MusicPlayer({ open, onClose, minimized, onMinimize, onRe
   }, [minimized, minimizedHover]);
 
   useEffect(() => {
+    // Subscribe to audio focus state changes
+    const unsubscribe = audioFocusCoordinator.subscribe((state) => {
+      const currentOwner = state.currentOwner;
+      const isMusicOwner = currentOwner?.type === 'music' && currentOwner?.id === focusOwner.current?.id;
+
+      if (!isMusicOwner && audio.current && !audio.current.paused) {
+        // Preempted by higher priority audio source
+        savedPlaybackState.current = {
+          position: audio.current.currentTime,
+          playing: true,
+        };
+        suspensionReason.current = 'automatic';
+        audio.current.pause();
+        setPlaying(false);
+      } else if (isMusicOwner && suspensionReason.current === 'automatic' && savedPlaybackState.current) {
+        // Resuming after automatic suspension
+        const saved = savedPlaybackState.current;
+        savedPlaybackState.current = null;
+        suspensionReason.current = null;
+        if (audio.current && saved.playing) {
+          audio.current.currentTime = saved.position;
+          audio.current.play().catch(() => setPlaying(false));
+        }
+      }
+    });
+
+    // Legacy event listeners for backward compatibility with TTS
     const pause = () => {
       if (autoPause && audio.current && !audio.current.paused) {
-        resumeAfterPause.current = true;
+        savedPlaybackState.current = {
+          position: audio.current.currentTime,
+          playing: true,
+        };
+        suspensionReason.current = 'automatic';
         audio.current.pause();
       }
     };
     const resume = () => {
-      if (resumeAfterPause.current && audio.current && current) {
-        resumeAfterPause.current = false;
+      if (suspensionReason.current === 'automatic' && savedPlaybackState.current && audio.current && current) {
+        const saved = savedPlaybackState.current;
+        savedPlaybackState.current = null;
+        suspensionReason.current = null;
+        audio.current.currentTime = saved.position;
         audio.current.play().catch(() => undefined);
       }
     };
     window.addEventListener('labos:pause-music', pause);
     window.addEventListener('labos:resume-music', resume);
+
+    // Acquire audio focus when component mounts and music is playing
+    if (playing && !focusOwner.current) {
+      const { id, generation } = audioFocusCoordinator.acquire({
+        type: 'music',
+        id: 'music-player',
+        allowPreempt: true,
+      });
+      focusOwner.current = { id, generation };
+    }
+
     return () => {
+      unsubscribe();
       window.removeEventListener('labos:pause-music', pause);
       window.removeEventListener('labos:resume-music', resume);
+      // Release audio focus on unmount
+      if (focusOwner.current) {
+        audioFocusCoordinator.release({
+          id: focusOwner.current.id,
+          generation: focusOwner.current.generation,
+          suspensionReason: 'close',
+        });
+        focusOwner.current = null;
+      }
     };
-  }, [autoPause, current]);
+  }, [autoPause, playing, current]);
 
   useEffect(() => {
     if (audio.current) audio.current.volume = volume;
@@ -192,6 +253,18 @@ export default function MusicPlayer({ open, onClose, minimized, onMinimize, onRe
   const playTrack = async (id: string) => {
     setCurrentId(id);
     setPlaying(true);
+    suspensionReason.current = null;
+
+    // Acquire audio focus
+    if (!focusOwner.current) {
+      const { id: focusId, generation } = audioFocusCoordinator.acquire({
+        type: 'music',
+        id: 'music-player',
+        allowPreempt: true,
+      });
+      focusOwner.current = { id: focusId, generation };
+    }
+
     requestAnimationFrame(async () => {
       try {
         if (id === currentId && audio.current) {
@@ -242,8 +315,21 @@ export default function MusicPlayer({ open, onClose, minimized, onMinimize, onRe
   const toggle = async () => {
     if (!audio.current || !current) return;
     if (!audio.current.paused) {
+      // Manual pause - set suspension reason
+      suspensionReason.current = 'manual';
+      savedPlaybackState.current = null;
       audio.current.pause();
     } else {
+      // Manual play - acquire focus if needed
+      if (!focusOwner.current) {
+        const { id, generation } = audioFocusCoordinator.acquire({
+          type: 'music',
+          id: 'music-player',
+          allowPreempt: true,
+        });
+        focusOwner.current = { id, generation };
+      }
+      suspensionReason.current = null;
       try {
         await audio.current.play();
       } catch {
@@ -261,7 +347,11 @@ export default function MusicPlayer({ open, onClose, minimized, onMinimize, onRe
   };
 
   const remove = async (id: string) => {
-    if (currentId === id && audio.current) audio.current.pause();
+    if (currentId === id && audio.current) {
+      suspensionReason.current = 'track_change';
+      savedPlaybackState.current = null;
+      audio.current.pause();
+    }
     await deleteTrack(id);
     const url = urls.current.get(id);
     if (url) { URL.revokeObjectURL(url); urls.current.delete(id); }

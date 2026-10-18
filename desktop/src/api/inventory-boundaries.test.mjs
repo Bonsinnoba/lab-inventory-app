@@ -6,14 +6,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 const id='20000000-0000-4000-8000-000000000001';
 const initial=[{id,name:'Stock',type:'component',status:'available',current_quantity:10,initial_quantity:10,updated_at:'2026-01-01T00:00:00Z'}];
-function load(invoke,fetch,{token='test',online=true}={}){
-  let account='a';const session=()=>({accountId:account,token}),modules={};let requests=0;
+function load(invoke,fetch,{token='test',online=true,signedIn=true}={}){
+  let account='a',generation=0;const session=()=>signedIn?({accountId:account,token,generation}):null,modules={};let requests=0;
   const get=name=>{
     if(modules[name])return modules[name];const exports={};modules[name]=exports;
     const js=ts.transpileModule(readFileSync(new URL(name+'.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
     vm.runInNewContext(js,{exports,URLSearchParams,navigator:{onLine:online},crypto:{randomUUID},require:p=>{
       if(p==='@tauri-apps/api/tauri')return{invoke};
-      if(p==='./auth')return{captureAccountSession:session,isAccountSessionCurrent:s=>!!s&&s.accountId===account};
+      if(p==='./auth')return{captureAccountSession:session,isAccountSessionCurrent:s=>!!s&&signedIn&&s.accountId===account&&s.generation===generation&&s.token===token};
       if(p==='./local-backend')return{isLocalBackendAvailable:()=>true};
       if(p==='./item-sku')return{ensureItemSku:()=> 'test'};
       if(p==='./maintenance')return{};
@@ -21,7 +21,7 @@ function load(invoke,fetch,{token='test',online=true}={}){
       if(p==='./inventory-http')return{};
       if(p==='./local-inventory')return get('./local-inventory');throw Error(p);
     }});return exports;
-  };return{api:get('./items'),local:get('./local-inventory'),switchAccount:()=>{account='b'},requests:()=>requests};
+  };return{api:get('./items'),local:get('./local-inventory'),switchAccount:()=>{account='b';generation++},renewSession:()=>{generation++},requests:()=>requests};
 }
 const actions=api=>[
   ()=>api.createItem({name:'new',type:'tool',status:'available',current_quantity:1,initial_quantity:1}),
@@ -76,3 +76,89 @@ test('history account changes, denied native reads and cache failures fail close
   const denied=load(async()=>{throw Error('Permission denied')});await assert.rejects(denied.api.getItemMovements(id),/Permission denied/);await assert.rejects(denied.api.getItems(),/Permission denied/);assert.equal(denied.requests(),0);
   const disk=load(async command=>{if(command==='list_local_inventory_movements')return[];throw Error('disk failed')},async()=>({ok:true,json:async()=>[]}));await assert.rejects(disk.api.getItemMovements(id),/disk failed/);
 });
+
+const scopedReads = [
+  ['movements', 'getItemMovements', 'list_local_inventory_movements', 'cache_local_inventory_movements'],
+  ['field history', 'getItemHistory', 'list_local_item_field_history', 'cache_local_item_field_history'],
+  ['assignment history', 'getItemAssignmentHistory', 'list_local_item_assignment_history', 'cache_local_item_assignment_history'],
+  ['custody', 'getItemCustody', 'list_local_item_custody', 'cache_local_item_custody'],
+  ['assignee directory', 'getAssigneeDirectory', 'list_local_assignee_directory', 'cache_local_assignee_directory'],
+];
+for (const [label, method, readCommand, cacheCommand] of scopedReads) {
+  const read = c => c.api[method](id);
+  test(`${label}: cached offline reads need no network; missing snapshots are not empty`, async () => {
+    for (const options of [{online:false}, {token:'local:test'}]) {
+      const c = load(async () => ['{"id":"cached"}'], undefined, options);
+      assert.equal((await read(c))[0].id, 'cached');
+      assert.equal(c.requests(), 0);
+      const empty = load(async () => [], undefined, options);
+      assert.equal((await read(empty)).length, 0);
+      const missing = load(async () => null, undefined, options);
+      await assert.rejects(read(missing), /not been downloaded/);
+      assert.equal(missing.requests(), 0);
+    }
+  });
+  test(`${label}: HTTP refusals and invalid responses never fall back to cache`, async () => {
+    for (const status of [400, 401, 403, 404, 409, 429]) {
+      const c = load(async () => ['{"id":"cached"}'], async () => ({ok:false,status}));
+      await assert.rejects(read(c), /error/);
+    }
+    for (const json of [async () => ({}), async () => {throw Error('bad JSON')}]) {
+      const c = load(async () => ['{"id":"cached"}'], async () => ({ok:true,json}));
+      await assert.rejects(read(c), /Invalid inventory history|bad JSON/);
+    }
+  });
+  test(`${label}: transport/5xx fallback rechecks native permission and lease`, async () => {
+    for (const fault of ['network', 'server']) {
+      const fetch = async () => {if (fault === 'network') throw Error('offline');return {ok:false,status:503}};
+      let reads = 0;
+      const c = load(async () => {reads++;return [`{"id":"read-${reads}"}`]}, fetch);
+      assert.equal((await read(c))[0].id, 'read-2');
+      let deniedReads = 0;
+      const denied = load(async () => {if (++deniedReads > 1) throw Error('Lease expired');return ['{"id":"cached"}']}, fetch);
+      await assert.rejects(read(denied), /Lease expired/);
+    }
+  });
+  test(`${label}: account/session changes at every asynchronous boundary fail closed`, async () => {
+    for (const boundary of ['local','response','json','cache','merged','network']) {
+      let c, reads = 0, writes = 0;
+      c = load(async command => {
+        if (command === readCommand) {
+          reads++;
+          if (boundary === 'local' || (boundary === 'merged' && reads > 1)) c.switchAccount();
+          return ['{"id":"cached"}'];
+        }
+        assert.equal(command, cacheCommand);
+        writes++;
+        if (boundary === 'cache') c.renewSession();
+      }, async () => {
+        if (boundary === 'response') c.switchAccount();
+        if (boundary === 'network') {c.switchAccount();throw Error('offline')}
+        return {ok:true,json:async () => {if (boundary === 'json') c.renewSession();return [{id:'remote'}]}};
+      });
+      await assert.rejects(read(c), /Account changed/, boundary);
+      if (['local','response','json','network'].includes(boundary)) assert.equal(writes,0,boundary);
+    }
+  });
+  test(`${label}: no session, denied native reads and failed cache writes cannot return rows`, async () => {
+    let nativeCalls = 0;
+    const absent = load(async () => {nativeCalls++;return []}, undefined, {signedIn:false});
+    await assert.rejects(read(absent), /Sign in/);
+    assert.equal(nativeCalls,0);
+    const denied = load(async () => {throw Error('Permission denied')});
+    await assert.rejects(read(denied), /Permission denied/);
+    assert.equal(denied.requests(),0);
+    const disk = load(async command => {if (command === readCommand) return [];throw Error('disk failed')}, async () => ({ok:true,json:async () => []}));
+    await assert.rejects(read(disk), /disk failed/);
+  });
+  test(`${label}: successful refresh uses captured account and rereads the native snapshot`, async () => {
+    let cached = false;
+    const c = load(async (command,args) => {
+      if (command === readCommand) return (cached ? ['{"id":"merged"}'] : []);
+      assert.equal(command,cacheCommand);
+      assert.equal(args.expectedAccountId,'a');
+      cached = true;
+    }, async () => ({ok:true,json:async () => [{id:'remote'}]}));
+    assert.equal((await read(c))[0].id,'merged');
+  });
+}

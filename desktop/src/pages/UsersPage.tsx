@@ -1,3 +1,4 @@
+import {useManualRefresh} from '../hooks/useManualRefresh';
 import { useState, type FormEvent, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, KeyRound, Plus, RefreshCw, Search, Shield, User, X } from 'lucide-react';
@@ -29,6 +30,7 @@ function Modal({ title, close, children, wide = false }: { title: string; close:
 }
 
 export default function UsersPage() {
+  const manualRefresh=useManualRefresh();
   const me = getStoredUser();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -118,7 +120,7 @@ export default function UsersPage() {
     <header className="flex flex-wrap items-end justify-between gap-4">
       <div><div className="text-[10px] font-semibold uppercase tracking-[.16em] text-accent">Administration / Directory</div><h1 className="mt-1 text-page-title font-semibold">Users</h1><p className="mt-1 text-sm text-text-secondary">Manage laboratory accounts and access levels.</p></div>
       <div className="flex gap-2">
-        <button type="button" className={secondaryButton} onClick={() => users.refetch()} disabled={users.isFetching}><RefreshCw size={15} className={users.isFetching ? 'animate-spin' : ''}/>Refresh</button>
+        <button type="button" className={secondaryButton} onClick={()=>manualRefresh.refresh(()=>users.refetch())} disabled={manualRefresh.refreshing}><RefreshCw size={15} className={manualRefresh.refreshing ? 'animate-spin' : ''}/>Refresh</button>
         {can('users.create') && <button type="button" className={primaryButton} onClick={() => setCreating(true)}><Plus size={16}/>Add user</button>}
       </div>
     </header>
@@ -130,7 +132,7 @@ export default function UsersPage() {
         <span className="text-xs text-text-secondary">{filteredUsers.length} of {allUsers.length} users</span>
       </div>
       {users.isLoading ? <div className="space-y-3 p-5" aria-busy="true">{[1, 2, 3].map(row => <div key={row} className="h-12 animate-pulse rounded-md bg-surface-raised"/>)}</div> :
-        users.error ? <div role="alert" className="m-4 rounded-md border border-status-danger/30 bg-status-danger/5 p-4 text-sm"><p className="font-medium text-status-danger">Unable to load users</p><p className="mt-1 text-text-secondary">{users.error.message}</p><button type="button" onClick={() => users.refetch()} className="mt-3 text-accent hover:underline">Try again</button></div> :
+        users.error ? <div role="alert" className="m-4 rounded-md border border-status-danger/30 bg-status-danger/5 p-4 text-sm"><p className="font-medium text-status-danger">Unable to load users</p><p className="mt-1 text-text-secondary">{users.error.message}</p><button type="button" onClick={()=>manualRefresh.refresh(()=>users.refetch())} className="mt-3 text-accent hover:underline">Try again</button></div> :
           <div className="overflow-x-auto">
             <table className="w-full min-w-[560px] text-left text-sm">
               <thead className="bg-surface-raised/50 text-xs text-text-secondary border-b border-border"><tr><th scope="col" className="px-4 py-2.5 font-medium">User</th><th scope="col" className="px-3 py-2.5 font-medium">Role</th><th scope="col" className="px-3 py-2.5 font-medium">Last activity</th><th scope="col" className="px-3 py-2.5 font-medium">Status</th><th scope="col" className="px-4 py-2.5 text-right font-medium"> </th></tr></thead>

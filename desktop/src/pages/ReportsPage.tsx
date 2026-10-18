@@ -1,3 +1,4 @@
+import {useManualRefresh} from '../hooks/useManualRefresh';
 import { useQuery } from '@tanstack/react-query';
 import { CartesianGrid, Cell, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis, ZAxis } from 'recharts';
 import { Download, FileBarChart, Printer, RefreshCw } from 'lucide-react';
@@ -16,7 +17,7 @@ function Chart({title,description,data,state='available'}:{title:string;descript
       <ScatterChart margin={{top:12,right:12,bottom:8,left:0}}><CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)"/>
         <XAxis dataKey="status" type="category" tick={{fontSize:11}}/><YAxis dataKey="count" type="number" allowDecimals={false} tick={{fontSize:11}}/>
         <ZAxis range={[144,144]}/><Tooltip cursor={{strokeDasharray:'3 3'}}/>
-        <Scatter data={points} name={title}>{points.map((entry,index)=><Cell key={entry.status} fill={colors[index%colors.length]}/>)}</Scatter>
+        <Scatter isAnimationActive={false} data={points} name={title}>{points.map((entry,index)=><Cell key={entry.status} fill={colors[index%colors.length]}/>)}</Scatter>
       </ScatterChart>
     </ResponsiveContainer>:<p className="py-10 text-center text-sm text-text-secondary">{state==='available'?'No records in this view.':'No records in the available portion.'}</p>)}
   </section>;
@@ -25,13 +26,14 @@ function Chart({title,description,data,state='available'}:{title:string;descript
 function Loading(){return <div className="p-4 md:p-6 max-w-[1400px] mx-auto space-y-5" aria-busy="true" aria-label="Loading reports"><div className="h-24 bg-surface-raised border border-border rounded-md animate-pulse"/><div className="grid grid-cols-2 md:grid-cols-5 gap-3">{[1,2,3,4,5].map(i=><div key={i} className="h-24 bg-surface border border-border rounded-md animate-pulse"/>)}</div></div>;}
 
 export default function ReportsPage() {
+  const manualRefresh=useManualRefresh();
   const reports=useQuery({queryKey:['reports-overview'],queryFn:getReportsOverview});
   if(reports.isLoading)return <Loading/>;
   if(reports.error||!reports.data)return <div className="p-4 md:p-6 max-w-[1400px] mx-auto min-h-full flex items-center justify-center">
     <div className="bg-surface border border-border rounded-md p-6 max-w-md w-full text-center" role="alert">
       <FileBarChart size={24} className="mx-auto text-status-danger"/><h1 className="font-semibold mt-4">Reports unavailable</h1>
       <p className="text-sm text-text-secondary mt-2">Check your session and report permissions. Your underlying data is unchanged.</p>
-      <button onClick={()=>reports.refetch()} className="mt-5 inline-flex items-center gap-2 px-3 py-2 bg-accent text-bg rounded-sm text-sm"><RefreshCw size={14}/>Try again</button>
+      <button onClick={()=>manualRefresh.refresh(()=>reports.refetch())} className="mt-5 inline-flex items-center gap-2 px-3 py-2 bg-accent text-bg rounded-sm text-sm"><RefreshCw size={14}/>Try again</button>
     </div>
   </div>;
   const data=reports.data;
@@ -47,7 +49,7 @@ export default function ReportsPage() {
       <div><div className="page-kicker">REPORTING & ANALYTICS</div><h1 className="text-page-title font-ui font-semibold mt-1">Reports & Analytics</h1>
         <p className="text-xs text-text-secondary mt-2">Generated {new Date(data.generated_at).toLocaleString()} · {data.availability?'Local authorized data; may include pending changes':'Server report'}</p></div>
       <div className="flex flex-wrap gap-2">
-        <button onClick={()=>reports.refetch()} disabled={reports.isFetching} aria-label="Refresh reports" className="inline-flex items-center gap-2 px-3 py-2 bg-surface border border-border rounded-sm text-sm disabled:opacity-50"><RefreshCw size={15} className={reports.isFetching?'animate-spin':''}/>Refresh</button>
+        <button onClick={()=>manualRefresh.refresh(()=>reports.refetch())} disabled={manualRefresh.refreshing} aria-label="Refresh reports" className="inline-flex items-center gap-2 px-3 py-2 bg-surface border border-border rounded-sm text-sm disabled:opacity-50"><RefreshCw size={15} className={manualRefresh.refreshing?'animate-spin':''}/>Refresh</button>
         <button onClick={()=>window.print()} className="inline-flex items-center gap-2 px-3 py-2 bg-surface border border-border rounded-sm text-sm"><Printer size={15}/>Print</button>
         <button onClick={exportCsv} className="inline-flex items-center gap-2 px-3 py-2 bg-accent text-bg rounded-sm text-sm"><Download size={15}/>Export CSV</button>
       </div>

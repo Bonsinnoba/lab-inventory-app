@@ -1,3 +1,4 @@
+import {useManualRefresh} from '../hooks/useManualRefresh';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Bell, Check, Clock, History, MessageSquare, RefreshCw, Users } from 'lucide-react';
 import { getActivity, getNotifications, markAllNotificationsRead, markNotificationRead } from '../api/collaboration';
@@ -8,6 +9,7 @@ function activityText(a:any){return `${a.actor_username||'System'} ${prettyEntit
 function LoadingRows(){return <div aria-busy="true" aria-label="Loading collaboration" className="p-4 space-y-3">{[1,2,3].map(i=><div key={i} className="h-10 rounded bg-surface-raised animate-pulse"/>)}</div>;}
 
 export default function CollaborationPage() {
+  const manualRefresh=useManualRefresh();
   const qc=useQueryClient();
   const activity=useQuery({queryKey:['collaboration-activity'],queryFn:()=>getActivity(60),refetchInterval:30000});
   const notifications=useQuery({queryKey:['notifications'],queryFn:()=>getNotifications(),refetchInterval:30000});
@@ -21,8 +23,8 @@ export default function CollaborationPage() {
   const notificationItems=notificationReady?notifications.data!.items:[];
   const unreadCount=notificationReady?notifications.data!.unread_count:null;
   const activityPage=usePagination(activityItems,6),notificationPage=usePagination(notificationItems,6);
-  const refreshing=activity.isFetching||notifications.isFetching;
-  const retry=()=>{activity.refetch();notifications.refetch();};
+  const refreshing=manualRefresh.refreshing||manualRefresh.refreshing;
+  const retry=()=>manualRefresh.refresh(()=>Promise.all([activity.refetch(),notifications.refetch()]));
   const unavailableActivity=activity.data?.state==='restricted'?'Activity history is restricted to authorized administrators.':
     activity.data?.state==='not_downloaded'?'Activity has not been synchronized to this PC yet. Connect and sync to download it.':
     'Activity is unavailable. Check your session and permissions; an unavailable feed is not an empty history.';
@@ -31,7 +33,7 @@ export default function CollaborationPage() {
     <header className="flex flex-col xl:flex-row xl:items-end xl:justify-between gap-4">
       <div><div className="text-[11px] uppercase tracking-[0.16em] text-text-tertiary mb-1">WORKSPACE ACTIVITY</div><h1 className="text-page-title font-ui font-semibold">Collaboration</h1></div>
       <div className="flex items-center gap-2"><span className="inline-flex items-center gap-2 text-sm text-text-secondary"><Users size={16}/>Shared lab workspace</span>
-        <button type="button" onClick={retry} disabled={refreshing} aria-label="Refresh collaboration" className={button}><RefreshCw size={15} className={refreshing?'animate-spin':''}/>{refreshing?'Refreshing…':'Refresh'}</button></div>
+        <button type="button" onClick={retry} disabled={refreshing} aria-label="Refresh collaboration" className={button}><RefreshCw size={15} className={refreshing?'animate-spin':''}/>Refresh</button></div>
     </header>
     {(activity.error||notifications.error)&&<div role="alert" className="rounded-md border border-status-danger/40 bg-status-danger/5 p-4">
       <p className="text-sm text-status-danger">Some collaboration data could not be loaded.</p><p className="text-xs text-text-secondary mt-1">Available sections remain visible. Missing totals are unknown, not zero.</p>

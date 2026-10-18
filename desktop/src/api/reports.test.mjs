@@ -10,6 +10,7 @@ function load(options={}) {
   const fixture={
     './auth':{captureAccountSession:()=>({accountId:current}),isAccountSessionCurrent:s=>s?.accountId===current},
     './local-backend':{localBackend:{isAvailable:()=>options.desktop!==false}},
+    './sync':{getSyncRuntimeState:()=>({status:'idle',lastSuccessAt:options.lastSyncAt||null,lastError:null})},
     '@tauri-apps/api/tauri':{invoke:async()=>{
       permissionReads++;return options.permissions?options.permissions(permissionReads):['reports.view'];
     }},
@@ -86,4 +87,25 @@ test('CSV distinguishes unknown from empty, includes inventory units and escapes
 test('browser continues to use the server report without local repository reads',async()=>{
   const c=load({desktop:false});assert.equal((await c.api.getReportsOverview()).fromServer,true);
   assert.equal(c.requests(),1);assert.equal(c.reads(),0);
+});
+
+test('global device sync timestamp is not claimed as report freshness',async()=>{
+  const c=load({lastSyncAt:'2026-10-17T12:00:00.000Z'});
+  const r=await c.api.getReportsOverview();
+  assert.equal(r.lastSyncedAt,undefined);
+  assert.equal(c.requests(),0);
+});
+
+test('local report without sync shows no last sync timestamp',async()=>{
+  const c=load({lastSyncAt:null});
+  const r=await c.api.getReportsOverview();
+  assert.equal(r.lastSyncedAt,undefined);
+});
+
+test('CSV export keeps completeness unverified despite a global sync timestamp',async()=>{
+  const c=load({lastSyncAt:'2026-10-17T12:00:00.000Z'});
+  const r=await c.api.getReportsOverview();
+  const csv=c.csv(r);
+  assert.match(csv,/completeness unverified/);
+  assert.doesNotMatch(csv,/"Last sync"/);
 });

@@ -1,4 +1,6 @@
-use std::{fs, path::PathBuf};
+use std::path::PathBuf;
+
+mod build_support;
 
 fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
     let mut table = [255u8; 256];
@@ -45,10 +47,10 @@ fn main() {
     let icon_bytes = decode_base64(icon_source).expect("invalid embedded LabOS icon");
     let icon_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("icons").join("icon.ico");
 
-    if let Some(parent) = PathBuf::from(&icon_path).parent() {
-        fs::create_dir_all(parent).expect("failed to create Tauri icon directory");
-    }
-    fs::write(&icon_path, icon_bytes).expect("failed to materialize LabOS icon");
+    // The dev watcher watches this asset. Rewriting identical bytes changes its
+    // timestamp and can trigger another native build indefinitely.
+    build_support::write_if_changed(&icon_path, &icon_bytes)
+        .expect("failed to materialize LabOS icon");
 
     assert!(PathBuf::from(&icon_path).exists(), "LabOS icon was not created");
     assert!(PathBuf::from(&icon_path).is_file(), "LabOS icon path is not a file");

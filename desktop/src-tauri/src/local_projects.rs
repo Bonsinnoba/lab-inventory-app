@@ -324,6 +324,25 @@ pub fn update_local_project_experiment(app:AppHandle,project_id:String,record_id
 pub fn delete_local_project_experiment(app:AppHandle,project_id:String,record_id:String)->Result<(),String>{nested_delete(app,project_id,"experiments",record_id,"project_experiment")}
 
 #[tauri::command]
+pub fn repeat_local_project_experiment(app:AppHandle,project_id:String,experiment_id:String)->Result<Value,String>{
+    let c=conn(&app)?;
+    let p=load(&c)?.into_iter().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
+    let experiments=nested_get(&p,"experiments");
+    let original=experiments.iter().find(|e|e.get("id").and_then(Value::as_str)==Some(experiment_id.as_str())).ok_or("Experiment not found")?;
+    let new_exp=json!({
+        "project_id": project_id,
+        "title": format!("{} (repeat)", original.get("title").and_then(Value::as_str).unwrap_or("Experiment")),
+        "status": "planned",
+        "hypothesis": original.get("hypothesis").cloned().unwrap_or(json!("")),
+        "procedure": original.get("procedure").cloned().unwrap_or(json!("")),
+        "requirement_id": original.get("requirement_id").cloned().unwrap_or(Value::Null),
+        "observations": json!([]),
+        "measurements": json!([]),
+    });
+    create_local_project_experiment(app,project_id,new_exp)
+}
+
+#[tauri::command]
 pub fn create_local_project_bom(app:AppHandle,project_id:String,record:Value)->Result<Value,String>{nested_create(app,project_id,"bom",record,"project_bom")}
 #[tauri::command]
 pub fn update_local_project_bom(app:AppHandle,project_id:String,record_id:String,patch:Value)->Result<Value,String>{nested_update(app,project_id,"bom",record_id,patch,"project_bom")}

@@ -1,5 +1,109 @@
 # Phase 2 implementation evidence
 
+## October 18 — primary inventory account/read guard repair (A1/B6)
+
+Primary repaired H1-4 helper-review read guards across movements, field history,
+assignment history, custody and assignees. Session checks cover asynchronous
+returns; transport/5xx fallback rereads native authorization; HTTP refusal,
+malformed data and cache failures no longer return captured rows. Missing offline
+snapshots remain distinct from empty snapshots. History/movement panels mask
+retained failed-query data and partition keys by account/login generation.
+53 Node contract/component checks PASS; TypeScript and scoped whitespace check PASS. Docker
+engine unavailable, so no live PostgreSQL/native outage acceptance claimed.
+Not deployed; custody/salvage write repair and broader B6 local-read refresh
+decoupling remain open. Full primary evidence:
+`docs/handoffs/phase2-parallel/PRIMARY_INVENTORY_READ_GUARDS_2026-10-18.md`.
+
+## October 18 — silent refresh presentation repair
+
+Primary repaired atomic local-file capability refresh, identical-poster URL reuse
+and race/session cleanup. Ten page refresh indicators now respond to explicit
+user refreshes rather than automatic query reads; report/finance chart animation
+is disabled and the local read timestamp is available in a tooltip without
+changing visible notice text every poll. Initial loading, errors, actual data
+changes and authorization checks remain intact. No outbox/backend/schema changes.
+34 focused checks passed, including a repeat with the actual Docker API stopped;
+API restored and healthy. These are contract checks, not native visual acceptance.
+Expanded final regression batch: 45 PASS. TypeScript, scoped diff checks and
+isolated frontend bundle (2,254 modules) passed. Subsequently deployed a narrowly
+selected candidate from committed native baseline plus reviewed presentation/build
+changes, excluding unfinished helper domain/audio integration. Candidate checks:
+55 PASS, TypeScript/Vite PASS, native compile PASS. Restarted the actual desktop;
+Dashboard loaded local data and showed the new static snapshot notice. Full
+no-blink visual acceptance remains open. Docker was unavailable after the pause;
+no API/database changes were made by this restart. Full evidence:
+`docs/handoffs/phase2-parallel/PRIMARY_SILENT_REFRESH_2026-10-18.md`.
+
+## October 18 — download metadata correction deployed narrowly
+
+Primary verified the newly reported completed video on the real PostgreSQL/server:
+3,361,603 actual bytes; existing two videos also exist with matching recorded sizes.
+The deployed resource SELECT still omitted media fields, and read-only desktop
+SQLite had null media metadata and no PC copy entries. Confirmed the October 17
+source fix was not running. Built/deployed a one-file correction on the existing
+API image, excluding unreviewed custody/salvage changes. API/DB healthy, existing
+storage/database volumes unchanged. Running image:
+`sha256:c98e503aafc4d0eaf62e0d924e5fb57066fff352920fcae18e31e7fcc84307b3`.
+Actual deployed SELECT against PostgreSQL now returns canonical download metadata.
+Backend regression batch: 6 PASS. Following owner sign-in, natural sync populated
+all three existing resources and produced ready PC copies. Actual PC/server byte
+counts and independently calculated SHA-256 match for all three (3,361,603;
+8,147,966; 93,958,024 bytes). Resources shows Local and Downloaded. With the actual
+Docker API stopped, the newest video opened and loaded a frame through the native
+local-file handler. Advancing playback was NOT established: desktop-control bounds
+failed during Play interaction and user activity subsequently closed the viewer.
+API restored and confirmed running/healthy. Cold restart and reconnect/replay
+duplicate acceptance remain open. No whole item closed; no data reset or manual
+SQLite repair, and no provider redownload.
+Full evidence and rollback identity:
+`docs/handoffs/phase2-parallel/PRIMARY_DOWNLOAD_DEPLOYMENT_2026-10-18.md`.
+
+## October 17 — primary startup and grouped build/audio/report repairs
+
+Later checkpoint superseding the compile/audio failures recorded below, not the
+remaining integration findings. Primary launched the existing desktop directly
+(PID 12592); no dev watcher, API deployment, database reset or native rebuild.
+Build icon materialization now skips identical bytes (3 standalone Rust tests
+PASS). Reports fixture syntax is repaired and global device sync time is no longer
+misrepresented as report freshness; account/domain watermarks remain open.
+Audio displaced-owner callbacks, reset token uniqueness and ownership snapshots
+are repaired. Resource media hook now pauses on denied/preempted focus. Broken
+Jest scaffold was replaced by Node tests rather than excluded from type-checking.
+
+Focused desktop batch: 39 PASS (10 audio, 10 Reports, 19 existing inventory cases).
+Combined TypeScript `--noEmit`: PASS. Scoped diff check: PASS. Total with Rust: 42.
+These are unit/contract/build checks, not real PostgreSQL, Tauri audio or Docker-
+stopped acceptance. Current executable does not contain this source repair batch.
+H1 custody/salvage gaps, H2-3 TTS/microphone/music integration, durable freshness,
+and download fix deployment/live verification remain open. No parent item closed.
+Detailed attribution and boundaries: `docs/handoffs/phase2-parallel/PRIMARY_REVIEW_2026-10-17.md`.
+
+## October 17 — primary download projection repair and helper review
+
+Primary changed only the canonical resource pull SELECT in `backend/src/routes/sync.js`
+to include the five downloaded-media fields written by the server worker. Previously
+Downloads could show completion while resource metadata omitted the filename/date
+needed for Resources state and PC replication. Permission/visibility filters remain;
+server completion does not establish verified PC bytes. No data was reset or repaired
+directly, and no deployment occurred in this checkpoint.
+
+New route-contract tests plus visibility regressions: 6 PASS. Existing desktop
+replication/device-state tests: 12 PASS. Backend syntax and scoped diff check PASS.
+These are unit/contract checks, not real PostgreSQL/Tauri acceptance. Docker API/DB
+were observed healthy, but the subsequent elevated read-only database inspection
+was not executed because automatic approval review hit its usage limit. Deployment,
+real records, API-stopped/cold-restart and reconnect/playback verification remain open.
+
+Independent helper review is recorded in
+`docs/handoffs/phase2-parallel/PRIMARY_REVIEW_2026-10-17.md`. Both deliveries require
+changes: custody local intent/server ordering and salvage offline/provenance gaps,
+plus audio ownership/build blockers. Two new primary audio contract regressions
+FAIL; combined TypeScript checking FAILS. Helper completion claims do not promote
+B/C or transferred A items. All delivered changes are preserved for grouped repair.
+Follow-on collection: 19 existing inventory boundary/HTTP checks PASS, but the
+newly edited Reports test file fails parsing before any Reports tests execute.
+
+
 Status: **in progress, not Phase 2 sign-off**. Existing application and seeded
 PostgreSQL are preserved. Tests create scoped fixtures; no database reset.
 
@@ -16,11 +120,10 @@ PostgreSQL are preserved. Tests create scoped fixtures; no database reset.
 - Native fix joins the account-filtered view to its base outbox table solely to
   obtain insertion order. Account/lease filtering, immutable events and atomic
   enqueue remain; no schema migration, reset or HTTP-write fallback.
-- Existing supported link cards now offer Queue download / View queue. Retry
-  uses the saved resource ID, not resource creation. Initial link-save/queue
-  partial failure explicitly says the link was saved and points to this action.
-  Download queries are account-generation keyed; native string failures become
-  readable errors and do not claim that no snapshot was ever synchronized.
+- The initial Queue download / View queue resource-card workaround was deployed,
+  then rejected by the owner. It is superseded by automatic Downloads intake
+  below. Download queries remain account-generation keyed; native string failures
+  become readable errors, not claims that no snapshot was ever synchronized.
 - Checks: 26 focused frontend adapter/presentation/component checks passed;
   TypeScript passed; Vite built 2,250 modules. Scoped diff whitespace check passed
   (unrelated pre-existing visual-agent whitespace remains outside these files).
@@ -33,8 +136,66 @@ PostgreSQL are preserved. Tests create scoped fixtures; no database reset.
   required to reproduce this native query defect, not a PostgreSQL substitute.
   An earlier sandboxed read probe failed accessing WAL files; the approved
   read-only rerun passed. These are not full PostgreSQL worker acceptance tests.
-- Owner confirmed all edits saved and restart. Updated native build and native
-  window offline-read verification are pending below; full A6 remains PARTIAL.
+- Initial corrected executable SHA-256:
+  `27EFE62025C2A00A9A96B2B1D436B517D5056A560086841F98BDBB4AD16DCE95`.
+  Native cold start with the API stopped showed the complete saved queue (zero
+  jobs), saved schedule/settings and saved tool checks. Resources queue buttons
+  were visible on saved links; no user resource was enqueued by this check.
+  API was restored. A fresh container media-tool inspection at 16:22 UTC passed
+  yt-dlp, FFmpeg and Node; the earlier cached warning did not reproduce.
+  Full A6 remains PARTIAL, not worker/reconnect acceptance.
+
+### Owner correction — automatic Downloads intake, no Resources enqueue step
+
+- Contract: adding a supported media link makes it visible in Downloads as
+  **Awaiting schedule**. Listing a link is not permission to start a worker.
+  Quality and timing are selected in Downloads; no resource-card queue button
+  or optional Add Resource & Queue checkbox remains.
+- Native Downloads reads now include every authorized local link, including
+  project/note/folder links, in the same SQLite read transaction as jobs and
+  pending events. The resource row is the durable intake record: there is no
+  second persistence write to lose, no read-triggered enqueue and no HTTP fallback.
+- Existing undownloaded supported links are included automatically. Canonical
+  UUID matching excludes resources already represented by any job, including
+  cancelled/failed/conflicted history; refresh cannot resurrect cancelled work.
+  Removing a resource from local state removes its intake row. Clearing history
+  can make an undownloaded resource eligible again, but never starts it.
+- Scheduling calls the existing local download command/outbox for the same
+  resource ID. Native/server permissions and retry deduplication remain in force.
+  A deduplicated job with a different schedule is reported honestly, not treated
+  as proof that the new requested time was applied. Browser intake uses existing
+  authorized resource/folder reads and the browser enqueue path.
+- Focused checks: 28 frontend tests passed (intake projection 7, intake component
+  5, local adapter 8, image thumbnail 4, download preview 4); TypeScript passed.
+  Vite built 2,252 modules. Frontend index SHA-256:
+  `57ABC039843317F4F5E2CE5352E066F2338B433F6CB4D371469F811C9BFB7C28`.
+- A4 companion change: native image cards use an authorized PC file URL or an
+  explicit unavailable/error state, never an HTTP fallback. Attached Resources
+  panels now prefer the local video poster for downloaded links and display file
+  availability. Broader preview/export acceptance remains open.
+- Native stopped-API regression: all 9 Downloads tests passed, including actual
+  read-only desktop SQLite inspection of all saved links and a rollback-only
+  scheduled enqueue/uppercase-UUID retry. The request retained its selected time,
+  was visible as scheduled/pending sync, and retry returned one job/event. Explicit
+  rollback left no test request behind. API restored in finally; PostgreSQL and
+  storage were not stopped/reset. Owner confirmed saved edits and restart.
+- Deployment briefly hit an approval-service usage-limit error (nothing executed).
+  Following the owner's continue, the approved restart/build retry was accepted;
+  native build completed in 2m29s and the updated executable launched as PID 14528.
+  Executable SHA-256:
+  `474218E6CD4EF35DF572B81E539ED34F6AD90023B1C48F3F493030C344AA5290`.
+  The API-stopped cold launch reached sign-in; the user was entering credentials,
+  so no authentication UI was automated. API was restored and `/api/health` at
+  21:32:51 UTC reported API/database/storage healthy. Native Downloads visual
+  acceptance awaits completion of user sign-in; this is not an offline UI pass.
+- User completed sign-in. Native Resources inspection confirmed six resources,
+  no Queue download buttons, preserved YouTube/Facebook links, and uploaded video
+  poster/image cards. Downloads navigation could not be verified: the computer-use
+  helper reported `point (41, 254) is outside window bounds ... width: 12, height: 12`
+  despite a normal app screenshot. One fresh-window rebind/retry returned the same
+  error, so UI inputs stopped. API remains restored/healthy; app remains running.
+  Downloads visual acceptance and a fresh stopped-server UI run remain open;
+  automated stopped-server native checks passed as documented above.
 
 - Root cause of the browser/Tauri assistant mismatch: Cargo enables
   `custom-protocol` by default. Tauri codegen therefore embeds `distDir`, even in

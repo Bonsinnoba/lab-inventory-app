@@ -36,9 +36,9 @@ function decodePullCursor(value){if(!value)return null;try{const padded=value.re
 
 const PROJECT_ENTITY_CONFIG = {
   project: { table: 'projects', fields: ['name','status','budget','description','priority','start_date','due_date','owner_id','visibility'] },
-  project_task: { table: 'project_tasks', fields: ['project_id','title','description','status','priority','assignee_id','due_date','completed_at','created_by'] },
-  project_experiment: { table: 'project_experiments', fields: ['project_id','title','status','hypothesis','procedure','observations','result','conclusion','performed_by'] },
-  project_bom: { table: 'project_bom_items', fields: ['project_id','name','part_number','required_quantity','unit','preferred_item_id','alternative_item_id','notes','created_by'] },
+  project_task: { table: 'project_tasks', fields: ['project_id','title','description','status','priority','assignee_id','due_date','completed_at','created_by','requirement_id'] },
+  project_experiment: { table: 'project_experiments', fields: ['project_id','title','status','hypothesis','procedure','observations','result','conclusion','performed_by','requirement_id'] },
+  project_bom: { table: 'project_bom_items', fields: ['project_id','name','part_number','required_quantity','unit','preferred_item_id','alternative_item_id','notes','created_by','requirement_id'] },
   project_block: { table: 'project_blocks', fields: ['project_id','block_type','text_content','resource_id','title','x','y','width','height'] },
   project_connector: { table: 'project_connectors', fields: ['project_id','source_block_id','target_block_id','label'] },
   project_experiment_measurement: { table: 'project_experiment_measurements', fields: ['experiment_id','name','value_numeric','value_text','unit','uncertainty','observed_at','recorded_by','notes'] },
@@ -559,7 +559,10 @@ router.get('/resources/pull',async(req,res,next)=>{
   try{
     const permissions=await getUserPermissions(req.user.userId,req.user.role);
     if(!permissions.has('resources.view'))return res.status(403).json({error:{code:'PERMISSION_DENIED',message:'Permission required: resources.view'}});
-    const result=await pool.query('SELECT r.id,r.name,r.kind,r.file_type,r.original_filename,r.mime_type,r.size_bytes,r.parent_resource_id,r.relative_path,r.url,r.thumbnail_url,r.category,r.description,r.tags,r.visibility,r.updated_at,r.created_at,r.item_id,r.project_id,r.note_id,r.derived_from_resource_id FROM resources r ORDER BY r.updated_at DESC');
+    // Download completion is canonical resource metadata, not just job history.
+    // Include it in the desktop snapshot so link media can enter PC replication.
+    // These server fields do not assert that verified bytes exist on this PC.
+    const result=await pool.query('SELECT r.id,r.name,r.kind,r.file_type,r.original_filename,r.mime_type,r.size_bytes,r.parent_resource_id,r.relative_path,r.url,r.thumbnail_url,r.local_media_path,r.local_media_filename,r.local_media_mime_type,r.local_media_size_bytes,r.local_media_downloaded_at,r.category,r.description,r.tags,r.visibility,r.updated_at,r.created_at,r.item_id,r.project_id,r.note_id,r.derived_from_resource_id FROM resources r ORDER BY r.updated_at DESC');
     const visible=[];
     for(const row of result.rows){const access=await getResourceAccess(row.id,req.user);if(access.access!=='none'&&!access.context?.invalid)visible.push(row);}
     const deletedRows=await pool.query("SELECT entity_id,project_id,item_id,note_id FROM sync_tombstones WHERE entity_type='resource' ORDER BY deleted_at DESC LIMIT 500");

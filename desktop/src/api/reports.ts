@@ -77,6 +77,10 @@ async function getLocalReportsOverview():Promise<ReportsOverview> {
   }
   await requireReportAccess();
   assertReadAccount(session);
+
+  // Device-wide sync telemetry is not an account/domain freshness watermark.
+  // Keep the local read time and section availability until those exist.
+
   return {
     projects:countBy(projects,'status'),inventory:Array.from(inventory.values()).sort(
       (a,b)=>a.type.localeCompare(b.type)||a.status.localeCompare(b.status)||a.unit.localeCompare(b.unit)),
@@ -90,5 +94,7 @@ export async function getReportsOverview():Promise<ReportsOverview> {
   if(localBackend.isAvailable())return getLocalReportsOverview();
   const response=await apiFetch('/reports/overview');
   if(!response.ok)throw new Error('Failed to load reports');
-  return response.json();
+  const data=await response.json() as ReportsOverview;
+  // Browser reports retain their server-provided projection.
+  return data;
 }
