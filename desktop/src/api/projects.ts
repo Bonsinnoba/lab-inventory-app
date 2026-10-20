@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/tauri';
 import { apiFetch, getApiErrorMessage } from './http';
 import { getTransactions } from './transactions';
 import { getItems } from './items';
+import { captureAccountSession, isAccountSessionCurrent } from './auth';
 
 function isTauriRuntime(): boolean { return typeof window !== 'undefined' && !!(window as any).__TAURI_IPC__; }
 async function localInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T | null> {
@@ -146,21 +147,38 @@ export async function decideProjectReview(projectId:string,decision:'submit'|'re
  return r.json();
 }
 
-export interface ProjectReservation {id:string;project_id:string;item_id:string;item_name:string;quantity:number|string;original_quantity?:number|string;fulfilled_quantity?:number|string;needed_from:string;needed_until:string|null;status:'pending_review'|'confirmed'|'rejected'|'released'|'proposed'|'fulfilled';note:string|null;review_note:string|null;project_priority:string;project_start_date:string|null;project_due_date:string|null;created_at:string;}
+export interface ProjectReservation {id:string;project_id:string;item_id:string;item_name:string;quantity:number|string;original_quantity?:number|string;fulfilled_quantity?:number|string;local_pending_issue_quantity?:number;local_issue_error?:string;needed_from:string;needed_until:string|null;status:'pending_review'|'confirmed'|'rejected'|'released'|'proposed'|'fulfilled';note:string|null;review_note:string|null;project_priority:string;project_start_date:string|null;project_due_date:string|null;created_at:string;}
 export async function getProjectReservations(projectId:string):Promise<ProjectReservation[]>{
+ if(isTauriRuntime()){
+  const session=captureAccountSession();
+  if(!session)throw new Error('Sign in to read reservations');
+  const project=await localInvoke<{reservations?:ProjectReservation[]}>('get_local_project',{projectId});
+  if(!isAccountSessionCurrent(session))throw new Error('Account changed while reading reservations');
+  if(!Array.isArray(project?.reservations))throw new Error('Synchronize this project once to make its reservations available offline');
+  return project.reservations;
+ }
  const r=await apiFetch(`/projects/${projectId}/reservations`);
  if(!r.ok)throw new Error(await getApiErrorMessage(r,'Unable to load reservations'));
  return r.json();
 }
 export async function requestProjectReservation(projectId:string,input:{item_id:string;quantity:number;needed_from:string;needed_until?:string;note?:string}):Promise<ProjectReservation>{
+ if(isTauriRuntime())return queueReservationIntent(projectId,crypto.randomUUID(),'request',input);
  const r=await apiFetch(`/projects/${projectId}/reservations`,{method:'POST',body:JSON.stringify(input)});
  if(!r.ok)throw new Error(await getApiErrorMessage(r,'Unable to request reservation'));
  return r.json();
 }
 export async function decideProjectReservation(projectId:string,reservationId:string,decision:'confirm'|'reject'|'release',review_note:string):Promise<ProjectReservation>{
+ if(isTauriRuntime())return queueReservationIntent(projectId,reservationId,'decision',{decision,review_note});
  const r=await apiFetch(`/projects/${projectId}/reservations/${reservationId}/decision`,{method:'POST',body:JSON.stringify({decision,review_note})});
  if(!r.ok)throw new Error(await getApiErrorMessage(r,'Unable to decide reservation'));
  return r.json();
+}
+
+async function queueReservationIntent(projectId:string,reservationId:string,operation:'request'|'decision',payload:Record<string,unknown>):Promise<ProjectReservation>{
+ const session=captureAccountSession();if(!session)throw new Error('Sign in to save reservation intentions');
+ const result=await localInvoke<ProjectReservation>('save_local_reservation_intent',{input:{expected_account_id:session.accountId,change_id:crypto.randomUUID(),reservation_id:reservationId,operation,payload:{...payload,project_id:projectId}}});
+ if(!isAccountSessionCurrent(session))throw new Error('Account changed while saving reservation intention');
+ if(!result)throw new Error('Reservation intention was not saved');return result;
 }
 
 export interface ReservationReviewQueueItem extends ProjectReservation {project_name:string;project_status:string;item_type:string;current_quantity:number|string;overlapping_confirmed:number|string;}

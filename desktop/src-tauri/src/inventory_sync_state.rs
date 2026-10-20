@@ -53,7 +53,11 @@ pub(crate) fn merge(c:&mut Connection,account:&str,incoming:Vec<Value>,deleted:V
     current.retain(|row|{let id=row["id"].as_str().unwrap();pending.contains(id)||(cursor.is_some()&&!deleted.contains(id))});
     for row in incoming{
         let id=row["id"].as_str().unwrap();if pending.contains(id)||deleted.contains(id){continue}
+        tx.execute("DELETE FROM sync_state WHERE key=?1",[local_db::scoped_state_key(&tx,&format!("inventory_reconciliation_{id}"))?]).map_err(|e|e.to_string())?;
         current.retain(|old|old["id"]!=id);current.push(row);
+    }
+    for id in &deleted {
+        if !pending.contains(id) { tx.execute("DELETE FROM sync_state WHERE key=?1",[local_db::scoped_state_key(&tx,&format!("inventory_reconciliation_{id}"))?]).map_err(|e|e.to_string())?; }
     }
     write(&tx,&current)?;
     if let Some(cursor)=cursor{tx.execute("INSERT INTO sync_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![local_db::scoped_state_key(&tx,"inventory_sync_cursor")?,cursor]).map_err(|e|e.to_string())?;}
@@ -96,6 +100,8 @@ pub(crate) fn stamp_versions(c:&Connection,kind:&str,entity:Option<&str>,op:&str
     }
     let creating=kind=="item"&&op=="create";let deleting=kind=="item"&&["delete","bulk_delete"].contains(&op);let mut bases=vec![];
     for id in &ids{
+        let awaiting:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM sync_state WHERE key=?1)",[local_db::scoped_state_key(c,&format!("inventory_reconciliation_{id}"))?],|r|r.get(0)).map_err(|e|e.to_string())?;
+        if awaiting{return Err("Synchronize this inventory item before recording more changes. Rejected local work has been preserved for recovery.".into())}
         let old=current.iter().find(|r|r["id"]==*id);
         let version=if creating{if old.is_some()||predecessors.contains_key(id){return Err("Inventory identity already exists or has pending work".into())}0}
         else{old.and_then(|r|r["sync_version"].as_i64()).filter(|v|*v>0).ok_or("Refresh inventory online to obtain its version before editing")?};
@@ -114,6 +120,28 @@ pub(crate) fn discard_connected(c:&Connection,change:&str,resolution:&str)->Resu
     let mut changes=vec![];for row in rows{let (key,k,id,op,raw)=row.map_err(|e|e.to_string())?;let payload:Value=serde_json::from_str(&raw).map_err(|e|e.to_string())?;changes.push((key,target_ids(&k,id.as_deref(),&op,&payload)?));}
     let mut targets:HashSet<String>=changes.iter().find(|(key,_)|key==change).ok_or("Pending inventory change missing")?.1.iter().cloned().collect();
     loop{let before=targets.len();for (_,ids) in &changes{if ids.iter().any(|id|targets.contains(id)){targets.extend(ids.iter().cloned());}}if targets.len()==before{break}}
+    // Retiring an authored chain is not an acknowledgement of its stock effects.
+    // Preserve the projection, then invalidate custody and block further writes
+    // until an authorized server pull supplies the item's actual state.
+    let account=local_db::active_account(c)?;
+    let has_custody:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_inventory_custody_records')",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+    let rows=read(c)?.unwrap_or_default().into_iter().filter(|row|row["id"].as_str().is_some_and(|id|targets.contains(id))).collect::<Vec<_>>();
+    let mut custody=Vec::<Value>::new();
+    for id in &targets {
+        if has_custody {
+            let raw:Vec<String>=c.prepare("SELECT custody_json FROM local_inventory_custody_records WHERE account_id=?1 AND item_id=?2").map_err(|e|e.to_string())?.query_map(params![account,id],|r|r.get(0)).map_err(|e|e.to_string())?.collect::<Result<_,_>>().map_err(|e|e.to_string())?;
+            for value in raw {custody.push(serde_json::from_str(&value).map_err(|e|e.to_string())?);}
+        }
+    }
+    let retired:HashSet<String>=changes.iter().filter(|(_,ids)|ids.iter().any(|id|targets.contains(id))).map(|(key,_)|key.clone()).collect();
+    let reservations=crate::local_inventory::reservations::retire(c,&retired)?;
+    let archived=serde_json::json!({"change_id":change,"account_id":account,"resolution":resolution,"items":rows,"custody":custody,"reservation_issues":reservations,"change_ids":retired});
+    c.execute("INSERT INTO sync_state(key,value) VALUES(?1,?2)",params![local_db::scoped_state_key(c,&format!("inventory_recovery_{}",uuid::Uuid::new_v4()))?,archived.to_string()]).map_err(|e|e.to_string())?;
+    for id in &targets {
+        c.execute("INSERT INTO sync_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![local_db::scoped_state_key(c,&format!("inventory_reconciliation_{id}"))?,change]).map_err(|e|e.to_string())?;
+        if has_custody {c.execute("DELETE FROM local_inventory_custody_records WHERE account_id=?1 AND item_id=?2",params![account,id]).map_err(|e|e.to_string())?;}
+        c.execute("DELETE FROM sync_state WHERE key=?1",[local_db::scoped_state_key(c,&format!("inventory_custody_{id}"))?]).map_err(|e|e.to_string())?;
+    }
     for (key,ids) in changes{if ids.iter().any(|id|targets.contains(id)){
         c.execute("UPDATE sync_conflicts SET resolved_at=CURRENT_TIMESTAMP,resolution=?2 WHERE change_id=?1",params![key,resolution]).map_err(|e|e.to_string())?;
         c.execute("UPDATE sync_outbox SET synced_at=CURRENT_TIMESTAMP,last_error=NULL WHERE change_id=?1",[key]).map_err(|e|e.to_string())?;

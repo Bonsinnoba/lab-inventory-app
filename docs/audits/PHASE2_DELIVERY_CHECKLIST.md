@@ -68,9 +68,80 @@ linked by ID, coordinated app/API build available. Acceptance remains separate.
 
 ## Batch B — inventory, projects and finance
 
+October 20 reservation intent server checkpoint (primary, B3/B4): request and
+confirm/reject/release sync handlers implemented with immutable identity, current
+authority, stock allocation guards and atomic audit/receipt. Real PostgreSQL
+handler regression batch 20 PASS, rollback verified. Native request/review
+intentions, projections and UI wiring remain CODE REMAINING; no offline approval
+authority is enabled. No parent/count changes. Next: native intentions and
+ACK/pull/rejection reconciliation, then stopped-API/reconnect acceptance.
+Evidence: `docs/handoffs/phase2-parallel/PRIMARY_RESERVATION_INTENTS_SERVER_2026-10-20.md`.
+
+October 20 checkout UI follow-up (primary): confirmed allocations now expose
+Issue to recipient, with centered recipient/quantity/serial/note dialog and
+submission-time permission/session/allocation checks through the existing native
+movement adapter. Source implementation; 52 adapter and 30 native checks passed
+with API stopped (one integration case ignored). Actual desktop interaction and
+reconnect acceptance remain pending; task/experiment selection, reservation
+request/review/consumption intents and lifecycle work remain open. No parent
+status/count changes. See latest PHASE2_EVIDENCE.md entry.
+
+October 20 later primary B1/B3/A1/A5 checkpoint: native reservation-backed issue
+and durable allocation overlays implemented with atomic SQLite/outbox, cached
+authority and canonical work checks. Server reservation snapshots carry fulfillment
+identities; ACK/pull ordering and explicit rejection recovery preserve allocations
+and authored work. Desktop projected reservation reads have no HTTP fallback.
+PostgreSQL batch 14 PASS; stopped-API native inventory 30 PASS / 1 IGNORED,
+project/local DB regressions 8 PASS; adapter batch 48 PASS. Source only, awaiting
+integrated desktop acceptance. Checkout UI, other reservation intents and their
+read-after-write integration remain CODE REMAINING. Full implementation-ready
+0/18; closed 0/18; all existing parent boundaries remain open. Next: checkout UI
+and reservation intent integration, then coordinated deployment/acceptance.
+Evidence: `docs/handoffs/phase2-parallel/PRIMARY_RESERVED_CUSTODY_NATIVE_2026-10-20.md`.
+
+October 20 primary B1/B3 subcheck: reservation-backed custody server operation
+implemented with transactional allocation/history, authority and quantity guards;
+real PostgreSQL handler batch 13 PASS with full rollback. Source request/schema
+compatibility and lock-order fixes included; migration NOT deployed. Native offline
+reservation projection, pull/rejection reconciliation and checkout UI remain CODE
+REMAINING; direct-route/concurrency acceptance remains unverified. No parent status
+or implementation-ready/closed count changed.
+Evidence: `docs/handoffs/phase2-parallel/PRIMARY_RESERVED_CUSTODY_SERVER_2026-10-20.md`.
+
+October 19 primary B3/B4/A1 subcheck: same-project requirement/work/canvas
+relationship guards and stored-owner sync authorization implemented in source.
+Foreign link deletion is rejected; valid connector updates no longer reference a
+missing timestamp column. Native project batch 4 PASS with API/DB stopped; expanded
+real PostgreSQL handler batch 8 PASS, rollback verified. Not deployed/integrated
+acceptance. Reservation-backed issue, local reservation intents/projection,
+browser parity, demand aggregation and lifecycle settlement remain CODE REMAINING.
+Project post-commit audit atomicity remains open. No parent status/count changes.
+Evidence: `docs/handoffs/phase2-parallel/PRIMARY_PROJECT_RELATIONSHIP_GUARDS_2026-10-19.md`.
+
+October 19 primary B1 subcheck: dedicated native custody intent/quantity writer
+implemented; movement-before-custody FK ordering and settlement numeric SQL repaired
+and checked against real PostgreSQL (8 PASS, complete rollback). Renderer offline
+batch 55 PASS; native arithmetic 4 PASS. Follow-up native inventory batch: 21 PASS,
+0 FAIL, 1 IGNORED, including eight on-disk custody cases with API stopped. Fixed
+wrong-item/duplicate custody cache acceptance. Native atomicity and connection-reopen
+subcheck verified; not deployed. Integrated server replay, reservation/project
+coupling and remaining B1 behaviors are still open. B1's stale PLANNED label is
+reconciled to PARTIAL, not acceptance closure. See
+`docs/handoffs/phase2-parallel/PRIMARY_CUSTODY_REPAIR_2026-10-19.md`.
+
+Further October 19 primary B1/A2 subcheck: real PostgreSQL push-handler replay and
+receipt-failure batch 5 PASS (rollback-only; no HTTP/auth middleware or parallel
+acceptance). Explicit rejection resolution now preserves account-owned recovery
+snapshots and outbox payloads, invalidates rejected custody and blocks new writes
+until authorized server reconciliation. Native inventory 24 PASS/1 IGNORED;
+local DB/import regressions 7 PASS; receipt processing 3 PASS, with server stopped.
+Recovery UI/export/retention and deployed/multi-client integration remain open.
+No parent closure. Evidence:
+`docs/handoffs/phase2-parallel/PRIMARY_CUSTODY_SYNC_RECOVERY_2026-10-19.md`.
+
 | ID | State | Required closure behavior / remaining boundary |
 | --- | --- | --- |
-| B1 | PLANNED | Quantity-aware custody: separate responsible person from physical issue; split issues, recipients/transfers, partial return/consumption/damage/loss and outstanding balances. Consuming issued stock cannot deduct storeroom stock twice. Preserve provenance, units, permissions and provisional offline allocation. Existing assigned_to is not evidence of a physical issue. |
+| B1 | PARTIAL | Quantity-aware custody: separate responsible person from physical issue; split issues, recipients/transfers, partial return/consumption/damage/loss and outstanding balances. Consuming issued stock cannot deduct storeroom stock twice. Preserve provenance, units, permissions and provisional offline allocation. Existing assigned_to is not evidence of a physical issue. |
 | B2 | PLANNED | Traceable salvage/returns/disassembly/scrap linked to source project and issue/consumption. Human confirmation/inspection before usable stock, no over-recovery or duplicate credit, preserve historical consumption. Separate recovery value, carrying/replacement value and actual repair expense; no invented purchase/cash refund. Reviewed recovery valuation is owner-approved below; implementation remains. |
 | B3 | PARTIAL | Audit and complete canonical links among projects, BOM revisions, requirements, reservations, tasks, experiments, canvas, notes/resources and financial evidence. Shared demand must not be double-counted; visual references must not duplicate/delete underlying records. Finish remaining local mutation/repeat/revision paths and remove missing-record server fallbacks. |
 | B4 | PARTIAL | Finish project review/reservation/history/context projections and queued submissions/decisions. Define and implement revision, cancellation, reservation release, archive/delete and closure propagation while preserving custody/results/audit/finance history. Task completion must not silently consume stock or fabricate results; global acceptance remains distinct from local intent. |

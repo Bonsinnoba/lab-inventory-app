@@ -6,6 +6,14 @@ import { getProjectAccess, requireProjectEditor } from '../middleware/project-ac
 import { canManageEntityGrants, isVisibility, visibilityReadSql } from '../middleware/visibility.js';
 
 const router = Router();
+// Inventory sync locks item -> reservation. HTTP decisions/fulfillment must use
+// the same order, or they can deadlock against a reservation-backed checkout.
+async function lockReservationForItem(client,reservationId,projectId){
+  const observed=await client.query('SELECT item_id FROM project_reservations WHERE id=$1 AND project_id=$2',[reservationId,projectId]);
+  if(!observed.rowCount)return observed;
+  await client.query('SELECT id FROM items WHERE id=$1 FOR UPDATE',[observed.rows[0].item_id]);
+  return client.query('SELECT * FROM project_reservations WHERE id=$1 AND project_id=$2 AND item_id=$3 FOR UPDATE',[reservationId,projectId,observed.rows[0].item_id]);
+}
 router.get('/', hasPermission('projects.view'), async (req,res)=>{try{const permissions=await getUserPermissions(req.user.userId,req.user.role);const financial=permissions.has('finance.view');const scope=visibilityReadSql({alias:'p',entityType:'project',userIdParameter:'$1',roleParameter:'$2',projectIdExpression:'p.id'});const rows=await pool.query(financial?`SELECT p.*,pfs.actual_expense::float AS actual_expense,pfs.project_income::float AS project_income,pfs.allocated_inventory_value::float AS allocated_inventory_value,CASE WHEN p.budget IS NULL THEN NULL ELSE (p.budget-COALESCE(pfs.actual_expense,0))::float END AS budget_remaining FROM projects p LEFT JOIN project_financial_summary pfs ON pfs.project_id=p.id WHERE ${scope} ORDER BY p.created_at DESC`:`SELECT p.id,p.name,p.status,p.description,p.priority,p.start_date,p.due_date,p.owner_id,p.review_status,p.visibility,p.created_at,p.updated_at FROM projects p WHERE ${scope} ORDER BY p.created_at DESC`,[req.user.userId,req.user.role]);res.json(rows.rows.map(row=>projectFinancialProjection(row,permissions)));}catch(err){console.error(err);res.status(500).json({error:'Failed to fetch projects'});}});
 router.get('/financial-summary', hasPermission('projects.view'), hasPermission('finance.view'), async (req,res)=>{
   try {
@@ -66,8 +74,8 @@ router.post('/:id/reservations',hasPermission('projects.edit'),async(req,res)=>{
   if(!['planning','active'].includes(project.rows[0].status))return res.status(409).json({error:'Project must be Planning or Active'});
   const item=await pool.query('SELECT id FROM items WHERE id=$1',[item_id]);
   if(!item.rowCount)return res.status(404).json({error:'Inventory item not found'});
-  const result=await pool.query(`INSERT INTO project_reservations(project_id,item_id,requested_by,quantity,needed_from,needed_until,note,status)
-    VALUES($1,$2,$3,$4,$5,$6,$7,'pending_review') RETURNING *`,[req.params.id,item_id,req.user.userId,quantity,needed_from,needed_until||null,note||null]);
+  const result=await pool.query(`INSERT INTO project_reservations(project_id,item_id,requested_by,quantity,original_quantity,needed_from,needed_until,note,status)
+    VALUES($1,$2,$3,$4,$4,$5,$6,$7,'pending_review') RETURNING *`,[req.params.id,item_id,req.user.userId,quantity,needed_from,needed_until||null,note||null]);
   await writeAuditLog({req,action:'CREATE',entityType:'project_reservation',entityId:result.rows[0].id,newValue:result.rows[0]});
   res.status(201).json(result.rows[0]);
  }catch(err){console.error(err);res.status(500).json({error:'Unable to request reservation'});}
@@ -80,7 +88,7 @@ router.post('/:id/reservations/:reservationId/decision',hasPermission('projects.
  const client=await pool.connect();
  try{
   await client.query('BEGIN');
-  const request=await client.query('SELECT * FROM project_reservations WHERE id=$1 AND project_id=$2 FOR UPDATE',[req.params.reservationId,req.params.id]);
+  const request=await lockReservationForItem(client,req.params.reservationId,req.params.id);
   if(!request.rowCount){await client.query('ROLLBACK');return res.status(404).json({error:'Reservation not found'});}
   const reservation=request.rows[0];
   if(decision==='release'?reservation.status!=='confirmed':reservation.status!=='pending_review'){await client.query('ROLLBACK');return res.status(409).json({error:'Reservation state does not permit this decision'});}
@@ -113,7 +121,7 @@ router.post('/:id/reservations/:reservationId/fulfill',hasPermission('inventory.
  const client=await pool.connect();
  try{
   await client.query('BEGIN');
-  const found=await client.query('SELECT * FROM project_reservations WHERE id=$1 AND project_id=$2 FOR UPDATE',[req.params.reservationId,req.params.id]);
+  const found=await lockReservationForItem(client,req.params.reservationId,req.params.id);
   if(!found.rowCount){await client.query('ROLLBACK');return res.status(404).json({error:'Reservation not found'});}
   const reservation=found.rows[0];
   const previous=await client.query(`SELECT f.*,m.quantity AS movement_quantity FROM project_reservation_fulfillments f

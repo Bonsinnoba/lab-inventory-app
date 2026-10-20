@@ -248,7 +248,7 @@ pub fn resolve_sync_conflict(app:AppHandle,change_id:String,resolution:String)->
     let mut conn=open_local_connection(&app)?;ensure_schema(&conn)?;
     resolve_conflict(&mut conn,&change_id,&resolution)
 }
-fn resolve_conflict(conn:&mut Connection,change_id:&str,resolution:&str)->Result<(),String>{
+pub(crate) fn resolve_conflict(conn:&mut Connection,change_id:&str,resolution:&str)->Result<(),String>{
     if !["keep_local","accept_server","dismiss"].contains(&resolution){return Err("Invalid conflict resolution".into())}
     let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
     require_owned_change(&tx,change_id)?;
@@ -281,6 +281,7 @@ fn resolve_conflict(conn:&mut Connection,change_id:&str,resolution:&str)->Result
             tx.execute("UPDATE sync_outbox SET attempt_count=0,last_error=NULL,synced_at=NULL WHERE change_id=?1",[change_id]).map_err(|e|e.to_string())?;
         }
     } else {
+        if entity=="project_reservation" {crate::local_reservations::retire(&tx,change_id)?;}
         if entity=="resource"&&["edit_content","create","create_copy","attach","edit_metadata"].contains(&operation.as_str()) {
             crate::resource_dependencies::discard_descendants(&tx,change_id,resolution)?;
         }

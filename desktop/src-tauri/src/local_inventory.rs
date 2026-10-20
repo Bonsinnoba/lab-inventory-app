@@ -1,9 +1,89 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 use tauri::AppHandle;
 
 use crate::local_db;
 use crate::local_auth;
+
+#[path = "inventory_custody.rs"]
+mod custody;
+
+#[path = "inventory_reservations.rs"]
+pub(crate) mod reservations;
+
+#[cfg(test)]
+#[path = "inventory_custody_persistence_test.rs"]
+mod custody_persistence_tests;
+
+#[derive(Debug, Deserialize)]
+pub struct LocalCustodyWriteInput {
+    pub expected_snapshot_json: String,
+    pub expected_account_id: String,
+    pub movement_json: String,
+    pub change_id: String,
+    pub item_id: String,
+}
+
+// A distinct command prevents newer UI code from silently using an older native
+// writer that drops custody intent. No HTTP fallback is permitted.
+#[tauri::command]
+pub fn save_local_inventory_custody_movement(app: AppHandle, input: LocalCustodyWriteInput) -> Result<String, String> {
+    let mut conn = connection(&app)?;
+    save_custody_movement(&mut conn, input)
+}
+
+fn save_custody_movement(conn: &mut Connection, input: LocalCustodyWriteInput) -> Result<String, String> {
+    ensure_movement_schema(conn)?;
+    let item_id = crate::inventory_sync_state::canonical_id(&input.item_id)?;
+    let mut intent: serde_json::Value = serde_json::from_str(&input.movement_json).map_err(|e| e.to_string())?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
+    crate::inventory_sync_state::require_base(&tx, &input.expected_account_id, &input.expected_snapshot_json)?;
+    local_auth::require_local_permission(&tx, "inventory.adjust_stock")?;
+    let account = local_db::active_account(&tx)?;
+    let mut snapshot = crate::inventory_sync_state::read(&tx)?.ok_or("Download inventory before editing")?;
+    let index = snapshot.iter().position(|row| row["id"] == item_id).ok_or("Inventory item missing")?;
+    let current = if let Some(id) = intent["custody_id"].as_str() {
+        let id = crate::inventory_sync_state::canonical_id(id)?;
+        let raw: String = tx.query_row("SELECT custody_json FROM local_inventory_custody_records WHERE custody_id=?1 AND account_id=?2 AND item_id=?3",
+            params![format!("account:{account}:{id}"),account,item_id], |r| r.get(0)).optional().map_err(|e| e.to_string())?.ok_or("Custody has not been downloaded for this account")?;
+        Some(serde_json::from_str::<serde_json::Value>(&raw).map_err(|e| e.to_string())?)
+    } else { None };
+    let allocation = reservations::prepare_issue(&tx, &mut intent, &item_id, &input.change_id)?;
+    let mut plan = custody::plan(&snapshot[index], &intent, current.as_ref(), &account)?;
+    if let Some(recipient) = &plan.recipient {
+        let found: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM local_assignee_directory WHERE user_id=?1 AND account_id=?2)",
+            params![format!("account:{account}:{recipient}"),account], |r| r.get(0)).map_err(|e| e.to_string())?;
+        if !found { return Err("Download the active recipient directory before assigning custody".into()); }
+    }
+    for record in &plan.records {
+        if record["id"] == plan.movement["id"] {
+            let key = format!("account:{account}:{}", record["id"].as_str().ok_or("Custody ID missing")?);
+            let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM local_inventory_custody_records WHERE custody_id=?1)",[key],|r|r.get(0)).map_err(|e| e.to_string())?;
+            if exists { return Err("Custody identity already exists; refresh before continuing".into()); }
+        }
+        if let Some(project) = record["project_id"].as_str() {
+            crate::local_projects::require_cached_project_access(&tx, project, false)?;
+        }
+    }
+    snapshot[index] = plan.item;
+    crate::inventory_sync_state::stamp_versions(&tx,"item_movement",Some(&item_id),"create",&mut plan.movement,&mut snapshot)?;
+    crate::inventory_sync_state::write(&tx,&snapshot)?;
+    let movement_id = plan.movement["id"].as_str().ok_or("Movement ID missing")?;
+    tx.execute("INSERT INTO local_inventory_movement_records(movement_id,item_id,movement_json,account_id) VALUES(?1,?2,?3,?4)",
+        params![format!("account:{account}:{movement_id}"),item_id,plan.movement.to_string(),account]).map_err(|e| e.to_string())?;
+    for record in &plan.records {
+        let id = record["id"].as_str().ok_or("Custody ID missing")?;
+        tx.execute("INSERT INTO local_inventory_custody_records(custody_id,item_id,custody_json,account_id) VALUES(?1,?2,?3,?4) ON CONFLICT(custody_id) DO UPDATE SET custody_json=excluded.custody_json",
+            params![format!("account:{account}:{id}"),item_id,record.to_string(),account]).map_err(|e| e.to_string())?;
+    }
+    let device: String = tx.query_row("SELECT device_id FROM device_identity WHERE id=1",[],|r|r.get(0)).map_err(|e| e.to_string())?;
+    tx.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES(?1,?2,'item_movement',?3,'create',?4)",
+        params![input.change_id,device,item_id,plan.movement.to_string()]).map_err(|e| e.to_string())?;
+    if let Some(allocation) = allocation { reservations::record_issue(&tx, &allocation)?; }
+    let result = serde_json::json!({"item":snapshot[index],"movement":plan.movement}).to_string();
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(result)
+}
 
 const MOVEMENT_SCHEMA_VERSION: &str = "005_local_inventory_movement_account";
 
@@ -217,6 +297,11 @@ pub(crate) fn save_movement(conn:&mut Connection,input:LocalMovementWriteInput)-
     let mut movement: serde_json::Value = serde_json::from_str(&input.movement_json)
         .map_err(|e| format!("Invalid movement JSON: {e}"))?;
 
+    if ["custody_id","recipient_id","settlement_type","transfer_recipient_id","serial_number"]
+        .iter().any(|key| movement[*key].as_str().is_some_and(|s| !s.is_empty())) {
+        return Err("Use the custody movement writer for custody operations".into());
+    }
+
     let id = movement
         .get("id")
         .and_then(|v| v.as_str())
@@ -319,6 +404,10 @@ pub fn cache_local_item_custody(
     expected_account_id: String,
 ) -> Result<(), String> {
     let mut conn = connection(&app)?;
+    cache_custody(&mut conn, &item_id, &records_json, &expected_account_id)
+}
+
+fn cache_custody(conn: &mut Connection, item_id: &str, records_json: &str, expected_account_id: &str) -> Result<(), String> {
     let item_id = crate::inventory_sync_state::canonical_id(&item_id)?;
     let values: Vec<serde_json::Value> = serde_json::from_str(&records_json)
         .map_err(|e| format!("Invalid custody records JSON: {e}"))?;
@@ -331,18 +420,48 @@ pub fn cache_local_item_custody(
     local_auth::require_local_permission(&tx, "inventory.view")?;
     let account_id = local_db::active_account(&tx)?;
 
+    // A server refresh must not replace optimistic balances that are part of
+    // unacknowledged authored movements (including failed/conflicted intents).
+    let pending: Vec<String> = tx.prepare("SELECT payload_json FROM active_sync_outbox WHERE entity_type='item_movement' AND synced_at IS NULL")
+        .map_err(|e| e.to_string())?.query_map([], |r| r.get(0)).map_err(|e| e.to_string())?
+        .collect::<Result<_,_>>().map_err(|e| e.to_string())?;
+    for raw in pending {
+        let value: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        if value["item_id"].as_str().map(crate::inventory_sync_state::canonical_id).transpose()?.as_deref() == Some(&item_id)
+            && (value["custody_id"].is_string() || value["recipient_id"].is_string()) {
+            return Ok(());
+        }
+    }
+
     tx.execute(
         "DELETE FROM local_inventory_custody_records WHERE item_id=?1 AND account_id=?2",
         params![&item_id, &account_id],
     )
     .map_err(|e| format!("Unable to replace custody cache: {e}"))?;
 
-    for record in values {
+    let mut seen = std::collections::HashSet::new();
+    for mut record in values {
         let id = record
             .get("id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| "Custody record id is required".to_string())?;
         let id = crate::inventory_sync_state::canonical_id(id)?;
+        if crate::inventory_sync_state::canonical_id(record["item_id"].as_str().ok_or("Custody item ID missing")?)? != item_id {
+            return Err("Custody record belongs to another item".into());
+        }
+        if !seen.insert(id.clone()) {
+            return Err("Duplicate custody identity in response".into());
+        }
+        let key = format!("account:{account_id}:{id}");
+        let previous_item: Option<String> = tx.query_row(
+            "SELECT item_id FROM local_inventory_custody_records WHERE custody_id=?1 AND account_id=?2",
+            params![key,account_id], |r| r.get(0),
+        ).optional().map_err(|e| e.to_string())?;
+        if previous_item.as_deref().is_some_and(|previous| previous != item_id) {
+            return Err("Custody identity already belongs to another item".into());
+        }
+        record["id"] = serde_json::json!(id);
+        record["item_id"] = serde_json::json!(item_id);
         tx.execute(
             "INSERT INTO local_inventory_custody_records(custody_id, item_id, custody_json, account_id)
              VALUES (?1, ?2, ?3, ?4) ON CONFLICT(custody_id) DO UPDATE SET custody_json=excluded.custody_json",

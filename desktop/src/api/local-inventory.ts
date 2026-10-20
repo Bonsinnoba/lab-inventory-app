@@ -1,7 +1,27 @@
 import { invoke } from '@tauri-apps/api/tauri';
-import type { Item, ItemMovement, MovementType } from './items';
+import type { Item, ItemMovement, MovementType, MovementOptions } from './items';
 import { captureAccountSession, isAccountSessionCurrent, type AccountSession } from './auth';
 import { isLocalBackendAvailable } from './local-backend';
+export function hasCustodyIntent(movement: MovementOptions): boolean {
+  return Boolean(movement.custody_id || movement.recipient_id || movement.settlement_type || movement.transfer_recipient_id || movement.serial_number || movement.reservation_id);
+}
+export async function createLocalCustodyMovement(id: string, movement: MovementOptions): Promise<{item: Item; movement: ItemMovement} | null> {
+  if (!isLocalBackendAvailable()) return null;
+  const session = captureAccountSession();
+  if (!session) throw new Error('Sign in to record custody');
+  const local = await getLocalInventorySnapshot();
+  if (!isAccountSessionCurrent(session)) throw new Error('Account changed while preparing custody');
+  if (local === null) throw new Error('Download inventory before recording custody');
+  const record = {...movement, id: crypto.randomUUID(), item_id: id, created_at: new Date().toISOString()};
+  const raw = await invoke<string>('save_local_inventory_custody_movement', {input:{
+    expected_snapshot_json: JSON.stringify(local), expected_account_id: session.accountId,
+    movement_json: JSON.stringify(record), change_id: crypto.randomUUID(), item_id: id,
+  }});
+  if (!isAccountSessionCurrent(session)) throw new Error('Account changed while saving custody');
+  const result = JSON.parse(raw);
+  if (result?.movement?.id !== record.id || result?.item?.id !== id) throw new Error('Invalid local custody receipt');
+  return result;
+}
 export async function getLocalInventorySnapshot():Promise<Item[]|null>{if(!isLocalBackendAvailable())return null;const raw=await invoke<string|null>('get_local_inventory_snapshot');if(raw===null)return null;const parsed=JSON.parse(raw);if(!Array.isArray(parsed))throw new Error('Invalid local inventory snapshot');return parsed as Item[];}
 export async function cacheLocalInventorySnapshot(items:Item[],session:AccountSession|null=captureAccountSession()):Promise<void>{if(!isLocalBackendAvailable())return;if(!isAccountSessionCurrent(session))throw new Error('Account changed before caching inventory');await invoke('cache_local_inventory_snapshot',{snapshotJson:JSON.stringify(items),expectedAccountId:session.accountId});}
 export async function cacheLocalItemMovements(id:string,movements:ItemMovement[],session:AccountSession|null=captureAccountSession()):Promise<void>{if(!isLocalBackendAvailable())return;if(!isAccountSessionCurrent(session))throw new Error('Account changed before caching movements');await invoke('cache_local_inventory_movements',{itemId:id,movementsJson:JSON.stringify(movements),expectedAccountId:session.accountId});}

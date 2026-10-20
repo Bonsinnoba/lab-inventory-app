@@ -1,5 +1,150 @@
 # Phase 2 implementation evidence
 
+## October 20 — reservation request/review sync contract (B3/B4)
+
+Primary added `project_reservation` request/decision handling through the existing
+sync broker. Stable IDs, immutable receipts, active database authority, allocation
+locking/quantity checks and mandatory audit share one transaction. Releasing a
+reservation does not create a physical return. Full existing PostgreSQL handler
+batch **20 PASS**, rollback verified; syntax/diff checks pass. An initial audit
+context defect was fixed and the entire batch rerun. No deployed source or data
+replacement. Native intention persistence/projections and UI wiring remain open;
+queued confirmations must not grant effective offline authority. No new native
+outage acceptance or concurrent-client claim. Parent counts unchanged.
+Report: `docs/handoffs/phase2-parallel/PRIMARY_RESERVATION_INTENTS_SERVER_2026-10-20.md`.
+
+## October 20 — reserved-stock checkout UI (B1/B3)
+
+Primary agent connected the confirmed reservation list to a centered native HTML
+dialog (body portal) for recipient, partial quantity, optional single-unit serial
+and handover note. Submission rechecks current permissions, reservation, inventory,
+recipient directory and session, then calls the existing movement adapter/native
+SQLite+outbox transaction. No direct reservation checkout HTTP fallback was added.
+Synchronous submission guard prevents double clicks; success prevents resubmission
+and invalidates allocation/stock/custody/history queries. Physical issue is not
+labeled consumption. Native/server authority checks remain the final enforcement.
+
+API stopped for verification: **52 adapter tests PASS**, native inventory
+**30 PASS / 1 IGNORED**. TypeScript passed. The ignored two-client integration case
+and actual modal interaction/deployed reconnect acceptance remain unverified.
+No DB tests substituted a server mock for PostgreSQL; this batch changed renderer
+code and reused the previously verified native/server contracts. API restored;
+no database reset, deployment or desktop restart. Remaining request/review/direct
+consumption intents, cache integration, lifecycle/settlement and broader B1/B3
+obligations remain open. Optional task/experiment selection is not in this dialog
+yet; project/reservation provenance is recorded. Parent counts unchanged.
+
+## October 20 — primary native reserved-custody projection (B1/B3, A1/A5)
+
+Native reservation-backed issues now validate cached project authority, allocation,
+quantity and work/requirement provenance, then commit stock/custody/movement/outbox
+and an allocation overlay atomically. Project pulls include reservation quantities
+and fulfillment IDs from one PostgreSQL statement. Overlays survive ACK/restart;
+included movement IDs prevent double deduction. Explicit conflict retirement
+archives overlays atomically and retains authored payloads. Returns do not reopen
+allocations. Desktop reservation reads now use native projected snapshots with
+account/session guards and no HTTP fallback; missing is not empty.
+
+Real PostgreSQL handler batch **14 PASS**, rollback verified. Docker API stopped
+for native checks: inventory **30 PASS / 1 IGNORED**, projects **4 PASS**, local DB
+**4 PASS**. Adapter batch **48 PASS**; TypeScript, backend syntax and diff checks
+passed. Ignored two-client integration is NOT verified. API restored; no deployed
+migration, desktop restart, reset or user-data deletion. Checkout UI, remaining
+reservation mutation intents/read-after-write integration and coordinated desktop
+outage/reconnect/concurrency acceptance remain open. No whole-parent closure.
+
+Detailed primary report:
+`docs/handoffs/phase2-parallel/PRIMARY_RESERVED_CUSTODY_NATIVE_2026-10-20.md`.
+
+## October 20 — primary reserved-custody server foundation (B1/B3)
+
+Server checkout now validates a matching confirmed reservation, current project
+editor authority and canonical work references, then atomically records physical
+issue, custody, remaining allocation and fulfillment history through the existing
+inventory broker. Returns preserve custody project provenance without re-opening
+reservations. Other allocations remain protected; receipt retry is unchanged.
+
+Fixed source request INSERT missing original_quantity; added a data-preserving
+zero-remaining-only-when-fulfilled migration and aligned HTTP item/reservation
+lock order. Presentation says fulfilled rather than assuming consumption.
+Final real PostgreSQL handler batch **13 PASS / 0 FAIL**, including earlier eight
+checks; fixture and constraint rollback verified. No HTTP/concurrency or native
+offline reservation acceptance claimed. Migration/source NOT deployed; existing
+running API/DB left running, data preserved. Native reservation projection,
+pending/rejected reconciliation and checkout UI remain CODE REMAINING.
+
+Evidence: `docs/handoffs/phase2-parallel/PRIMARY_RESERVED_CUSTODY_SERVER_2026-10-20.md`.
+No parent status or phase closure changes.
+
+## October 19 — primary project relationship guards (B3/B4/A1)
+
+Native task/experiment/BOM requirement references and work/canvas endpoints now
+validate within the owning project before nested writes. Server sync independently
+checks requirement ownership, uses stored project ownership for edit/delete, and
+binds task/experiment link deletion to its project/endpoints. UUID normalization
+leaves original retry payloads unchanged. Fixed connector updates referencing a
+nonexistent timestamp column, discovered by a legitimate-update PostgreSQL check.
+
+Native project checks **4 PASS** with LabOS API/DB stopped. Final expanded real
+PostgreSQL push-handler batch **8 PASS**, rollback verified; full batch rerun after
+the connector failure. Not HTTP/auth-middleware, concurrent-client or deployed UI
+acceptance. Project post-commit audit atomicity remains open; the probe isolates
+its real audit implementation within the rollback transaction. No data reset,
+deployed-source replacement or desktop restart. Containers returned to stopped.
+
+Reservation-backed issue/local allocation, direct API parity, demand aggregation
+and lifecycle settlement remain CODE REMAINING. No parent or phase closure.
+Report: `docs/handoffs/phase2-parallel/PRIMARY_PROJECT_RELATIONSHIP_GUARDS_2026-10-19.md`.
+
+## October 19 — primary custody sync replay and rejection preservation (B1/A2)
+
+Current push handler + inventory apply/version/audit/receipt code exercised on the
+existing PostgreSQL inside a rollback-only transaction: **5 PASS, 0 FAIL**. Verified
+issue/return/transfer replay, identity/payload ownership, rejected dependencies and
+excess settlement, and rollback/retry at receipt-write failure. Real SQL and handler
+logic; transport/auth middleware are not exercised and concurrency is not claimed.
+Fixture/schema rollback verified; deployed API untouched.
+
+Fixed local explicit-resolution gap: connected rejected inventory projections are
+archived under the owning account; original outbox payloads remain retained; active
+custody is invalidated and affected stock writes wait for an authorized server pull.
+Archive failure rolls back resolution. Native inventory **24 PASS, 1 IGNORED**;
+related local DB **4 PASS**, workbook import **3 PASS**, receipt processing **3 PASS**.
+Native checks ran with both real Docker containers stopped. Containers were initially
+stopped, temporarily started for PostgreSQL checks, then restored to stopped.
+Not deployed. Recovery UI/export/retention, multi-client/native-network acceptance
+and project/reservation coupling remain open. No parent closure.
+Evidence: `docs/handoffs/phase2-parallel/PRIMARY_CUSTODY_SYNC_RECOVERY_2026-10-19.md`.
+
+## October 19 — primary native custody persistence follow-up (B1)
+
+Native inventory regression batch: **21 PASS, 0 FAIL, 1 IGNORED**, with actual API
+stopped then restored; PostgreSQL left running. Eight new on-disk SQLite tests
+exercise the production transaction core, reopen durability, rollback at each
+write boundary, pending cache preservation, author/version dependencies,
+authorization failures, duplicate IDs, stale competing writers and transfer
+rollback. Fixed wrong-item custody-cache acceptance; also reject duplicate and
+cross-item custody identities. Initial failures/harness corrections are recorded.
+No deployment or data reset. Native persistence subcheck verified; integrated
+server replay/conflict reconciliation and wider B1/B3 remain open. B1's stale
+PLANNED label is reconciled to PARTIAL, not closed.
+Evidence: `docs/handoffs/phase2-parallel/PRIMARY_CUSTODY_REPAIR_2026-10-19.md`.
+
+## October 19 — primary custody quantity/transaction repair (B1)
+
+Dedicated account-bound native custody writer now persists item/movement/custody
+and outbox together; newer UI cannot silently call an older generic writer.
+Partial return/consumption/transfer arithmetic and pending custody cache protection
+implemented. Server inserts movements before dependent custody rows; real PostgreSQL
+testing also caught and resolved a numeric SQL parameter defect. Final rollback-only
+PostgreSQL batch: 8 PASS, schema/fixtures rolled back. Native calculation tests:
+4 PASS. Renderer batch: 55 PASS with API actually stopped, then restored healthy;
+PostgreSQL left running. TypeScript and cargo check PASS. Not deployed; new native
+SQLite persistence was pending at this checkpoint (follow-up above); integrated
+server replay, concurrency and broader B1/B3 integration remain open.
+No parent closure. Primary evidence:
+`docs/handoffs/phase2-parallel/PRIMARY_CUSTODY_REPAIR_2026-10-19.md`.
+
 ## October 18 — primary inventory account/read guard repair (A1/B6)
 
 Primary repaired H1-4 helper-review read guards across movements, field history,

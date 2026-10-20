@@ -154,7 +154,13 @@ pub fn list_local_projects(app: AppHandle) -> Result<Vec<Value>, String> {
 
 #[tauri::command]
 pub fn get_local_project(app: AppHandle, project_id: String) -> Result<Option<Value>, String> {
-    let c = conn(&app)?; Ok(load(&c)?.into_iter().find(|p| p.get("id").and_then(Value::as_str) == Some(project_id.as_str())))
+    let c = conn(&app)?;
+    let mut project = load(&c)?.into_iter().find(|p| p.get("id").and_then(Value::as_str) == Some(project_id.as_str()));
+    if let Some(ref mut project) = project {
+        crate::local_inventory::reservations::project(&c, project)?;
+        crate::local_reservations::project(&c, project)?;
+    }
+    Ok(project)
 }
 
 #[tauri::command]
@@ -225,12 +231,38 @@ fn nested_get(project: &Value, key: &str) -> Vec<Value> {
     project.get(key).and_then(Value::as_array).cloned().unwrap_or_default()
 }
 
+// References reuse canonical demand; they never create another requirement.
+fn validate_nested_references(project: &Value, key: &str, record: &mut Value) -> Result<(), String> {
+    let refs: &[(&str, &str, bool)] = match key {
+        "tasks" | "experiments" | "bom" => &[("requirement_id", "requirements", false)],
+        "task_experiments" => &[("task_id", "tasks", true), ("experiment_id", "experiments", true)],
+        "connectors" => &[("source_block_id", "blocks", true), ("target_block_id", "blocks", true)],
+        _ => &[],
+    };
+    for &(field, collection, required) in refs {
+        let value = record.get(field).unwrap_or(&Value::Null);
+        if value.is_null() && !required { continue; }
+        let canonical = uuid::Uuid::parse_str(value.as_str().ok_or_else(|| format!("{field} must be a UUID"))?)
+            .map_err(|_| format!("{field} must be a UUID"))?.to_string();
+        if !nested_get(project, collection).iter().any(|entry| entry.get("id").and_then(Value::as_str)
+            .and_then(|id| uuid::Uuid::parse_str(id).ok()).map(|id| id.to_string()) == Some(canonical.clone())) {
+            return Err(format!("{field} must reference a record in this project; synchronize if it is missing"));
+        }
+        record[field] = json!(canonical);
+    }
+    if key == "connectors" && record["source_block_id"] == record["target_block_id"] {
+        return Err("Connector endpoints must be different blocks".into());
+    }
+    Ok(())
+}
+
 fn nested_create(app: AppHandle, project_id: String, key: &str, mut record: Value, entity_type: &str) -> Result<Value, String> {
     let mut c=conn(&app)?; let mut projects=load(&c)?;
     let p=projects.iter_mut().find(|p| p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
     let record_id=id(); let timestamp=now(&c)?;
     record["id"]=json!(&record_id); record["project_id"]=json!(&project_id);
     record["created_at"]=json!(&timestamp); record["updated_at"]=json!(&timestamp);
+    validate_nested_references(p,key,&mut record)?;
     let mut list=nested_get(p,key); list.push(record.clone()); p[key]=Value::Array(list); p["updated_at"]=json!(&timestamp);
     save(&mut c,&projects,vec![(id(),entity_type.into(),record_id,"create".into(),record.clone())])?;
     Ok(record)
@@ -242,6 +274,7 @@ fn nested_update(app: AppHandle, project_id:String, key:&str, record_id:String, 
     let mut list=nested_get(p,key);
     let r=list.iter_mut().find(|r|r.get("id").and_then(Value::as_str)==Some(record_id.as_str())).ok_or("Record not found")?;
     if let Some(obj)=patch.as_object(){for(k,v)in obj{if k!="id"&&k!="project_id"&&k!="created_at"{r[k]=v.clone();}}}
+    validate_nested_references(p,key,r)?;
     r["updated_at"]=json!(now(&c)?); let updated=r.clone(); p[key]=Value::Array(list); p["updated_at"]=json!(now(&c)?);
     save(&mut c,&projects,vec![(id(),entity_type.into(),record_id,"update".into(),json!({"project_id":project_id,"record":updated}))])?;Ok(updated)
 }
@@ -556,8 +589,36 @@ pub fn delete_local_project_experiment_observation(app:AppHandle,project_id:Stri
 
 #[cfg(test)]
 mod access_tests {
-    use super::{access_for_user, readable_for_user, require_local_project_editor};
+    use super::{access_for_user, readable_for_user, require_local_project_editor, validate_nested_references};
     use serde_json::json;
+
+    #[test]
+    fn canonical_requirement_references_are_shared_and_normalized() {
+        let id="abcdef01-2345-6789-abcd-ef0123456789";
+        let project=json!({"requirements":[{"id":id,"quantity":3}]});
+        let before=project.clone();
+        for key in ["tasks","experiments","bom"] {
+            let mut record=json!({"requirement_id":"ABCDEF0123456789ABCDEF0123456789"});
+            validate_nested_references(&project,key,&mut record).unwrap();
+            assert_eq!(record["requirement_id"],id);
+            assert!(validate_nested_references(&project,key,&mut json!({"requirement_id":null})).is_ok());
+            assert!(validate_nested_references(&project,key,&mut json!({"requirement_id":"bad"})).is_err());
+            assert!(validate_nested_references(&json!({"requirements":[]}),key,&mut record).is_err());
+        }
+        assert_eq!(project,before,"References do not multiply canonical demand");
+    }
+
+    #[test]
+    fn work_links_and_canvas_endpoints_stay_in_the_project() {
+        let a="10000000-0000-0000-0000-000000000001";
+        let b="20000000-0000-0000-0000-000000000001";
+        let project=json!({"tasks":[{"id":a}],"experiments":[{"id":b}],"blocks":[{"id":a},{"id":b}]});
+        assert!(validate_nested_references(&project,"task_experiments",&mut json!({"task_id":a,"experiment_id":b})).is_ok());
+        assert!(validate_nested_references(&project,"task_experiments",&mut json!({"task_id":b,"experiment_id":a})).is_err());
+        assert!(validate_nested_references(&project,"connectors",&mut json!({"source_block_id":a,"target_block_id":b})).is_ok());
+        assert!(validate_nested_references(&project,"connectors",&mut json!({"source_block_id":a,"target_block_id":a})).is_err());
+        assert!(validate_nested_references(&project,"connectors",&mut json!({"source_block_id":a})).is_err());
+    }
 
     #[test]
     fn cached_editor_access_is_bound_to_the_account() {

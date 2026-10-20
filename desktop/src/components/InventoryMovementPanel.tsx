@@ -92,7 +92,7 @@ export default function InventoryMovementPanel({ item }: Props) {
       return createItemMovement(
         item.id,
         {
-          movement_type: settleType === 'return' ? 'return' : 'consume',
+          movement_type: settleType,
           quantity: Number(settleQuantity),
           custody_id: settlingCustody.id,
           settlement_type: settleType,
@@ -191,7 +191,7 @@ export default function InventoryMovementPanel({ item }: Props) {
 
         <button
           onClick={() => mutation.mutate()}
-          disabled={mutation.isPending || !quantity || (type === 'transfer' && !toLocation.trim()) || (type === 'adjust' && !reason.trim())}
+          disabled={mutation.isPending || !quantity || (type === 'checkout' && !recipientId) || (type === 'transfer' && !toLocation.trim()) || (type === 'adjust' && !reason.trim())}
           className="mt-4 px-4 py-2 bg-accent text-bg rounded-sm text-sm font-medium disabled:opacity-50"
         >
           {mutation.isPending ? 'Recording...' : 'Record Movement'}

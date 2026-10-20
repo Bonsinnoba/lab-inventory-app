@@ -29,6 +29,15 @@ const actions=api=>[
   ()=>api.bulkUpdateItemStatus([id],'in_use'),()=>api.bulkDeleteItems([id]),
   ()=>api.createItemMovement(id,{movement_type:'consume',quantity:2}),
 ];
+test('reservation intent without a recipient cannot be dropped by the ordinary writer',async()=>{
+  let nativeCommand;
+  const c=load(async command=>{
+    if(command==='get_local_inventory_snapshot')return JSON.stringify(initial);
+    nativeCommand=command;throw Error('Reservation-backed issues require checkout with a recipient');
+  });
+  await assert.rejects(c.api.createItemMovement(id,{movement_type:'checkout',quantity:1,reservation_id:randomUUID(),project_id:randomUUID()}),/recipient/);
+  assert.equal(nativeCommand,'save_local_inventory_custody_movement');assert.equal(c.requests(),0);
+});
 for(const fault of ['missing','reject'])test(`all inventory writes ${fault}: no HTTP fallback`,async()=>{
   const c=load(async command=>{if(command==='get_local_inventory_snapshot')return fault==='missing'?null:JSON.stringify(initial);throw Error('SQLite failure')});
   for(const action of actions(c.api))await assert.rejects(action());assert.equal(c.requests(),0);
@@ -84,6 +93,32 @@ const scopedReads = [
   ['custody', 'getItemCustody', 'list_local_item_custody', 'cache_local_item_custody'],
   ['assignee directory', 'getAssigneeDirectory', 'list_local_assignee_directory', 'cache_local_assignee_directory'],
 ];
+
+test('custody writes use the dedicated native transaction with full authored intent and receipt', async()=>{
+  const intent={movement_type:'transfer',quantity:2,custody_id:id,settlement_type:'transfer',transfer_recipient_id:id,
+    project_id:id,task_id:id,experiment_id:id,requirement_id:id,reservation_id:id,serial_number:'SN-1',notes:'transfer'};
+  let saved;
+  const c=load(async(command,args)=>{
+    if(command==='get_local_inventory_snapshot')return JSON.stringify(initial);
+    assert.equal(command,'save_local_inventory_custody_movement');saved=args.input;
+    const movement=JSON.parse(saved.movement_json);
+    return JSON.stringify({item:initial[0],movement});
+  });
+  const result=await c.api.createItemMovement(id,intent);
+  for(const [key,value] of Object.entries(intent))assert.equal(result.movement[key],value);
+  assert.equal(saved.expected_account_id,'a');assert.ok(saved.change_id);assert.equal(c.requests(),0);
+});
+test('missing custody native command, missing inventory and account switch never fall back to HTTP',async()=>{
+  for(const mode of ['missing-command','missing-inventory','account-change']){
+    let c;c=load(async(command,args)=>{
+      if(command==='get_local_inventory_snapshot')return mode==='missing-inventory'?null:JSON.stringify(initial);
+      if(mode==='missing-command')throw Error('Unknown native command');
+      c.switchAccount();return JSON.stringify({item:initial[0],movement:JSON.parse(args.input.movement_json)});
+    });
+    await assert.rejects(c.api.createItemMovement(id,{movement_type:'checkout',quantity:1,recipient_id:id}));
+    assert.equal(c.requests(),0);
+  }
+});
 for (const [label, method, readCommand, cacheCommand] of scopedReads) {
   const read = c => c.api[method](id);
   test(`${label}: cached offline reads need no network; missing snapshots are not empty`, async () => {

@@ -51,7 +51,12 @@ const ENGINEERING_CONFIG={
   engineering_calculation:{table:'engineering_calculations',fields:['project_id','experiment_id','title','category','formula','inputs','result_numeric','result_text','result_unit','visibility','created_by'],permission:{create:'engineering.create',update:'engineering.edit',delete:'engineering.delete'}},
   engineering_test:{table:'engineering_tests',fields:['project_id','title','test_type','description','status','inputs','results','conclusion','visibility','performed_by'],permission:{create:'engineering.create',update:'engineering.edit',delete:'engineering.delete'}}
 };
-function projectEntityType(value){return Object.prototype.hasOwnProperty.call(PROJECT_ENTITY_CONFIG,value);}
+function projectEntityType(value){return value==='project_reservation'||Object.prototype.hasOwnProperty.call(PROJECT_ENTITY_CONFIG,value);}
+function projectReferenceId(value){
+  if(typeof value!=='string'||!(/^[0-9a-f]{32}$/i.test(value)||/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value)))fail(400,'INVALID_PROJECT_REFERENCE','Invalid project reference UUID');
+  const hex=value.replace(/-/g,'').toLowerCase();
+  return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
+}
 function engineeringEntityType(value){return Object.prototype.hasOwnProperty.call(ENGINEERING_CONFIG,value);}
 async function canEditProject(client,projectId,user){
   if(!projectId)return false;
@@ -113,9 +118,9 @@ async function applyProjectItemEntity(client,change,user){
 async function applyProjectTaskExperimentEntity(client,change,user){
   const payload=object(change.payload,'Task/experiment link sync payload');
   const record=payload.record||payload.item||payload;
-  const projectId=id(record.project_id,'Project ID');
-  const taskId=id(record.task_id,'Task ID');
-  const experimentId=id(record.experiment_id,'Experiment ID');
+  const projectId=projectReferenceId(record.project_id);
+  const taskId=projectReferenceId(record.task_id);
+  const experimentId=projectReferenceId(record.experiment_id);
   if(!(await canEditProject(client,projectId,user)))fail(403,'PROJECT_ACCESS_DENIED','You do not have edit access to this project');
   const parents=await client.query(
     'SELECT (SELECT project_id FROM project_tasks WHERE id=$1) AS task_project_id,(SELECT project_id FROM project_experiments WHERE id=$2) AS experiment_project_id',
@@ -136,7 +141,8 @@ async function applyProjectTaskExperimentEntity(client,change,user){
   if(change.operation==='delete'){
     const linkId=record.id||change.entity_id;
     if(linkId&&/^[0-9a-f-]{32,36}$/i.test(String(linkId))){
-      await client.query('DELETE FROM project_task_experiments WHERE id=$1',[linkId]);
+      const removed=await client.query('DELETE FROM project_task_experiments WHERE id=$1 AND project_id=$2 AND task_id=$3 AND experiment_id=$4 RETURNING id',[linkId,projectId,taskId,experimentId]);
+      if(!removed.rowCount)fail(409,'PROJECT_LINK_NOT_FOUND','The task/experiment link does not belong to these project endpoints');
       await client.query("INSERT INTO sync_tombstones(entity_type,entity_id,project_id) VALUES('project_task_experiment',$1,$2) ON CONFLICT(entity_type,entity_id) DO UPDATE SET deleted_at=now(),project_id=EXCLUDED.project_id",[linkId,projectId]);
     }else{
       await client.query('DELETE FROM project_task_experiments WHERE project_id=$1 AND task_id=$2 AND experiment_id=$3',[projectId,taskId,experimentId]);
@@ -147,8 +153,10 @@ async function applyProjectTaskExperimentEntity(client,change,user){
 }
 
 async function applyProjectEntity(client,change,user){
+  if(change.entity_type==='project_reservation')return applyReservationIntent(client,change,user);
   const entityType=change.entity_type,cfg=PROJECT_ENTITY_CONFIG[entityType],payload=object(change.payload,'Project sync payload');
-  const record=payload.project||payload.item||payload.record||payload;
+  // Normalize a copy; the immutable original payload is the retry receipt key.
+  const record={...(payload.project||payload.item||payload.record||payload)};
   const entityId=id(record.id||payload.id||change.entity_id,'Project entity ID');
   const isNestedParentless=['project_experiment_measurement','project_experiment_observation','project_work_attachment'].includes(entityType);
   let existing=null;
@@ -158,7 +166,10 @@ async function applyProjectEntity(client,change,user){
     if(!existing&&change.operation==='delete')return{deleted:true,id:entityId,already_deleted:true};
     if(!existing)fail(409,'PROJECT_ENTITY_NOT_FOUND',entityType+' '+entityId+' does not exist on the server');
   }
-  let projectId=entityType==='project'?entityId:record.project_id||existing?.project_id||null;
+  // Authorize the stored owner, never an alternate project supplied in an edit.
+  if(existing?.project_id&&record.project_id!=null&&projectReferenceId(record.project_id)!==existing.project_id)fail(400,'INVALID_PROJECT_REFERENCE','Cannot move a record between projects');
+  let projectId=entityType==='project'?entityId:existing?.project_id||record.project_id||null;
+  if(projectId)projectId=projectReferenceId(projectId);
   if(isNestedParentless){
     if(entityType==='project_experiment_measurement'||entityType==='project_experiment_observation'){
       const experimentId=record.experiment_id||existing?.experiment_id;
@@ -184,7 +195,21 @@ async function applyProjectEntity(client,change,user){
     if(!permissions.has('finance.edit'))fail(403,'PERMISSION_DENIED','Permission required: finance.edit to synchronize project budgets');
   }
   if(entityType==='project'&&change.operation==='create'&&record.owner_id&&record.owner_id!==user.userId&&user.role!=='admin')fail(403,'PROJECT_OWNER_DENIED','Only administrators can assign another project owner during synchronization');
-  validateProjectRecord(entityType,record);
+  // Deletes must remain possible for legacy records with invalid references.
+  if(change.operation!=='delete'){
+    validateProjectRecord(entityType,{...existing,...record});
+    if(['project_task','project_experiment','project_bom'].includes(entityType)&&Object.hasOwn(record,'requirement_id')&&record.requirement_id!=null){
+      record.requirement_id=projectReferenceId(record.requirement_id);
+      const requirement=await client.query('SELECT id FROM project_resource_requirements WHERE id=$1 AND project_id=$2 FOR KEY SHARE',[record.requirement_id,projectId]);
+      if(!requirement.rowCount)fail(400,'INVALID_PROJECT_REQUIREMENT','Requirement must belong to this project');
+    }
+    if(entityType==='project_connector'){
+      const merged={...existing,...record};
+      const endpoints=[projectReferenceId(merged.source_block_id),projectReferenceId(merged.target_block_id)];
+      const blocks=await client.query('SELECT id FROM project_blocks WHERE id=ANY($1::uuid[]) AND project_id=$2 FOR KEY SHARE',[endpoints,projectId]);
+      if(blocks.rowCount!==2)fail(400,'INVALID_PROJECT_CONNECTOR','Connector blocks must belong to this project');
+    }
+  }
   if(entityType==='project'&&change.operation==='update'&&existing?.status==='planning'&&record.status==='active')fail(409,'PROJECT_REVIEW_REQUIRED','Submit the plan for online admin review before activation');
   if(entityType==='project'&&change.operation==='create'&&user?.role!=='admin'&&record.status&&record.status!=='planning')fail(403,'PROJECT_ACTIVATION_REQUIRES_ADMIN','New projects must begin in Planning');
   if(entityType==='project'&&change.operation==='update'&&record.status==='active'&&existing?.status!=='active'&&user?.role!=='admin')fail(403,'PROJECT_ACTIVATION_REQUIRES_ADMIN','Only admins can activate projects');
@@ -195,10 +220,6 @@ async function applyProjectEntity(client,change,user){
     for(const field of cfg.fields){
       if(field==='owner_id'&&entityType==='project'&&!record.owner_id){columns.push(field);values.push(user.userId);continue;}
       if(Object.prototype.hasOwnProperty.call(record,field)){columns.push(field);values.push(record[field]??null);}
-    }
-    if(entityType==='project_connector'){
-      const checks=await client.query('SELECT id,project_id FROM project_blocks WHERE id=ANY($1::uuid[])',[[record.source_block_id,record.target_block_id]]);
-      if(checks.rowCount!==2||checks.rows.some(row=>row.project_id!==projectId))fail(400,'INVALID_PROJECT_CONNECTOR','Connector blocks must belong to this project');
     }
     const placeholders=values.map((_,i)=>'$'+(i+1)).join(',');
     const created=(await client.query('INSERT INTO '+cfg.table+' ('+columns.join(',')+') VALUES ('+placeholders+') RETURNING *',values)).rows[0];
@@ -213,7 +234,9 @@ async function applyProjectEntity(client,change,user){
       if(Object.prototype.hasOwnProperty.call(record,field)){values.push(record[field]??null);updates.push(field+'=$'+values.length);}
     }
     if(!updates.length)return existing;
-    updates.push('updated_at=now()');values.push(entityId);
+    // Canvas connectors have created_at only in the existing schema.
+    if(entityType!=='project_connector')updates.push('updated_at=now()');
+    values.push(entityId);
     const updated=(await client.query('UPDATE '+cfg.table+' SET '+updates.join(',')+' WHERE id=$'+values.length+' RETURNING *',values)).rows[0];
     if(entityType==='project'&&existing.visibility!==updated.visibility&&updated.visibility==='restricted')await client.query("INSERT INTO record_access_grants(entity_type,entity_id,user_id,access_level,created_by) VALUES('project',$1,$2,'edit',$2) ON CONFLICT(entity_type,entity_id,user_id) DO UPDATE SET access_level='edit'",[entityId,user.userId]);
     if(entityType==='project'&&existing.visibility==='restricted'&&updated.visibility!=='restricted')await client.query("DELETE FROM record_access_grants WHERE entity_type='project' AND entity_id=$1",[entityId]);
@@ -226,6 +249,67 @@ async function applyProjectEntity(client,change,user){
     return{deleted:Boolean(result.rowCount),id:entityId};
   }
   fail(400,'UNSUPPORTED_PROJECT_OPERATION','Unsupported project operation: '+change.operation);
+}
+
+async function applyReservationIntent(client,change,user){
+  const record={...object(change.payload,'Reservation intent')};
+  const reservationId=projectReferenceId(change.entity_id),projectId=projectReferenceId(record.project_id);
+  if(record.id&&projectReferenceId(record.id)!==reservationId)fail(400,'RESERVATION_ID_MISMATCH','Reservation identity does not match the queued event');
+  if(!['request','decision'].includes(change.operation))fail(400,'RESERVATION_OPERATION_INVALID','Unsupported reservation intent');
+  const requesting=change.operation==='request';
+  const observed=requesting?null:(await client.query('SELECT item_id FROM project_reservations WHERE id=$1 AND project_id=$2',[reservationId,projectId])).rows[0];
+  if(!requesting&&!observed)fail(409,'RESERVATION_NOT_FOUND','Reservation is not available in this project');
+  const itemId=requesting?projectReferenceId(record.item_id):observed.item_id;
+  // Same order as custody and HTTP allocation writers: item -> reservation -> project.
+  const stock=(await client.query('SELECT id,current_quantity,type,status FROM items WHERE id=$1 FOR UPDATE',[itemId])).rows[0];
+  if(!stock)fail(409,'RESERVATION_ITEM_MISSING','Inventory item no longer exists');
+  const existing=(await client.query('SELECT * FROM project_reservations WHERE id=$1 FOR UPDATE',[reservationId])).rows[0];
+  if(existing&&existing.project_id!==projectId)fail(409,'RESERVATION_PROJECT_MISMATCH','Reservation belongs to another project');
+  if(!requesting&&(!existing||existing.item_id!==itemId))fail(409,'RESERVATION_CHANGED','Reservation changed during review');
+  const authority=(await client.query(`SELECT p.status,p.owner_id,p.visibility,u.role,u.is_active,pm.member_role,g.access_level
+    FROM projects p JOIN users u ON u.id=$2
+    LEFT JOIN project_members pm ON pm.project_id=p.id AND pm.user_id=u.id
+    LEFT JOIN record_access_grants g ON g.entity_type='project' AND g.entity_id=p.id AND g.user_id=u.id
+    WHERE p.id=$1 FOR SHARE OF p,u`,[projectId,user.userId])).rows[0];
+  const permissions=authority&&await getUserPermissions(user.userId,authority.role);
+  if(!authority?.is_active||!permissions?.has('projects.edit')||
+     (authority.role!=='admin'&&(!requesting||authority.role==='viewer'||
+       (authority.owner_id!==user.userId&&authority.member_role!=='lead')||
+       (authority.visibility==='restricted'&&authority.access_level!=='edit'))))
+    fail(403,'RESERVATION_AUTHORITY_DENIED','A project lead/admin may request; only an active admin may decide');
+  let result;
+  if(requesting){
+    if(existing)fail(409,'RESERVATION_ID_COLLISION','Reservation identity already exists; reuse the original change ID to retry');
+    if(!['planning','active'].includes(authority.status))fail(409,'RESERVATION_PROJECT_CLOSED','Project must be Planning or Active');
+    const quantity=Number(record.quantity),from=Date.parse(record.needed_from),until=record.needed_until?Date.parse(record.needed_until):null;
+    if(!Number.isFinite(quantity)||quantity<=0||quantity>999999999.999||Math.abs(quantity*1000-Math.round(quantity*1000))>0.0001||
+       typeof record.needed_from!=='string'||!Number.isFinite(from)||(until!==null&&(!Number.isFinite(until)||until<=from))||
+       (record.note!=null&&typeof record.note!=='string')||String(record.note||'').length>2000)
+      fail(400,'RESERVATION_INPUT_INVALID','Positive quantity, valid usage dates and a note of at most 2000 characters are required');
+    result=(await client.query(`INSERT INTO project_reservations(id,project_id,item_id,requested_by,quantity,original_quantity,needed_from,needed_until,note,status)
+      VALUES($1,$2,$3,$4,$5,$5,$6,$7,$8,'pending_review') RETURNING *`,
+      [reservationId,projectId,itemId,user.userId,quantity,new Date(from).toISOString(),until===null?null:new Date(until).toISOString(),record.note||null])).rows[0];
+  }else{
+    const decision=record.decision,note=record.review_note??'';
+    if(!['confirm','reject','release'].includes(decision)||typeof note!=='string'||note.length>2000||(decision==='reject'&&!note.trim()))
+      fail(400,'RESERVATION_DECISION_INVALID','Provide a valid decision and a reason for rejection');
+    if(existing.status!==(decision==='release'?'confirmed':'pending_review'))fail(409,'RESERVATION_STATE_CONFLICT','Reservation state no longer permits this decision');
+    if(decision==='confirm'){
+      if(!['planning','active'].includes(authority.status))fail(409,'RESERVATION_PROJECT_CLOSED','Closed projects cannot acquire new allocations');
+      if(!['available','low_stock'].includes(stock.status))fail(409,'RESERVATION_STOCK_UNAVAILABLE','Item is unavailable for reservation');
+      const allocated=(await client.query(`SELECT COALESCE(SUM(quantity),0)::numeric AS total FROM project_reservations
+        WHERE item_id=$1 AND status='confirmed' AND id<>$2 AND
+        (CASE WHEN $5::boolean THEN true ELSE (needed_until IS NULL OR needed_until>$3) AND ($4::timestamptz IS NULL OR needed_from<$4) END)`,
+        [itemId,reservationId,existing.needed_from,existing.needed_until,!['equipment','instrument','tool'].includes(stock.type)])).rows[0];
+      if(Number(stock.current_quantity)-Number(allocated.total)<Number(existing.quantity))fail(409,'RESERVATION_CONFLICT','Insufficient unreserved stock during the requested period');
+    }
+    const status={confirm:'confirmed',reject:'rejected',release:'released'}[decision];
+    result=(await client.query('UPDATE project_reservations SET status=$1,reviewed_by=$2,review_note=$3,reviewed_at=now(),updated_at=now() WHERE id=$4 RETURNING *',
+      [status,user.userId,note||null,reservationId])).rows[0];
+  }
+  await writeAuditLog({req:{user},actorUserId:user.userId,action:`sync:${change.operation}`,entityType:'project_reservation',entityId:reservationId,
+    oldValue:existing||null,newValue:result,deviceId:change.__device_id,client,required:true});
+  return result;
 }
 
 const RESOURCE_FIELDS=['name','kind','file_type','original_filename','mime_type','size_bytes','parent_resource_id','relative_path','url','thumbnail_url','item_id','project_id','note_id','category','description','tags','visibility'];
@@ -603,7 +687,7 @@ router.get('/projects/pull',async(req,res,next)=>{
     const projects=await pool.query(`SELECT p.* FROM projects p WHERE ${visibilityReadSql({alias:'p',entityType:'project',userIdParameter:'$1',roleParameter:'$2',projectIdExpression:'p.id'})} ORDER BY p.updated_at DESC`,[req.user.userId,req.user.role]);
     const ids=projects.rows.map(p=>p.id);
     const deletedRows=await pool.query("SELECT entity_type,entity_id FROM sync_tombstones WHERE entity_type IN ('project','project_task','project_experiment','project_bom','project_block','project_connector','project_experiment_measurement','project_experiment_observation','project_task_experiment','project_work_attachment','project_resource_requirement') AND (project_id=ANY($1::uuid[]) OR (project_id IS NULL AND entity_type='project')) ORDER BY deleted_at DESC LIMIT 2500",[ids]); const deletedByType={project:[],project_task:[],project_experiment:[],project_bom:[],project_block:[],project_connector:[],project_experiment_measurement:[],project_experiment_observation:[],project_task_experiment:[],project_work_attachment:[],project_resource_requirement:[]}; for(const row of deletedRows.rows)if(deletedByType[row.entity_type])deletedByType[row.entity_type].push(row.entity_id); if(!ids.length)return res.json({projects:[],visible_project_ids:[],deleted_project_ids:deletedByType.project,deleted_project_entities:deletedByType});
-    const [tasks,experiments,bom,items,blocks,connectors,measurements,observations,taskExperiments,attachments,requirements,members,grants]=await Promise.all([
+    const [tasks,experiments,bom,items,blocks,connectors,measurements,observations,taskExperiments,attachments,requirements,members,grants,reservations]=await Promise.all([
       pool.query('SELECT * FROM project_tasks WHERE project_id=ANY($1::uuid[]) ORDER BY created_at',[ids]),
       pool.query('SELECT * FROM project_experiments WHERE project_id=ANY($1::uuid[]) ORDER BY updated_at DESC',[ids]),
       pool.query('SELECT * FROM project_bom_items WHERE project_id=ANY($1::uuid[]) ORDER BY created_at',[ids]),
@@ -616,7 +700,17 @@ router.get('/projects/pull',async(req,res,next)=>{
       pool.query('SELECT a.* FROM project_work_attachments a LEFT JOIN project_tasks t ON t.id=a.task_id LEFT JOIN project_experiments e ON e.id=a.experiment_id WHERE COALESCE(t.project_id,e.project_id)=ANY($1::uuid[]) ORDER BY a.created_at',[ids]),
       pool.query('SELECT * FROM project_resource_requirements WHERE project_id=ANY($1::uuid[]) ORDER BY required_by NULLS LAST,created_at',[ids]),
       pool.query("SELECT pm.project_id,pm.user_id,pm.member_role,pm.joined_at,u.username,u.role FROM project_members pm JOIN users u ON u.id=pm.user_id WHERE pm.project_id=ANY($1::uuid[]) ORDER BY CASE pm.member_role WHEN 'lead' THEN 0 WHEN 'member' THEN 1 ELSE 2 END,u.username",[ids]),
-      pool.query("SELECT entity_id,access_level FROM record_access_grants WHERE entity_type='project' AND entity_id=ANY($1::uuid[]) AND user_id=$2",[ids,req.user.userId])
+      pool.query("SELECT entity_id,access_level FROM record_access_grants WHERE entity_type='project' AND entity_id=ANY($1::uuid[]) AND user_id=$2",[ids,req.user.userId]),
+      // Quantity and included movements must come from ONE statement snapshot.
+      // Otherwise an issue committed between two reads could be deducted twice.
+      pool.query(`SELECT r.*,i.name AS item_name,p.priority AS project_priority,
+        p.start_date AS project_start_date,p.due_date AS project_due_date,
+        COALESCE((SELECT jsonb_agg(f.movement_id ORDER BY f.movement_id)
+          FROM project_reservation_fulfillments f WHERE f.reservation_id=r.id),'[]'::jsonb) AS fulfillment_movement_ids,
+        COALESCE((SELECT jsonb_agg(s.change_id ORDER BY s.change_id) FROM sync_idempotency s
+          WHERE s.entity_type='project_reservation' AND s.entity_id=r.id::text AND s.user_id=$2),'[]'::jsonb) AS applied_intent_ids
+        FROM project_reservations r JOIN items i ON i.id=r.item_id JOIN projects p ON p.id=r.project_id
+        WHERE r.project_id=ANY($1::uuid[]) ORDER BY r.created_at`,[ids,req.user.userId])
     ]);
     const resourceAccess=new Map();
     for(const resourceId of new Set([...blocks.rows,...attachments.rows].map(row=>row.resource_id).filter(Boolean))){resourceAccess.set(resourceId,(await getResourceAccess(resourceId,req.user)).access!=='none');}
@@ -627,15 +721,16 @@ router.get('/projects/pull',async(req,res,next)=>{
     const by=(rows,key)=>{const m=new Map();for(const row of rows){const id=row[key];if(!m.has(id))m.set(id,[]);m.get(id).push(row);}return m;};
     const taskMap=by(tasks.rows,'project_id'),taskExperimentMap=by(taskExperiments.rows,'task_id'),taskExperimentProjectMap=by(taskExperiments.rows,'project_id'),experimentMap=by(experiments.rows,'project_id'),bomMap=by(bom.rows,'project_id'),itemMap=by(items.rows,'project_id'),blockMap=by(visibleBlocks,'project_id'),connectorMap=by(visibleConnectors,'project_id'),measurementMap=by(measurements.rows,'experiment_id'),observationMap=by(observations.rows,'experiment_id'),attachmentTaskMap=by(visibleAttachments,'task_id'),attachmentExperimentMap=by(visibleAttachments,'experiment_id'),requirementMap=by(requirements.rows,'project_id'),memberMap=by(members.rows,'project_id');
     const grantMap=new Map(grants.rows.map(row=>[row.entity_id,row.access_level]));
+    const reservationMap=by(reservations.rows,'project_id');
     for(const e of experiments.rows){e.measurements=measurementMap.get(e.id)||[];e.observations=observationMap.get(e.id)||[];e.attachments=attachmentExperimentMap.get(e.id)||[];}
     for(const t of tasks.rows){t.attachments=attachmentTaskMap.get(t.id)||[];t.experiments=taskExperimentMap.get(t.id)||[];}
     res.setHeader('Cache-Control','no-store');
-    res.json({projects:projects.rows.map(p=>{const members=memberMap.get(p.id)||[];const memberRole=members.find(member=>member.user_id===req.user.userId)?.member_role||null;const access=effectiveProjectAccess({ownerId:p.owner_id,memberRole,visibility:p.visibility,grantLevel:grantMap.get(p.id)||null,userId:req.user.userId,role:req.user.role,canEdit:permissions.has('projects.edit')});return {...projectFinancialProjection(p,permissions),members,permissions:{access:access.access,member_role:access.memberRole,can_edit:access.access==='edit'||access.access==='admin',user_id:req.user.userId},tasks:taskMap.get(p.id)||[],experiments:experimentMap.get(p.id)||[],bom:bomMap.get(p.id)||[],items:itemMap.get(p.id)||[],blocks:blockMap.get(p.id)||[],connectors:connectorMap.get(p.id)||[],requirements:requirementMap.get(p.id)||[],task_experiments:taskExperimentProjectMap.get(p.id)||[]};}),visible_project_ids:ids,deleted_project_ids:deletedByType.project,deleted_project_entities:deletedByType});
+    res.json({projects:projects.rows.map(p=>{const members=memberMap.get(p.id)||[];const memberRole=members.find(member=>member.user_id===req.user.userId)?.member_role||null;const access=effectiveProjectAccess({ownerId:p.owner_id,memberRole,visibility:p.visibility,grantLevel:grantMap.get(p.id)||null,userId:req.user.userId,role:req.user.role,canEdit:permissions.has('projects.edit')});return {...projectFinancialProjection(p,permissions),members,permissions:{access:access.access,member_role:access.memberRole,can_edit:access.access==='edit'||access.access==='admin',user_id:req.user.userId},tasks:taskMap.get(p.id)||[],experiments:experimentMap.get(p.id)||[],bom:bomMap.get(p.id)||[],items:itemMap.get(p.id)||[],blocks:blockMap.get(p.id)||[],connectors:connectorMap.get(p.id)||[],reservations:reservationMap.get(p.id)||[],requirements:requirementMap.get(p.id)||[],task_experiments:taskExperimentProjectMap.get(p.id)||[]};}),visible_project_ids:ids,deleted_project_ids:deletedByType.project,deleted_project_entities:deletedByType});
   }catch(error){next(error);}
 });
 router.get('/pull',async(req,res,next)=>{try{const raw=typeof req.query.since==='string'?req.query.since.trim():'';let cursor=null;if(raw){cursor=decodePullCursor(raw);if(!cursor){const legacy=new Date(raw);if(Number.isNaN(legacy.getTime()))return res.status(400).json({error:{code:'INVALID_SYNC_CURSOR',message:'since must be a valid inventory sync cursor'}});cursor={at:legacy.toISOString(),type:'',id:''};}}const limit=Math.min(500,Math.max(1,Number(req.query.limit||500)));const values=cursor?[cursor.at,cursor.type,cursor.id,limit+1]:[limit+1];const where=cursor?`WHERE event_at > $1 OR (event_at = $1 AND (event_type > $2 OR (event_type = $2 AND event_id > $3)))`:'';const result=await pool.query(`SELECT event_type,event_id,event_at,to_char(event_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_at,item,deleted FROM (SELECT 'item'::text AS event_type,id::text AS event_id,updated_at AS event_at,to_jsonb(items) AS item,false AS deleted FROM items UNION ALL SELECT 'delete'::text AS event_type,entity_id::text AS event_id,deleted_at AS event_at,NULL::jsonb AS item,true AS deleted FROM sync_tombstones WHERE entity_type='item') events ${where} ORDER BY event_at ASC,event_type ASC,event_id ASC LIMIT $${values.length}`,values);const rows=result.rows;const hasMore=rows.length>limit;const page=hasMore?rows.slice(0,limit):rows;const last=page[page.length-1];const nextCursor=last?encodePullCursor(last.cursor_at,last.event_type,last.event_id):(cursor?raw:null);res.setHeader('Cache-Control','no-store');res.json({items:page.filter(row=>!row.deleted).map(row=>row.item),deleted_item_ids:page.filter(row=>row.deleted).map(row=>row.event_id),next_cursor:nextCursor,has_more:hasMore,snapshot_complete:!raw&&!hasMore});}catch(error){next(error);}});
 router.post('/push',async(req,res,next)=>{const body=object(req.body,'Sync request');const deviceId=typeof body.device_id==='string'&&body.device_id.trim()?body.device_id.trim():null;const changes=Array.isArray(body.changes)?body.changes:null;if(!deviceId)return res.status(400).json({error:{code:'DEVICE_ID_REQUIRED',message:'device_id is required'}});if(!changes)return res.status(400).json({error:{code:'CHANGES_REQUIRED',message:'changes must be an array'}});if(changes.length>100)return res.status(413).json({error:{code:'SYNC_BATCH_TOO_LARGE',message:'A maximum of 100 changes can be synchronized per request'}});try{const permissions=await getUserPermissions(req.user.userId,req.user.role);const results=[];for(const raw of changes){const change=object(raw,'Sync change');if(typeof change.change_id!=='string'||!change.change_id.trim()){results.push({change_id:null,status:'rejected',error:{code:'CHANGE_ID_REQUIRED',message:'change_id is required'}});continue;}const entityType=String(change.entity_type||''),operation=String(change.operation||'');const required=entityType==='item'?(operation==='import'?null:operation==='create'?'inventory.create':['delete','bulk_delete'].includes(operation)?'inventory.delete':'inventory.edit'):['daily_preferences','notification_read'].includes(entityType)?null:entityType==='project_comment'?'projects.edit':entityType==='maintenance_record'?'inventory.edit':entityType==='note'?(operation==='create'?'notes.create':operation==='delete'?'notes.delete':'notes.edit'):knowledgeEntityType(entityType)?'projects.edit':entityType==='project_item'?'projects.edit':engineeringEntityType(entityType)?(operation==='create'?'engineering.create':operation==='delete'?'engineering.delete':'engineering.edit'):entityType==='item_movement'?'inventory.adjust_stock':['resource_download_job','media_download_settings'].includes(entityType)?'resources.edit':entityType==='resource'?(['create','create_copy'].includes(operation)?'resources.create':operation==='delete'?'resources.delete':'resources.edit'):['location','supplier','storage_container'].includes(entityType)?(operation==='create'?'inventory.create':operation==='delete'?'inventory.delete':'inventory.edit'):projectEntityType(entityType)?(operation==='create'?'projects.create':operation==='delete'?'projects.delete':'projects.edit'):FINANCE_CONFIG[entityType]?(operation==='create'?(entityType==='transaction'?(change.payload?.transaction?.direction||change.payload?.record?.direction||change.payload?.direction)==='income'?'finance.create_income':'finance.create_expense':'finance.edit'):operation==='delete'?'finance.delete':'finance.edit'):operation==='bulk_delete'?'inventory.delete':operation==='bulk_status'?'inventory.edit':'inventory.edit';if(required&&!permissions.has(required)){results.push({change_id:change.change_id,status:'rejected',error:{code:'PERMISSION_DENIED',message:`Permission required: ${required}`}});continue;}change.__role=req.user.role;change.__device_id=deviceId;const client=await pool.connect();try{await client.query('BEGIN');await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',['sync-change:'+change.change_id]);if(['supplier','storage_container'].includes(entityType)){change.entity_id=catalogUuid(change.entity_id);await authorizeCatalog(entityType,operation,req.user);}if(entityType==='item'&&operation==='import')await authorizeInventoryImport(change.payload,req.user);if(entityType==='project_comment'){change.entity_id=catalogUuid(change.entity_id);await authorizeComment(catalogUuid(change.payload?.record?.project_id),req.user,true);}if(entityType==='resource_download_job')await authorizeDownloadControl(change.payload?.resource_id||change.payload?.resourceId,req.user);const prior=await client.query('SELECT payload_json,response_json,user_id,device_id,entity_type,entity_id,operation FROM sync_idempotency WHERE change_id=$1 FOR UPDATE',[change.change_id]);if(prior.rowCount){if(String(prior.rows[0].user_id)!==String(req.user.userId)||prior.rows[0].device_id!==deviceId||prior.rows[0].entity_type!==entityType||prior.rows[0].operation!==operation||String(prior.rows[0].entity_id||'')!==String(change.entity_id||'')){await client.query('ROLLBACK');results.push({change_id:change.change_id,status:'rejected',error:{code:'IDEMPOTENCY_OWNERSHIP_MISMATCH',message:'change_id belongs to a different user, device or operation'}});continue;}const same=(await client.query('SELECT $1::jsonb = $2::jsonb AS same',[prior.rows[0].payload_json,change.payload])).rows[0].same;if(!same){await client.query('ROLLBACK');results.push({change_id:change.change_id,status:'rejected',error:{code:'IDEMPOTENCY_PAYLOAD_MISMATCH',message:'change_id was already used with a different payload'}});continue;}await client.query('COMMIT');results.push({change_id:change.change_id,status:'synced',result:syncResponseProjection(entityType,prior.rows[0].response_json,permissions)});continue;}const result=await applyChange(client,change,req.user.userId);await client.query('INSERT INTO sync_idempotency(change_id,device_id,user_id,entity_type,entity_id,operation,payload_json,response_json,response_status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,200)',[change.change_id,deviceId,req.user.userId,entityType,change.entity_id||null,operation,change.payload,result]);await client.query('COMMIT');
-      if(!(entityType==='resource'&&(operation==='edit_metadata'||['create','create_copy','edit_content'].includes(operation)&&change.payload?.resource?.kind==='file'))&&!['item','item_movement','maintenance_record','daily_preferences','supplier','storage_container','notification_read','project_comment'].includes(entityType))await writeAuditLog({req,actorUserId:req.user.userId,action:`sync:${operation}`,entityType,entityId:typeof change.entity_id==='string'&&/^[0-9a-f-]{32,36}$/i.test(change.entity_id)?change.entity_id:null,newValue:result,deviceId,metadata:{sync_mode:'online',authorization:'server',sync_entity_id:change.entity_id||null}});
+      if(!(entityType==='resource'&&(operation==='edit_metadata'||['create','create_copy','edit_content'].includes(operation)&&change.payload?.resource?.kind==='file'))&&!['item','item_movement','maintenance_record','daily_preferences','supplier','storage_container','notification_read','project_comment','project_reservation'].includes(entityType))await writeAuditLog({req,actorUserId:req.user.userId,action:`sync:${operation}`,entityType,entityId:typeof change.entity_id==='string'&&/^[0-9a-f-]{32,36}$/i.test(change.entity_id)?change.entity_id:null,newValue:result,deviceId,metadata:{sync_mode:'online',authorization:'server',sync_entity_id:change.entity_id||null}});
       results.push({change_id:change.change_id,status:'synced',result:syncResponseProjection(entityType,result,permissions)});}catch(error){await client.query('ROLLBACK').catch(()=>{});if(error?.code==='23505'){const prior=await pool.query('SELECT payload_json,response_json,user_id,device_id,entity_type,operation FROM sync_idempotency WHERE change_id=$1',[change.change_id]);if(prior.rowCount){if(String(prior.rows[0].user_id)!==String(req.user.userId)||prior.rows[0].device_id!==deviceId||prior.rows[0].entity_type!==entityType||prior.rows[0].operation!==operation){results.push({change_id:change.change_id,status:'rejected',error:{code:'IDEMPOTENCY_OWNERSHIP_MISMATCH',message:'change_id belongs to a different user, device or operation'}});continue;}const same=(await pool.query('SELECT $1::jsonb = $2::jsonb AS same',[prior.rows[0].payload_json,change.payload])).rows[0].same;if(same){results.push({change_id:change.change_id,status:'synced',result:syncResponseProjection(entityType,prior.rows[0].response_json,permissions)});continue;}}}const status=Number(error?.status)>=400&&Number(error?.status)<500?'rejected':'failed';results.push({change_id:change.change_id,status,error:{code:error?.code||'SYNC_APPLY_FAILED',message:error?.message||'Unable to apply sync change'}});}finally{client.release();}}res.json({device_id:deviceId,accepted:results.filter(r=>r.status==='synced').length,results});}catch(error){next(error);}});
 
 const NOTE_FIELDS=['title','body','tags','item_id','project_id','visibility'];
