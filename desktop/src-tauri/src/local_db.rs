@@ -154,6 +154,26 @@ END;
     Ok(())}
 pub fn initialize(app:&AppHandle)->Result<(),String>{let(connection,_)=open_connection(app)?;ensure_schema(&connection)?;canonicalize_legacy_ids(&connection)}
 #[tauri::command]
+pub fn get_local_sync_queue_status(app:AppHandle,expected_account_id:String)->Result<Value,String>{
+    let conn=open_local_connection(&app)?;ensure_schema(&conn)?;
+    sync_queue_status(&conn,&expected_account_id)
+}
+fn sync_queue_status(conn:&Connection,expected_account_id:&str)->Result<Value,String>{
+    require_sync_account(conn,expected_account_id)?;
+    // One statement observes a consistent count snapshot. Return no database
+    // path, device identity, payloads or foreign-account queue counts.
+    let (pending,conflicts,unassigned,legacy):(i64,i64,i64,i64)=conn.query_row(
+        "SELECT
+         (SELECT COUNT(*) FROM sync_outbox WHERE synced_at IS NULL AND account_id=?1),
+         (SELECT COUNT(*) FROM sync_conflicts c JOIN sync_outbox o ON o.change_id=c.change_id WHERE c.resolved_at IS NULL AND o.account_id=?1),
+         (SELECT COUNT(*) FROM sync_outbox WHERE synced_at IS NULL AND account_id IS NULL),
+         (SELECT COUNT(*) FROM sync_state WHERE key NOT LIKE 'account:%' AND value NOT IN ('[]','{}'))",
+        [expected_account_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))
+    ).map_err(|e|format!("Unable to inspect local sync queue: {e}"))?;
+    require_sync_account(conn,expected_account_id)?;
+    Ok(serde_json::json!({"pending_sync_count":pending,"sync_conflict_count":conflicts,"unassigned_pending_sync_count":unassigned,"unassigned_state_count":legacy}))
+}
+#[tauri::command]
 pub fn local_database_status(app:AppHandle)->Result<LocalDatabaseStatus,String>{
     let(connection,path)=open_connection(&app)?;
     ensure_schema(&connection)?;
@@ -182,20 +202,48 @@ pub fn list_pending_sync_changes(app:AppHandle,limit:Option<i64>,expected_accoun
     rows.map(|r|r.map_err(|e|format!("Unable to decode sync queue row: {e}"))).collect()
 }
 #[tauri::command]
-pub fn list_sync_conflicts(app:AppHandle)->Result<Vec<Value>,String>{
+pub fn list_sync_conflicts(app:AppHandle,expected_account_id:String)->Result<Vec<Value>,String>{
     let conn=open_local_connection(&app)?; ensure_schema(&conn)?;
+    require_sync_account(&conn,&expected_account_id)?;
     let account=active_account(&conn)?;
     let mut stmt=conn.prepare("SELECT c.id,c.change_id,o.entity_type,o.entity_id,o.operation,o.payload_json,c.error_code,c.error_message,c.created_at FROM sync_conflicts c JOIN sync_outbox o ON o.change_id=c.change_id WHERE c.resolved_at IS NULL AND o.account_id=?1 ORDER BY c.created_at DESC").map_err(|e|e.to_string())?;
     let records=stmt.query_map([account],|r|{let raw:String=r.get(5)?;Ok(serde_json::json!({"id":r.get::<_,i64>(0)?,"change_id":r.get::<_,String>(1)?,"entity_type":r.get::<_,String>(2)?,"entity_id":r.get::<_,Option<String>>(3)?,"operation":r.get::<_,String>(4)?,"payload":serde_json::from_str::<Value>(&raw).unwrap_or(Value::Null),"error_code":r.get::<_,String>(6)?,"error_message":r.get::<_,String>(7)?,"created_at":r.get::<_,String>(8)?}))}).map_err(|e|e.to_string())?;
-    records.map(|record|{
+    let result=records.map(|record|{
         let mut record=record.map_err(|e|e.to_string())?;
         let readable=require_conflict_permission(&conn,record["entity_type"].as_str().unwrap_or(""),record["operation"].as_str().unwrap_or(""),&record["payload"],false).is_ok();
         if !readable {record["payload"]=Value::Null;record["entity_id"]=Value::Null;record["error_message"]=Value::String("Access changed. This account's pending work is preserved; reconnect or discard explicitly.".into());}
         record["access_restricted"]=Value::Bool(!readable);Ok(record)
-    }).collect()
+    }).collect::<Result<Vec<Value>,String>>()?;
+    require_sync_account(&conn,&expected_account_id)?;
+    Ok(result)
 }
 
 fn require_conflict_permission(conn:&Connection,entity:&str,operation:&str,payload:&Value,write:bool)->Result<(),String>{
+    if entity=="project_review" {
+        let id=payload["project_id"].as_str().ok_or("Review project missing")?;
+        return if write{crate::local_project_review::require_authority(conn,id,payload["decision"].as_str().unwrap_or(""))}else{crate::local_projects::require_cached_project_access(conn,id,false)};
+    }
+    if entity=="project_reservation" {
+        let project_id=payload["project_id"].as_str().ok_or("Reservation project missing")?;
+        crate::local_projects::require_cached_project_access(conn,project_id,write)?;
+        if write {
+            let role:String=conn.query_row("SELECT u.role FROM local_users u JOIN local_session s ON s.user_id=u.id WHERE s.id=1",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+            match operation {
+                "decision" if role!="admin"=>return Err("Administrator review required".into()),
+                "request"=>{
+                    let account=active_account(conn)?;
+                    let project=crate::local_projects::load_all(conn)?.into_iter().find(|p|p["id"]==project_id).ok_or("Project not cached")?;
+                    if role!="admin"&&project["owner_id"]!=account&&project.pointer("/permissions/member_role").and_then(Value::as_str)!=Some("lead") {
+                        return Err("Only project leads or administrators may retry reservations".into());
+                    }
+                    crate::local_auth::require_local_permission(conn,"inventory.view")?;
+                },
+                "decision"=>{},
+                _=>return Err("Unsupported reservation operation".into()),
+            }
+        }
+        return Ok(())
+    }
     if ["media_download_settings","resource_download_job"].contains(&entity){return crate::local_auth::require_local_permission(conn,"resources.edit")}
     if entity=="daily_preferences"||entity=="notification_read" {active_account(conn)?;return Ok(())}
     if entity=="project_comment" {return crate::local_comments::require_comment_project_access(conn,payload.pointer("/record/project_id").and_then(Value::as_str).ok_or("Comment project missing")?,write)}
@@ -244,18 +292,33 @@ pub fn record_sync_conflict(app:AppHandle,change_id:String,entity_type:String,en
     tx.commit().map_err(|e|format!("Unable to commit sync conflict: {e}"))?;Ok(())
 }
 #[tauri::command]
-pub fn resolve_sync_conflict(app:AppHandle,change_id:String,resolution:String)->Result<(),String>{
+pub fn resolve_sync_conflict(app:AppHandle,change_id:String,resolution:String,expected_account_id:String)->Result<(),String>{
     let mut conn=open_local_connection(&app)?;ensure_schema(&conn)?;
-    resolve_conflict(&mut conn,&change_id,&resolution)
+    require_sync_account(&conn,&expected_account_id)?;
+    resolve_conflict_for_account(&mut conn,&change_id,&resolution,&expected_account_id)
 }
 pub(crate) fn resolve_conflict(conn:&mut Connection,change_id:&str,resolution:&str)->Result<(),String>{
+    let account=active_account(conn)?;
+    resolve_conflict_for_account(conn,change_id,resolution,&account)
+}
+fn resolve_conflict_for_account(conn:&mut Connection,change_id:&str,resolution:&str,expected_account_id:&str)->Result<(),String>{
     if !["keep_local","accept_server","dismiss"].contains(&resolution){return Err("Invalid conflict resolution".into())}
     let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+    require_sync_account(&tx,expected_account_id)?;
     require_owned_change(&tx,change_id)?;
     let (entity,entity_id,operation,payload,code):(String,Option<String>,String,String,String)=tx.query_row(
         "SELECT o.entity_type,o.entity_id,o.operation,o.payload_json,c.error_code FROM sync_outbox o JOIN sync_conflicts c ON c.change_id=o.change_id WHERE o.change_id=?1 AND c.resolved_at IS NULL",[change_id],
         |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(|e|e.to_string())?;
     if resolution=="keep_local" {
+        if entity=="project_review"&&code=="REVIEW_VERSION_CONFLICT" {
+            return Err("Review snapshot changed. Preserve the note, accept the server state, synchronize and author a new decision; an old approval cannot overwrite a newer plan.".into());
+        }
+        if entity=="project"&&operation=="delete"&&["PROJECT_INVENTORY_HISTORY_PROTECTED","PROJECT_RECORDED_HISTORY_PROTECTED"].contains(&code.as_str()) {
+            return Err("This project has protected history. Accept the server version to cancel this deletion, synchronize, then archive the project instead. Your saved deletion payload will be retained.".into());
+        }
+        if entity=="project"&&code=="PROJECT_LIFECYCLE_CONFLICT" {
+            return Err("Project lifecycle changed on the server. Accept the server version, synchronize and review the current status before making a new decision. Automatic revision overwrite is not allowed.".into());
+        }
         let mut value:Value=serde_json::from_str(&payload).map_err(|e|e.to_string())?;
         require_conflict_permission(&tx,&entity,&operation,&value,true)?;
         if entity=="resource"&&operation=="edit_content"&&code=="RESOURCE_EDIT_CONFLICT" {
@@ -281,6 +344,9 @@ pub(crate) fn resolve_conflict(conn:&mut Connection,change_id:&str,resolution:&s
             tx.execute("UPDATE sync_outbox SET attempt_count=0,last_error=NULL,synced_at=NULL WHERE change_id=?1",[change_id]).map_err(|e|e.to_string())?;
         }
     } else {
+        if entity=="project"&&operation=="delete" {
+            preserve_project_delete_recovery(&tx,change_id,&payload,resolution)?;
+        }
         if entity=="project_reservation" {crate::local_reservations::retire(&tx,change_id)?;}
         if entity=="resource"&&["edit_content","create","create_copy","attach","edit_metadata"].contains(&operation.as_str()) {
             crate::resource_dependencies::discard_descendants(&tx,change_id,resolution)?;
@@ -302,6 +368,50 @@ pub(crate) fn resolve_conflict(conn:&mut Connection,change_id:&str,resolution:&s
     }
     tx.execute("UPDATE sync_conflicts SET resolved_at=CURRENT_TIMESTAMP,resolution=?2 WHERE change_id=?1",params![change_id,resolution]).map_err(|e|e.to_string())?;
     tx.commit().map_err(|e|e.to_string())
+}
+
+// Recovery evidence is not an authorized live project snapshot. Never restore
+// cached permissions or overwrite newer project/child work from this payload.
+fn preserve_project_delete_recovery(conn:&Connection,change_id:&str,payload:&str,resolution:&str)->Result<(),String>{
+    let account=require_owned_change(conn,change_id)?;
+    let value:Value=serde_json::from_str(payload).map_err(|e|format!("Invalid saved project deletion: {e}"))?;
+    let (project_id,device):(String,String)=conn.query_row(
+        "SELECT entity_id,device_id FROM sync_outbox WHERE change_id=?1 AND account_id=?2",
+        params![change_id,account],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|e.to_string())?;
+    let key=scoped_state_key(conn,&format!("project_delete_recovery_{change_id}"))?;
+    let recovery=serde_json::json!({"account_id":account,"device_id":device,"change_id":change_id,
+        "project_id":project_id,"resolution":resolution,"payload":value,
+        "requires_authorized_pull":true});
+    conn.execute("INSERT INTO sync_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO NOTHING",
+        params![key,recovery.to_string()]).map_err(|e|format!("Unable to preserve project deletion recovery: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_project_delete_recoveries(app:AppHandle,expected_account_id:String)->Result<Value,String>{
+    let conn=open_local_connection(&app)?;ensure_schema(&conn)?;
+    project_delete_recovery_index(&conn,&expected_account_id)
+}
+
+fn project_delete_recovery_index(conn:&Connection,expected_account_id:&str)->Result<Value,String>{
+    require_sync_account(conn,expected_account_id)?;
+    // Show only this account's receipt metadata, never the historical project
+    // payload, names, child records or cached permission grants. This index is
+    // safe even when project access has subsequently been revoked.
+    let mut stmt=conn.prepare("SELECT o.change_id,o.created_at,c.resolved_at,c.resolution
+        FROM sync_outbox o JOIN sync_conflicts c ON c.change_id=o.change_id
+        JOIN sync_state s ON s.key='account:' || o.account_id || ':project_delete_recovery_' || o.change_id
+        WHERE o.account_id=?1 AND o.entity_type='project' AND o.operation='delete'
+          AND o.synced_at IS NOT NULL AND c.resolved_at IS NOT NULL
+        ORDER BY c.resolved_at DESC,o.change_id DESC LIMIT 51").map_err(|e|e.to_string())?;
+    let rows=stmt.query_map([expected_account_id],|r|Ok(serde_json::json!({
+        "change_id":r.get::<_,String>(0)?,"created_at":r.get::<_,String>(1)?,
+        "resolved_at":r.get::<_,String>(2)?,"resolution":r.get::<_,String>(3)?
+    }))).map_err(|e|e.to_string())?;
+    let mut records=rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
+    let has_more=records.len()>50;records.truncate(50);
+    require_sync_account(conn,expected_account_id)?;
+    Ok(serde_json::json!({"records":records,"has_more":has_more}))
 }
 #[tauri::command]
 pub fn mark_sync_changes_synced(app:AppHandle,change_ids:Vec<String>)->Result<(),String>{let mut conn=open_local_connection(&app)?;ensure_schema(&conn)?;mark_changes_synced(&mut conn,change_ids)}
@@ -361,6 +471,43 @@ mod tests {
     }
 
     #[test]
+    fn queue_status_is_account_bound_counts_only_and_preserves_rows(){
+        let c=conflict_fixture();
+        add_conflict(&c,"owned","note","PERMISSION_DENIED");
+        c.execute("INSERT INTO local_users VALUES('other-local','other-account',1,'2099-01-01','[]')",[]).unwrap();
+        c.execute("UPDATE local_session SET user_id='other-local'",[]).unwrap();
+        add_conflict(&c,"foreign","note","PERMISSION_DENIED");
+        assert!(sync_queue_status(&c,"account").is_err());
+        c.execute("UPDATE local_session SET user_id='local'",[]).unwrap();
+        let status=sync_queue_status(&c,"account").unwrap();
+        assert_eq!(status["pending_sync_count"],1);
+        assert_eq!(status["sync_conflict_count"],1);
+        assert_eq!(status.as_object().unwrap().len(),4);
+        assert!(status.get("path").is_none());assert!(status.get("payload").is_none());
+        let rows:i64=c.query_row("SELECT COUNT(*) FROM sync_outbox",[],|r|r.get(0)).unwrap();
+        assert_eq!(rows,2);
+        c.execute("UPDATE sync_outbox SET synced_at=CURRENT_TIMESTAMP WHERE change_id='owned'",[]).unwrap();
+        c.execute("UPDATE sync_conflicts SET resolved_at=CURRENT_TIMESTAMP WHERE change_id='owned'",[]).unwrap();
+        assert_eq!(sync_queue_status(&c,"account").unwrap()["pending_sync_count"],0);
+        assert_eq!(sync_queue_status(&c,"account").unwrap()["sync_conflict_count"],0);
+    }
+
+    #[test]
+    fn queue_status_rejects_expired_disabled_signed_out_and_broken_storage(){
+        let c=conflict_fixture();
+        c.execute("UPDATE local_users SET offline_expires_at='2000-01-01'",[]).unwrap();
+        assert!(sync_queue_status(&c,"account").is_err());
+        c.execute("UPDATE local_users SET offline_expires_at='2099-01-01',is_active=0",[]).unwrap();
+        assert!(sync_queue_status(&c,"account").is_err());
+        c.execute("UPDATE local_users SET is_active=1",[]).unwrap();
+        c.execute("DELETE FROM local_session",[]).unwrap();
+        assert!(sync_queue_status(&c,"account").is_err());
+        c.execute("INSERT INTO local_session VALUES(1,'local')",[]).unwrap();
+        c.execute("DROP TABLE sync_conflicts",[]).unwrap();
+        assert!(sync_queue_status(&c,"account").unwrap_err().contains("Unable to inspect"));
+    }
+
+    #[test]
     fn conflict_retry_is_immutable_and_overwrite_is_new_intent(){
         let mut c=conflict_fixture();
         add_conflict(&c,"retry","note","PERMISSION_DENIED");
@@ -379,6 +526,103 @@ mod tests {
         add_conflict(&c,"revoked","transaction","PERMISSION_DENIED");
         assert!(resolve_conflict(&mut c,"revoked","keep_local").is_err());
         resolve_conflict(&mut c,"revoked","dismiss").unwrap();
+    }
+
+    fn project_delete_fixture()->Connection {
+        let c=conflict_fixture();
+        add_conflict(&c,"project-delete","project","PROJECT_RECORDED_HISTORY_PROTECTED");
+        c.execute("UPDATE sync_outbox SET operation='delete',payload_json=?1 WHERE change_id='project-delete'",
+            [r#"{"project":{"id":"entity","name":"authored project","tasks":[{"id":"task","title":"unsynced work"}]}}"#]).unwrap();
+        c
+    }
+
+    #[test]
+    fn protected_project_delete_cannot_be_blindly_retried(){
+        let mut c=project_delete_fixture();
+        for code in ["PROJECT_RECORDED_HISTORY_PROTECTED","PROJECT_INVENTORY_HISTORY_PROTECTED","PROJECT_LIFECYCLE_CONFLICT"] {
+            c.execute("UPDATE sync_conflicts SET error_code=?1 WHERE change_id='project-delete'",[code]).unwrap();
+            let error=resolve_conflict(&mut c,"project-delete","keep_local").unwrap_err();
+            assert!(error.contains("server version"));
+            assert_eq!(c.query_row::<i64,_,_>("SELECT count(*) FROM sync_outbox WHERE change_id='project-delete' AND synced_at IS NULL",[],|r|r.get(0)).unwrap(),1);
+        }
+    }
+
+    #[test]
+    fn project_delete_resolution_preserves_authorship_without_restoring_authority(){
+        for resolution in ["accept_server","dismiss"] {
+            let mut c=project_delete_fixture();
+            add_conflict(&c,"child-edit","project_task","PERMISSION_DENIED");
+            let original:String=c.query_row("SELECT payload_json FROM sync_outbox WHERE change_id='project-delete'",[],|r|r.get(0)).unwrap();
+            resolve_conflict(&mut c,"project-delete",resolution).unwrap();
+            let raw:String=c.query_row("SELECT value FROM sync_state WHERE key='account:account:project_delete_recovery_project-delete'",[],|r|r.get(0)).unwrap();
+            let recovery:Value=serde_json::from_str(&raw).unwrap();
+            assert_eq!(recovery["account_id"],"account");assert_eq!(recovery["device_id"],"device");
+            assert_eq!(recovery["payload"],serde_json::from_str::<Value>(&original).unwrap());
+            assert_eq!(recovery["requires_authorized_pull"],true);
+            assert_eq!(c.query_row::<String,_,_>("SELECT payload_json FROM sync_outbox WHERE change_id='project-delete'",[],|r|r.get(0)).unwrap(),original);
+            assert_eq!(c.query_row::<i64,_,_>("SELECT count(*) FROM sync_outbox WHERE change_id='child-edit' AND synced_at IS NULL",[],|r|r.get(0)).unwrap(),1);
+            assert_eq!(c.query_row::<i64,_,_>("SELECT count(*) FROM sync_state WHERE key LIKE '%projects%'",[],|r|r.get(0)).unwrap(),0);
+            c.execute("UPDATE local_users SET central_user_id='another-account'",[]).unwrap();
+            assert!(resolve_conflict(&mut c,"project-delete",resolution).is_err());
+        }
+    }
+
+    #[test]
+    fn project_delete_recovery_failure_keeps_intent_and_conflict_pending(){
+        let mut c=project_delete_fixture();
+        c.execute_batch("CREATE TRIGGER fail_project_recovery BEFORE INSERT ON sync_state BEGIN SELECT RAISE(ABORT,'injected storage failure'); END;").unwrap();
+        assert!(resolve_conflict(&mut c,"project-delete","accept_server").is_err());
+        assert_eq!(c.query_row::<i64,_,_>("SELECT count(*) FROM sync_outbox WHERE change_id='project-delete' AND synced_at IS NULL",[],|r|r.get(0)).unwrap(),1);
+        assert_eq!(c.query_row::<i64,_,_>("SELECT count(*) FROM sync_conflicts WHERE change_id='project-delete' AND resolved_at IS NULL",[],|r|r.get(0)).unwrap(),1);
+    }
+
+    #[test]
+    fn conflict_resolution_requires_expected_account_inside_transaction(){
+        let mut c=project_delete_fixture();
+        assert!(resolve_conflict_for_account(&mut c,"project-delete","accept_server","previous-account").is_err());
+        assert_eq!(c.query_row::<i64,_,_>("SELECT count(*) FROM sync_outbox WHERE change_id='project-delete' AND synced_at IS NULL",[],|r|r.get(0)).unwrap(),1);
+        assert_eq!(c.query_row::<i64,_,_>("SELECT count(*) FROM sync_state WHERE key LIKE '%project_delete_recovery%'",[],|r|r.get(0)).unwrap(),0);
+    }
+
+    #[test]
+    fn project_delete_recovery_survives_sqlite_reopen(){
+        let path=std::env::temp_dir().join(format!("labos-project-recovery-{}.sqlite",uuid::Uuid::new_v4()));
+        let seed=project_delete_fixture();
+        seed.execute("VACUUM INTO ?1",[path.to_str().unwrap()]).unwrap();
+        drop(seed);
+        {
+            let mut c=Connection::open(&path).unwrap();
+            ensure_schema(&c).unwrap();
+            resolve_conflict(&mut c,"project-delete","accept_server").unwrap();
+        }
+        {
+            let c=Connection::open(&path).unwrap();
+            ensure_schema(&c).unwrap();
+            let raw:String=c.query_row("SELECT value FROM sync_state WHERE key='account:account:project_delete_recovery_project-delete'",[],|r|r.get(0)).unwrap();
+            let recovery:Value=serde_json::from_str(&raw).unwrap();
+            assert_eq!(project_delete_recovery_index(&c,"account").unwrap()["records"].as_array().unwrap().len(),1);
+            assert_eq!(recovery["payload"]["project"]["tasks"][0]["title"],"unsynced work");
+            assert_eq!(c.query_row::<i64,_,_>("SELECT count(*) FROM sync_outbox WHERE change_id='project-delete' AND synced_at IS NOT NULL",[],|r|r.get(0)).unwrap(),1);
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn recovery_index_is_owned_metadata_only_and_does_not_require_old_project_access(){
+        let mut c=project_delete_fixture();
+        assert!(project_delete_recovery_index(&c,"account").unwrap()["records"].as_array().unwrap().is_empty());
+        resolve_conflict(&mut c,"project-delete","accept_server").unwrap();
+        c.execute("UPDATE local_users SET permissions_json='[]'",[]).unwrap();
+        let index=project_delete_recovery_index(&c,"account").unwrap();
+        let rows=index["records"].as_array().unwrap();assert_eq!(rows.len(),1);
+        assert_eq!(rows[0].as_object().unwrap().len(),4);
+        assert!(rows[0].get("payload").is_none());assert!(rows[0].get("project_id").is_none());
+        assert!(!index.to_string().contains("authored project"));assert!(!index.to_string().contains("unsynced work"));
+        assert!(project_delete_recovery_index(&c,"different").is_err());
+        c.execute("UPDATE local_users SET central_user_id='different'",[]).unwrap();
+        assert!(project_delete_recovery_index(&c,"different").unwrap()["records"].as_array().unwrap().is_empty());
+        c.execute("UPDATE local_users SET offline_expires_at='2000-01-01'",[]).unwrap();
+        assert!(project_delete_recovery_index(&c,"different").is_err());
     }
 
     #[test]

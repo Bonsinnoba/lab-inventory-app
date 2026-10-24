@@ -1,5 +1,5 @@
 //! Authored request/review intentions are separate from server allocation authority.
-use rusqlite::{params,Connection};
+use rusqlite::{params,Connection,OptionalExtension};
 use serde_json::{json,Value};
 use crate::{local_db,local_projects,inventory_sync_state::canonical_id};
 
@@ -25,6 +25,13 @@ pub(crate) fn project(c:&Connection,project:&mut Value)->Result<(),String>{
     let project_id=project["id"].clone();
     // Absence is not an empty authoritative snapshot.
     let Some(rows)=project["reservations"].as_array_mut() else{return Ok(())};
+    for row in rows.iter_mut() {
+        if let Some(id)=row["id"].as_str() {
+            let key=local_db::scoped_state_key(c,&format!("reservation_reconcile_{id}"))?;
+            let blocked:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM sync_state WHERE key=?1)",[key],|r|r.get(0)).map_err(|e|e.to_string())?;
+            if blocked {row["local_pending_action"]=json!("reconcile");row["local_issue_error"]=json!("Refresh the authoritative reservation snapshot after resolving this conflict");}
+        }
+    }
     for entry in entries(c)? {
         if entry["payload"]["project_id"]!=project_id {continue;}
         let index=rows.iter().position(|r|r["id"]==entry["reservation_id"]);
@@ -44,8 +51,11 @@ pub(crate) fn project(c:&Connection,project:&mut Value)->Result<(),String>{
 }
 
 fn reference(record:&Value,key:&str)->Result<String,String>{canonical_id(record[key].as_str().ok_or_else(||format!("{key} is required"))?)}
-fn timestamp(value:&Value)->Result<chrono::DateTime<chrono::FixedOffset>,String>{
-    chrono::DateTime::parse_from_rfc3339(value.as_str().ok_or("Usage date is required")?).map_err(|_|"Usage date must be an RFC3339 timestamp".into())
+fn timestamp(c:&Connection,value:&Value)->Result<f64,String>{
+    let text=value.as_str().ok_or("Usage date is required")?;
+    if !text.contains('T')||!(text.ends_with('Z')||text.get(19..).is_some_and(|s|s.contains('+')||s.contains('-'))){return Err("Usage date must include a time and timezone".into());}
+    let date:Option<f64>=c.query_row("SELECT julianday(?1)",[text],|r|r.get(0)).map_err(|e|e.to_string())?;
+    date.ok_or_else(||"Invalid usage date".into())
 }
 
 pub(crate) fn save(c:&mut Connection,input:ReservationIntentInput)->Result<Value,String>{
@@ -76,12 +86,13 @@ pub(crate) fn save(c:&mut Connection,input:ReservationIntentInput)->Result<Value
         let item=inventory.iter().find(|i|i["id"]==item_id).ok_or("Inventory item not cached")?;
         let n=payload["quantity"].as_f64().ok_or("Quantity must be numeric")?;
         if !n.is_finite()||n<=0.0||n>999999999.999||(n*1000.0-(n*1000.0).round()).abs()>0.0001{return Err("Enter a positive quantity with at most three decimal places".into());}
-        let from=timestamp(&payload["needed_from"])?;
-        if !payload["needed_until"].is_null()&&timestamp(&payload["needed_until"])?<=from{return Err("Usage end must follow start".into());}
+        let from=timestamp(&tx,&payload["needed_from"])?;
+        if !payload["needed_until"].is_null()&&timestamp(&tx,&payload["needed_until"])?<=from{return Err("Usage end must follow start".into());}
         if !payload["note"].is_null()&&payload["note"].as_str().is_none_or(|n|n.chars().count()>2000){return Err("Invalid reservation note".into());}
         let mut row=payload.clone();row["status"]=json!("proposed");row["item_name"]=item["name"].clone();
         row["original_quantity"]=json!(n);row["fulfilled_quantity"]=json!(0);row["requested_by"]=json!(account);
-        row["created_at"]=json!(chrono::Utc::now().to_rfc3339());row["project_priority"]=project_record["priority"].clone();
+        let created:String=tx.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+        row["created_at"]=json!(created);row["project_priority"]=project_record["priority"].clone();
         row["project_due_date"]=project_record["due_date"].clone();row
     }else if input.operation=="decision"{
         if role!="admin" {return Err("Administrator review required".into());}
@@ -105,5 +116,11 @@ pub(crate) fn save(c:&mut Connection,input:ReservationIntentInput)->Result<Value
 pub(crate) fn retire(c:&Connection,change:&str)->Result<(),String>{
     let id=canonical_id(change)?;let key=local_db::scoped_state_key(c,&format!("reservation_intent_{id}"))?;
     c.execute("INSERT INTO sync_state(key,value) SELECT ?1,value FROM sync_state WHERE key=?2 ON CONFLICT(key) DO NOTHING",params![local_db::scoped_state_key(c,&format!("reservation_recovery_{id}"))?,key]).map_err(|e|e.to_string())?;
+    let raw:Option<String>=c.query_row("SELECT value FROM sync_state WHERE key=?1",[&key],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+    if let Some(raw)=raw {
+        let entry:Value=serde_json::from_str(&raw).map_err(|e|e.to_string())?;
+        let reservation=reference(&entry,"reservation_id")?;
+        c.execute("INSERT INTO sync_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![local_db::scoped_state_key(c,&format!("reservation_reconcile_{reservation}"))?,raw]).map_err(|e|e.to_string())?;
+    }
     c.execute("DELETE FROM sync_state WHERE key=?1",[key]).map_err(|e|e.to_string())?;Ok(())
 }

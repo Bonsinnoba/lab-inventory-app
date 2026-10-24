@@ -11,7 +11,9 @@ import {confirmResourceChange,confirmResourceMutation} from './resource-confirma
 import type {Resource} from './resources';
 import { invoke } from '@tauri-apps/api/tauri';
 import { apiFetch, getApiErrorMessage } from './http';
-import { getStoredUser, getToken, captureServerRequest, isServerRequestCurrent } from './auth';
+import { getStoredUser, getToken, captureServerRequest, isServerRequestCurrent, captureAccountSession, isAccountSessionCurrent, type AccountSession } from './auth';
+import { createSyncRuntimeStore, type SyncRuntimeState } from './sync-runtime-state';
+import { readSyncQueueCounts, listSyncConflicts } from './sync-conflict-client';
 
 type PendingChange = { change_id:string; device_id:string; entity_type:string; entity_id?:string|null; operation:string; payload:unknown; created_at:string; attempt_count:number; last_error?:string|null };
 type LocationPullResponse = { snapshot_complete?:boolean; locations?:unknown[]; deleted_location_ids?:string[] };
@@ -19,40 +21,41 @@ type EngineeringPullResponse = { calculations?:unknown[]; tests?:unknown[]; visi
 type PullResponse = { items?:unknown[]; deleted_item_ids?:string[]; next_cursor?:string|null; has_more?:boolean };
 type KnowledgePullResponse = { findings?:unknown[]; results?:unknown[]; relationships?:unknown[]; visible_finding_ids?:string[]; visible_result_ids?:string[]; visible_relationship_ids?:string[]; deleted?:{finding?:string[];knowledge_result?:string[];knowledge_relationship?:string[]} };
 type NotesPullResponse = { notes?:unknown[]; visible_note_ids?:string[]; deleted_note_ids?:string[] };
-export type SyncRuntimeState = { status:'offline'|'syncing'|'idle'|'error'; lastSuccessAt:string|null; lastError:string|null };
+export type { SyncRuntimeState } from './sync-runtime-state';
 
-const STATUS_KEY='labos.sync.status.v1';
-const RETRY_KEY='labos.sync.retry.v1';
-const RETRY_DELAYS_MS=[5000,15000,30000,60000,120000,300000];
 let activeSync:Promise<number>|null=null;
-let failureStreak=0;
-let nextRetryAt=0;
-let runtimeState:SyncRuntimeState={status:'idle',lastSuccessAt:null,lastError:null};
-const listeners=new Set<(state:SyncRuntimeState)=>void>();
+const runtime=createSyncRuntimeStore({storage:()=>typeof localStorage==='undefined'?undefined:localStorage,session:captureAccountSession,isCurrent:isAccountSessionCurrent});
+function clearRetryState(){runtime.clearRetry(currentSyncSession);}
+function scheduleRetry(){runtime.scheduleRetry(currentSyncSession);}
+function publish(patch:Partial<SyncRuntimeState>){runtime.publish(currentSyncSession,patch);}
+export function getSyncRuntimeState():SyncRuntimeState{return runtime.getState();}
+export function subscribeSyncStatus(listener:(state:SyncRuntimeState)=>void):()=>void{return runtime.subscribe(listener);}
+if(typeof window!=='undefined'){
+  window.addEventListener('labos-user-updated',runtime.refresh);
+  window.addEventListener('labos:auth-expired',runtime.refresh);
+}
 
-function loadRuntimeState():SyncRuntimeState{try{if(typeof localStorage==='undefined')return runtimeState;const raw=localStorage.getItem(STATUS_KEY);if(!raw)return runtimeState;const parsed=JSON.parse(raw) as Partial<SyncRuntimeState>;const lastError=typeof parsed.lastError==='string'&&parsed.lastError?parsed.lastError:null;return {status:lastError?'error':'idle',lastSuccessAt:typeof parsed.lastSuccessAt==='string'?parsed.lastSuccessAt:null,lastError};}catch{return runtimeState;}}
-runtimeState=loadRuntimeState();
-function loadRetryState(){try{if(typeof localStorage==='undefined')return;const raw=localStorage.getItem(RETRY_KEY);if(!raw)return;const parsed=JSON.parse(raw) as {retryAt?:unknown;streak?:unknown};const retryAt=typeof parsed.retryAt==='number'?parsed.retryAt:0;failureStreak=typeof parsed.streak==='number'&&parsed.streak>0?Math.floor(parsed.streak):0;nextRetryAt=retryAt>Date.now()?retryAt:0;}catch{failureStreak=0;nextRetryAt=0;}}
-loadRetryState();
-function persistRetryState(){try{localStorage.setItem(RETRY_KEY,JSON.stringify({retryAt:nextRetryAt,streak:failureStreak}));}catch{}}
-function clearRetryState(){failureStreak=0;nextRetryAt=0;try{localStorage.removeItem(RETRY_KEY);}catch{}}
-function scheduleRetry(){const delay=RETRY_DELAYS_MS[Math.min(failureStreak,RETRY_DELAYS_MS.length-1)];failureStreak+=1;nextRetryAt=Date.now()+delay;persistRetryState();}
-function publish(patch:Partial<SyncRuntimeState>){runtimeState={...runtimeState,...patch};try{localStorage.setItem(STATUS_KEY,JSON.stringify({lastSuccessAt:runtimeState.lastSuccessAt,lastError:runtimeState.lastError}));}catch{}listeners.forEach(listener=>listener(runtimeState));}
-export function getSyncRuntimeState():SyncRuntimeState{return runtimeState;}
-export function subscribeSyncStatus(listener:(state:SyncRuntimeState)=>void):()=>void{listeners.add(listener);listener(runtimeState);return()=>listeners.delete(listener);}
+export async function getPendingSyncCount():Promise<number>{return (await readSyncQueueCounts()).pending;}
+export async function getUnassignedSyncCount():Promise<number>{return (await readSyncQueueCounts()).unassigned;}
+export async function getUnassignedStateCount():Promise<number>{return (await readSyncQueueCounts()).unassignedState;}
+export async function getSyncConflictCount():Promise<number>{return (await listSyncConflicts()).length;}
+export { listSyncConflicts, resolveSyncConflict } from './sync-conflict-client';
+export async function syncPendingChanges(force=false):Promise<number>{
+  runtime.refresh();
+  if(activeSync){
+    if(!isAccountSessionCurrent(currentSyncSession))throw new Error('Previous login synchronization is finishing. Retry shortly.');
+    return activeSync;
+  }
+  if(!force&&!runtime.retryDue())return 0;
+  currentSyncSession=captureAccountSession();
+  activeSync=runSync().finally(()=>{currentSyncSession=null;activeSync=null;});
+  return activeSync;
+}
 
-export async function getPendingSyncCount():Promise<number>{try{const status=await invoke<{pending_sync_count:number}>('local_database_status');return Number(status.pending_sync_count||0);}catch{return 0;}}
-export async function getUnassignedSyncCount():Promise<number>{try{const status=await invoke<{unassigned_pending_sync_count:number}>('local_database_status');return Number(status.unassigned_pending_sync_count||0);}catch{return 0;}}
-export async function getUnassignedStateCount():Promise<number>{try{const status=await invoke<{unassigned_state_count:number}>('local_database_status');return Number(status.unassigned_state_count||0);}catch{return 0;}}
-export async function getSyncConflictCount():Promise<number>{try{const status=await invoke<{sync_conflict_count:number}>('local_database_status');return Number(status.sync_conflict_count||0);}catch{return 0;}}
-export async function listSyncConflicts():Promise<unknown[]>{return invoke<unknown[]>('list_sync_conflicts');}
-export async function resolveSyncConflict(changeId:string,resolution:'keep_local'|'accept_server'|'dismiss'):Promise<void>{await invoke('resolve_sync_conflict',{changeId,resolution});}
-export async function syncPendingChanges(force=false):Promise<number>{if(activeSync)return activeSync;if(!force&&nextRetryAt>Date.now()){return 0;}activeSync=runSync().finally(()=>{currentSyncSession=null;activeSync=null;});return activeSync;}
-
-type SyncSession={token:string;accountId:string};
+type SyncSession=AccountSession;
 let currentSyncSession:SyncSession|null=null;
 function assertSyncSession(session:SyncSession|null=currentSyncSession):void{
-  if(!session||getToken()!==session.token||getStoredUser()?.id!==session.accountId){
+  if(!isAccountSessionCurrent(session)){
     throw new Error('Account changed during sync. Sign in and retry.');
   }
 }
@@ -63,7 +66,7 @@ async function runPullStep(label:string, step:()=>Promise<boolean>):Promise<bool
     assertSyncSession();
     const ok=await step();
     assertSyncSession();
-    if(!ok) publish({status:'error',lastError:`${label}: ${runtimeState.lastError||'operation failed'}`});
+    if(!ok) publish({status:'error',lastError:`${label}: ${getSyncRuntimeState().lastError||'operation failed'}`});
     return ok;
   }catch(error){
     const message=error instanceof Error?error.message:String(error);
@@ -78,9 +81,16 @@ async function runSync():Promise<number>{
   if(!token||token.startsWith('local:')){publish({status:'offline',lastError:'Reconnect to LabOS to synchronize this installation'});return 0;}
   const accountId=getStoredUser()?.id;
   if(!accountId){publish({status:'error',lastError:'Sign in again before synchronizing local changes'});return 0;}
-  const unassigned=await getUnassignedSyncCount();
+  let unassigned:number;
+  try{unassigned=await getUnassignedSyncCount();}
+  catch(error){
+    assertSyncSession();
+    publish({status:'error',lastError:`Local sync preflight unavailable: ${error instanceof Error?error.message:String(error)}`});
+    scheduleRetry();
+    return 0;
+  }
+  assertSyncSession();
   if(unassigned>0){publish({status:'error',lastError:`${unassigned} older local change${unassigned===1?' has':'s have'} no verified account owner. Sync is paused to protect that data.`});return 0;}
-  currentSyncSession={token,accountId};
   publish({status:'syncing',lastError:null});
   let changes:PendingChange[]=[];
   try{changes=await invoke<PendingChange[]>('list_pending_sync_changes',{limit:100,expectedAccountId:accountId});assertSyncSession();}
@@ -198,9 +208,9 @@ async function runSync():Promise<number>{
     return true;
   });
   const pullSucceeded=authorityPullSucceeded&&downloadsPullSucceeded&&activityPullSucceeded&&commentPullSucceeded&&notificationPullSucceeded&&catalogPullSucceeded&&inventoryPullSucceeded&&maintenancePullSucceeded&&preferencesPullSucceeded&&projectPullSucceeded&&resourcePullSucceeded&&financePullSucceeded&&locationPullSucceeded&&engineeringPullSucceeded&&knowledgePullSucceeded&&notesPullSucceeded;
-  if(!pullSucceeded){syncSucceeded=false;publish({status:'error',lastError:runtimeState.lastError||'Unable to download the latest server changes'});scheduleRetry();}
+  if(!pullSucceeded){syncSucceeded=false;publish({status:'error',lastError:getSyncRuntimeState().lastError||'Unable to download the latest server changes'});scheduleRetry();}
   if(syncSucceeded&&pullSucceeded){clearRetryState();publish({status:'idle',lastSuccessAt:new Date().toISOString(),lastError:null});}
-  else if(runtimeState.status!=='error')publish({status:'error',lastError:runtimeState.lastError||'Some changes could not be synchronized'});
+  else if(getSyncRuntimeState().status!=='error')publish({status:'error',lastError:getSyncRuntimeState().lastError||'Some changes could not be synchronized'});
   currentSyncSession=null;
   return syncedCount;
 }

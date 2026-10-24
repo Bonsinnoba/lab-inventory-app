@@ -45,7 +45,7 @@ async function applyMovement(client,change,userId){
     }
     return Math.round(scaled);
   };
-  if (isCustody) quantityUnits = units(quantity, 'Custody quantity');
+  if (isCustody || payload.reservation_id) quantityUnits = units(quantity, 'Movement quantity');
 
   if (payload.custody_id) {
     const custodyId = id(payload.custody_id, 'Custody ID');
@@ -81,8 +81,14 @@ async function applyMovement(client,change,userId){
     }
   } else {
     if (payload.settlement_type || payload.transfer_recipient_id) fail(400, 'CUSTODY_REQUIRED', 'Select the custody record to settle');
+    if(payload.project_id&&!payload.reservation_id&&['checkout','consume'].includes(type)){
+      const project=(await client.query('SELECT status FROM projects WHERE id=$1 FOR SHARE',[id(payload.project_id,'Project ID')])).rows[0];
+      if(!project||!['planning','active'].includes(project.status))fail(409,'PROJECT_CLOSED_FOR_ISSUE','Project is not open for new stock issues');
+    }
     if (payload.reservation_id) {
-      if (!isCustody) fail(400,'RESERVATION_CUSTODY_REQUIRED','Reservation-backed issues require checkout with a recipient');
+      const directConsumption=type==='consume'&&!payload.recipient_id&&!payload.serial_number;
+      if (!isCustody&&!directConsumption) fail(400,'RESERVATION_CUSTODY_REQUIRED','Reservation-backed issues require checkout with a recipient or explicit non-returnable consumption');
+      if (directConsumption&&['equipment','instrument','tool'].includes(item.type)) fail(409,'RESERVATION_RETURNABLE_ITEM','Returnable equipment requires checkout and return');
       const reservationId=id(payload.reservation_id,'Reservation ID');
       // Item lock is already held. Keep this order in reservation HTTP writers too.
       reservation=(await client.query('SELECT * FROM project_reservations WHERE id=$1 FOR UPDATE',[reservationId])).rows[0];
@@ -122,7 +128,7 @@ async function applyMovement(client,change,userId){
     else if (OUTGOING.has(type)) next -= quantity;
     else if (type === 'adjust') next = quantity;
 
-    if (isCustody) next = (units(item.current_quantity, 'Storeroom quantity') - quantityUnits) / 1000;
+    if (isCustody || reservation) next = (units(item.current_quantity, 'Storeroom quantity') - quantityUnits) / 1000;
 
     if (next < 0) fail(409, 'INSUFFICIENT_STOCK', 'Movement would make stock negative');
     // Only the validated matching allocation is fulfilled by this issue.

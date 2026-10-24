@@ -8,8 +8,8 @@ import { useNavigate } from 'react-router-dom';
 import AddProjectModal from '../components/AddProjectModal';
 import ReservationReviewQueue from '../components/ReservationReviewQueue';
 
-const statusColors = { planning: 'var(--color-status-warn)', active: 'var(--color-status-ok)', completed: 'var(--color-accent)', on_hold: 'var(--color-status-warn)', cancelled: 'var(--color-status-danger)' };
-const statusLabels = { planning: 'Planning', active: 'Active', completed: 'Completed', on_hold: 'On Hold', cancelled: 'Cancelled' } as const;
+const statusColors = { planning: 'var(--color-status-warn)', active: 'var(--color-status-ok)', completed: 'var(--color-accent)', on_hold: 'var(--color-status-warn)', cancelled: 'var(--color-status-danger)', archived:'var(--color-text-secondary)' };
+const statusLabels = { planning: 'Planning', active: 'Active', completed: 'Completed', on_hold: 'On Hold', cancelled: 'Cancelled', archived:'Archived' } as const;
 const formatDate = (value?: string | null) => { if (!value) return '—'; const date = new Date(value); if (Number.isNaN(date.getTime())) return value; return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(date); };
 const priorityClasses: Record<string, string> = { high: 'text-status-danger border-status-danger/25 bg-status-danger/5', medium: 'text-status-warning border-status-warning/25 bg-status-warning/5', normal: 'text-text-secondary border-border bg-surface-raised', low: 'text-text-secondary border-border bg-surface-raised' };
 

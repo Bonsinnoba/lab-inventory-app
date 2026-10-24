@@ -85,6 +85,7 @@ export async function getItemMovements(id:string):Promise<ItemMovement[]>{
     (rows, session) => cacheLocalItemMovements(id, rows, session));
 }
 export interface MovementOptions {
+  movement_id?: string;
   movement_type: MovementType;
   quantity: number;
   to_storage_location?: string;

@@ -66,9 +66,32 @@ pub(crate) fn load_all(conn: &Connection) -> Result<Vec<Value>, String> {
         "SELECT value FROM sync_state WHERE key=?1", [local_db::scoped_state_key(conn, STATE_KEY)?], |r| r.get(0)
     ).optional().map_err(|e| format!("Unable to read local projects: {e}"))?;
     match raw {
-        Some(v) => serde_json::from_str(&v).map_err(|e| format!("Invalid local projects state: {e}")),
+        Some(v) => {let mut projects:Vec<Value>=serde_json::from_str(&v).map_err(|e| format!("Invalid local projects state: {e}"))?;for project in &mut projects{normalize_experiment_observations(project);}Ok(projects)},
         None => Ok(Vec::new()),
     }
+}
+
+fn normalize_experiment_observations(project:&mut Value){
+    if let Some(experiments)=project.get_mut("experiments").and_then(Value::as_array_mut){
+        for experiment in experiments{
+            if experiment.get("observation_records").is_none()&&experiment["observations"].is_array(){
+                experiment["observation_records"]=experiment["observations"].clone();
+            }
+            // A cached prose edit wins over the pull's compatibility alias.
+            if experiment["observations"].is_string(){continue;}
+            if let Some(text)=experiment.get("observations_text").and_then(Value::as_str).map(str::to_owned){
+                experiment["observations"]=json!(text);experiment["observations_text_available"]=json!(true);
+            }else{
+                experiment["observations"]=json!("");experiment["observations_text_available"]=json!(false);
+            }
+        }
+    }
+}
+
+fn require_experiment_observation_text(record:&Value)->Result<(),String>{
+    if record["observations_text_available"]==false||record.get("observations").is_some_and(|v|!v.is_string()){
+        return Err("Synchronize this experiment's observation text before editing it; existing records and pending work are preserved.".into());
+    }Ok(())
 }
 
 fn load(conn: &Connection) -> Result<Vec<Value>, String> {
@@ -87,10 +110,10 @@ pub(crate) fn require_cached_project_access(conn:&Connection,project_id:&str,edi
 }
 
 fn save(conn: &mut Connection, projects: &[Value], changes: Vec<(String, String, String, String, Value)>) -> Result<(), String> {
-    save_checked(conn, projects, changes, None)
+    save_checked(conn, projects, changes, None, &[])
 }
 
-fn save_checked(conn: &mut Connection, projects: &[Value], changes: Vec<(String, String, String, String, Value)>, expected_account_id: Option<&str>) -> Result<(), String> {
+fn save_checked(conn: &mut Connection, projects: &[Value], changes: Vec<(String, String, String, String, Value)>, expected_account_id: Option<&str>, refreshed_reservations:&[String]) -> Result<(), String> {
     let (user_id, _) = current_principal(conn)?;
     for (_, entity_type, _, operation, _) in &changes {
         let permission = if entity_type == "project" {
@@ -124,6 +147,16 @@ fn save_checked(conn: &mut Connection, projects: &[Value], changes: Vec<(String,
     combined.extend_from_slice(projects);
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| format!("Unable to begin local project transaction: {e}"))?;
     local_db::require_sync_account(&tx, expected_account_id.unwrap_or(&user_id))?;
+    // A second native writer must not replace a newly queued lifecycle with an
+    // older full-project payload after waiting for this SQLite transaction.
+    for (_,entity,entity_id,operation,payload) in &changes {
+        if entity=="project"&&operation=="update" {
+            let current=load_all(&tx)?.into_iter().find(|p|p["id"]==*entity_id).ok_or("Project is no longer cached")?;
+            if current["lifecycle_revision"]!=payload["before"]["lifecycle_revision"]||current["status"]!=payload["before"]["status"] {
+                return Err("Project lifecycle changed during save. Reload the project before retrying.".into());
+            }
+        }
+    }
     let raw = serde_json::to_string(&combined).map_err(|e| format!("Unable to encode local projects: {e}"))?;
     tx.execute(
         "INSERT INTO sync_state(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -136,6 +169,9 @@ fn save_checked(conn: &mut Connection, projects: &[Value], changes: Vec<(String,
             "INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES (?1,?2,?3,?4,?5,?6)",
             params![change_id, device, entity_type, entity_id, operation, payload.to_string()],
         ).map_err(|e| format!("Unable to queue local project change: {e}"))?;
+    }
+    for id in refreshed_reservations {
+        tx.execute("DELETE FROM sync_state WHERE key=?1",[local_db::scoped_state_key(&tx,&format!("reservation_reconcile_{id}"))?]).map_err(|e|e.to_string())?;
     }
     tx.commit().map_err(|e| format!("Unable to commit local project change: {e}"))
 }
@@ -159,6 +195,7 @@ pub fn get_local_project(app: AppHandle, project_id: String) -> Result<Option<Va
     if let Some(ref mut project) = project {
         crate::local_inventory::reservations::project(&c, project)?;
         crate::local_reservations::project(&c, project)?;
+        crate::local_project_review::project(&c, project)?;
     }
     Ok(project)
 }
@@ -195,6 +232,7 @@ pub fn create_local_project(app: AppHandle, mut project: Value) -> Result<Value,
     project["task_experiments"] = json!([]);
     project["attachments"] = json!([]);
     project["requirements"] = json!([]);
+    project["lifecycle_revision"] = json!(1);
     projects.push(project.clone());
     save(&mut c, &projects, vec![(id(), "project".into(), project_id, "create".into(), project.clone())])?;
     Ok(project)
@@ -205,9 +243,10 @@ pub fn update_local_project(app: AppHandle, project_id: String, patch: Value) ->
     let mut c = conn(&app)?; let mut projects = load(&c)?;
     let p = projects.iter_mut().find(|p| p.get("id").and_then(Value::as_str) == Some(project_id.as_str())).ok_or("Project not found")?;
     let old = p.clone();
+    prepare_lifecycle_patch(p,&patch)?;
     if patch.get("status").and_then(Value::as_str) == Some("active") && old.get("status").and_then(Value::as_str) != Some("active") { return Err("Activation requires online admin approval. Sync your planning changes and ask an admin to activate this project.".into()); }
     if let Some(obj) = patch.as_object() {
-        for (k,v) in obj { if !matches!(k.as_str(), "id"|"created_at"|"tasks"|"experiments"|"items"|"bom"|"members"|"permissions"|"owner_id") { p[k] = v.clone(); } }
+        for (k,v) in obj { if matches!(k.as_str(), "name"|"status"|"budget"|"description"|"priority"|"start_date"|"due_date"|"visibility") { p[k] = v.clone(); } }
     }
     if let Some(visibility) = p.get("visibility").and_then(Value::as_str) {
         if !matches!(visibility, "lab" | "project" | "restricted") { return Err("visibility must be lab, project, or restricted".into()); }
@@ -217,6 +256,18 @@ pub fn update_local_project(app: AppHandle, project_id: String, patch: Value) ->
     let updated = p.clone();
     save(&mut c, &projects, vec![(id(), "project".into(), project_id.clone(), "update".into(), json!({"id":project_id,"before":old,"project":updated}))])?;
     Ok(updated)
+}
+
+fn prepare_lifecycle_patch(project:&mut Value,patch:&Value)->Result<(),String>{
+    if let Some(status)=patch.get("status").filter(|s|**s!=project["status"]) {
+        if !matches!(status.as_str(),Some("planning"|"active"|"completed"|"on_hold"|"cancelled"|"archived")){return Err("Invalid project status".into());}
+        let revision=project["lifecycle_revision"].as_i64().filter(|n|*n>0&&*n<i32::MAX as i64).ok_or("Synchronize this project's lifecycle before changing its status")?;
+        if patch.get("expected_lifecycle_revision").is_some_and(|v|v.as_i64()!=Some(revision)){return Err("Project status changed while editing. Review it before saving.".into());}
+        project["lifecycle_revision"]=json!(revision+1);
+        project["local_lifecycle_pending"]=json!(true);
+        project["inventory_settlement"]=json!({"state":"unknown","scope":"inventory","reason":"Project lifecycle awaits server reconciliation"});
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -273,6 +324,7 @@ fn nested_update(app: AppHandle, project_id:String, key:&str, record_id:String, 
     let p=projects.iter_mut().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
     let mut list=nested_get(p,key);
     let r=list.iter_mut().find(|r|r.get("id").and_then(Value::as_str)==Some(record_id.as_str())).ok_or("Record not found")?;
+    if key=="experiments"{require_experiment_observation_text(r)?;require_experiment_observation_text(&patch)?;}
     if let Some(obj)=patch.as_object(){for(k,v)in obj{if k!="id"&&k!="project_id"&&k!="created_at"{r[k]=v.clone();}}}
     validate_nested_references(p,key,r)?;
     r["updated_at"]=json!(now(&c)?); let updated=r.clone(); p[key]=Value::Array(list); p["updated_at"]=json!(now(&c)?);
@@ -350,7 +402,7 @@ pub fn update_local_project_task(app:AppHandle,project_id:String,record_id:Strin
 pub fn delete_local_project_task(app:AppHandle,project_id:String,record_id:String)->Result<(),String>{nested_delete(app,project_id,"tasks",record_id,"project_task")}
 
 #[tauri::command]
-pub fn create_local_project_experiment(app:AppHandle,project_id:String,mut record:Value)->Result<Value,String>{record["measurements"]=json!([]);record["observations"]=json!([]);nested_create(app,project_id,"experiments",record,"project_experiment")}
+pub fn create_local_project_experiment(app:AppHandle,project_id:String,mut record:Value)->Result<Value,String>{require_experiment_observation_text(&record)?;if record.get("observations").is_none(){record["observations"]=json!("");}record["measurements"]=json!([]);record["observation_records"]=json!([]);record["observations_text_available"]=json!(true);nested_create(app,project_id,"experiments",record,"project_experiment")}
 #[tauri::command]
 pub fn update_local_project_experiment(app:AppHandle,project_id:String,record_id:String,patch:Value)->Result<Value,String>{nested_update(app,project_id,"experiments",record_id,patch,"project_experiment")}
 #[tauri::command]
@@ -369,7 +421,7 @@ pub fn repeat_local_project_experiment(app:AppHandle,project_id:String,experimen
         "hypothesis": original.get("hypothesis").cloned().unwrap_or(json!("")),
         "procedure": original.get("procedure").cloned().unwrap_or(json!("")),
         "requirement_id": original.get("requirement_id").cloned().unwrap_or(Value::Null),
-        "observations": json!([]),
+        "observations": json!(""),
         "measurements": json!([]),
     });
     create_local_project_experiment(app,project_id,new_exp)
@@ -485,14 +537,15 @@ pub fn unlink_local_project_item(app:AppHandle,project_id:String,item_id:String)
 
 #[tauri::command]
 pub fn apply_server_project_pull(app: AppHandle, projects_json: String, visible_project_ids: Vec<String>, deleted_project_ids: Vec<String>, deleted_project_task_ids: Vec<String>, deleted_project_experiment_ids: Vec<String>, deleted_project_bom_ids: Vec<String>, deleted_project_block_ids: Vec<String>, deleted_project_connector_ids: Vec<String>, deleted_project_measurement_ids: Vec<String>, deleted_project_observation_ids: Vec<String>, deleted_project_attachment_ids: Vec<String>, _deleted_project_task_experiment_ids: Vec<String>, deleted_project_requirement_ids: Vec<String>, expected_account_id: String) -> Result<(), String> {
-    let incoming: Vec<Value> = serde_json::from_str(&projects_json).map_err(|e| format!("Invalid server project payload: {e}"))?;
+    let mut incoming: Vec<Value> = serde_json::from_str(&projects_json).map_err(|e| format!("Invalid server project payload: {e}"))?;
+    for project in &mut incoming{normalize_experiment_observations(project);}
     let visible: std::collections::HashSet<String> = visible_project_ids.into_iter().collect();
     let deleted: std::collections::HashSet<String> = deleted_project_ids.into_iter().collect();
     let mut c = conn(&app)?;
     local_db::require_sync_account(&c, &expected_account_id)?;
     let mut projects = load(&c)?;
     let pending: std::collections::HashSet<String> = {
-        let mut stmt = c.prepare("SELECT DISTINCT entity_type || ':' || entity_id FROM active_sync_outbox WHERE synced_at IS NULL AND entity_id IS NOT NULL AND entity_type IN ('project','project_task','project_experiment','project_bom','project_block','project_connector','project_work_attachment','project_task_experiment','project_resource_requirement','project_item')").map_err(|e| format!("Unable to inspect pending project changes: {e}"))?;
+        let mut stmt = c.prepare("SELECT DISTINCT entity_type || ':' || entity_id FROM active_sync_outbox WHERE synced_at IS NULL AND entity_id IS NOT NULL AND entity_type IN ('project','project_task','project_experiment','project_experiment_measurement','project_experiment_observation','project_bom','project_block','project_connector','project_work_attachment','project_task_experiment','project_resource_requirement','project_item')").map_err(|e| format!("Unable to inspect pending project changes: {e}"))?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| format!("Unable to inspect pending project changes: {e}"))?;
         rows.filter_map(|r| r.ok()).collect()
     };
@@ -500,9 +553,13 @@ pub fn apply_server_project_pull(app: AppHandle, projects_json: String, visible_
         let id = p.get("id").and_then(Value::as_str).unwrap_or_default();
         (!deleted.contains(id) && visible.contains(id)) || pending.contains(&format!("project:{id}"))
     });
+    let mut refreshed_reservations=Vec::new();
     for mut project in incoming {
         let Some(project_id) = project.get("id").and_then(Value::as_str).map(ToOwned::to_owned) else { continue; };
         if pending.contains(&format!("project:{project_id}")) { continue; }
+        if let Some(rows)=project["reservations"].as_array(){
+            refreshed_reservations.extend(rows.iter().filter(|r|r["applied_intent_ids"].is_array()).filter_map(|r|r["id"].as_str().map(ToOwned::to_owned)));
+        }
         if let Some(existing) = projects.iter().find(|p| p.get("id").and_then(Value::as_str) == Some(project_id.as_str())).cloned() {
             let server_task_experiments=project.get("task_experiments").and_then(Value::as_array).cloned().unwrap_or_default();
             let old_task_experiments=existing.get("task_experiments").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -541,7 +598,7 @@ pub fn apply_server_project_pull(app: AppHandle, projects_json: String, visible_
                     for exp in &mut merged {
                         let eid=exp.get("id").and_then(Value::as_str).unwrap_or_default();
                         let oldexp=existing.get("experiments").and_then(Value::as_array).and_then(|a|a.iter().find(|v|v.get("id").and_then(Value::as_str)==Some(eid))).cloned().unwrap_or_else(||json!({}));
-                        for sub in ["measurements","observations"] {
+                        for sub in ["measurements","observation_records"] {
                             let et=if sub=="measurements"{"project_experiment_measurement"}else{"project_experiment_observation"};
                             let dels:std::collections::HashSet<String>=if sub=="measurements"{deleted_project_measurement_ids.iter().cloned().collect()}else{deleted_project_observation_ids.iter().cloned().collect()};
                             let mut subrows=exp.get(sub).and_then(Value::as_array).cloned().unwrap_or_default();
@@ -572,7 +629,7 @@ pub fn apply_server_project_pull(app: AppHandle, projects_json: String, visible_
             projects.push(project);
         }
     }
-    save_checked(&mut c, &projects, Vec::new(), Some(&expected_account_id))
+    save_checked(&mut c, &projects, Vec::new(), Some(&expected_account_id), &refreshed_reservations)
 }
 
 fn nested_create_nested(app:AppHandle,project_id:String,parent_key:&str,key:&str,parent_id:String,mut record:Value,entity_type:&str)->Result<Value,String>{let mut c=conn(&app)?;let mut projects=load(&c)?;let p=projects.iter_mut().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;let mut parents=nested_get(p,parent_key);let parent=parents.iter_mut().find(|x|x.get("id").and_then(Value::as_str)==Some(parent_id.as_str())).ok_or("Parent record not found")?;let rid=id();let ts=now(&c)?;record["id"]=json!(&rid);record["project_id"]=json!(&project_id);record["created_at"]=json!(&ts);record["updated_at"]=json!(&ts);let mut rows=nested_get(parent,key);rows.push(record.clone());parent[key]=Value::Array(rows);p[parent_key]=Value::Array(parents);p["updated_at"]=json!(&ts);save(&mut c,&projects,vec![(id(),entity_type.into(),rid,"create".into(),record.clone())])?;Ok(record)}
@@ -583,14 +640,55 @@ pub fn create_local_project_experiment_measurement(app:AppHandle,project_id:Stri
 #[tauri::command]
 pub fn delete_local_project_experiment_measurement(app:AppHandle,project_id:String,experiment_id:String,record_id:String)->Result<(),String>{nested_delete_nested(app,project_id,"experiments","measurements",experiment_id,record_id,"project_experiment_measurement")}
 #[tauri::command]
-pub fn create_local_project_experiment_observation(app:AppHandle,project_id:String,experiment_id:String,record:Value)->Result<Value,String>{let mut r=record;r["experiment_id"]=json!(experiment_id);nested_create_nested(app,project_id,"experiments","observations",experiment_id,r,"project_experiment_observation")}
+pub fn create_local_project_experiment_observation(app:AppHandle,project_id:String,experiment_id:String,record:Value)->Result<Value,String>{let mut r=record;r["experiment_id"]=json!(experiment_id);nested_create_nested(app,project_id,"experiments","observation_records",experiment_id,r,"project_experiment_observation")}
 #[tauri::command]
-pub fn delete_local_project_experiment_observation(app:AppHandle,project_id:String,experiment_id:String,record_id:String)->Result<(),String>{nested_delete_nested(app,project_id,"experiments","observations",experiment_id,record_id,"project_experiment_observation")}
+pub fn delete_local_project_experiment_observation(app:AppHandle,project_id:String,experiment_id:String,record_id:String)->Result<(),String>{nested_delete_nested(app,project_id,"experiments","observation_records",experiment_id,record_id,"project_experiment_observation")}
 
 #[cfg(test)]
 mod access_tests {
+    #[test]
+    fn observation_projection_preserves_text_and_records_separately(){
+        let mut p=serde_json::json!({"experiments":[{"id":"e","observations":[{"id":"o","content":"red"}],"observations_text":"Sample changed colour","observation_records":[{"id":"o","content":"red"}]}]});
+        super::normalize_experiment_observations(&mut p);
+        assert_eq!(p["experiments"][0]["observations"],"Sample changed colour");
+        assert_eq!(p["experiments"][0]["observation_records"][0]["content"],"red");
+        assert_eq!(p["experiments"][0]["observations_text_available"],true);
+        p["experiments"][0]["observations"]=serde_json::json!("New offline narrative");
+        super::normalize_experiment_observations(&mut p);
+        assert_eq!(p["experiments"][0]["observations"],"New offline narrative");
+    }
+
+    #[test]
+    fn legacy_observation_arrays_are_preserved_but_missing_prose_cannot_be_overwritten(){
+        let original=serde_json::json!({"experiments":[{"id":"e","observations":[{"id":"o","content":"retained"}]}]});
+        let mut p=original.clone();super::normalize_experiment_observations(&mut p);
+        assert_eq!(p["experiments"][0]["observation_records"],original["experiments"][0]["observations"]);
+        assert_eq!(p["experiments"][0]["observations_text_available"],false);
+        assert!(super::require_experiment_observation_text(&p["experiments"][0]).is_err());
+        assert!(super::require_experiment_observation_text(&serde_json::json!({"observations":[]})).is_err());
+        assert!(super::require_experiment_observation_text(&serde_json::json!({"observations":""})).is_ok());
+        super::normalize_experiment_observations(&mut p);
+        assert_eq!(p["experiments"][0]["observations_text_available"],false);
+    }
     use super::{access_for_user, readable_for_user, require_local_project_editor, validate_nested_references};
     use serde_json::json;
+
+    #[test]
+    fn lifecycle_intentions_do_not_release_stock_or_claim_settlement(){
+        let original=json!({"status":"active","lifecycle_revision":2,"reservations":[{"status":"confirmed","quantity":3}],"inventory_settlement":{"state":"settled"}});
+        for status in ["cancelled","completed","archived"] {
+            let mut project=original.clone();
+            super::prepare_lifecycle_patch(&mut project,&json!({"status":status,"expected_lifecycle_revision":2})).unwrap();
+            assert_eq!(project["reservations"],original["reservations"]);
+            assert_eq!(project["inventory_settlement"]["state"],"unknown");
+            assert_eq!(project["local_lifecycle_pending"],true);assert_eq!(project["lifecycle_revision"],3);
+        }
+        for patch in [json!({"status":"archived","expected_lifecycle_revision":1}),json!({"status":"bogus"})] {
+            let mut project=original.clone();assert!(super::prepare_lifecycle_patch(&mut project,&patch).is_err());assert_eq!(project,original);
+        }
+        let mut legacy=json!({"status":"active"});let before=legacy.clone();
+        assert!(super::prepare_lifecycle_patch(&mut legacy,&json!({"status":"cancelled"})).is_err());assert_eq!(legacy,before);
+    }
 
     #[test]
     fn canonical_requirement_references_are_shared_and_normalized() {

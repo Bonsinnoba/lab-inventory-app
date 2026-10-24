@@ -42,8 +42,15 @@ fn remaining(reservation: &Value, pending: &[Value]) -> Result<(i64, i64), Strin
 // Called inside the custody writer's immediate transaction. Normalize before
 // creating both the custody record and its immutable outbox payload.
 pub(super) fn prepare_issue(c: &Connection, intent: &mut Value, item: &str, change: &str) -> Result<Option<Value>, String> {
+    if intent["custody_id"].is_null()&&!intent["project_id"].is_null()&&intent["reservation_id"].is_null()&&matches!(intent["movement_type"].as_str(),Some("checkout"|"consume")) {
+        let project_id=id(&intent["project_id"])?;
+        local_projects::require_cached_project_access(c,&project_id,true)?;
+        let project=local_projects::load_all(c)?.into_iter().find(|p|p["id"]==project_id).ok_or("Issue project is not cached")?;
+        if !matches!(project["status"].as_str(),Some("planning"|"active")){return Err("Project is not open for stock issues".into());}
+    }
     if !intent["custody_id"].is_null() || intent["reservation_id"].is_null() { return Ok(None); }
-    if intent["movement_type"] != "checkout" || intent["recipient_id"].as_str().is_none() {
+    let consume=intent["movement_type"]=="consume"&&intent["recipient_id"].is_null()&&intent["serial_number"].is_null();
+    if !consume&&(intent["movement_type"] != "checkout" || intent["recipient_id"].as_str().is_none()) {
         return Err("Reservation-backed issues require checkout with a recipient".into());
     }
     let project_id = id(&intent["project_id"])?;

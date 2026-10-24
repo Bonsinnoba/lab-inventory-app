@@ -12,7 +12,7 @@ export async function createLocalCustodyMovement(id: string, movement: MovementO
   const local = await getLocalInventorySnapshot();
   if (!isAccountSessionCurrent(session)) throw new Error('Account changed while preparing custody');
   if (local === null) throw new Error('Download inventory before recording custody');
-  const record = {...movement, id: crypto.randomUUID(), item_id: id, created_at: new Date().toISOString()};
+  const record = {...movement, id: movement.movement_id || crypto.randomUUID(), item_id: id, created_at: new Date().toISOString()};
   const raw = await invoke<string>('save_local_inventory_custody_movement', {input:{
     expected_snapshot_json: JSON.stringify(local), expected_account_id: session.accountId,
     movement_json: JSON.stringify(record), change_id: crypto.randomUUID(), item_id: id,

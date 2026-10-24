@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/tauri';
 import { apiFetch, getApiErrorMessage } from './http';
 import { getTransactions } from './transactions';
-import { getItems } from './items';
+import { getItems, createItemMovement } from './items';
 import { captureAccountSession, isAccountSessionCurrent } from './auth';
 
 function isTauriRuntime(): boolean { return typeof window !== 'undefined' && !!(window as any).__TAURI_IPC__; }
@@ -21,7 +21,9 @@ export interface ProjectFinancialSummary {
 
 export interface Project {
   id: string; name: string;
-  status: 'planning' | 'active' | 'completed' | 'on_hold' | 'cancelled';
+  status: 'planning' | 'active' | 'completed' | 'on_hold' | 'cancelled' | 'archived';
+  lifecycle_revision?:number; expected_lifecycle_revision?:number; local_lifecycle_pending?:boolean; local_review_pending?:boolean;
+  inventory_settlement?:{state:'settled'|'unsettled'|'unknown';scope:'inventory';outstanding_custody_records?:number;open_reservations?:number;observed_at?:string};
   budget?: string | number; total_spent?: string | number;
   description?: string; priority?: 'low'|'normal'|'high'|'critical';
   start_date?: string | null; due_date?: string | null; owner_id?: string | null;
@@ -119,13 +121,30 @@ export async function deleteProjectBomItem(id:string,bomId:string):Promise<void>
 export async function getTaskExperiments(id:string,taskId:string):Promise<any[]>{const local=await localInvoke<any[]>('get_local_project_task_experiments',{projectId:id,taskId});if(local!==null)return local;const r=await apiFetch(`/projects/${id}/tasks/${taskId}/experiments`);if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to fetch task experiments'));return r.json();}
 export async function linkTaskExperiment(id:string,taskId:string,experiment_id:string,relationship='related'):Promise<any>{const local=await localInvoke<any>('create_local_project_task_experiment',{projectId:id,taskId,record:{experiment_id,relationship}});if(local!==null)return local;const r=await apiFetch(`/projects/${id}/tasks/${taskId}/experiments`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({experiment_id,relationship})});if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to link experiment'));return r.json();}
 export async function unlinkTaskExperiment(id:string,taskId:string,experimentId:string):Promise<void>{const local=await localInvoke<any[]>('get_local_project_task_experiments',{projectId:id,taskId});if(local!==null){const link=local.find((x:any)=>x.experiment_id===experimentId);if(!link)throw new Error('Task experiment link not found');await localInvoke<void>('delete_local_project_task_experiment',{projectId:id,linkId:link.id});return;}const r=await apiFetch(`/projects/${id}/tasks/${taskId}/experiments/${experimentId}`,{method:'DELETE'});if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to unlink experiment'));}
-export async function getExperimentMeasurements(id:string,experimentId:string):Promise<any[]>{const local=await localInvoke<any[]>('get_local_project_experiments',{projectId:id});if(local!==null){const e=local.find((x:any)=>x.id===experimentId);if(e)return e.measurements||[];}const r=await apiFetch(`/projects/${id}/experiments/${experimentId}/measurements`);if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to fetch measurements'));return r.json();}
+async function readExperimentCollection(projectId:string,experimentId:string,collection:'measurements'|'observations'|'revisions'):Promise<any[]>{
+  if(isTauriRuntime()){
+    const session=captureAccountSession();
+    if(!session)throw new Error('Sign in to read experiment records.');
+    const experiments=await localInvoke<unknown>('get_local_project_experiments',{projectId});
+    if(!isAccountSessionCurrent(session))throw new Error('Account changed while loading experiment records.');
+    if(!Array.isArray(experiments))throw new Error('Local experiment snapshot is unavailable.');
+    const experiment=experiments.find((record:any)=>record?.id===experimentId);
+    if(!experiment)throw new Error('Experiment is not available in the authorized local project snapshot.');
+    const rows=collection==='observations'?(experiment.observation_records??experiment.observations):experiment[collection];
+    if(!Array.isArray(rows))throw new Error(`Local experiment ${collection} are not available in this snapshot.`);
+    return rows;
+  }
+  const r=await apiFetch(`/projects/${projectId}/experiments/${experimentId}/${collection}`);
+  if(!r.ok)throw new Error(await getApiErrorMessage(r,`Failed to fetch ${collection}`));
+  return r.json();
+}
+export async function getExperimentMeasurements(id:string,experimentId:string):Promise<any[]>{return readExperimentCollection(id,experimentId,'measurements');}
 export async function createExperimentMeasurement(id:string,experimentId:string,data:any):Promise<any>{const local=await localInvoke<any>('create_local_project_experiment_measurement',{projectId:id,experimentId,record:data});if(local!==null)return local;const r=await apiFetch(`/projects/${id}/experiments/${experimentId}/measurements`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to create measurement'));return r.json();}
 export async function deleteExperimentMeasurement(id:string,experimentId:string,measurementId:string):Promise<void>{const local=await localInvoke<void>('delete_local_project_experiment_measurement',{projectId:id,experimentId,recordId:measurementId});if(local!==null)return;const r=await apiFetch(`/projects/${id}/experiments/${experimentId}/measurements/${measurementId}`,{method:'DELETE'});if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to delete measurement'));}
-export async function getExperimentObservations(id:string,experimentId:string):Promise<any[]>{const local=await localInvoke<any[]>('get_local_project_experiments',{projectId:id});if(local!==null){const e=local.find((x:any)=>x.id===experimentId);if(e)return e.observations||[];}const r=await apiFetch(`/projects/${id}/experiments/${experimentId}/observations`);if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to fetch observations'));return r.json();}
+export async function getExperimentObservations(id:string,experimentId:string):Promise<any[]>{return readExperimentCollection(id,experimentId,'observations');}
 export async function createExperimentObservation(id:string,experimentId:string,data:any):Promise<any>{const local=await localInvoke<any>('create_local_project_experiment_observation',{projectId:id,experimentId,record:data});if(local!==null)return local;const r=await apiFetch(`/projects/${id}/experiments/${experimentId}/observations`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to create observation'));return r.json();}
 export async function deleteExperimentObservation(id:string,experimentId:string,observationId:string):Promise<void>{const local=await localInvoke<void>('delete_local_project_experiment_observation',{projectId:id,experimentId,recordId:observationId});if(local!==null)return;const r=await apiFetch(`/projects/${id}/experiments/${experimentId}/observations/${observationId}`,{method:'DELETE'});if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to delete observation'));}
-export async function getExperimentRevisions(id:string,experimentId:string):Promise<any[]>{const r=await apiFetch(`/projects/${id}/experiments/${experimentId}/revisions`);if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to fetch revisions'));return r.json();}
+export async function getExperimentRevisions(id:string,experimentId:string):Promise<any[]>{return readExperimentCollection(id,experimentId,'revisions');}
 
 export async function getTaskAttachments(id:string,taskId:string):Promise<any[]>{const local=await localInvoke<any[]>('get_local_project_attachments',{projectId:id,workId:taskId,workType:'task'});if(local!==null)return local;const r=await apiFetch(`/projects/${id}/tasks/${taskId}/attachments`);if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to fetch task attachments'));return r.json();}
 export async function attachTaskResource(id:string,taskId:string,resource_id:string):Promise<any>{const local=await localInvoke<any>('create_local_project_attachment',{projectId:id,workId:taskId,workType:'task',resourceId:resource_id});if(local!==null)return local;const r=await apiFetch(`/projects/${id}/tasks/${taskId}/attachments`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({resource_id})});if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to attach resource'));return r.json();}
@@ -135,13 +154,31 @@ export async function attachExperimentResource(id:string,experimentId:string,res
 export async function removeExperimentAttachment(id:string,experimentId:string,attachmentId:string):Promise<void>{const local=await localInvoke<any>('delete_local_project_attachment',{projectId:id,attachmentId});if(local!==null)return;const r=await apiFetch(`/projects/${id}/experiments/${experimentId}/attachments/${attachmentId}`,{method:'DELETE'});if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to remove attachment'));}
 
 export interface ProjectReviewEvent {id:string;decision:'submit'|'request_changes'|'approve';note:string|null;created_at:string;actor:string;}
-export interface ProjectReview {project:Pick<Project,'id'|'status'|'priority'|'start_date'|'due_date'> & {review_status:'draft'|'submitted'|'changes_requested'|'approved'};events:ProjectReviewEvent[];}
+export interface ProjectReview {project:Pick<Project,'id'|'status'|'priority'|'start_date'|'due_date'> & {review_status:'draft'|'submitted'|'changes_requested'|'approved'};events:ProjectReviewEvent[];token?:string;pending_intents?:{change_id:string;decision:string;note:string;state:string;error?:string}[];}
 export async function getProjectReview(projectId:string):Promise<ProjectReview>{
+ if(isTauriRuntime()){
+  const session=captureAccountSession();
+  if(!session)throw new Error('Sign in to read project review.');
+  const local=await localInvoke<any>('get_local_project',{projectId});
+  if(!isAccountSessionCurrent(session))throw new Error('Account changed while loading project review.');
+  const snapshot=local?.review_snapshot;
+  if(local?.id!==projectId||snapshot?.project?.id!==projectId||
+    !['draft','submitted','changes_requested','approved'].includes(snapshot.project.review_status)||!Array.isArray(snapshot.events)){
+   throw new Error('Project review is not available in this local snapshot. Synchronize to obtain it.');
+  }
+  return snapshot;
+ }
  const r=await apiFetch(`/projects/${projectId}/review`);
  if(!r.ok)throw new Error(await getApiErrorMessage(r,'Unable to load project review'));
  return r.json();
 }
 export async function decideProjectReview(projectId:string,decision:'submit'|'request_changes'|'approve',note:string):Promise<Project>{
+ if(isTauriRuntime()){
+  const session=captureAccountSession();if(!session)throw new Error('Sign in to queue project review.');
+  const result=await localInvoke<Project>('save_local_project_review_intent',{input:{expected_account_id:session.accountId,change_id:crypto.randomUUID(),project_id:projectId,decision,note}});
+  if(!isAccountSessionCurrent(session))throw new Error('Account changed after saving review. The original account owns the saved intention.');
+  if(!result)throw new Error('Local review intention was not confirmed.');return result;
+ }
  const r=await apiFetch(`/projects/${projectId}/review`,{method:'POST',body:JSON.stringify({decision,note})});
  if(!r.ok)throw new Error(await getApiErrorMessage(r,'Unable to submit project review'));
  return r.json();
@@ -189,6 +226,18 @@ export async function getReservationReviewQueue():Promise<ReservationReviewQueue
 }
 
 export async function fulfillProjectReservation(projectId:string,reservationId:string,quantity:number,requestId:string):Promise<{reservation:ProjectReservation;movement:{id:string;quantity:number|string};already_fulfilled?:boolean}>{
+ if(isTauriRuntime()){
+  const session=captureAccountSession();if(!session)throw new Error('Sign in to consume reserved stock');
+  if(!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(requestId))throw new Error('A stable UUID submission identity is required');
+  if(!Number.isFinite(quantity)||quantity<=0||Math.abs(quantity*1000-Math.round(quantity*1000))>0.0001)throw new Error('Enter a positive quantity with at most three decimal places');
+  const rows=await getProjectReservations(projectId);
+  if(!isAccountSessionCurrent(session))throw new Error('Account changed before fulfillment');
+  const reservation=rows.find(r=>r.id===reservationId&&r.project_id===projectId);
+  if(!reservation||reservation.status!=='confirmed'||reservation.local_issue_error||quantity>Number(reservation.quantity))throw new Error(reservation?.local_issue_error||'Reservation is not available for this consumption');
+  const result=await createItemMovement(reservation.item_id,{movement_id:requestId,movement_type:'consume',quantity,project_id:projectId,reservation_id:reservationId,reason:'Reservation fulfillment'});
+  if(!isAccountSessionCurrent(session))throw new Error('Account changed after saving consumption; inspect movements before retrying');
+  return {movement:result.movement,reservation:{...reservation,quantity:Number(reservation.quantity)-quantity,fulfilled_quantity:Number(reservation.fulfilled_quantity||0)+quantity,status:Number(reservation.quantity)===quantity?'fulfilled':'confirmed'}};
+ }
  const r=await apiFetch(`/projects/${projectId}/reservations/${reservationId}/fulfill`,{method:'POST',body:JSON.stringify({quantity,request_id:requestId})});
  if(!r.ok)throw new Error(await getApiErrorMessage(r,'Unable to fulfill reservation'));
  return r.json();

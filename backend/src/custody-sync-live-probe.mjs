@@ -41,7 +41,8 @@ const db=data('export const pool=globalThis.labosCustodyProbePool;');
 const auditURL=data(imports(readFileSync('/app/src/middleware/audit.js','utf8'),'file:///app/src/middleware/audit.js',{'../db.js':db}));
 const applyURL=data(imports(packet.apply,'file:///app/src/inventory-apply.js'));
 const syncURL=data(imports(packet.sync,'file:///app/src/inventory-sync.js',{'./inventory-apply.js':applyURL}));
-const routeURL=data(imports(packet.route,'file:///app/src/routes/sync.js',{'../db.js':db,'../inventory-sync.js':syncURL,'../inventory-apply.js':applyURL,'../middleware/audit.js':auditURL}));
+const lifecycleOverride=packet.lifecycle?{'../project-lifecycle.js':data(packet.lifecycle)}:{};
+const routeURL=data(imports(packet.route,'file:///app/src/routes/sync.js',{'../db.js':db,'../inventory-sync.js':syncURL,'../inventory-apply.js':applyURL,'../middleware/audit.js':auditURL,...lifecycleOverride}));
 const results=[];let failures=0,checkNumber=0;
 async function check(name,run,dependencies=[]){
   if(dependencies.some(index=>results[index]?.status!=='PASS')){results.push({name,status:'BLOCKED'});failures++;return;}
@@ -80,6 +81,7 @@ try{
   const offset=packet.migration.indexOf('-- 2. Item custody records');assert.ok(offset>=0);
   await client.query(packet.migration);
   if(packet.reservationMigration)await client.query(packet.reservationMigration);
+  if(packet.lifecycleMigration)await client.query(packet.lifecycleMigration);
   await client.query("INSERT INTO users(id,username,password_hash,role,is_active) VALUES($1,$2,'probe-no-login','admin',true),($3,$4,'probe-no-login','admin',true)",[actor,'p2-custody-sync-'+actor,recipient,'p2-custody-sync-'+recipient]);
   await client.query("INSERT INTO items(id,name,type,current_quantity,initial_quantity,storage_location) VALUES($1,'Rollback-only custody sync probe','component',10,10,'Shelf A')",[item]);
   const issue=movement({movement_type:'checkout',quantity:4,recipient_id:actor});
@@ -304,7 +306,124 @@ try{
     rejected((await send([{...requestIntent,change_id:randomUUID(),entity_id:rid,payload:{...requestIntent.payload,id:rid}}]))[0],'RESERVATION_PROJECT_CLOSED');
     await client.query("UPDATE projects SET status='planning' WHERE id=$1",[project]);
   },[requestStart]);
+  const consumable=randomUUID(),consumeAllocation=randomUUID(),protectedAllocation=randomUUID();
+  await client.query("INSERT INTO items(id,name,type,current_quantity,initial_quantity) VALUES($1,'Rollback consumable','component',10,10)",[consumable]);
+  await client.query(`INSERT INTO project_reservations(id,project_id,item_id,requested_by,quantity,original_quantity,needed_from,status)
+    VALUES($1,$3,$5,$6,6,6,now(),'confirmed'),($2,$4,$5,$6,4,4,now(),'confirmed')`,[consumeAllocation,protectedAllocation,project,otherProject,consumable,actor]);
+  const consumeMove=async(extra={})=>({change_id:randomUUID(),entity_type:'item_movement',entity_id:consumable,operation:'create',payload:{id:randomUUID(),item_id:consumable,inventory_protocol:2,item_bases:[{id:consumable,version:Number((await client.query('SELECT sync_version FROM items WHERE id=$1',[consumable])).rows[0].sync_version)}],movement_type:'consume',quantity:2,project_id:project,reservation_id:consumeAllocation,...extra}});
+  const consumeState=async()=>({
+    item:(await client.query('SELECT current_quantity,sync_version FROM items WHERE id=$1',[consumable])).rows,
+    allocations:(await client.query('SELECT id,quantity,fulfilled_quantity,status FROM project_reservations WHERE item_id=$1 ORDER BY id',[consumable])).rows,
+    movements:(await client.query('SELECT id,quantity FROM item_movements WHERE item_id=$1 ORDER BY id',[consumable])).rows,
+    history:(await client.query('SELECT movement_id,quantity FROM project_reservation_fulfillments WHERE reservation_id=$1 ORDER BY movement_id',[consumeAllocation])).rows
+  });
+  await check('reserved consumption atomically decrements stock and allocation without custody; retry is immutable',async()=>{
+    const intent=await consumeMove();ok((await send([intent]))[0]);const once=await consumeState();
+    assert.equal(Number(once.item[0].current_quantity),8);assert.equal(Number(once.allocations.find(r=>r.id===consumeAllocation).quantity),4);
+    assert.equal(Number(once.allocations.find(r=>r.id===protectedAllocation).quantity),4);assert.equal(once.history.length,1);
+    assert.equal((await client.query('SELECT id FROM item_custody_records WHERE item_id=$1',[consumable])).rowCount,0);
+    ok((await send([intent]))[0]);assert.deepEqual(await consumeState(),once);
+  });
+  await check('reserved consumption receipt failure rolls back stock allocation and history',async()=>{
+    const before=await consumeState(),intent=await consumeMove();failReceipt=true;
+    try{assert.equal((await send([intent]))[0].status,'failed');}finally{failReceipt=false;}
+    assert.deepEqual(await consumeState(),before);
+  });
+  await check('reserved consumption rejects excess quantity and returnable equipment',async()=>{
+    const before=await consumeState();
+    rejected((await send([await consumeMove({quantity:7})]))[0],'RESERVATION_QUANTITY_CONFLICT');
+    await client.query('SAVEPOINT returnable_fixture');
+    await client.query("UPDATE items SET type='equipment' WHERE id=$1",[consumable]);
+    rejected((await send([await consumeMove()]))[0],'RESERVATION_RETURNABLE_ITEM');
+    await client.query('ROLLBACK TO SAVEPOINT returnable_fixture');
+    await client.query('RELEASE SAVEPOINT returnable_fixture');
+    assert.deepEqual(await consumeState(),before);
+  });
+  await check('project pull identifies reserved consumption exactly once for native reconciliation',async()=>{
+    const pull=router.stack.find(layer=>layer.route?.path==='/projects/pull'&&layer.route.methods.get).route.stack[0].handle;
+    let body,status=200,routeError;
+    const response={setHeader(){},status(value){status=value;return this;},json(value){body=value;return this;}};
+    await pull({user:{userId:actor,role:'admin'},query:{}},response,error=>{routeError=error;});if(routeError)throw routeError;
+    assert.equal(status,200);
+    const row=body.projects.find(p=>p.id===project).reservations.find(r=>r.id===consumeAllocation);
+    const actual=await consumeState();
+    assert.equal(Number(row.quantity),Number(actual.allocations.find(r=>r.id===consumeAllocation).quantity));
+    assert.deepEqual(row.fulfillment_movement_ids,actual.history.map(r=>r.movement_id).sort());
+    assert.equal(row.fulfillment_movement_ids.length,1);
+    const requested=body.projects.find(p=>p.id===project).reservations.find(r=>r.id===requestId);
+    assert.ok(requested.applied_intent_ids.includes(requestIntent.change_id));
+  });
+  await check('project deletion via sync preserves inventory history and creates no success receipt',async()=>{
+    const before=await consumeState();
+    const change=randomUUID();
+    rejected((await send([{change_id:change,entity_type:'project',entity_id:project,operation:'delete',payload:{project:{id:project}}}]))[0],'PROJECT_INVENTORY_HISTORY_PROTECTED');
+    assert.deepEqual(await consumeState(),before);
+    assert.equal((await client.query('SELECT id FROM projects WHERE id=$1',[project])).rowCount,1);
+    assert.equal((await client.query('SELECT change_id FROM sync_idempotency WHERE change_id=$1',[change])).rowCount,0);
+    assert.equal((await client.query("SELECT entity_id FROM sync_tombstones WHERE entity_type='project' AND entity_id=$1",[project])).rowCount,0);
+  });
+  await check('sync deletion preserves financial provenance without receipt or tombstone',async()=>{
+    const historyProject=randomUUID(),transaction=randomUUID(),change=randomUUID();
+    await client.query("INSERT INTO projects(id,name,owner_id) VALUES($1,'Rollback financial history',$2)",[historyProject,actor]);
+    await client.query("INSERT INTO transactions(id,type,amount,project_id) VALUES($1,'project_expense',1,$2)",[transaction,historyProject]);
+    rejected((await send([{change_id:change,entity_type:'project',entity_id:historyProject,operation:'delete',payload:{project:{id:historyProject}}}]))[0],'PROJECT_RECORDED_HISTORY_PROTECTED');
+    assert.equal((await client.query('SELECT project_id FROM transactions WHERE id=$1',[transaction])).rows[0].project_id,historyProject);
+    assert.equal((await client.query('SELECT change_id FROM sync_idempotency WHERE change_id=$1',[change])).rowCount,0);
+    assert.equal((await client.query("SELECT entity_id FROM sync_tombstones WHERE entity_type='project' AND entity_id=$1",[historyProject])).rowCount,0);
+  });
+  if(packet.projects)await check('browser deletion preserves experiment evidence without tombstones',async()=>{
+    const historyProject=randomUUID(),experiment=randomUUID(),measurement=randomUUID();
+    await client.query("INSERT INTO projects(id,name,owner_id) VALUES($1,'Rollback scientific history',$2)",[historyProject,actor]);
+    await client.query("INSERT INTO project_experiments(id,project_id,title) VALUES($1,$2,'recorded experiment')",[experiment,historyProject]);
+    await client.query("INSERT INTO project_experiment_measurements(id,experiment_id,name,value_numeric) VALUES($1,$2,'reading',0)",[measurement,experiment]);
+    const url=data(imports(packet.projects,'file:///app/src/routes/projects.js',{'../db.js':db,'../middleware/audit.js':auditURL,...lifecycleOverride}));
+    const {default:browser}=await import(url);
+    const handler=browser.stack.find(layer=>layer.route?.path==='/:id'&&layer.route.methods.delete).route.stack.at(-1).handle;
+    let body,status=200;
+    const response={status(n){status=n;return this;},json(v){body=v;return this;},send(){return this;}};
+    const originalError=console.error;
+    // Expected route rejection otherwise prints the entire data-URL module stack.
+    console.error=(...args)=>{
+      if(args[0]?.code==='PROJECT_RECORDED_HISTORY_PROTECTED') return;
+      originalError(...args);
+    };
+    try { await handler({params:{id:historyProject},user:{userId:actor,role:'admin'}},response); }
+    finally { console.error=originalError; }
+    assert.equal(status,409);assert.equal(body.error.code,'PROJECT_RECORDED_HISTORY_PROTECTED');
+    assert.equal((await client.query('SELECT id FROM project_experiment_measurements WHERE id=$1',[measurement])).rowCount,1);
+    assert.equal((await client.query('SELECT entity_id FROM sync_tombstones WHERE project_id=$1',[historyProject])).rowCount,0);
+  });
+  await check('lifecycle receipt failure rolls back status release and revision; replay releases once',async()=>{
+    const before=(await client.query('SELECT * FROM projects WHERE id=$1',[project])).rows[0];
+    const allocations=async()=>(await client.query('SELECT id,status,quantity FROM project_reservations WHERE project_id=$1 ORDER BY id',[project])).rows;
+    const original=await allocations();
+    const change={change_id:randomUUID(),entity_type:'project',entity_id:project,operation:'update',payload:{before,project:{id:project,status:'cancelled'}}};
+    failReceipt=true;try{assert.equal((await send([change]))[0].status,'failed');}finally{failReceipt=false;}
+    assert.deepEqual(await allocations(),original);
+    assert.equal((await client.query('SELECT lifecycle_revision FROM projects WHERE id=$1',[project])).rows[0].lifecycle_revision,before.lifecycle_revision);
+    ok((await send([change]))[0]);const once=await allocations();
+    assert.ok(once.every(r=>!['confirmed','pending_review'].includes(r.status)));
+    ok((await send([change]))[0]);assert.deepEqual(await allocations(),once);
+    assert.equal((await client.query('SELECT lifecycle_revision FROM projects WHERE id=$1',[project])).rows[0].lifecycle_revision,before.lifecycle_revision+1);
+    rejected((await send([{...change,change_id:randomUUID(),payload:{before,project:{id:project,status:'planning'}}}]))[0],'PROJECT_LIFECYCLE_CONFLICT');
+  });
+  if(packet.projects)await check('browser project update archives without claiming outstanding custody is settled',async()=>{
+    const url=data(imports(packet.projects,'file:///app/src/routes/projects.js',{'../db.js':db,'../middleware/audit.js':auditURL,...lifecycleOverride}));
+    const {default:browser}=await import(url);
+    const route=browser.stack.find(layer=>layer.route?.path==='/:id'&&layer.route.methods.put).route;
+    const handler=route.stack.at(-1).handle;
+    const before=(await client.query('SELECT * FROM projects WHERE id=$1',[project])).rows[0];
+    let body,status=200;
+    const response={status(n){status=n;return this;},json(v){body=v;return this;}};
+    await handler({params:{id:project},body:{status:'archived',expected_lifecycle_revision:before.lifecycle_revision},user:{userId:actor,role:'admin'},permissions:new Set(['projects.edit','inventory.view'])},response);
+    assert.equal(status,200,JSON.stringify(body));assert.equal(body.status,'archived');
+    const remaining=(await client.query('SELECT count(*)::integer AS n FROM item_custody_records WHERE project_id=$1 AND outstanding_quantity>0',[project])).rows[0].n;
+    assert.equal(body.inventory_settlement.outstanding_custody_records,remaining);
+    assert.equal(body.inventory_settlement.state,remaining?'unsettled':'settled');
+    assert.equal((await client.query('SELECT lifecycle_revision FROM projects WHERE id=$1',[project])).rows[0].lifecycle_revision,before.lifecycle_revision+1);
+  });
   await client.query('ROLLBACK');
+  assert.equal((await client.query('SELECT id FROM items WHERE id=$1',[consumable])).rowCount,0);
   assert.equal((await client.query('SELECT id FROM items WHERE id=$1',[requestStock])).rowCount,0);
   assert.equal((await client.query('SELECT id FROM items WHERE id=$1',[item])).rowCount,0);
   assert.equal((await client.query('SELECT id FROM items WHERE id=$1',[reservedItem])).rowCount,0);

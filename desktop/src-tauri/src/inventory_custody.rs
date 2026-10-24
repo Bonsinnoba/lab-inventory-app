@@ -79,10 +79,12 @@ pub(super) fn plan(item: &Value, intent: &Value, current: Option<&Value>, actor:
         for key in ["project_id","task_id","experiment_id","requirement_id","reservation_id"] { movement[key] = source[key].clone(); }
     } else {
         if !intent["custody_id"].is_null() { return Err("Custody has not been downloaded for this account".into()); }
-        if movement_type != "checkout" || !intent["settlement_type"].is_null() || !intent["transfer_recipient_id"].is_null() {
+        let consume=movement_type=="consume"&&!intent["reservation_id"].is_null()&&intent["recipient_id"].is_null()&&intent["serial_number"].is_null();
+        if consume&&matches!(item["type"].as_str(),None|Some("equipment"|"instrument"|"tool")){return Err("Returnable or unknown inventory requires checkout, not reserved consumption".into());}
+        if (!consume&&movement_type != "checkout") || !intent["settlement_type"].is_null() || !intent["transfer_recipient_id"].is_null() {
             return Err("A custody issue requires checkout and a recipient".into());
         }
-        recipient = Some(uuid(&intent["recipient_id"], "recipient")?);
+        if !consume {recipient = Some(uuid(&intent["recipient_id"], "recipient")?);}
         if intent["serial_number"].as_str().is_some_and(|s| !s.is_empty()) && quantity != 1000 { return Err("Issue serialized equipment one unit at a time".into()); }
         after -= quantity;
     }

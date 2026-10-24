@@ -12,7 +12,7 @@ export default function ProjectPlanningReview({project,canEdit}:{project:Project
  const review=useQuery({queryKey:['project-review',project.id],queryFn:()=>getProjectReview(project.id),enabled:project.status==='planning'});
  const decision=useMutation({
   mutationFn:(choice:'submit'|'request_changes'|'approve')=>decideProjectReview(project.id,choice,note),
-  onSuccess:(updated)=>{setMessage('');setNote('');qc.setQueryData(['project',project.id],updated);qc.invalidateQueries({queryKey:['project-review',project.id]});qc.invalidateQueries({queryKey:['projects']});},
+  onSuccess:(updated)=>{setMessage(updated.local_review_pending?'Review decision saved on this PC; awaiting server validation.':'');setNote('');qc.setQueryData(['project',project.id],updated);qc.invalidateQueries({queryKey:['project-review',project.id]});qc.invalidateQueries({queryKey:['projects']});},
   onError:(error:Error)=>setMessage(error.message)
  });
  if(project.status!=='planning')return null;
@@ -20,10 +20,12 @@ export default function ProjectPlanningReview({project,canEdit}:{project:Project
  return <section className="border border-border rounded-md bg-surface p-4 mb-4" aria-label="Project planning review">
   <h3 className="font-semibold">Planning review</h3>
   <p className="text-xs text-text-secondary mt-1">Prepare your BOM, Requirements, budget and proposed dates before submitting. Submitting does not reserve inventory. Admin approval activates the project.</p>
-  {review.isLoading&&<p className="text-xs mt-3">Loading central review state…</p>}
-  {review.isError&&<p className="text-xs mt-3 text-status-warning" role="alert">Central review is unavailable. Connect and synchronize this project before submitting or approving it.</p>}
+  <p className="text-xs text-text-secondary mt-1">On desktop, this is the last synchronized review. Decisions are saved locally for server validation. A queued approval does not activate the project.</p>
+  {!!review.data?.pending_intents?.length&&<div role="status" className="text-xs text-status-warning mt-2">{review.data.pending_intents.map(intent=><p key={intent.change_id}>{intent.decision.replace('_',' ')} · {intent.state.replace('_',' ')}{intent.error?` — ${intent.error}`:''}{intent.state==='rejected'?' — Review this preserved decision in Sync conflicts.':''}</p>)}</div>}
+  {review.isLoading&&<p className="text-xs mt-3">Loading review snapshot…</p>}
+  {review.isError&&<p className="text-xs mt-3 text-status-warning" role="alert">{review.data?'Review could not be refreshed. Showing the last loaded snapshot.':'Review snapshot is unavailable. This does not mean there is no review history.'}<button type="button" disabled={review.isFetching} onClick={()=>void review.refetch()} className="ml-2 text-accent underline">Retry</button></p>}
   {state&&<div className="flex items-center gap-2 mt-3 text-sm"><span className="text-text-secondary">Review status:</span><span className={`px-2 py-0.5 rounded-full border text-xs font-medium capitalize ${state === 'approved' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : state === 'submitted' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' : state === 'changes_requested' ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' : 'bg-surface-raised text-text-secondary border-border'}`}>{state.replace('_',' ')}</span></div>}
-  {state&&canEdit&&<div className="mt-3">
+  {state&&canEdit&&!review.data?.pending_intents?.length&&<div className="mt-3">
    <label className="block text-xs text-text-secondary mb-1" htmlFor="project-review-note">Review note (required when requesting changes)</label>
    <textarea id="project-review-note" value={note} onChange={e=>setNote(e.target.value)} maxLength={2000} rows={2} className="w-full bg-bg border border-border rounded-sm p-2 text-sm" placeholder="Planning notes or reasons for decision"/>
    <div className="flex flex-wrap gap-2 mt-2">

@@ -7,6 +7,159 @@ Phase 3. Detailed requirements remain in the linked source plans below.
 
 ## Baseline and rules
 
+October 24 B3/B4: review native outbox/server path connected in source; focused
+offline and PostgreSQL handler checks pass. Do not close or deploy: whole-plan
+version guard and actual sync replay/integration gates remain. Report:
+`docs/handoffs/phase2-parallel/PRIMARY_REVIEW_QUEUE_2026-10-24.md`.
+
+October 23 B3/B4 review atomicity foundation: decision/event/audit now share the
+HTTP transaction in source, verified against PostgreSQL with rolled-back fixtures.
+Native review queue and idempotent replay remain open; not deployed. Report:
+`docs/handoffs/phase2-parallel/PRIMARY_REVIEW_ATOMICITY_2026-10-23.md`.
+
+October 23 B3/B4 project review: cached confirmed review reads implemented in
+source and focused checks passed. Queued decisions/atomic audit are still open,
+not claimed completed by this read change. Deployment/integration pending. See
+`docs/handoffs/phase2-parallel/PRIMARY_PROJECT_REVIEW_READ_2026-10-23.md`.
+
+October 23 B3/B4 revision-history update: authorized experiment revisions added
+to project sync snapshots; desktop reader uses native snapshot without HTTP
+fallback. Source-only, integration/deployment still pending. See
+`docs/handoffs/phase2-parallel/PRIMARY_EXPERIMENT_REVISIONS_2026-10-23.md`.
+
+October 23 B3/B4 update: observation prose/record collision fixed in source,
+focused offline and read-only PostgreSQL checks pass. Coordinated deployment,
+desktop acceptance and ambiguous legacy-event recovery remain open. See
+`docs/handoffs/phase2-parallel/PRIMARY_EXPERIMENT_OBSERVATIONS_2026-10-23.md`.
+
+October 23 primary B3/B4: measurement/observation collection reads no longer
+fall through to HTTP on desktop local misses or accept missing/non-array fields
+as valid collections. TypeScript and 15 boundary tests PASS with API stopped,
+restored healthy. Source-only. Project history/review projections, observations
+prose/collection field collision and UI availability remain open. Evidence:
+`docs/handoffs/phase2-parallel/PRIMARY_EXPERIMENT_READ_BOUNDARIES_2026-10-23.md`.
+
+October 23 coordinated sync-safety deployment: runtime account isolation,
+fail-closed preflight and dedicated native queue-status reader now deployed
+together after saved-edit approval. TypeScript/Vite/native builds PASS; 28 frontend
++ 12 native checks PASS with actual API stopped; restored healthy. Original
+database/storage preserved. Earlier source-only notes are historical. Integrated
+desktop acceptance remains open; no parent closure. Evidence:
+`docs/handoffs/phase2-parallel/PRIMARY_SYNC_SAFETY_DEPLOYMENT_2026-10-23.md`.
+
+October 23 primary A1: dedicated native account/lease-bound queue-count command
+implemented; renderer preflight/panel now use it without diagnostic-command or
+HTTP fallback. TypeScript/native test build PASS; 28 frontend + 12 native checks
+PASS with API stopped, restored healthy. Source-only; deploy with runtime
+isolation/preflight fixes. No parent closure. Evidence:
+`docs/handoffs/phase2-parallel/PRIMARY_NATIVE_QUEUE_STATUS_2026-10-23.md`.
+
+October 23 primary A1/A2: unreadable/malformed local queue preflight now stops
+sync instead of treating ownership counts as zero. Explicit retry repeats the
+check; automatic retry respects account-scoped backoff. TypeScript and 28 focused
+tests PASS with API stopped; restored healthy. Source-only, awaiting deployment
+with runtime isolation and integrated acceptance. Evidence:
+`docs/handoffs/phase2-parallel/PRIMARY_SYNC_PREFLIGHT_2026-10-23.md`.
+
+October 23 primary A1: account-scoped sync runtime status/backoff and login-bound
+late-update guards implemented in source. Generation checks now cover sync
+preflight and prevent a new login joining the old run. TypeScript and 25 focused
+tests PASS with actual API stopped; restored healthy. Awaiting coordinated build
+and integrated account-switch acceptance; no parent closure. Evidence:
+`docs/handoffs/phase2-parallel/PRIMARY_SYNC_RUNTIME_ISOLATION_2026-10-23.md`.
+
+October 23 primary deployment: recovery index and full/compact conflict view
+lifetime guards deployed in rebuilt desktop after saved-edit approval. Queue
+status read errors now remain unknown, not zero/no conflicts. TypeScript, Vite
+and native build PASS; 18 focused checks PASS with API confirmed stopped; existing
+PostgreSQL/API restarted healthy with original volumes. Integrated desktop
+acceptance and recovery-content export remain open. No parent closure. Evidence:
+`docs/handoffs/phase2-parallel/PRIMARY_SYNC_PANEL_READS_2026-10-23.md`.
+
+October 22 primary A1/B4: conflict/recovery renderer request lifetime guarded;
+superseded reads cannot overwrite newer state, authentication events clear the
+view and resolution continuations reject account switches. 15 focused checks
+PASS with API stopped, restored healthy. Source-only; integrated desktop
+acceptance remains open. Evidence:
+`docs/handoffs/phase2-parallel/PRIMARY_CONFLICT_VIEW_LIFETIME_2026-10-22.md`.
+
+October 22 primary A2/B4: read-only owned project-deletion recovery index added in
+source, metadata only with no historical project content/authority exposed.
+TypeScript/native build PASS; 12 adapter/render + 10 native checks PASS with API
+stopped; restored healthy. Awaiting coordinated native/UI deployment and desktop
+acceptance. Payload inspection/export remains open. Evidence:
+`docs/handoffs/phase2-parallel/PRIMARY_PROJECT_RECOVERY_INDEX_2026-10-22.md`.
+
+October 22 coordinated deployment: history guard, native recovery, conflict UI and
+account fence now deployed together after saved-edit approval. Frontend/native
+builds PASS; deployed PostgreSQL 23 focused + 29 handler PASS (rollback verified),
+11 adapter/render PASS. Existing data/volumes retained; updated desktop launched.
+Earlier source-only notes below are historical. Integrated desktop/recovery export
+and parent acceptance remain open. Evidence:
+`docs/handoffs/phase2-parallel/PRIMARY_CONFLICT_DEPLOYMENT_2026-10-22.md`.
+
+October 22 primary A1/B4: conflict account/session fence implemented in source;
+11 adapter/render and 9 native checks PASS with API stopped, API restored healthy.
+UI/native must deploy together; two-login desktop acceptance still open. Existing
+desktop launched, latest source not deployed. No parent closure. Evidence:
+`docs/handoffs/phase2-parallel/PRIMARY_CONFLICT_ACCOUNT_FENCE_2026-10-22.md`.
+
+October 22 primary B4 conflict UI: both sync views share explicit Cancel deletion /
+Use server status guidance, disable protected/stale retries and retain native
+authority. Seven presentation/render checks PASS with API stopped; TypeScript
+PASS and API restored healthy. Awaiting deployment/desktop interaction acceptance;
+no recovery export or parent closure. Evidence:
+`docs/handoffs/phase2-parallel/PRIMARY_PROJECT_CONFLICT_GUIDANCE_2026-10-22.md`.
+
+October 22 primary B4/A2 recovery subcheck: native conflict resolution now blocks
+blind history-protected deletion/lifecycle retries and atomically preserves an
+account-scoped deletion recovery record before explicit retirement. 8 native
+local_db tests PASS with actual API stopped, including disk reopen and failure
+rollback; API restored. Awaiting deployment/integrated verification; recovery UI
+and broader project reconciliation remain open. Evidence:
+`docs/handoffs/phase2-parallel/PRIMARY_PROJECT_DELETE_RECOVERY_2026-10-22.md`.
+
+October 22 primary B4: shared project deletion guard now protects financial,
+purchase, salvage and scientific evidence/provenance in source. Real PostgreSQL:
+23 focused and 29 handler checks PASS, rollback verified. Awaiting deployment and
+integrated acceptance; no parent closure. Evidence:
+`docs/handoffs/phase2-parallel/PRIMARY_PROJECT_RECORDED_HISTORY_2026-10-22.md`.
+
+October 21 deployment correction: the lifecycle API migration and coordinated
+desktop/UI build described below were deployed successfully after owner approval.
+API/database/storage health passed; existing volumes and app data preserved.
+Deployed-code probes: 12 focused and 27 handler checks PASS, rollback verified.
+Integrated desktop/concurrent-client acceptance remains open. See deployment
+checkpoint in `PRIMARY_PROJECT_LIFECYCLE_2026-10-21.md`; earlier pending-deployment
+statements below are historical, not the current deployment state.
+
+October 21 primary B4 lifecycle batch: core revision-fenced cancellation/archive,
+unused reservation release, inventory settlement projection and native pending
+state implemented in source. PostgreSQL 12 focused / 27 handler checks PASS;
+stopped-API native project/inventory 43 PASS. Awaiting coordinated deployment and
+integrated acceptance; broader B4 revision/review/recovery/history work remains.
+Evidence: `docs/handoffs/phase2-parallel/PRIMARY_PROJECT_LIFECYCLE_2026-10-21.md`.
+
+October 21 primary B4 safeguard: project deletion now rejects inventory history
+in sync and browser routes in source. PostgreSQL: 6 focused checks and 25 handler
+regressions PASS, rollback verified. Awaiting deployment/end-to-end verification;
+cancellation, archive and settlement remain open. Parent B4 unchanged. Evidence:
+`docs/handoffs/phase2-parallel/PRIMARY_PROJECT_HISTORY_GUARD_2026-10-21.md`.
+
+October 21 primary follow-up: native/HTTP reservation request-review and rejected
+approval retry subcase is **VERIFIED CLOSED in tested source**. A discovered
+conflict-domain omission was fixed with access/role guards. Full live test passed;
+38 native inventory checks passed with API stopped. Fix awaits next desktop build.
+No parent state changed; GUI and multi-client acceptance remain open. Evidence:
+`docs/handoffs/phase2-parallel/PRIMARY_RESERVATION_REVIEW_ACCEPTANCE_2026-10-21.md`.
+
+October 21 primary bounded acceptance: reserved consumption through native disk
+SQLite, actual API outage, deployed HTTP/PostgreSQL sync, lost-ACK replay and
+repeated pull convergence is **VERIFIED CLOSED** (one opt-in integration test,
+pass; guarded fixture cleanup verified). This does not close B1/B3/B4, GUI
+interaction, login, request/review conflict lifecycle or multi-client contention.
+Evidence: `docs/handoffs/phase2-parallel/PRIMARY_RESERVATION_HTTP_ACCEPTANCE_2026-10-21.md`.
+
 Exactly 18 remaining delivery items, in three implementation batches. These are
 closure units of unequal size, not a percentage or an estimate of days. Existing
 working code stays in place. A build, restart or additional unit test is evidence,
@@ -226,7 +379,7 @@ a deployed-build or integrated-acceptance claim.
 | B1 | Quantity custody ledger and optional serials | CODE REMAINING | Main business rules approved; no longer blocked on owner selection. |
 | B2 | Quarantined salvage, inspection and reviewed recovery valuation | DEPENDENCY | B1 custody/provenance quantities; independent schema/UI planning can proceed. Valuation policy approved. |
 | B3 | Connected requirements/BOM/tasks/experiments/canvas and remaining local mutations | CODE REMAINING | Canonical demand approved; integrate B1 quantities where stock effects apply. |
-| B4 | Cancellation/closure propagation and settlement | DEPENDENCY | B1 outstanding custody and B3 canonical demand; settlement policy approved. Independent history/review projections can proceed. |
+| B4 | Cancellation/closure propagation and settlement | PARTIAL — core awaiting deployment/verification | October 21: revision-fenced cancellation/completion/archive, unused reservation release and inventory settlement implemented. Coordinated migration/native build, in-flight pull/concurrency and end-to-end acceptance remain; broader review/recovery/history work remains separate. |
 | B5/B6 | Remaining finance/import and inventory relationship/history/recovery paths | CODE REMAINING | Existing ordinary permission/version/outbox contract; custody-specific consumers depend on B1. |
 | C1 | Validated, persisted editable assistant proposals | CODE REMAINING | No stock execution or automatic acceptance; use existing permissions/context boundaries. |
 | C2 | Human acceptance of connected proposal graphs | DEPENDENCY | A1 enforcement plus B3/B4 graph/lifecycle contracts. |

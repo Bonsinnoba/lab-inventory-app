@@ -403,3 +403,215 @@ fn inventory_reservation_remote_overallocation_is_visible_not_negative() {
     let request=input(&c,&reserved_issue());assert!(save_custody_movement(&mut c,request).is_err());
     assert_eq!(reservations::overlays(&c).unwrap().len(),1);
 }
+
+fn intent(operation:&str,reservation:&str,payload:Value)->crate::local_reservations::ReservationIntentInput {
+    crate::local_reservations::ReservationIntentInput{expected_account_id:ACCOUNT.into(),change_id:uuid::Uuid::new_v4().to_string(),reservation_id:reservation.into(),operation:operation.into(),payload}
+}
+
+#[test]
+fn inventory_reservation_intent_request_survives_ack_and_reopen_without_stock_authority(){
+    let (disk,mut c)=Database::new();reservation_fixture(&c);
+    let id=uuid::Uuid::new_v4().to_string();
+    let request=intent("request",&id,json!({"project_id":PROJECT,"item_id":ITEM,"quantity":2,"needed_from":"2026-10-21T12:00:00Z"}));
+    let change=request.change_id.clone();
+    crate::local_reservations::save(&mut c,request).unwrap();
+    local_db::mark_changes_synced(&mut c,vec![change.clone()]).unwrap();
+    drop(c);let c=disk.reopen();
+    let mut p=crate::local_projects::load_all(&c).unwrap().remove(0);
+    crate::local_reservations::project(&c,&mut p).unwrap();
+    let row=p["reservations"].as_array().unwrap().iter().find(|r|r["id"]==id).unwrap();
+    assert_eq!(row["status"],"proposed");assert_eq!(row["local_pending_action"],"request");
+    assert_eq!(state::read(&c).unwrap().unwrap()[0]["current_quantity"],10);
+    let row=p["reservations"].as_array_mut().unwrap().iter_mut().find(|r|r["id"]==id).unwrap();
+    row["status"]=json!("pending_review");row["applied_intent_ids"]=json!([change]);
+    row.as_object_mut().unwrap().remove("local_pending_action");row.as_object_mut().unwrap().remove("local_issue_error");
+    crate::local_reservations::project(&c,&mut p).unwrap();
+    assert_eq!(p["reservations"].as_array().unwrap().last().unwrap()["status"],"pending_review");
+}
+
+#[test]
+fn inventory_reservation_pending_release_blocks_issue_and_duplicate_review(){
+    let (_disk,mut c)=Database::new();let mut p=reservation_fixture(&c);
+    p["reservations"][0]["applied_intent_ids"]=json!([]);store_project(&c,&p);
+    let payload=json!({"project_id":PROJECT,"decision":"release","review_note":""});
+    crate::local_reservations::save(&mut c,intent("decision",RESERVATION,payload.clone())).unwrap();
+    let request=input(&c,&reserved_issue());assert!(save_custody_movement(&mut c,request).is_err());
+    assert!(crate::local_reservations::save(&mut c,intent("decision",RESERVATION,payload)).is_err());
+    assert_eq!(state::read(&c).unwrap().unwrap()[0]["current_quantity"],10);
+}
+
+#[test]
+fn inventory_reservation_intent_outbox_failure_rolls_back_overlay(){
+    let (_disk,mut c)=Database::new();reservation_fixture(&c);
+    c.execute_batch("CREATE TEMP TRIGGER fail_intent BEFORE INSERT ON sync_outbox BEGIN SELECT RAISE(ABORT,'injected outbox failure'); END;").unwrap();
+    let before=snapshot(&c);
+    let request=intent("request",&uuid::Uuid::new_v4().to_string(),json!({"project_id":PROJECT,"item_id":ITEM,"quantity":2,"needed_from":"2026-10-21T12:00:00Z"}));
+    assert!(crate::local_reservations::save(&mut c,request).unwrap_err().contains("injected outbox failure"));
+    let mut p=crate::local_projects::load_all(&c).unwrap().remove(0);let original=p.clone();
+    crate::local_reservations::project(&c,&mut p).unwrap();assert_eq!(p,original);assert_eq!(snapshot(&c),before);
+}
+
+#[test]
+fn inventory_reservation_review_conflict_retains_authorship_and_blocks_stale_authority(){
+    let (_disk,mut c)=Database::new();let mut p=reservation_fixture(&c);
+    p["reservations"][0]["applied_intent_ids"]=json!([]);store_project(&c,&p);
+    let request=intent("decision",RESERVATION,json!({"project_id":PROJECT,"decision":"release","review_note":"review"}));
+    let change=request.change_id.clone();crate::local_reservations::save(&mut c,request).unwrap();
+    let original=records(&c,"sync_outbox","payload_json");reject(&c,&change,"RESERVATION_STATE_CONFLICT");
+    local_db::resolve_conflict(&mut c,&change,"accept_server").unwrap();
+    assert_eq!(records(&c,"sync_outbox","payload_json"),original);
+    let count:i64=c.query_row("SELECT COUNT(*) FROM sync_state WHERE key GLOB '*:reservation_recovery_*'",[],|r|r.get(0)).unwrap();assert_eq!(count,1);
+    crate::local_reservations::project(&c,&mut p).unwrap();assert_eq!(p["reservations"][0]["local_pending_action"],"reconcile");
+    let issue=input(&c,&reserved_issue());assert!(save_custody_movement(&mut c,issue).is_err());
+}
+
+#[test]
+fn inventory_reserved_consumption_is_atomic_survives_reopen_and_cannot_duplicate(){
+    let (disk,mut c)=Database::new();reservation_fixture(&c);
+    let mut items=state::read(&c).unwrap().unwrap();items[0]["type"]=json!("component");state::write(&c,&items).unwrap();
+    let mut movement=reserved_issue();movement["movement_type"]=json!("consume");movement.as_object_mut().unwrap().remove("recipient_id");
+    let request=input(&c,&movement);save_custody_movement(&mut c,request).unwrap();
+    let once=snapshot(&c);assert_eq!(once["items"][0]["current_quantity"],8.0);assert_eq!(projected(&c)["quantity"],4.0);
+    assert!(once["custody"].as_array().unwrap().is_empty());assert_eq!(once["outbox"][0]["movement_type"],"consume");
+    drop(c);let mut c=disk.reopen();assert_eq!(snapshot(&c),once);
+    let request=input(&c,&movement);assert!(save_custody_movement(&mut c,request).is_err());assert_eq!(snapshot(&c),once);assert_eq!(projected(&c)["quantity"],4.0);
+}
+
+#[test]
+fn inventory_reservation_retry_rechecks_role_and_preserves_intent(){
+    let (_disk,mut c)=Database::new();let mut p=reservation_fixture(&c);
+    p["reservations"][0]["applied_intent_ids"]=json!([]);store_project(&c,&p);
+    let request=intent("decision",RESERVATION,json!({"project_id":PROJECT,"decision":"release","review_note":"Preserve this review"}));
+    let change=request.change_id.clone();crate::local_reservations::save(&mut c,request).unwrap();
+    reject(&c,&change,"RESERVATION_STATE_CONFLICT");let original=records(&c,"sync_outbox","payload_json");
+    c.execute("UPDATE local_users SET role='member'",[]).unwrap();
+    assert!(local_db::resolve_conflict(&mut c,&change,"keep_local").is_err());
+    assert_eq!(records(&c,"sync_outbox","payload_json"),original);
+    c.execute("UPDATE local_users SET role='admin'",[]).unwrap();
+    local_db::resolve_conflict(&mut c,&change,"keep_local").unwrap();
+    assert_eq!(records(&c,"sync_outbox","payload_json"),original);
+}
+
+#[test]
+fn inventory_reserved_consumption_rejects_returnables_and_rolls_back_failed_outbox(){
+    for kind in ["equipment","instrument","tool","component"]{
+        let (_disk,mut c)=Database::new();reservation_fixture(&c);
+        let mut items=state::read(&c).unwrap().unwrap();items[0]["type"]=json!(kind);state::write(&c,&items).unwrap();
+        if kind=="component"{c.execute_batch("CREATE TEMP TRIGGER fail_consume BEFORE INSERT ON sync_outbox BEGIN SELECT RAISE(ABORT,'injected consumption failure'); END;").unwrap();}
+        let before=snapshot(&c);let mut movement=reserved_issue();movement["movement_type"]=json!("consume");movement.as_object_mut().unwrap().remove("recipient_id");
+        let request=input(&c,&movement);assert!(save_custody_movement(&mut c,request).is_err());assert_eq!(snapshot(&c),before);assert_eq!(projected(&c)["quantity"],6.0);
+    }
+}
+
+#[test]
+fn inventory_reserved_consumption_reconciliation_handles_lost_ack_and_repeated_snapshots(){
+    for ack_first in [false,true]{
+        let (disk,mut c)=Database::new();let mut project=reservation_fixture(&c);
+        let mut items=state::read(&c).unwrap().unwrap();items[0]["type"]=json!("component");state::write(&c,&items).unwrap();
+        let mut movement=reserved_issue();movement["movement_type"]=json!("consume");movement.as_object_mut().unwrap().remove("recipient_id");
+        let request=input(&c,&movement);let change=request.change_id.clone();save_custody_movement(&mut c,request).unwrap();
+        if ack_first{local_db::mark_changes_synced(&mut c,vec![change.clone()]).unwrap();}
+        drop(c);let mut c=disk.reopen();
+        assert_eq!(projected(&c)["quantity"],4.0,"ACK alone cannot restore allocation");
+        project["reservations"][0]["quantity"]=json!(4);
+        project["reservations"][0]["fulfilled_quantity"]=json!(2);
+        project["reservations"][0]["fulfillment_movement_ids"]=json!([movement["id"]]);
+        for _ in 0..3{store_project(&c,&project);assert_eq!(projected(&c)["quantity"],4.0);assert_eq!(projected(&c)["fulfilled_quantity"],2);assert_eq!(projected(&c)["local_pending_issue_quantity"],0.0);}
+        if !ack_first{local_db::mark_changes_synced(&mut c,vec![change]).unwrap();}
+        let mut authoritative=items.clone();authoritative[0]["current_quantity"]=json!(8);authoritative[0]["sync_version"]=json!(2);
+        state::merge(&mut c,ACCOUNT,authoritative.clone(),vec![],None).unwrap();
+        state::merge(&mut c,ACCOUNT,authoritative,vec![],None).unwrap();
+        assert_eq!(state::read(&c).unwrap().unwrap()[0]["current_quantity"],8);
+        assert_eq!(projected(&c)["quantity"],4.0);
+        assert_eq!(records(&c,"local_inventory_movement_records","movement_json").len(),1);
+        assert_eq!(records(&c,"sync_outbox","payload_json").len(),1);
+    }
+}
+
+#[test]
+#[ignore="requires explicit LABOS_RESERVATION_LIVE=1, real Docker API outage and PostgreSQL fixture"]
+fn inventory_reserved_consumption_live_http_reconnect(){
+    use std::io::Write;
+    use std::process::{Command,Stdio};
+    use crate::local_system::live_tests::http;
+    assert_eq!(std::env::var("LABOS_RESERVATION_LIVE").as_deref(),Ok("1"));
+    fn fixture(action:&str,account:&str)->Value{
+        let source=include_str!("../../../backend/src/reservation-client-fixture.mjs").replace("'./db.js'","'file:///app/src/db.js'").replace("'./config.js'","'file:///app/src/config.js'");
+        let mut child=Command::new("docker").args(["exec","-i","-e",&format!("LABOS_RESERVATION_FIXTURE_ID={account}"),"-e",&format!("LABOS_RESERVATION_FIXTURE_ACTION={action}"),"labos-labos-api-1","node","--input-type=module"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        child.stdin.take().unwrap().write_all(source.as_bytes()).unwrap();let out=child.wait_with_output().unwrap();
+        assert!(out.status.success(),"Fixture {action}: {}",String::from_utf8_lossy(&out.stderr));serde_json::from_slice(&out.stdout).unwrap()
+    }
+    fn api(action:&str){assert!(Command::new("docker").args([action,"labos-labos-api-1"]).output().unwrap().status.success());}
+    struct Cleanup(String);
+    impl Drop for Cleanup{fn drop(&mut self){let result=std::panic::catch_unwind(||fixture("cleanup",&self.0));assert!(result.is_ok(),"Fixture cleanup failed for {}",self.0);}}
+    let account=uuid::Uuid::new_v4().to_string();let f=fixture("create",&account);let _cleanup=Cleanup(account.clone());let token=f["token"].as_str().unwrap();
+    let item_id=f["item"].as_str().unwrap();let project_id=f["project"].as_str().unwrap();
+    let (disk,mut c)=Database::new();
+    c.execute("UPDATE local_users SET central_user_id=?1",[&account]).unwrap();
+    c.execute_batch("ALTER TABLE local_users ADD COLUMN role TEXT DEFAULT 'admin'; UPDATE local_users SET permissions_json='[\"inventory.view\",\"inventory.adjust_stock\",\"projects.view\",\"projects.edit\"]';").unwrap();
+    let pull=||{let r=http("GET","/sync/projects/pull",Value::Null,token,"");assert_eq!(r["status"],200);r["body"]["projects"].as_array().unwrap().iter().find(|p|p["id"]==project_id).unwrap().clone()};
+    let item=||{let r=http("GET",&format!("/items/{item_id}"),Value::Null,token,"");assert_eq!(r["status"],200);r["body"].clone()};
+    store_project(&c,&pull());state::write(&c,&[item()]).unwrap();
+    api("stop");
+    let offline=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{
+        let movement=json!({"id":uuid::Uuid::new_v4().to_string(),"item_id":item_id,"movement_type":"consume","quantity":2,"project_id":project_id,"reservation_id":f["reservation"],"created_at":"2026-10-21T07:00:00Z"});
+        let base=json!(state::read(&c).unwrap().unwrap()).to_string();
+        save_custody_movement(&mut c,LocalCustodyWriteInput{expected_snapshot_json:base,expected_account_id:account.clone(),movement_json:movement.to_string(),change_id:uuid::Uuid::new_v4().to_string(),item_id:item_id.into()}).unwrap();
+    }));
+    api("start");
+    if let Err(e)=offline{std::panic::resume_unwind(e);}
+    drop(c);let mut c=disk.reopen();
+    let ready=Command::new("node").args(["-e","(async()=>{for(let i=0;i<60;i++){try{if((await fetch('http://127.0.0.1:4000/api/health')).ok)return;}catch{}await new Promise(r=>setTimeout(r,500));}process.exit(1)})()"] ).status().unwrap();assert!(ready.success());
+    let device:String=c.query_row("SELECT device_id FROM device_identity",[],|r|r.get(0)).unwrap();
+    let (change,payload):(String,String)=c.query_row("SELECT change_id,payload_json FROM sync_outbox",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();let payload:Value=serde_json::from_str(&payload).unwrap();
+    let send=||{let r=http("POST","/sync/push",json!({"device_id":device,"changes":[{"change_id":change,"entity_type":"item_movement","entity_id":item_id,"operation":"create","payload":payload}]}),token,"");assert_eq!(r["status"],200);assert_eq!(r["body"]["results"][0]["status"],"synced","{}",r["body"]);r};
+    let first=send(); // Simulate a lost response: deliberately do not ACK locally.
+    store_project(&c,&pull());assert_eq!(projected(&c)["quantity"],4.0);
+    assert_eq!(send(),first);local_db::mark_changes_synced(&mut c,vec![change.clone()]).unwrap();
+    for _ in 0..2{state::merge(&mut c,&account,vec![item()],vec![],None).unwrap();store_project(&c,&pull());}
+    let stock=state::read(&c).unwrap().unwrap()[0]["current_quantity"].clone();assert_eq!(stock.as_f64().or_else(||stock.as_str().and_then(|s|s.parse().ok())),Some(8.0));
+    assert_eq!(projected(&c)["quantity"],4.0);assert_eq!(projected(&c)["local_pending_issue_quantity"],0.0);
+    assert_eq!(projected(&c)["fulfillment_movement_ids"],json!([payload["id"]]));
+    // Request/review lifecycle uses the same deployed HTTP path and isolated DB.
+    let requested_id=uuid::Uuid::new_v4().to_string();let request_change=uuid::Uuid::new_v4().to_string();
+    let queue=|c:&mut Connection,id:&str,change:&str,operation:&str,payload:Value|{
+        crate::local_reservations::save(c,crate::local_reservations::ReservationIntentInput{expected_account_id:account.clone(),reservation_id:id.into(),change_id:change.into(),operation:operation.into(),payload})
+    };
+    let send_intent=|c:&Connection,change:&str|{
+        let (entity,operation,raw):(String,String,String)=c.query_row("SELECT entity_id,operation,payload_json FROM sync_outbox WHERE change_id=?1",[change],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+        let r=http("POST","/sync/push",json!({"device_id":device,"changes":[{"change_id":change,"entity_type":"project_reservation","entity_id":entity,"operation":operation,"payload":serde_json::from_str::<Value>(&raw).unwrap()}]}),token,"");
+        assert_eq!(r["status"],200);r["body"]["results"][0].clone()
+    };
+    let row=|c:&Connection,id:&str|{
+        let mut p=crate::local_projects::load_all(c).unwrap().remove(0);crate::local_reservations::project(c,&mut p).unwrap();
+        p["reservations"].as_array().unwrap().iter().find(|r|r["id"]==id).unwrap().clone()
+    };
+    fn wait_ready(){assert!(Command::new("node").args(["-e","(async()=>{for(let i=0;i<60;i++){try{if((await fetch('http://127.0.0.1:4000/api/health')).ok)return;}catch{}await new Promise(r=>setTimeout(r,500));}process.exit(1)})()"] ).status().unwrap().success());}
+    api("stop");
+    let offline=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{
+        queue(&mut c,&requested_id,&request_change,"request",json!({"project_id":project_id,"item_id":item_id,"quantity":5,"needed_from":"2026-10-21T00:00:00Z"})).unwrap();
+        assert_eq!(row(&c,&requested_id)["status"],"proposed");
+    }));api("start");wait_ready();if let Err(e)=offline{std::panic::resume_unwind(e);}
+    let accepted=send_intent(&c,&request_change);assert_eq!(accepted["status"],"synced");assert_eq!(send_intent(&c,&request_change),accepted);
+    store_project(&c,&pull());local_db::mark_changes_synced(&mut c,vec![request_change.clone()]).unwrap();
+    assert_eq!(row(&c,&requested_id)["status"],"pending_review");assert!(row(&c,&requested_id)["local_pending_action"].is_null());
+    let decision_change=uuid::Uuid::new_v4().to_string();
+    api("stop");let offline=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{
+        queue(&mut c,&requested_id,&decision_change,"decision",json!({"project_id":project_id,"decision":"confirm","review_note":"Offline approval probe"})).unwrap();
+        assert_eq!(row(&c,&requested_id)["status"],"pending_review");assert_eq!(row(&c,&requested_id)["local_pending_action"],"confirm");
+    }));api("start");wait_ready();if let Err(e)=offline{std::panic::resume_unwind(e);}
+    let original:String=c.query_row("SELECT payload_json FROM sync_outbox WHERE change_id=?1",[&decision_change],|r|r.get(0)).unwrap();
+    let denied=send_intent(&c,&decision_change);assert_eq!(denied["status"],"rejected");assert_eq!(denied["error"]["code"],"RESERVATION_CONFLICT");
+    reject(&c,&decision_change,"RESERVATION_CONFLICT");assert_eq!(send_intent(&c,&decision_change)["status"],"rejected");
+    store_project(&c,&pull());assert_eq!(row(&c,&requested_id)["status"],"pending_review");assert_eq!(row(&c,&requested_id)["local_pending_action"],"confirm");
+    let release_change=uuid::Uuid::new_v4().to_string();
+    queue(&mut c,f["reservation"].as_str().unwrap(),&release_change,"decision",json!({"project_id":project_id,"decision":"release","review_note":"Free only unused allocation"})).unwrap();
+    assert_eq!(send_intent(&c,&release_change)["status"],"synced");local_db::mark_changes_synced(&mut c,vec![release_change]).unwrap();store_project(&c,&pull());
+    local_db::resolve_conflict(&mut c,&decision_change,"keep_local").unwrap();
+    let retry_payload:String=c.query_row("SELECT payload_json FROM sync_outbox WHERE change_id=?1",[&decision_change],|r|r.get(0)).unwrap();assert_eq!(retry_payload,original);
+    let approved=send_intent(&c,&decision_change);assert_eq!(approved["status"],"synced");assert_eq!(send_intent(&c,&decision_change),approved);
+    local_db::mark_changes_synced(&mut c,vec![decision_change]).unwrap();assert_eq!(row(&c,&requested_id)["status"],"pending_review","ACK alone grants no authority");
+    store_project(&c,&pull());assert_eq!(row(&c,&requested_id)["status"],"confirmed");assert!(row(&c,&requested_id)["local_pending_action"].is_null());
+    let final_stock=item()["current_quantity"].clone();assert_eq!(final_stock.as_f64().or_else(||final_stock.as_str().and_then(|s|s.parse().ok())),Some(8.0));
+    println!("PASS native/HTTP consumption and request-review lifecycle: offline saves, lost ACK, rejected approval preserved, unchanged retry after release, no premature authority or stock effects; fixture cleanup follows");
+}
