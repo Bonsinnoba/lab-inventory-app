@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import { applyProjectReviewDecision } from '../project-review-decision.js';
+import { requireProjectReviewAuthority } from '../project-review-authority.js';
+import { readProjectReviewSnapshots } from '../project-review-snapshot.js';
 import { assertProjectDeletable, applyProjectLifecycle, projectInventorySettlement } from '../project-lifecycle.js';
 import { pool } from '../db.js';
 import { hasPermission, getUserPermissions, projectFinancialProjection, projectFinancialSummaryProjection } from '../middleware/permissions.js';
@@ -177,12 +179,9 @@ router.get('/:id/review',hasPermission('projects.view'),async(req,res)=>{
  try{
   const access=await getProjectAccess(req.params.id,req.user);
   if(access.access==='none')return res.status(404).json({error:'Project not found'});
-  const [project,events]=await Promise.all([
-   pool.query('SELECT id,status,review_status,priority,start_date,due_date FROM projects WHERE id=$1',[req.params.id]),
-   pool.query('SELECT e.id,e.decision,e.note,e.created_at,u.username AS actor FROM project_review_events e JOIN users u ON u.id=e.actor_id WHERE e.project_id=$1 ORDER BY e.created_at DESC',[req.params.id])
-  ]);
-  if(!project.rowCount)return res.status(404).json({error:'Project not found'});
-  res.json({project:project.rows[0],events:events.rows});
+  const [snapshot]=await readProjectReviewSnapshots(pool,[req.params.id]);
+  if(!snapshot)return res.status(404).json({error:'Project not found'});
+  res.json(snapshot);
  }catch(err){console.error(err);res.status(500).json({error:'Unable to load project review'});}
 });
 router.post('/:id/review',hasPermission('projects.edit'),async(req,res)=>{
@@ -190,19 +189,18 @@ router.post('/:id/review',hasPermission('projects.edit'),async(req,res)=>{
  if(!['submit','request_changes','approve'].includes(decision))return res.status(400).json({error:'Invalid review decision'});
  if(note.length>2000)return res.status(400).json({error:'Review note is too long'});
  if(decision==='request_changes'&&!note)return res.status(400).json({error:'Explain the requested changes'});
- const access=await getProjectAccess(req.params.id,req.user);
- if(access.access==='none'||access.access==='view')return res.status(403).json({error:'Project editor access required'});
- if(decision==='submit'&&access.access!=='admin'&&access.memberRole!=='lead')return res.status(403).json({error:'Only the project lead or an admin can submit a plan'});
- if(decision!=='submit'&&req.user.role!=='admin')return res.status(403).json({error:'Admin approval required'});
  const client=await pool.connect();
  try{
   await client.query('BEGIN');
   const found=await client.query('SELECT * FROM projects WHERE id=$1 FOR UPDATE',[req.params.id]);
   if(!found.rowCount){await client.query('ROLLBACK');return res.status(404).json({error:'Project not found'});}
   const project=found.rows[0];
+  const permissions=await requireProjectReviewAuthority(client,project,req.user,decision);
+  if(typeof req.body?.expected_token!=='string'||req.body.expected_token!==`plan-v1:${project.plan_revision}`)
+   throw Object.assign(new Error('Project changed or no review version was supplied. Refresh the review and decide again; your note is unchanged.'),{status:409,code:'REVIEW_VERSION_CONFLICT'});
   const updated=await applyProjectReviewDecision(client,project,req,decision,note);
   await client.query('COMMIT');
-  res.json(projectFinancialProjection(updated,req.permissions));
+  res.json(projectFinancialProjection(updated,permissions));
  }catch(err){await client.query('ROLLBACK');console.error(err);res.status(err.status||500).json({error:{code:err.code||'PROJECT_REVIEW_FAILED',message:err.status?err.message:'Unable to record project review'}});}finally{client.release();}
 });
 async function requireProjectGrantManager(projectId,user){

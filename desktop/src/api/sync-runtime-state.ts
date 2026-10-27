@@ -1,6 +1,6 @@
 import type { AccountSession } from './auth';
 
-export type SyncRuntimeState = { status:'offline'|'syncing'|'idle'|'error'; lastSuccessAt:string|null; lastError:string|null };
+export type SyncRuntimeState = { status:'offline'|'syncing'|'idle'|'error'; lastSuccessAt:string|null; lastError:string|null; step?:string|null };
 type Storage = Pick<globalThis.Storage,'getItem'|'setItem'|'removeItem'>;
 const delays=[5000,15000,30000,60000,120000,300000];
 const empty=():SyncRuntimeState=>({status:'idle',lastSuccessAt:null,lastError:null});
@@ -41,7 +41,7 @@ export function createSyncRuntimeStore(options:{
     getState(){refresh();return {...state};},
     retryDue(){refresh();return retryAt<=now();},
     subscribe(listener:(state:SyncRuntimeState)=>void){refresh();listeners.add(listener);listener({...state});return()=>{listeners.delete(listener);};},
-    publish(session:AccountSession|null,patch:Partial<SyncRuntimeState>){if(!accepts(session))return;state={...state,...patch};persist();emit();},
+    publish(session:AccountSession|null,patch:Partial<SyncRuntimeState>){if(!accepts(session))return;state={...state,...patch};if(state.status!=='syncing')state.step=null;persist();emit();},
     scheduleRetry(session:AccountSession|null){if(!accepts(session))return;retryAt=now()+delays[Math.min(streak,delays.length-1)];streak=Math.min(streak+1,delays.length);persist();},
     clearRetry(session:AccountSession|null){if(!accepts(session))return;retryAt=0;streak=0;persist();},
   };

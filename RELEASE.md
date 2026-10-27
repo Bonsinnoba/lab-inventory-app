@@ -2,6 +2,11 @@
 
 This document defines the V1 release flow for LabOS.
 
+For the owner-approved October 25, 2026 own-lab pilot, follow
+[the controlled pilot gates](docs/audits/V1_LAB_PILOT_RELEASE.md). This is not a
+public release authorization or a fresh-install/data-reset instruction. The
+tagged publication process below remains separate from pilot acceptance.
+
 ## Release model
 
 LabOS releases are versioned from Git tags using semantic versioning:

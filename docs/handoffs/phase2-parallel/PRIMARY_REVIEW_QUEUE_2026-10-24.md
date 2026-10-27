@@ -44,14 +44,12 @@ API have not been upgraded. No existing database/storage/pending changes removed
 
 ## Remaining acceptance and code gates
 
-- Version token currently covers project-row xmin/updated_at, not independent
-  BOM/tasks/requirements/canvas edits. Add a coherent plan-version boundary before
-  claiming stale-plan approval protection or deploying queued approvals.
-- Actual /sync/push idempotent replay, cross-device ownership mismatch, concurrency
-  and lost-response acceptance remain; handler probe is NOT a replay test.
+- Plan-version source guard and actual push-handler replay checks now passed;
+  see PRIMARY_REVIEW_PLAN_VERSION_2026-10-24.md. Concurrent connections and durable
+  commit/lost-response/reconnect acceptance remain; savepoints do not prove these.
 - Restart/reopen persistence and full desktop pending/rejection/ack/pull UI checks.
-- HTTP review authorization remains its existing pre-transaction check; unify
-  current-authority validation with sync before closing the review workflow.
+- HTTP/sync transactional authority now unified in source; see
+  PRIMARY_REVIEW_AUTHORITY_2026-10-24.md for evidence and remaining race boundaries.
 - Check native project-work dirty detection across all parent/nested payloads.
 - Acknowledgement versus refreshed snapshot handling is unit-tested; full delayed
   pull/rejection recovery and authorization changes still need integration checks.

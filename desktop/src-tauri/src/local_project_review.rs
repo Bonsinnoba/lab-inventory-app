@@ -3,7 +3,7 @@ use serde_json::{json,Value};
 use crate::{local_db,local_projects,inventory_sync_state::canonical_id};
 
 #[derive(serde::Deserialize)]
-pub struct ReviewIntentInput {pub expected_account_id:String,pub change_id:String,pub project_id:String,pub decision:String,pub note:String}
+pub struct ReviewIntentInput {pub expected_account_id:String,pub change_id:String,pub project_id:String,pub decision:String,pub note:String,pub expected_token:String}
 
 pub(crate) fn project(c:&Connection,p:&mut Value)->Result<(),String>{
     let account=local_db::active_account(c)?;
@@ -45,9 +45,12 @@ pub(crate) fn save(c:&mut Connection,input:ReviewIntentInput)->Result<Value,Stri
     if p["local_review_pending"]==true{return Err("Review already awaits synchronization or conflict resolution".into());}
     let snapshot=&p["review_snapshot"];
     let token=snapshot["token"].as_str().filter(|s|!s.is_empty()).ok_or("Synchronize a current review snapshot first")?;
+    if input.expected_token.is_empty()||input.expected_token!=token{return Err("Review snapshot changed since it was displayed. Refresh the review and decide again; your note has not been queued".into());}
     let state=snapshot["project"]["review_status"].as_str().unwrap_or("");
     if snapshot["project"]["id"]!=id||p["status"]!="planning"||snapshot["project"]["status"]!="planning"||
-       (input.decision=="submit"&&!matches!(state,"draft"|"changes_requested"))||(input.decision!="submit"&&state!="submitted"){return Err("Review state does not permit this decision".into());}
+       (input.decision=="submit"&&!matches!(state,"draft"|"changes_requested"))||
+       (input.decision=="approve"&&!matches!(state,"draft"|"changes_requested"|"submitted"))||
+       (input.decision=="request_changes"&&state!="submitted"){return Err("Review state does not permit this decision".into());}
     // A locally changed plan must synchronize before its review can be authored.
     let dirty:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM sync_outbox WHERE account_id=?1 AND synced_at IS NULL AND (entity_id=?2 OR json_extract(payload_json,'$.project_id')=?2 OR json_extract(payload_json,'$.record.project_id')=?2))",params![input.expected_account_id,id],|r|r.get(0)).map_err(|e|e.to_string())?;
     if dirty{return Err("Synchronize pending project work before authoring a review decision".into());}
@@ -63,13 +66,65 @@ mod tests {
     const PID:&str="11111111-1111-4111-8111-111111111111";
     const CID:&str="22222222-2222-4222-8222-222222222222";
     fn fixture()->Connection {
-        let c=Connection::open_in_memory().unwrap();local_db::ensure_schema(&c).unwrap();
+        let c=Connection::open_in_memory().unwrap();seed(&c);c
+    }
+    fn seed(c:&Connection) {
+        local_db::ensure_schema(c).unwrap();
         c.execute_batch("CREATE TABLE local_users(id TEXT PRIMARY KEY,central_user_id TEXT,is_active INTEGER,offline_expires_at TEXT,permissions_json TEXT,role TEXT); CREATE TABLE local_session(id INTEGER PRIMARY KEY,user_id TEXT); INSERT INTO local_users VALUES('local','account',1,'2099-01-01','[\"projects.view\",\"projects.edit\"]','admin'); INSERT INTO local_session VALUES(1,'local');").unwrap();
         let p=json!({"id":PID,"status":"planning","owner_id":"account","permissions":{"user_id":"account","access":"admin","can_edit":true},"review_snapshot":{"token":"v1","project":{"id":PID,"status":"planning","review_status":"submitted"},"events":[]}});
-        c.execute("INSERT INTO sync_state(key,value) VALUES('account:account:projects_state',?1)",[json!([p]).to_string()]).unwrap();c
+        c.execute("INSERT INTO sync_state(key,value) VALUES('account:account:projects_state',?1)",[json!([p]).to_string()]).unwrap();
     }
-    fn input()->ReviewIntentInput {ReviewIntentInput{expected_account_id:"account".into(),change_id:CID.into(),project_id:PID.into(),decision:"approve".into(),note:"Keep this authored note".into()}}
+    fn input()->ReviewIntentInput {ReviewIntentInput{expected_account_id:"account".into(),change_id:CID.into(),project_id:PID.into(),decision:"approve".into(),note:"Keep this authored note".into(),expected_token:"v1".into()}}
+    #[test]
+    fn admin_can_queue_draft_approval_but_cannot_activate_locally(){
+        let mut c=fixture();
+        c.execute("UPDATE sync_state SET value=replace(value,'submitted','draft') WHERE key='account:account:projects_state'",[]).unwrap();
+        let result=save(&mut c,input()).unwrap();
+        assert_eq!(result["status"],"planning");
+        assert_eq!(result["review_snapshot"]["pending_intents"][0]["decision"],"approve");
+    }
     fn cached(c:&Connection)->Value {local_projects::load_all(c).unwrap().remove(0)}
+    fn queued_child(c:&Connection,entity:&str,operation:&str,payload:Value){
+        c.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES('child-change','device',?1,'child-id',?2,?3)",params![entity,operation,payload.to_string()]).unwrap();
+    }
+    #[test]
+    fn pending_nested_plan_changes_block_review_without_losing_work(){
+        for entity in ["project_task","project_experiment","project_bom","project_block","project_connector","project_resource_requirement","project_work_attachment","project_task_experiment","project_item","project_experiment_measurement","project_experiment_observation"] {
+            for operation in ["create","update","delete"] {
+                for payload in [json!({"project_id":PID}),json!({"record":{"project_id":PID}})] {
+                    let mut c=fixture();let before=cached(&c);
+                    queued_child(&c,entity,operation,payload.clone());
+                    assert!(save(&mut c,input()).unwrap_err().contains("Synchronize pending project work"),"{entity}/{operation}");
+                    assert_eq!(cached(&c),before);
+                    let raw:String=c.query_row("SELECT payload_json FROM sync_outbox WHERE change_id='child-change'",[],|r|r.get(0)).unwrap();
+                    assert_eq!(serde_json::from_str::<Value>(&raw).unwrap(),payload);
+                    assert_eq!(c.query_row("SELECT COUNT(*) FROM sync_outbox WHERE entity_type='project_review'",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+                }
+            }
+        }
+    }
+    #[test]
+    fn unrelated_or_foreign_pending_work_does_not_block_review(){
+        for foreign in [false,true] {
+            let mut c=fixture();
+            queued_child(&c,"project_task","update",json!({"project_id":if foreign{PID}else{"another-project"}}));
+            if foreign {c.execute("UPDATE sync_outbox SET account_id='another-account' WHERE change_id='child-change'",[]).unwrap();}
+            save(&mut c,input()).unwrap();
+            let synced:Option<String>=c.query_row("SELECT synced_at FROM sync_outbox WHERE change_id='child-change'",[],|r|r.get(0)).unwrap();
+            assert!(synced.is_none());
+        }
+    }
+    #[test]
+    fn child_ack_alone_cannot_replace_the_displayed_review_version(){
+        let mut c=fixture();queued_child(&c,"project_bom","update",json!({"project_id":PID}));
+        assert!(save(&mut c,input()).is_err());
+        local_db::mark_changes_synced(&mut c,vec!["child-change".into()]).unwrap();
+        let mut p=cached(&c);p["review_snapshot"]["token"]=json!("new-plan");
+        c.execute("UPDATE sync_state SET value=?1 WHERE key='account:account:projects_state'",[json!([p]).to_string()]).unwrap();
+        assert!(save(&mut c,input()).unwrap_err().contains("since it was displayed"));
+        let mut fresh=input();fresh.expected_token="new-plan".into();save(&mut c,fresh).unwrap();
+        assert_eq!(cached(&c)["status"],"planning");
+    }
     #[test]
     fn queues_owned_intent_without_activating_and_prevents_double_submission(){
         let mut c=fixture();let original=cached(&c);let result=save(&mut c,input()).unwrap();
@@ -107,5 +162,38 @@ mod tests {
         c.execute_batch("CREATE TRIGGER fail_review BEFORE INSERT ON sync_outbox BEGIN SELECT RAISE(ABORT,'disk probe'); END;").unwrap();
         assert!(save(&mut c,input()).is_err());assert_eq!(cached(&c),before);
         assert_eq!(c.query_row("SELECT COUNT(*) FROM sync_outbox",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    }
+    #[test]
+    fn stale_displayed_token_never_silently_approves_newer_cached_plan(){
+        let mut c=fixture();let mut p=cached(&c);p["review_snapshot"]["token"]=json!("v2");
+        c.execute("UPDATE sync_state SET value=?1 WHERE key='account:account:projects_state'",[json!([p]).to_string()]).unwrap();
+        assert!(save(&mut c,input()).unwrap_err().contains("since it was displayed"));
+        let mut empty=input();empty.expected_token.clear();assert!(save(&mut c,empty).is_err());
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM sync_outbox",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        let mut fresh=input();fresh.expected_token="v2".into();save(&mut c,fresh).unwrap();
+        let raw:String=c.query_row("SELECT payload_json FROM sync_outbox WHERE change_id=?1",[CID],|r|r.get(0)).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&raw).unwrap()["expected_token"],"v2");
+    }
+    #[test]
+    fn durable_queue_reopen_ack_and_delayed_snapshot_preserve_authored_intent(){
+        let path=std::env::temp_dir().join(format!("labos-review-probe-{}.sqlite",uuid::Uuid::new_v4()));
+        let mut c=Connection::open(&path).unwrap();seed(&c);save(&mut c,input()).unwrap();
+        let read_payload=|c:&Connection|->String{c.query_row("SELECT payload_json FROM sync_outbox WHERE change_id=?1",[CID],|r|r.get(0)).unwrap()};
+        let original=read_payload(&c);drop(c);
+        let mut c=Connection::open(&path).unwrap();local_db::ensure_schema(&c).unwrap();
+        assert_eq!(read_payload(&c),original);
+        let mut p=cached(&c);project(&c,&mut p).unwrap();assert_eq!(p["review_snapshot"]["pending_intents"][0]["state"],"pending");
+        // Real ACK persistence helper, with duplicate ACK simulating response retry.
+        local_db::mark_changes_synced(&mut c,vec![CID.into()]).unwrap();
+        local_db::mark_changes_synced(&mut c,vec![CID.into()]).unwrap();drop(c);
+        let c=Connection::open(&path).unwrap();
+        let mut p=cached(&c);project(&c,&mut p).unwrap();assert_eq!(p["review_snapshot"]["pending_intents"][0]["state"],"awaiting_snapshot");
+        assert_eq!(p["status"],"planning");assert_eq!(read_payload(&c),original);
+        p["review_snapshot"]["token"]=json!("v2");p["review_snapshot"]["project"]["status"]=json!("active");p["status"]=json!("active");
+        c.execute("UPDATE sync_state SET value=?1 WHERE key='account:account:projects_state'",[json!([p]).to_string()]).unwrap();drop(c);
+        let c=Connection::open(&path).unwrap();let mut p=cached(&c);project(&c,&mut p).unwrap();
+        assert_eq!(p["local_review_pending"],false);assert_eq!(read_payload(&c),original);
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM sync_outbox",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+        drop(c);std::fs::remove_file(path).unwrap();
     }
 }

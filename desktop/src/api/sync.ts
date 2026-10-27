@@ -48,7 +48,16 @@ export async function syncPendingChanges(force=false):Promise<number>{
   }
   if(!force&&!runtime.retryDue())return 0;
   currentSyncSession=captureAccountSession();
-  activeSync=runSync().finally(()=>{currentSyncSession=null;activeSync=null;});
+  const session=currentSyncSession;
+  activeSync=runSync().catch(error=>{
+    // The automatic caller deliberately catches rejected runs. Publish first,
+    // otherwise an exception outside a per-step handler leaves a false spinner.
+    // Never acknowledge work or publish an old account's failure into a new one.
+    const step=isAccountSessionCurrent(session)?runtime.getState().step:null;
+    runtime.publish(session,{status:'error',lastError:`Sync interrupted${step?` (${step})`:''}: ${error instanceof Error?error.message:String(error)}`});
+    runtime.scheduleRetry(session);
+    throw error;
+  }).finally(()=>{currentSyncSession=null;activeSync=null;});
   return activeSync;
 }
 
@@ -64,6 +73,7 @@ function syncAccountId():string{assertSyncSession();return currentSyncSession!.a
 async function runPullStep(label:string, step:()=>Promise<boolean>):Promise<boolean>{
   try{
     assertSyncSession();
+    publish({step:label});
     const ok=await step();
     assertSyncSession();
     if(!ok) publish({status:'error',lastError:`${label}: ${getSyncRuntimeState().lastError||'operation failed'}`});
@@ -91,7 +101,7 @@ async function runSync():Promise<number>{
   }
   assertSyncSession();
   if(unassigned>0){publish({status:'error',lastError:`${unassigned} older local change${unassigned===1?' has':'s have'} no verified account owner. Sync is paused to protect that data.`});return 0;}
-  publish({status:'syncing',lastError:null});
+  publish({status:'syncing',lastError:null,step:'Reading the local change queue'});
   let changes:PendingChange[]=[];
   try{changes=await invoke<PendingChange[]>('list_pending_sync_changes',{limit:100,expectedAccountId:accountId});assertSyncSession();}
   catch(error){const message=error instanceof Error?error.message:String(error);publish({status:'error',lastError:message});scheduleRetry();currentSyncSession=null;return 0;}
@@ -104,14 +114,15 @@ async function runSync():Promise<number>{
       continue;
     }
     try{
+      publish({step:`Verifying upload session (${change.change_id})`});
       assertSyncSession();const context=await captureServerRequest(token);assertSyncSession();
       if(!context.nativeSessionToken)throw new Error('Native upload session unavailable');
-      await transferResourceUpload(change,accountId,context.nativeSessionToken,()=>{assertSyncSession();if(!isServerRequestCurrent(context))throw new Error('Upload session changed');});
+      await transferResourceUpload(change,accountId,context.nativeSessionToken,()=>{assertSyncSession();if(!isServerRequestCurrent(context))throw new Error('Upload session changed');},step=>publish({step:`${step} (${change.change_id})`}));
     }catch(error){
       syncSucceeded=false;blockedUploads.add(change.entity_id||'');
       const message=error instanceof Error?error.message:String(error);
       assertSyncSession();
-      await invoke('record_sync_failure',{changeId:change.change_id,error:message});
+      await invoke('record_sync_failure',{changeId:change.change_id,errorMessage:message});
       publish({status:'error',lastError:`File transfer: ${message}`});scheduleRetry();
     }
   }
@@ -122,13 +133,16 @@ async function runSync():Promise<number>{
     const deviceId=changes[0].device_id;
     try{
       assertSyncSession();
+      publish({step:'Verifying server push session'});
       const downloadContext=await captureServerRequest(token);
       assertSyncSession();
+      publish({step:'Sending saved changes to the server'});
       const response=await apiFetch('/sync/push',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id:deviceId,changes:changes.map(({change_id,entity_type,entity_id,operation,payload})=>({change_id,entity_type,entity_id,operation,payload}))})});
       assertSyncSession();
       if(response.ok){
         const body=await response.json() as {results?:SyncResult[]};
         assertSyncSession();
+        publish({step:'Confirming server receipts locally'});
         const results=Array.isArray(body.results)?body.results:[];
         const outcome=await processSyncReceipts(changes,results,{
           assertSession:assertSyncSession,
@@ -158,7 +172,7 @@ async function runSync():Promise<number>{
           },
           fail:async(change,message)=>{
             assertSyncSession();
-            await invoke('record_sync_failure',{changeId:change.change_id,error:message});
+            await invoke('record_sync_failure',{changeId:change.change_id,errorMessage:message});
             publish({status:'error',lastError:`Sync confirmation: ${message}`});
           }
         });
@@ -168,14 +182,14 @@ async function runSync():Promise<number>{
       }else{
         syncSucceeded=false;
         const message=await getApiErrorMessage(response,'Unable to synchronize local changes');
-        for(const change of changes){assertSyncSession();await invoke('record_sync_failure',{changeId:change.change_id,error:message}).catch(()=>undefined);}
+        for(const change of changes){assertSyncSession();await invoke('record_sync_failure',{changeId:change.change_id,errorMessage:message}).catch(()=>undefined);}
         publish({status:'error',lastError:`Sync push: ${message}`});
         scheduleRetry();
       }
     }catch(error){
       syncSucceeded=false;
       const message=error instanceof Error?error.message:String(error);
-      for(const change of changes){assertSyncSession();await invoke('record_sync_failure',{changeId:change.change_id,error:message}).catch(()=>undefined);}
+      for(const change of changes){assertSyncSession();await invoke('record_sync_failure',{changeId:change.change_id,errorMessage:message}).catch(()=>undefined);}
       publish({status:'error',lastError:`Sync push: ${message}`});
       scheduleRetry();
     }

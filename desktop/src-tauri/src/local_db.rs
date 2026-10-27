@@ -432,13 +432,13 @@ pub(crate) fn mark_changes_synced(conn:&mut Connection,change_ids:Vec<String>)->
     tx.commit().map_err(|e|e.to_string())
 }
 #[tauri::command]
-pub fn record_sync_failure(app:AppHandle,change_id:String,error:String)->Result<(),String>{
+pub fn record_sync_failure(app:AppHandle,change_id:String,error_message:String)->Result<(),String>{
     let mut conn=open_local_connection(&app)?;ensure_schema(&conn)?;
     let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|format!("Unable to begin sync failure record: {e}"))?;
     require_owned_change(&tx,&change_id)?;
     let account=active_account(&tx)?;
     if !crate::local_resource_authority::is_confirmed_file_change(&tx,&change_id)?{
-        let updated=tx.execute("UPDATE sync_outbox SET attempt_count=attempt_count+1,last_attempt_at=CURRENT_TIMESTAMP,last_error=?2 WHERE change_id=?1 AND account_id=?3",params![change_id,error,account]).map_err(|e|format!("Unable to record sync failure: {e}"))?;
+        let updated=tx.execute("UPDATE sync_outbox SET attempt_count=attempt_count+1,last_attempt_at=CURRENT_TIMESTAMP,last_error=?2 WHERE change_id=?1 AND account_id=?3",params![change_id,error_message,account]).map_err(|e|format!("Unable to record sync failure: {e}"))?;
         if updated!=1{return Err("Sync change does not belong to the active account".into())}
     }
     tx.commit().map_err(|e|format!("Unable to commit sync failure: {e}"))?;Ok(())

@@ -52,12 +52,12 @@ export function projectFinancialSummaryProjection(summary, permissions) {
   return Object.fromEntries(fields.filter(field => Object.hasOwn(summary,field)).map(field => [field,summary[field]]));
 }
 
-export async function getUserPermissions(userId, role) {
+export async function getUserPermissions(userId, role, { client = pool, lock = false } = {}) {
   const permissions = rolePermissions(role);
   // Administrator access is defined by the role baseline and is not reduced by
   // per-user overrides. Overrides remain available for non-administrator roles.
   if (role === 'admin') return permissions;
-  const result = await pool.query('SELECT permission, effect FROM user_permission_overrides WHERE user_id = $1', [userId]);
+  const result = await client.query('SELECT permission, effect FROM user_permission_overrides WHERE user_id = $1' + (lock ? ' FOR SHARE' : ''), [userId]);
   for (const row of result.rows) { if (row.effect === 'grant') permissions.add(row.permission); if (row.effect === 'deny') permissions.delete(row.permission); }
   return permissions;
 }

@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {webcrypto} from 'node:crypto';
 
-function load(invoke,{desktop=true,signedIn=true,itemApi={}}={}) {
+function load(invoke,{desktop=true,signedIn=true,itemApi={},http}={}) {
   let generation=0,requests=0;const exports={};
   const source=ts.transpileModule(readFileSync(new URL('./projects.ts',import.meta.url),'utf8'),{
     compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}
@@ -16,13 +16,23 @@ function load(invoke,{desktop=true,signedIn=true,itemApi={}}={}) {
       captureAccountSession:()=>signedIn?{accountId:'a',generation}:null,
       isAccountSessionCurrent:s=>!!s&&signedIn&&s.generation===generation
     };
-    if(name==='./http')return{apiFetch:async()=>{requests++;return{ok:true,json:async()=>[{id:'server'}]}}};
+    if(name==='./http')return{apiFetch:async(...args)=>{requests++;return http?http(...args):{ok:true,json:async()=>[{id:'server'}]}}};
     if(name==='./items')return itemApi;
     if(name==='./transactions')return{};
     throw Error(name);
   }});
   return{api:exports,requests:()=>requests,switchAccount:()=>generation++};
 }
+
+test('browser review requires the displayed token and sends it unchanged',async()=>{
+  let body;
+  const c=load(async()=>{throw Error('Unexpected native call')},{desktop:false,http:async(url,options)=>{
+    assert.equal(url,'/projects/p/review');body=JSON.parse(options.body);return{ok:true,json:async()=>({id:'p',status:'active'})};
+  }});
+  await assert.rejects(c.api.decideProjectReview('p','approve','preserved note'),/Refresh/);assert.equal(c.requests(),0);
+  await c.api.decideProjectReview('p','approve','preserved note','plan-v1:42');
+  assert.deepEqual(body,{decision:'approve',note:'preserved note',expected_token:'plan-v1:42'});assert.equal(c.requests(),1);
+});
 test('desktop reservations read the native projection without an HTTP refresh',async()=>{
   const c=load(async(command,args)=>{assert.equal(command,'get_local_project');assert.equal(args.projectId,'p');return{reservations:[{id:'local',quantity:4,local_pending_issue_quantity:2}]}});
   assert.equal((await c.api.getProjectReservations('p'))[0].quantity,4);assert.equal(c.requests(),0);
@@ -95,13 +105,15 @@ test('desktop review decision queues native account-owned intent without HTTP fa
   const c=load(async(command,args)=>{
     assert.equal(command,'save_local_project_review_intent');assert.equal(args.input.expected_account_id,'a');
     assert.equal(args.input.project_id,'p');assert.equal(args.input.decision,'approve');assert.equal(args.input.note,'reviewed');
+    assert.equal(args.input.expected_token,'plan-v1:42');
     assert.match(args.input.change_id,/^[0-9a-f-]{36}$/);return{id:'p',status:'planning',local_review_pending:true};
   });
-  assert.equal((await c.api.decideProjectReview('p','approve','reviewed')).status,'planning');assert.equal(c.requests(),0);
+  await assert.rejects(c.api.decideProjectReview('p','approve','reviewed'),/Refresh/);assert.equal(c.requests(),0);
+  assert.equal((await c.api.decideProjectReview('p','approve','reviewed','plan-v1:42')).status,'planning');assert.equal(c.requests(),0);
   const failed=load(async()=>{throw Error('native failure')});
-  await assert.rejects(failed.api.decideProjectReview('p','submit',''),/native failure/);assert.equal(failed.requests(),0);
+  await assert.rejects(failed.api.decideProjectReview('p','submit','','plan-v1:42'),/native failure/);assert.equal(failed.requests(),0);
   let switched;switched=load(async()=>{switched.switchAccount();return{id:'p'}});
-  await assert.rejects(switched.api.decideProjectReview('p','submit',''),/Account changed/);
+  await assert.rejects(switched.api.decideProjectReview('p','submit','','plan-v1:42'),/Account changed/);
 });
 test('browser project review retains its HTTP read',async()=>{
   const c=load(async()=>{throw Error('Unexpected IPC')},{desktop:false});

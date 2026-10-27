@@ -14,7 +14,7 @@
       "all": false,
       "shell": {
         "all": false,
-        "open": true
+        "open": "^(((mailto:\\w+)|(tel:\\w+)|(https?://\\w+)).+|[A-Za-z]:\\\\[^\\r\\n]+\\\\labos-presentation-[0-9a-f-]{36}\\\\Presentation\\.pptx?)$"
       },
       "http": {
         "all": true,

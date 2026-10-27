@@ -1,11 +1,98 @@
 # Phase 2 fixed delivery checklist
 
+## Current execution — October 26: return from personal V1 packaging
+
+The owner requested return to this original A1–C6 checklist. Personal V1 packaging
+is a separate handoff, not Phase 2 completion. See
+[V1_CLEAN_PERSONAL_SETUP.md](V1_CLEAN_PERSONAL_SETUP.md) for its installed artifact,
+isolated data and unperformed acceptance checks. Do not update, stop, seed or test
+against the daily-use `labos-v1`/port4010 environment as part of ordinary V2 work.
+Development uses the existing `labos`/port4000 environment; preserve both datasets.
+
+V1 interruption is now a separate follow-up: the optional-date/server approval
+hotfix was deployed, and the owner reports the desktop updated. Original pending
+event replay has not been independently verified. See
+[report](../handoffs/phase2-parallel/PRIMARY_PROJECT_BLANK_DATE_2026-10-26.md).
+The later external-PowerPoint-viewing installer built successfully and was launched;
+installation/opening acceptance remains unconfirmed. Neither V1 follow-up closes
+an A1–C6 parent or authorizes ordinary V2 changes to the V1 environment.
+
+Current resumed work: B3/B4 connected-project review/lifecycle and
+remaining integration boundaries, then the independent remaining A/B/C code in
+the bounded register. Reconcile helper-delivered code before implementing it
+again. Retain all 18 parent closure units; no new parent is closed by packaging.
+Historical dated checkpoints below retain their evidence-time status, not current
+blanket deployment claims. Use dated deployment reports for superseding evidence.
+
+October 26 resumed B3/B4 check: added native pending-child review regression matrix
+for tasks, experiments, BOM, canvas, requirements, attachments, task/experiment
+links, item links and measurement/observation events; verifies both project-ID
+payload shapes, account/project isolation and refreshed displayed-token handling.
+All 10 native review tests passed with the development API confirmed stopped,
+including 66 nested-event combinations. Production code unchanged. Results and remaining
+gates: `docs/handoffs/phase2-parallel/PRIMARY_REVIEW_NESTED_WORK_2026-10-26.md`.
+
+Deferred Phase3 packaging polish: owner reports generic/missing V1 shortcut icon;
+explicitly leave it unchanged for now. This is not a sync or database defect.
+
+## Historical October 24 approved V1 pilot priority
+
+Owner approved a controlled own-lab pilot targeting October 25, rather than full
+Phase 2 completion. [V1_LAB_PILOT_RELEASE.md](V1_LAB_PILOT_RELEASE.md) governs pilot
+gates and conditional deferrals. A1–C6 below remain the complete backlog; no parent
+is closed by the scope change. Preserve all current data. Backup/isolated restore,
+core correctness, permissions and offline/reconnect remain release gates.
+
 Owner-approved execution reset, October 13, 2026. This is the single remaining
 delivery/status checklist. It consolidates existing commitments; it does not add
 a fourth phase, erase evidence, authorize data loss, or move functionality into
 Phase 3. Detailed requirements remain in the linked source plans below.
 
 ## Baseline and rules
+
+October27 permission HTTP follow-up: eight real authenticated loopback HTTP scenario
+groups passed against rollback-only development PostgreSQL fixtures, including
+mid-request actor revocation, audit rollback and malformed-body protection. Explicit
+[] still clears overrides. Source only; deterministic race injection/savepoint
+transaction limits recorded; no V1 changes. Report:
+`docs/handoffs/phase2-parallel/PRIMARY_PERMISSION_HTTP_2026-10-27.md`.
+
+October27 A1/B3/B4: permission replacement now rechecks current actor authority under
+ordered actor+target account locks and authorizes implicit override removals. 16
+focused tests and rollback-only real PostgreSQL lock/authority checks PASS. Source
+only, no V1 update; full HTTP/concurrent request acceptance remains. Report:
+`docs/handoffs/phase2-parallel/PRIMARY_PERMISSION_WRITER_AUTHORITY_2026-10-27.md`.
+
+October 27 resumed B3/B4: real development PostgreSQL two-connection tests passed
+for task/experiment/canvas updates and rollback-only BOM insertion. Both parent/
+child lock orders, revision advancement and stale-token rejection verified. No
+committed changes; development DB restored stopped, API stayed stopped, V1 untouched.
+This is not full HTTP/desktop reconnect acceptance. Report:
+`docs/handoffs/phase2-parallel/PRIMARY_REVIEW_CHILD_CONCURRENCY_2026-10-27.md`.
+
+October 24 native review follow-up: displayed token is required at the native
+save boundary. Durable file-backed queue/reopen/duplicate-ACK/delayed-snapshot
+test PASS; 44 focused tests passed with API stopped. Source only. Live desktop
+reconnect acceptance still open. Report:
+`docs/handoffs/phase2-parallel/PRIMARY_REVIEW_NATIVE_PERSISTENCE_2026-10-24.md`.
+
+October 24 browser/version follow-up: browser approvals now require the displayed
+plan token; permission replacement locks the account before overrides. Nine real
+PostgreSQL scenarios, two-connection lock checks, 57 API-stopped regressions and
+TypeScript PASS. Source only; remaining native/reconnect/concurrency acceptance
+is explicit in `docs/handoffs/phase2-parallel/PRIMARY_REVIEW_BROWSER_VERSION_2026-10-24.md`.
+
+October 24 authority follow-up: HTTP and sync share transactional current review
+authority in source. Eight PostgreSQL handler scenario groups, two-connection
+project/account row-lock checks and 30 API-stopped regressions PASS. Not deployed;
+predicate/permission-writer races and full workflow acceptance remain. Report:
+`docs/handoffs/phase2-parallel/PRIMARY_REVIEW_AUTHORITY_2026-10-24.md`.
+
+October 24 follow-up B3/B4: plan revision guard implemented in source; seven
+actual PostgreSQL push-handler/migration scenario groups PASS, plus 12 focused
+tests with the API stopped. Not deployed. Concurrency, durable reconnect and
+HTTP authority/integrated desktop gates remain. Report:
+`docs/handoffs/phase2-parallel/PRIMARY_REVIEW_PLAN_VERSION_2026-10-24.md`.
 
 October 24 B3/B4: review native outbox/server path connected in source; focused
 offline and PostgreSQL handler checks pass. Do not close or deploy: whole-plan

@@ -7,6 +7,7 @@ import { authenticateToken, requireRole } from '../middleware/auth.js';
 import { writeAuditLog } from '../middleware/audit.js';
 import { loginRateLimit } from '../middleware/security.js';
 import { PERMISSIONS, getUserPermissions, rolePermissions, hasPermission } from '../middleware/permissions.js';
+import { requirePermissionReplacementAuthority } from '../permission-replacement-authority.js';
 
 const router = Router();
 const ROLES = ['admin', 'researcher', 'technician', 'viewer', 'member'];
@@ -204,25 +205,24 @@ router.put('/users/:id/permissions', authenticateToken, hasPermission('users.man
   if (!target.rowCount) return res.status(404).json({ error: 'User not found' });
   if (!canManageTarget(req.user, target.rows[0])) return res.status(403).json(deny('Only an administrator can manage administrator permissions', 'ADMIN_TARGET_PROTECTED', 'users.manage_permissions'));
   if (target.rows[0].role === 'admin') return res.status(400).json(deny('Administrator permissions are defined by the administrator role and cannot be overridden', 'ADMIN_PERMISSION_OVERRIDES_UNSUPPORTED', 'users.manage_permissions'));
-  const entries = Array.isArray(req.body?.overrides) ? req.body.overrides : [];
+  if (!Array.isArray(req.body?.overrides)) return res.status(400).json(deny('overrides must be an explicit array; use [] to clear overrides', 'INVALID_PERMISSION_OVERRIDES'));
+  const entries = req.body.overrides;
   const invalid = entries.find((entry) => !PERMISSIONS.includes(entry?.permission) || !['grant', 'deny'].includes(entry?.effect));
   if (invalid) return res.status(400).json({ error: 'Invalid permission override' });
-  const actorPermissions = req.permissions || await getUserPermissions(req.user.userId, req.user.role);
-  if (req.user.role !== 'admin') {
-    const escalation = entries.find((entry) => !actorPermissions.has(entry.permission));
-    if (escalation) return res.status(403).json({ error: { code: 'PERMISSION_ESCALATION_BLOCKED', message: `You cannot manage permission: ${escalation.permission}`, permission: escalation.permission } });
-  }
+  // Current actor authority and all changed overrides (including removals) are
+  // checked under transaction locks, not against middleware's earlier snapshot.
   const deduped = new Map(entries.map((entry) => [entry.permission, entry.effect]));
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    target.rows[0]=await requirePermissionReplacementAuthority(client,req.user.userId,req.params.id,entries);
     await client.query('DELETE FROM user_permission_overrides WHERE user_id = $1', [req.params.id]);
     for (const [permission, effect] of deduped) await client.query('INSERT INTO user_permission_overrides (user_id, permission, effect, updated_by) VALUES ($1,$2,$3,$4)', [req.params.id, permission, effect, req.user.userId]);
     await writeAuditLog({ req, action: 'UPDATE', entityType: 'user_permissions', entityId: req.params.id, metadata: { overrides: [...deduped.entries()] }, client, required: true });
     await client.query('COMMIT');
     const effective = await getUserPermissions(req.params.id, target.rows[0].role);
     res.json({ user: target.rows[0], permissions: PERMISSIONS.map((permission) => ({ permission, baseline: rolePermissions(target.rows[0].role).has(permission), effect: deduped.get(permission) || 'inherited', effective: effective.has(permission) })) });
-  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ error: 'Failed to update permissions' }); } finally { client.release(); }
+  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(err.status||500).json(deny(err.status?err.message:'Failed to update permissions',err.code||'PERMISSION_UPDATE_FAILED')); } finally { client.release(); }
 });
 
 export default router;

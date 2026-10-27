@@ -12,7 +12,10 @@ export async function applyProjectReviewDecision(client, project, req, decision,
   if(decision==='request_changes'&&!note)fail(400,'REVIEW_REASON_REQUIRED','Explain the requested changes');
   if(project.status!=='planning')fail(409,'REVIEW_STATE_CONFLICT','Only Planning projects can be reviewed');
   if(decision==='submit'&&!['draft','changes_requested'].includes(project.review_status))fail(409,'REVIEW_STATE_CONFLICT','Plan is already submitted or approved');
-  if(decision!=='submit'&&project.review_status!=='submitted')fail(409,'REVIEW_STATE_CONFLICT','Submit the plan before an admin decision');
+  // Both callers verify current administrator authority under the transaction
+  // before reaching this helper. Approval does not require self-submission.
+  if(decision==='approve'&&!['draft','changes_requested','submitted'].includes(project.review_status))fail(409,'REVIEW_STATE_CONFLICT','Plan is not awaiting approval');
+  if(decision==='request_changes'&&project.review_status!=='submitted')fail(409,'REVIEW_STATE_CONFLICT','Submit the plan before requesting changes');
   const next=decision==='submit'?'submitted':decision==='approve'?'approved':'changes_requested';
   const updated=(await client.query(`UPDATE projects SET review_status=$1,
     status=CASE WHEN $2='approve' THEN 'active' ELSE status END,updated_at=now()

@@ -13,6 +13,7 @@ mod local_notes;
 mod local_knowledge;
 mod local_locations;
 mod local_resources;
+mod local_presentations;
 mod local_search;
 mod local_excel;
 mod local_system;
@@ -55,6 +56,7 @@ fn main() {
         local_activity::list_local_activity,
         local_downloads::get_local_download_snapshot,
         local_resource_posters::read_local_resource_poster,
+        local_presentations::open_local_presentation,
         local_resource_replication::replicate_local_resource,
         local_resource_replication::local_resource_copy_status,
         local_resource_attachments::move_local_resource_attachment,

@@ -7,6 +7,24 @@ import assert from 'node:assert/strict';
 const compile=name=>ts.transpileModule(readFileSync(new URL(name,import.meta.url),'utf8'),{
   compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}
 }).outputText;
+
+test('all failure-reporting IPC calls preserve Tauri callback fields and match the native argument',()=>{
+  const source=ts.createSourceFile('sync.ts',readFileSync(new URL('./sync.ts',import.meta.url),'utf8'),ts.ScriptTarget.Latest,true);
+  let count=0;
+  function visit(node){
+    if(ts.isCallExpression(node)&&node.expression.getText(source)==='invoke'&&node.arguments[0]?.text==='record_sync_failure'){
+      count++;
+      const args=node.arguments[1];assert.ok(ts.isObjectLiteralExpression(args));
+      const keys=args.properties.map(p=>p.name?.getText(source));
+      assert.ok(keys.includes('errorMessage'));
+      assert.ok(!keys.some(k=>['error','callback','cmd'].includes(k)),'Tauri reserves these top-level IPC keys');
+    }
+    ts.forEachChild(node,visit);
+  }
+  visit(source);assert.equal(count,4);
+  const native=readFileSync(new URL('../../src-tauri/src/local_db.rs',import.meta.url),'utf8');
+  assert.match(native,/pub fn record_sync_failure\(app:AppHandle,change_id:String,error_message:String\)/);
+});
 const storeModule={};vm.runInNewContext(compile('./sync-runtime-state.ts'),{exports:storeModule});
 function fixture(){
   let session={accountId:'a',token:'token-a',generation:1},time=1000000;
@@ -57,7 +75,19 @@ test('persisted retry delay is bounded and transient syncing is never restored',
   assert.equal(f.store.retryDue(),false);f.advance(300000);assert.equal(f.store.retryDue(),true);
 });
 
-function loadSync(f,invoke){
+test('stage diagnostics clear on completion and never survive restart or account switch',()=>{
+  const f=fixture();
+  f.store.publish(f.session(),{status:'syncing',step:'Reading local file'});
+  assert.equal(f.store.getState().step,'Reading local file');
+  const restarted=storeModule.createSyncRuntimeStore(f.options);
+  assert.equal(restarted.getState().step,undefined);
+  f.store.publish(f.session(),{status:'error',lastError:'read failed'});
+  assert.equal(f.store.getState().step,null);
+  f.store.publish(f.session(),{status:'syncing',step:'Checking upload'});
+  f.switchTo('b');assert.equal(f.store.getState().step,undefined);
+});
+
+function loadSync(f,invoke,overrides={}){
   const exports={};
   const auth={captureAccountSession:f.session,isAccountSessionCurrent:f.options.isCurrent,getToken:()=>f.session()?.token,getStoredUser:()=>f.session()?{id:f.session().accountId}:null};
   const client={};
@@ -67,6 +97,7 @@ function loadSync(f,invoke){
     throw Error(name);
   }});
   vm.runInNewContext(compile('./sync.ts'),{exports,localStorage:f.storage,navigator:{onLine:true},window:{addEventListener(){},dispatchEvent(){}},require:name=>{
+    if(name in overrides)return overrides[name];
     if(name==='./auth')return auth;
     if(name==='./sync-runtime-state')return storeModule;
     if(name==='./sync-conflict-client')return client;
@@ -75,6 +106,24 @@ function loadSync(f,invoke){
   }});
   return exports;
 }
+
+test('unexpected queue processing failure leaves error status and releases the run for retry',async()=>{
+  const f=fixture(),commands=[];
+  const api=loadSync(f,async command=>{
+    commands.push(command);
+    if(command==='get_local_sync_queue_status')return{pending_sync_count:6,unassigned_pending_sync_count:0,unassigned_state_count:0};
+    if(command==='list_pending_sync_changes')return[{change_id:'saved-intent'}];
+    throw Error('Unexpected mutation');
+  },{'./resource-uploads':{isResourceUpload(){throw Error('queue processing failed');}}});
+  await assert.rejects(api.syncPendingChanges(true),/queue processing failed/);
+  assert.equal(api.getSyncRuntimeState().status,'error');
+  assert.match(api.getSyncRuntimeState().lastError,/Sync interrupted \(Reading the local change queue\): .*queue processing failed/);
+  assert.equal(api.getSyncRuntimeState().lastSuccessAt,null);
+  assert.deepEqual(commands,['get_local_sync_queue_status','list_pending_sync_changes']);
+  await api.syncPendingChanges();assert.equal(commands.length,2,'automatic retry respects backoff');
+  await assert.rejects(api.syncPendingChanges(true),/queue processing failed/);
+  assert.equal(commands.length,4,'explicit retry starts a new run, without acknowledging anything');
+});
 test('sync switched during preflight cannot start pulling or publish into new account',async()=>{
   const f=fixture();let release;const commands=[];
   const api=loadSync(f,async command=>{commands.push(command);await new Promise(r=>release=r);return{pending_sync_count:0,unassigned_pending_sync_count:0,unassigned_state_count:0};});

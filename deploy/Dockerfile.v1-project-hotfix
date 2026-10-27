@@ -1,0 +1,6 @@
+# Deliberately layer only the reviewed project hotfix over the installed V1.
+# Verify this local tag resolves to 030bdf774d21678136f760fb701e1e148e80a3d7b29478d00bd8c82fa2d45c05 before building.
+FROM labos-api:resource-ordering-20261025
+COPY backend/src/project-date-value.js /app/src/project-date-value.js
+COPY backend/src/project-review-decision.js /app/src/project-review-decision.js
+COPY backend/src/routes/sync.js /app/src/routes/sync.js

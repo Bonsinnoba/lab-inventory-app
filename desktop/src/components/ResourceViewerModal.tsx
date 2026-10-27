@@ -3,6 +3,7 @@ import { Resource, getResourceDownloadUrl, getDocxHtml } from '../api/resources'
 import { X, Download, ChevronLeft, ChevronRight, Repeat, Maximize2, Minimize2, ZoomIn, ZoomOut, RotateCcw, PanelRight, Pencil, Image as ImageIcon, Video, Music, FileText, File as FileIcon, Folder, Link as LinkIcon } from 'lucide-react';
 import { pdfjs } from 'react-pdf';
 import ResourcePdfPreview from './ResourcePdfPreview';
+import PresentationExternalPreview from './PresentationExternalPreview';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 import {useVideoPoster} from './VideoResourcePoster';
@@ -26,6 +27,8 @@ function PaneContent({resource,zoom,pdfPage,setPdfPages,onWheel}:{resource:Resou
   const poster=useVideoPoster(resource);
   const content=usePaneContent(resource);if(!resource)return <div className="flex h-full items-center justify-center text-sm text-slate-500">Select a resource to compare.</div>;if(content.loading)return <div className="flex h-full items-center justify-center text-sm text-slate-400">Loading preview…</div>;if(content.error)return <div className="flex h-full items-center justify-center p-6 text-center text-sm text-red-300">{content.error}</div>;
   const ext=extension(resource),url=getResourceDownloadUrl(resource.id),youtubeUrl=resource.kind==='link'?youtubeEmbedUrl(resource):null;
+  const originalExt=(resource.original_filename||resource.name||'').split('.').pop()?.toLowerCase();
+  if(resource.kind==='file'&&(originalExt==='ppt'||originalExt==='pptx'))return <PresentationExternalPreview key={`${resource.id}:${resource.updated_at}`} resource={resource}/>;
   if(ext==='pdf')return <div className="flex h-full items-start justify-center overflow-auto p-3" onWheel={onWheel}><div style={{transform:`scale(${zoom})`,transformOrigin:'top center'}}><ResourcePdfPreview key={`${resource.id}:${resource.updated_at}`} id={resource.id} revision={resource.updated_at} url={url} page={pdfPage} onPages={setPdfPages}/></div></div>;
   if(ext==='docx'&&content.docxHtml!==null)return <div className="h-full overflow-auto bg-white p-8 text-black"><div dangerouslySetInnerHTML={{__html:content.docxHtml}}/></div>;
   if(isMarkdownResource(resource)&&content.text!==null)return <pre className="h-full overflow-auto whitespace-pre-wrap p-6 text-sm leading-6 text-slate-200">{content.text}</pre>;

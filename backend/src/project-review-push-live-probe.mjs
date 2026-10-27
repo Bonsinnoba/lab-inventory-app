@@ -23,9 +23,10 @@ const routeClient={async query(sql,values){
 globalThis.labosReviewProbePool={connect:async()=>routeClient,query:(...args)=>c.query(...args)};
 const db=data('export const pool=globalThis.labosReviewProbePool;');
 const audit=data(imports(readFileSync('/app/src/middleware/audit.js','utf8'),'file:///app/src/middleware/audit.js',{'../db.js':db}));
-const permissions=data(imports(readFileSync('/app/src/middleware/permissions.js','utf8'),'file:///app/src/middleware/permissions.js',{'../db.js':db}));
+const permissions=data(imports(packet.permissions,'file:///app/src/middleware/permissions.js',{'../db.js':db}));
+const authority=data(imports(packet.authority,'file:///app/src/project-review-authority.js',{'./middleware/permissions.js':permissions}));
 const decision=data(imports(packet.decision,'file:///app/src/project-review-decision.js',{'./middleware/audit.js':audit}));
-const review=data(imports(packet.review,'file:///app/src/project-review-sync.js',{'./project-review-decision.js':decision,'./middleware/permissions.js':permissions}));
+const review=data(imports(packet.review,'file:///app/src/project-review-sync.js',{'./project-review-decision.js':decision,'./project-review-authority.js':authority}));
 const overrides={'../db.js':db,'../middleware/audit.js':audit,'../middleware/permissions.js':permissions,'../project-review-sync.js':review};
 for(const name of ['project-experiment-observations','project-experiment-revisions','project-review-snapshot','sync-receipts']){
   overrides[`../${name}.js`]=data(imports(packet[name],`file:///app/src/${name}.js`));
@@ -41,6 +42,24 @@ async function check(name,fn){
 try{
   const {default:router}=await import(data(imports(packet.route,'file:///app/src/routes/sync.js',overrides)));
   const push=router.stack.find(l=>l.route?.path==='/push'&&l.route.methods.post).route.stack[0].handle;
+  const {default:projectsRouter}=await import(data(imports(packet.projectsRoute,'file:///app/src/routes/projects.js',{
+    '../db.js':db,'../middleware/permissions.js':permissions,'../middleware/audit.js':audit,
+    '../project-review-decision.js':decision,'../project-review-authority.js':authority,
+    '../project-review-snapshot.js':overrides['../project-review-snapshot.js'],
+  })));
+  // Deliberately call the terminal HTTP handler with stale middleware results.
+  // Its transactional recheck must deny independently of preflight middleware.
+  const httpReview=projectsRouter.stack.find(l=>l.route?.path==='/:id/review'&&l.route.methods.post).route.stack.at(-1).handle;
+  async function sendHTTP(actorId,decision,expected_token){
+    let status=200,body;
+    const originalError=console.error;
+    // Avoid dumping in-memory module data URLs for expected denied requests.
+    console.error=(error)=>originalError('HTTP probe:',error.code??error.message);
+    try {await httpReview({params:{id:project},body:{decision,note:'HTTP review note',expected_token},user:{userId:actorId,role:'admin'},permissions:new Set(['projects.edit','finance.view','finance.view_sensitive'])},
+      {status(v){status=v;return this;},json(v){body=v;return this;}});
+    }finally{console.error=originalError;}
+    return {status,body};
+  }
   async function send(change,options={}){
     let body,error,status=200;
     await push({body:{device_id:options.device??device,changes:[structuredClone(change)]},user:{userId:options.actor??actor,role:'admin'}},
@@ -88,6 +107,15 @@ try{
     await c.query('UPDATE users SET is_active=true WHERE id=$1',[other]);
   });
   const submit=await intent('submit');
+  await check('HTTP terminal handler rejects disabled and demoted cached administrators',async()=>{
+    const before=await state();
+    await c.query('UPDATE users SET is_active=false WHERE id=$1',[other]);
+    assert.equal((await sendHTTP(other,'submit')).status,403);
+    await c.query("UPDATE users SET is_active=true,role='researcher' WHERE id=$1",[other]);
+    assert.equal((await sendHTTP(other,'approve')).status,403);
+    assert.deepEqual(await state(),before);
+    await c.query("UPDATE users SET role='admin' WHERE id=$1",[other]);
+  });
   await check('actual push submit and exact receipt replay create one event and audit',async()=>{
     ok(await send(submit));const once=await state();assert.equal(once.events.length,1);assert.equal(once.audit.length,1);assert.equal(once.receipts.length,1);
     ok(await send(submit));assert.deepEqual(await state(),once);
@@ -103,6 +131,19 @@ try{
     await c.query("INSERT INTO project_bom_items(project_id,name) VALUES($1,'New demand after review')",[project]);
     const before=await state();rejected(await send(approve),'REVIEW_VERSION_CONFLICT');assert.deepEqual(await state(),before);
     assert.equal(approve.payload.note,'Preserve this review note');
+  });
+  await check('HTTP missing and stale browser tokens reject; fresh snapshot succeeds',async()=>{
+    const stale=await token();
+    await c.query("INSERT INTO project_bom_items(project_id,name) VALUES($1,'Browser stale plan probe')",[project]);
+    const before=await state();
+    for(const version of [undefined,stale]){
+      const response=await sendHTTP(actor,'approve',version);assert.equal(response.status,409);assert.equal(response.body.error.code,'REVIEW_VERSION_CONFLICT');
+      assert.deepEqual(await state(),before);
+    }
+    // Exercise success without altering the state needed by the next scenario.
+    await c.query('SAVEPOINT http_success');
+    const response=await sendHTTP(actor,'approve',await token());assert.equal(response.status,200);assert.equal(response.body.status,'active');
+    await c.query('ROLLBACK TO SAVEPOINT http_success');await c.query('RELEASE SAVEPOINT http_success');
   });
   await check('receipt failure rolls back approval; same intention retries exactly once',async()=>{
     const approve=await intent('approve'),before=await state();failReceipt=true;

@@ -1,4 +1,5 @@
 import { syncResponseProjection } from '../sync-receipts.js';
+import { projectDateValue } from '../project-date-value.js';
 import { experimentObservationProjection, assertExperimentObservationText } from '../project-experiment-observations.js';
 import { readExperimentRevisionSnapshot } from '../project-experiment-revisions.js';
 import { readProjectReviewSnapshots } from '../project-review-snapshot.js';
@@ -226,7 +227,7 @@ async function applyProjectEntity(client,change,user){
     const values=[entityId],columns=['id'];
     for(const field of cfg.fields){
       if(field==='owner_id'&&entityType==='project'&&!record.owner_id){columns.push(field);values.push(user.userId);continue;}
-      if(Object.prototype.hasOwnProperty.call(record,field)){columns.push(field);values.push(record[field]??null);}
+      if(Object.prototype.hasOwnProperty.call(record,field)){columns.push(field);values.push(projectDateValue(field,record[field]));}
     }
     const placeholders=values.map((_,i)=>'$'+(i+1)).join(',');
     const created=(await client.query('INSERT INTO '+cfg.table+' ('+columns.join(',')+') VALUES ('+placeholders+') RETURNING *',values)).rows[0];
@@ -239,7 +240,7 @@ async function applyProjectEntity(client,change,user){
     const updates=[],values=[];
     for(const field of cfg.fields){
       if(['project_id','created_by','owner_id'].includes(field))continue;
-      if(Object.prototype.hasOwnProperty.call(record,field)){values.push(record[field]??null);updates.push(field+'=$'+values.length);}
+      if(Object.prototype.hasOwnProperty.call(record,field)){values.push(projectDateValue(field,record[field]));updates.push(field+'=$'+values.length);}
     }
     if(!updates.length)return existing;
     // Canvas connectors have created_at only in the existing schema.
@@ -327,6 +328,9 @@ async function applyResourceEntity(client,change,user){
  if(change.operation==='edit_content')return applyResourceContentEdit(client,change,user);
  if(change.operation==='edit_metadata')return applyResourceMetadata(client,change,user);
  const payload=object(change.payload,'Resource sync payload'),record=payload.resource||payload.record||payload,entityId=id(record.id||payload.id||change.entity_id,'Resource ID');
+ // Serialize resource creates/deletes even when they have different change IDs.
+ // UUID spelling must not give the same resource two different lock keys.
+ await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',['sync-resource:'+entityId.replace(/-/g,'').toLowerCase()]);
  // A distinct operation makes older servers reject rather than silently ACK
  // this as a metadata update with no recognized fields.
  if(change.operation==='attach'){
@@ -370,12 +374,21 @@ async function applyResourceEntity(client,change,user){
   }
   const existing=await client.query('SELECT * FROM resources WHERE id=$1',[entityId]);
   if(existing.rowCount)fail(409,'RESOURCE_ALREADY_EXISTS',`Resource ${entityId} already exists`);
+  // A historical absent-delete receipt from an older server is also evidence
+  // that this owner's delayed create must not resurrect the resource. Do not
+  // let another user's arbitrary absent-delete receipt reserve an unused UUID.
+  const removed=await client.query("SELECT 1 FROM sync_tombstones WHERE entity_type='resource' AND entity_id=$1::uuid UNION ALL SELECT 1 FROM sync_idempotency WHERE entity_type='resource' AND operation='delete' AND user_id=$2 AND replace(lower(entity_id),'-','')=replace(lower($1::text),'-','') AND response_status=200 AND response_json->>'deleted'='true' LIMIT 1",[entityId,user.userId]);
+  if(removed.rowCount)fail(409,'RESOURCE_PREVIOUSLY_DELETED','This resource was already deleted. Its delayed create is preserved for review, not recreated.');
   if(record.kind==='link'&&record.url){ await lockResourceLink(client,record); const duplicate=await client.query("SELECT * FROM resources WHERE kind='link' AND lower(btrim(url))=lower($1) AND item_id IS NOT DISTINCT FROM $2 AND project_id IS NOT DISTINCT FROM $3 AND note_id IS NOT DISTINCT FROM $4 AND parent_resource_id IS NOT DISTINCT FROM $5 ORDER BY (local_media_path IS NOT NULL) DESC, created_at ASC LIMIT 1",[String(record.url).trim().replace(/\/+$/,''),record.item_id||null,record.project_id||null,record.note_id||null,record.parent_resource_id||null]); if(duplicate.rowCount)return duplicate.rows[0]; }
+  // Native snapshots may explicitly serialize optional metadata as null.
+  // Apply schema defaults only to the insert projection, not the immutable
+  // queued payload (whose identity/hash must remain stable across retries).
+  const createRecord={...record,category:record.category??'general',description:record.description??'',tags:record.tags??[],visibility};
   const values=[entityId],columns=['id'];
   for(const field of RESOURCE_FIELDS){
    if(field==='file_type'&&record.kind==='folder'&&!record.file_type){columns.push(field);values.push('schematic_folder');continue;}
-   if(Object.prototype.hasOwnProperty.call(record,field)){
-    const value=field==='url'&&record.url!=null ? String(record.url).trim().replace(/\/+$/,'') : record[field];
+   if(Object.prototype.hasOwnProperty.call(createRecord,field)){
+    const value=field==='url'&&createRecord.url!=null ? String(createRecord.url).trim().replace(/\/+$/,'') : createRecord[field];
     columns.push(field);values.push(value??null);
    }
   }
@@ -389,7 +402,13 @@ async function applyResourceEntity(client,change,user){
   return created;
  }
  const existing=await client.query('SELECT * FROM resources WHERE id=$1 FOR UPDATE',[entityId]);
- if(!existing.rowCount&&change.operation==='delete')return{id:entityId,deleted:true,already_deleted:true};
+ if(!existing.rowCount&&change.operation==='delete'){
+  const removed=await client.query("SELECT 1 FROM sync_tombstones WHERE entity_type='resource' AND entity_id=$1::uuid",[entityId]);
+  if(removed.rowCount)return{id:entityId,deleted:true,already_deleted:true};
+  // Absence is not proof of deletion: an earlier create may still be retrying.
+  // Keep this retryable, with no success receipt, rather than lose delete intent.
+  fail(503,'RESOURCE_DELETE_WAITING_FOR_CREATE','Resource creation has not reached the server yet. The pending deletion is preserved and will retry.');
+ }
  if(!existing.rowCount)fail(409,'RESOURCE_NOT_FOUND',`Resource ${entityId} does not exist on the server`);
  const access=await requireResourceEditor(entityId,{userId:user.userId,role:user.role});
  if(!access.ok)fail(access.status,access.error.code,access.error.message);

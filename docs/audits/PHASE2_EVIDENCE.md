@@ -1,5 +1,39 @@
 # Phase 2 implementation evidence
 
+## October 24 — native displayed token and queue reopen
+
+Native save rejects a displayed token different from the cached review version.
+File-backed SQLite queue/ACK/reopen checks pass with the original payload intact.
+44 focused tests PASS with actual API stopped; restored healthy. Native compile
+and TypeScript PASS. Source only, not live desktop reconnect acceptance. Report:
+`docs/handoffs/phase2-parallel/PRIMARY_REVIEW_NATIVE_PERSISTENCE_2026-10-24.md`.
+
+## October 24 — browser review version and permission-writer lock
+
+Browser stale/missing tokens fail closed; permission replacement coordinates
+with review through the account row lock. Nine rollback-only PostgreSQL scenario
+groups, two-connection lock checks, 57 API-stopped regressions and TypeScript PASS.
+API restored healthy. Not deployed. Report:
+`docs/handoffs/phase2-parallel/PRIMARY_REVIEW_BROWSER_VERSION_2026-10-24.md`.
+
+## October 24 — shared transactional review authority
+
+HTTP/sync current authority checks unified; override reads use the transaction.
+Eight PostgreSQL handler scenario groups PASS, including stale HTTP admin context.
+Two real connections verify project/account write exclusion until lock release.
+Thirty focused regressions PASS with API stopped; restored healthy. Source only.
+Report: `docs/handoffs/phase2-parallel/PRIMARY_REVIEW_AUTHORITY_2026-10-24.md`.
+
+## October 24 — plan revision and actual push-handler replay
+
+Source-only plan revision triggers and review-token checks added. Seven real
+PostgreSQL scenario groups PASS, including nested child edits, stale approval,
+receipt ownership/replay, disabled actor and atomic receipt-failure rollback.
+All probe schema/fixtures rolled back. Eight JavaScript and four native review
+tests PASS with actual API stopped; API restored healthy. Concurrency, durable
+reconnect and integrated desktop acceptance remain. Report:
+`docs/handoffs/phase2-parallel/PRIMARY_REVIEW_PLAN_VERSION_2026-10-24.md`.
+
 ## October 24 — project review outbox path
 
 Native account-owned decision queue and pending-state UI connected to server sync

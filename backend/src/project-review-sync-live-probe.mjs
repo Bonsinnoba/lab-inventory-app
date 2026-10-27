@@ -11,8 +11,8 @@ try {
   await assert.rejects(applyProjectReviewIntent(c,intent,{userId:'00000000-0000-4000-8000-000000000001'}),e=>e.code==='REVIEW_AUTHORITY_DENIED');
   assert.deepEqual(await applyProjectReviewIntent(c,intent,{userId:admin.id}),{acknowledged:true});
   intent.payload.decision='approve';
-  // A rollback-only probe uses one transaction, so xmin and now() do not
-  // advance as they do between real requests. Supply a mismatched token.
+  // Explicit mismatch complements the real child-edit/replay cases in
+  // project-review-push-live-probe.mjs (which applies its migration in rollback).
   intent.payload.expected_token='stale-snapshot-token';
   await assert.rejects(applyProjectReviewIntent(c,intent,{userId:admin.id}),e=>e.code==='REVIEW_VERSION_CONFLICT');
   intent.payload.expected_token=await token();

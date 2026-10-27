@@ -172,14 +172,15 @@ export async function getProjectReview(projectId:string):Promise<ProjectReview>{
  if(!r.ok)throw new Error(await getApiErrorMessage(r,'Unable to load project review'));
  return r.json();
 }
-export async function decideProjectReview(projectId:string,decision:'submit'|'request_changes'|'approve',note:string):Promise<Project>{
+export async function decideProjectReview(projectId:string,decision:'submit'|'request_changes'|'approve',note:string,expectedToken?:string):Promise<Project>{
+ if(!expectedToken)throw new Error('Refresh the project review before making a decision. Your note has not been sent.');
  if(isTauriRuntime()){
   const session=captureAccountSession();if(!session)throw new Error('Sign in to queue project review.');
-  const result=await localInvoke<Project>('save_local_project_review_intent',{input:{expected_account_id:session.accountId,change_id:crypto.randomUUID(),project_id:projectId,decision,note}});
+  const result=await localInvoke<Project>('save_local_project_review_intent',{input:{expected_account_id:session.accountId,change_id:crypto.randomUUID(),project_id:projectId,decision,note,expected_token:expectedToken}});
   if(!isAccountSessionCurrent(session))throw new Error('Account changed after saving review. The original account owns the saved intention.');
   if(!result)throw new Error('Local review intention was not confirmed.');return result;
  }
- const r=await apiFetch(`/projects/${projectId}/review`,{method:'POST',body:JSON.stringify({decision,note})});
+ const r=await apiFetch(`/projects/${projectId}/review`,{method:'POST',body:JSON.stringify({decision,note,expected_token:expectedToken})});
  if(!r.ok)throw new Error(await getApiErrorMessage(r,'Unable to submit project review'));
  return r.json();
 }

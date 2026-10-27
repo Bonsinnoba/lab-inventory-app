@@ -116,6 +116,10 @@ export async function saveDocxCopy(id: string, html: string, expectedRevision?:s
 export async function createPdfEditCopy(id: string): Promise<Resource> { if(isTauriRuntime())return localEditorCommand<Resource>('create_local_pdf_edit_copy',id); const response = await apiFetch(`/resource-editor/${id}/pdf-copy`, { method: 'POST' }); if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to create PDF edit copy')); return response.json(); }
 export async function replaceResourceFile(id: string, file: File, expectedRevision?:string,onProgress?:(n:number)=>void): Promise<Resource> { if(isTauriRuntime())return stagePdfReplacement(id,file,expectedRevision||'',onProgress); const formData = new FormData(); formData.append('file', file); const response = await apiFetch(`/resource-editor/${id}/file`, { method: 'PUT', body: formData }); if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to replace resource file')); return response.json(); }
 
+export async function openLocalPresentation(id:string):Promise<void>{
+  return localEditorCommand<void>('open_local_presentation',id);
+}
+
 async function localEditorCommand<T>(command:string,id:string,args:Record<string,unknown>={}):Promise<T>{
   const session=captureAccountSession();
   if(!session||!isAccountSessionCurrent(session))throw new Error('Sign in before opening resource editors');
