@@ -22,6 +22,24 @@ fn require_session(c: &Connection, account: &str, guard: &str) -> Result<(), Str
 }
 
 fn read(c: &Connection, account: &str, limit: usize) -> Result<Value, String> {
+    read_filtered(c,account,limit,None)
+}
+
+pub(crate) fn read_project(c:&Connection,project_id:&str)->Result<Value,String>{
+    crate::local_projects::require_cached_project_access(c,project_id,false)?;
+    read_filtered(c,&local_db::active_account(c)?,100,Some(project_id))
+}
+
+fn project_matches(row:&Value,project_id:&str)->bool{
+    (row["entity_type"]=="project" && row["entity_id"].as_str()==Some(project_id))
+        || row.pointer("/metadata/project_id").and_then(Value::as_str)==Some(project_id)
+}
+
+fn select_records(records:&[Value],limit:usize,project_id:Option<&str>)->Vec<Value>{
+    records.iter().filter(|r|project_id.map(|id|project_matches(r,id)).unwrap_or(true)).take(limit.clamp(1,100)).cloned().collect()
+}
+
+fn read_filtered(c: &Connection, account: &str, limit: usize, project_id:Option<&str>) -> Result<Value, String> {
     local_db::require_sync_account(c, account)?;
     if !may_read(c)? { return Ok(json!({"items":[],"next_before":null,"state":"restricted","last_synced_at":null})); }
     let raw: Option<String> = c.query_row("SELECT value FROM sync_state WHERE key=?1",
@@ -29,7 +47,8 @@ fn read(c: &Connection, account: &str, limit: usize) -> Result<Value, String> {
     let Some(raw) = raw else { return Ok(json!({"items":[],"next_before":null,"state":"not_downloaded","last_synced_at":null})); };
     let snapshot: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
     let records = snapshot["records"].as_array().ok_or("Invalid local activity snapshot")?;
-    let items: Vec<Value> = records.iter().take(limit.clamp(1, 100)).cloned().collect();
+    // Filter the complete cached snapshot before applying the presentation limit.
+    let items = select_records(records,limit,project_id);
     Ok(json!({"next_before":items.last().map(|r|r["created_at"].clone()),"items":items,
         "state":"available","last_synced_at":snapshot["snapshot_at"]}))
 }
@@ -87,6 +106,19 @@ pub fn apply_server_activity_snapshot(app: AppHandle, expected_account_id: Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn project_filter_precedes_limit_and_requires_explicit_project_provenance(){
+        let mut rows=vec![json!({"entity_type":"project","entity_id":"other"});150];
+        rows.push(json!({"id":"direct","entity_type":"project","entity_id":"p"}));
+        rows.push(json!({"id":"child","entity_type":"project_task","entity_id":"task","metadata":{"project_id":"p"}}));
+        rows.push(json!({"id":"unrelated","entity_type":"note","entity_id":"p"}));
+        rows.push(json!({"id":"malformed","metadata":{"project_id":1}}));
+        let selected=select_records(&rows,100,Some("p"));
+        assert_eq!(selected.len(),2);assert_eq!(selected[0]["id"],"direct");assert_eq!(selected[1]["id"],"child");
+        assert_eq!(select_records(&rows,1,Some("p")).len(),1);
+        assert!(select_records(&rows,100,Some("missing")).is_empty());
+        assert_eq!(select_records(&rows,1000,None).len(),100);
+    }
     fn fixture() -> Connection {
         let c=Connection::open_in_memory().unwrap();
         c.execute_batch("CREATE TABLE sync_state(key TEXT PRIMARY KEY,value TEXT NOT NULL);

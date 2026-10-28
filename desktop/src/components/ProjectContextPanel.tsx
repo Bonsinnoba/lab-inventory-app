@@ -1,18 +1,21 @@
 import {useQuery} from '@tanstack/react-query';
 import {getProjectContext} from '../api/context';
+import {isTauriRuntime} from '../lib/runtime';
 export default function ProjectContextPanel({projectId}:{projectId:string}){
  const context=useQuery({queryKey:['project-context',projectId],queryFn:()=>getProjectContext(projectId),staleTime:30000,retry:1});
- const c=context.data;
+ // Section failures are represented inside a successful composite response.
+ // A top-level error may mean revoked project access: do not retain its old view.
+ const c=context.isError?undefined:context.data;
  return <section aria-label="Project context" className="border border-border rounded-md bg-surface p-4 my-4">
   <h3 className="font-semibold">Project context</h3>
-  <p className="text-xs text-text-secondary mt-1">Live central context · Access-controlled · Read-only</p>
+  <p className="text-xs text-text-secondary mt-1">{isTauriRuntime()?'Local project context · Cached authorization · Read-only':'Central project context · Access-controlled · Read-only'}</p>
   {context.isLoading&&<p className="text-sm mt-2">Loading linked project records…</p>}
-  {context.isError&&<p role="alert" className="text-sm text-status-warning mt-2">Central context unavailable. Offline project records remain accessible elsewhere; this panel does not use stale central data.</p>}
+  {context.isError&&<p role="alert" className="text-sm text-status-warning mt-2">Project context could not be refreshed.{c?' Showing the previously loaded view.':' Other project records may still be available.'}<button type="button" data-readonly-action className="ml-2 text-accent underline" onClick={()=>void context.refetch()} disabled={context.isFetching}>Retry</button></p>}
   {c&&<div className="mt-3">
    <p className="text-sm">{c.project.name} · {c.project.status}</p>
-   <p className="text-xs text-text-secondary">Snapshot: {new Date(c.generated_at).toLocaleString()}</p>
+   <p className="text-xs text-text-secondary">{c.availability?'Local read':'Snapshot'}: {new Date(c.generated_at).toLocaleString()}{c.availability?' · May include unsynced changes. This is not proof of server freshness or complete synchronization.':''}</p>
    <div className="grid grid-cols-2 md:grid-cols-3 gap-2 mt-3">
-    {Object.entries(c.sections).map(([name,rows])=><div key={name} className="border border-border rounded-sm p-2"><strong className="capitalize text-sm">{name.replace('_',' ')}</strong><p className="text-lg">{rows.length}{c.provenance.truncated[name]?'+':''}</p></div>)}
+    {Object.entries(c.sections).map(([name,rows])=>{const state=c.availability?.sections[name];return <div key={name} className="border border-border rounded-sm p-2"><strong className="capitalize text-sm">{name.replace('_',' ')}</strong><p className="text-lg">{state==='unavailable'?'—':rows.length}{state==='partial'||c.provenance.truncated[name]?'+':''}</p>{state&&state!=='available'&&<p className="text-xs text-status-warning">{state==='partial'?'Partial local data':'Unavailable or not authorized'}</p>}</div>})}
    </div>
    <details className="mt-3"><summary className="cursor-pointer text-sm">Linked evidence and resource allocations</summary>
     <ul className="mt-2 space-y-1 text-sm">

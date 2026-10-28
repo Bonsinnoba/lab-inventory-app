@@ -1,5 +1,129 @@
 # Phase 2 fixed delivery checklist
 
+October28 project visibility checkpoint: eight production SQL policy cases PASS
+on development PostgreSQL, including restricted grants and membership/grant
+revocation; rollback absence verified. Ten focused visibility/source-contract
+tests PASS. This is not JWT/HTTP or native cache acceptance; those remain open.
+No production permission change, deployment or parent closure.
+[Evidence](../handoffs/phase2-parallel/PRIMARY_PROJECT_VISIBILITY_POSTGRES_2026-10-28.md).
+
+October28 nonempty PostgreSQL collection checkpoint: all six project collections
+now pass snapshot shape/identity/uniqueness and per-project/empty-scope checks.
+Rollback-only fixtures closed the four earlier nonempty-data gaps; all twelve
+temporary rows were confirmed absent through ten cleanup queries. No permanent
+seed, V1 change or parent closure. Authenticated endpoints, mutation receipts and
+desktop reconnect remain separate acceptance gates.
+[Evidence](../handoffs/phase2-parallel/PRIMARY_PROJECT_COLLECTION_SERVER_SHAPE_2026-10-28.md).
+
+October28 live collection checkpoint supersedes Docker-blocked status below:
+actual development PostgreSQL query-shape/empty-scope checks PASS for six
+collections; nonempty checks cover 3 blocks and 18 requirements. Four empty
+collections still need nonempty fixtures. Native task nested experiment links
+now derive from canonical links; all 16 project tests pass. Existing development
+DB was temporarily started then restored to stopped; V1 unchanged. Full desktop
+acceptance remains open. [Evidence](../handoffs/phase2-parallel/PRIMARY_PROJECT_COLLECTION_SERVER_SHAPE_2026-10-28.md).
+
+October28 server collection-shape follow-up: source inspection confirms native
+project-item composite identity matches API projection. Read-only PostgreSQL
+shape/identity probe prepared for six collections. Live execution is blocked by
+the unavailable Docker Linux engine; no real-database PASS claimed.
+[Evidence](../handoffs/phase2-parallel/PRIMARY_PROJECT_COLLECTION_SERVER_SHAPE_2026-10-28.md).
+
+October28 project collection matrix: BOM, canvas blocks/connectors, requirements
+and composite project-item links now have production-pull regression coverage for
+pending create/edit/delete, authoritative absence, repeated pull, disk reopen and
+test-only acknowledgment convergence. All 15 native project tests pass; 26 pending
+fixture events survive reopen before simulated ACKs. Real server receipts and
+desktop acceptance remain open. No new production change or parent closure.
+[Evidence](../handoffs/phase2-parallel/PRIMARY_PROJECT_COLLECTION_MATRIX_2026-10-28.md).
+
+October28 experiment child reconciliation: measurements/observation records now
+merge independently after pending parent fields, retaining pending child values
+and removals while refreshing confirmed rows. All 15 native project tests pass,
+including repeated production pulls/reopen with eleven pending events preserved.
+Desktop/outage/reconnect acceptance remains open; no deployment or parent closure.
+[Evidence](../handoffs/phase2-parallel/PRIMARY_EXPERIMENT_CHILD_PULL_2026-10-28.md).
+
+October28 pending child deletion guard: shared project pull retention now respects
+local absence while a child event is pending. Task/experiment deletion regression
+passes through repeated production pulls and disk reopen; seven pending events
+remain intact. All 15 native project tests pass. Other child collections and
+desktop/API convergence remain acceptance gates, not parent closure.
+[Evidence](../handoffs/phase2-parallel/PRIMARY_PROJECT_PENDING_DELETIONS_2026-10-28.md).
+
+October28 task–experiment link convergence: fixed loss of pending links when the
+server returns the same identity before acknowledgment. Shared relation merge
+preserves local pending rows/removals and honors link tombstones. All 15 native
+project tests pass, including actual repeated pulls and disk reopen with five
+pending events preserved. Desktop/reconnect acceptance remains open; no parent
+closure or deployment. [Evidence](../handoffs/phase2-parallel/PRIMARY_TASK_EXPERIMENT_PULL_2026-10-28.md).
+
+October28 attachment pull convergence: server nested attachments now populate the
+canonical local collection; pending additions/removals survive pulls and nested
+views derive from the same collection. All 15 native project tests pass, including
+production pull/reopen coverage; desktop acceptance remains open. No parent closure or
+deployment. [Evidence](../handoffs/phase2-parallel/PRIMARY_ATTACHMENT_PULL_CONVERGENCE_2026-10-28.md).
+
+October28 history acceptance refinement: disk regression now runs the actual
+project-pull implementation twice, checks foreign-account rejection, preserved
+pending fields/event and restart persistence. All 14 native project tests pass.
+The Tauri wrapper delegates to the same tested body; no protocol change. Running
+desktop UI/IPC/outage/reconnect remains unverified, no parent closure.
+[Evidence](../handoffs/phase2-parallel/PRIMARY_EXPERIMENT_HISTORY_PERSISTENCE_2026-10-28.md).
+
+October28 experiment-history native follow-up: matching pending experiment rows
+retain authored fields while refreshing the confirmed history array. Fourteen
+native project tests passed, including production save/load through a temporary
+on-disk SQLite database, close/reopen and immutable pending-outbox assertions.
+No personal database touched. Full native pull/desktop reconnect and coordinated
+deployment remain open. [Evidence](../handoffs/phase2-parallel/PRIMARY_EXPERIMENT_HISTORY_PERSISTENCE_2026-10-28.md).
+
+October28 experiment history database checkpoint: actual development PostgreSQL
+probe PASS for two project scopes, history/endpoint parity, ordering and filtering.
+Six rollback-only audit fixtures were verified absent afterward. No V1 changes.
+Authenticated route, native persistence and desktop outage/reconnect acceptance
+remain open; no parent promoted. [Evidence](../handoffs/phase2-parallel/PRIMARY_EXPERIMENT_AUDIT_HISTORY_2026-10-28.md).
+
+October28 A3/B3/B4 experiment audit-history source integration: authorized project
+pull now carries a separate history collection; desktop reads it locally and shows
+downloaded audit events separately from saved revisions. Missing legacy history
+is unavailable, not empty. 38 adapter + 3 query-contract + 13 editor/refresh checks
+passed. Actual PostgreSQL, persistence, desktop outage/reconnect and deployment
+remain pending; no parent promotion. [Evidence](../handoffs/phase2-parallel/PRIMARY_EXPERIMENT_AUDIT_HISTORY_2026-10-28.md).
+
+October28 A1/B3 native attachment validation: shared write path now validates
+one task/experiment target in the project and canonical resource UUID/current
+local presence with resources.view permission. Existing links are preserved.
+Source implementation only; native-command/integrated acceptance pending.
+Separate experiment audit-history offline support remains open (not equivalent
+to saved revisions). [Evidence](../handoffs/phase2-parallel/PRIMARY_ATTACHMENT_WRITE_VALIDATION_2026-10-28.md).
+
+October28 A3/B3/B5 project finance: unknown local inventory/workspace/cost data no
+longer becomes zero valuation. Known ledger totals remain available; unknown
+valuation is explicit in rows and combined total. Composite reads are session
+guarded. 34 focused adapter checks passed; source only, desktop acceptance and
+durable completeness still pending. [Evidence](../handoffs/phase2-parallel/PRIMARY_PROJECT_FINANCE_AVAILABILITY_2026-10-28.md).
+
+October27 A1/B3 shared project-adapter boundary: require an active captured account
+before native IPC and suppress results from a changed account/session. Reject
+missing non-delete results without HTTP fallback; persisted work is not discarded.
+44 focused frontend checks passed; real desktop account-switch acceptance remains.
+Source only, no parent promotion. [Primary evidence](../handoffs/phase2-parallel/PRIMARY_PROJECT_ADAPTER_SESSION_2026-10-27.md).
+
+October27 B3/B4 attachment follow-up: native nested attachment reads now join
+current resource labels with a resources.view gate and work-item validation.
+Unlink/detach/measurement-delete/observation-delete failures now show explicit
+feedback. Source implemented; desktop acceptance pending, no parent promoted.
+See [primary evidence](../handoffs/phase2-parallel/PRIMARY_PROJECT_ATTACHMENT_FEEDBACK_2026-10-27.md).
+
+October27 B3/B4 nested-project checkpoint: local task/experiment relationships now
+join current labels; nested mutation callbacks refresh connected project views.
+Task and experiment editors await successful persistence and retain failed drafts.
+Three native projection tests and eight frontend handler/refresh checks passed.
+Source implemented, not deployed or accepted in the desktop. No parent status or
+implementation-ready count is promoted by these bounded fixes. Evidence and open
+checks: [primary report](../handoffs/phase2-parallel/PRIMARY_PROJECT_NESTED_EDITING_2026-10-27.md).
+
 ## Current execution — October 26: return from personal V1 packaging
 
 The owner requested return to this original A1–C6 checklist. Personal V1 packaging
@@ -35,6 +159,14 @@ gates: `docs/handoffs/phase2-parallel/PRIMARY_REVIEW_NESTED_WORK_2026-10-26.md`.
 Deferred Phase3 packaging polish: owner reports generic/missing V1 shortcut icon;
 explicitly leave it unchanged for now. This is not a sync or database defect.
 
+October27 owner-approved Phase3 navigation consolidation: use one right-dock
+Tools & settings entry that opens in the main workspace, not a narrow dock panel.
+Workspace tabs: Media, Daily use, System. Retain search shortcuts, existing
+permissions and device/account/lab setting boundaries. Downloads remains a separate
+page. Advanced settings may use centered modals; the assistant can remain open.
+Inspect and reuse existing controls; this decision does not authorize a backend
+rewrite. Missing underlying functionality/offline behavior remains Phase2 work.
+
 ## Historical October 24 approved V1 pilot priority
 
 Owner approved a controlled own-lab pilot targeting October 25, rather than full
@@ -49,6 +181,30 @@ a fourth phase, erase evidence, authorize data loss, or move functionality into
 Phase 3. Detailed requirements remain in the linked source plans below.
 
 ## Baseline and rules
+
+October27 A3/B3/B4 local context: desktop project context now composes existing
+authorized local readers with section availability and account lifetime guards,
+without HTTP fallback; reservation/review/checkout saves refresh connected views.
+35 focused regressions passed. Source only, integrated desktop acceptance pending,
+V1 unchanged. Report: `docs/handoffs/phase2-parallel/PRIMARY_LOCAL_PROJECT_CONTEXT_2026-10-27.md`.
+
+October27 B3/B4 plan-view consistency: shared post-save query refresh for BOM,
+workspace child and canvas mutations; corrected BOM form rejection of two absent
+optional inventory choices. Three focused tests pass; interactive acceptance
+pending, V1 untouched. Report: `docs/handoffs/phase2-parallel/PRIMARY_PROJECT_PLAN_REFRESH_2026-10-27.md`.
+
+October27 A3/B3/B4 project activity: connected the existing authorized local audit
+snapshot to the desktop workspace, filtering before the 100-row display limit.
+Explicit missing/restricted/unavailable/freshness states replace false empty
+history. Three native tests passed; integrated desktop acceptance pending; V1
+unchanged. Evidence: `docs/handoffs/phase2-parallel/PRIMARY_PROJECT_ACTIVITY_2026-10-27.md`.
+
+October27 B3/B4 Knowledge integration: replaced desktop resource and note empty
+placeholders with permission-checked account-local reads, corrected attachment
+labels/native link arguments and refreshed affected query families. Source only;
+no V1 update. Desktop acceptance remains open. Reports:
+`docs/handoffs/phase2-parallel/PRIMARY_RESOURCE_ATTACHMENT_DISPLAY_2026-10-27.md`
+and `docs/handoffs/phase2-parallel/PRIMARY_PROJECT_KNOWLEDGE_2026-10-27.md`.
 
 October27 permission HTTP follow-up: eight real authenticated loopback HTTP scenario
 groups passed against rollback-only development PostgreSQL fixtures, including

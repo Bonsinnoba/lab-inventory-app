@@ -5,6 +5,7 @@ import { captureAccountSession,isAccountSessionCurrent,getCurrentPermissions } f
 import { getAssigneeDirectory } from '../api/items';
 import { ProjectReservation } from '../api/projects';
 import { issueReservedStock } from '../api/reservation-checkout';
+import { refreshProjectPlan } from '../api/project-plan-refresh';
 
 export default function ReservationCheckoutModal({reservation,onClose}:{reservation:ProjectReservation;onClose:()=>void}) {
   const [session]=useState(captureAccountSession);
@@ -24,6 +25,7 @@ export default function ReservationCheckoutModal({reservation,onClose}:{reservat
     try {
       await issueReservedStock({projectId:reservation.project_id,reservationId:reservation.id,recipientId:recipient,quantity:Number(quantity),serialNumber:serial,reason});
       setSaved(true);
+      void refreshProjectPlan(qc,reservation.project_id);
       for(const queryKey of [['project-reservations',reservation.project_id],['items'],['item',reservation.item_id],['item-custody',reservation.item_id],['item-movements',reservation.item_id],['projects'],['project',reservation.project_id]])
         void qc.invalidateQueries({queryKey});
     } catch(e) {setError(e instanceof Error?e.message:'Unable to record checkout');}

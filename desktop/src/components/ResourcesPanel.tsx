@@ -1,4 +1,5 @@
 import { isLocalResourceRuntime } from '../api/resources';
+import { invalidateResourceAttachments } from '../api/resource-attachment-presentation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getResources, uploadFile, createLink, deleteResource, Resource } from '../api/resources';
 import { useState, useRef } from 'react';
@@ -32,7 +33,7 @@ export default function ResourcesPanel({ parent }: ResourcesPanelProps) {
   const uploadMutation = useMutation({
     mutationFn: (file: File) => uploadFile(file, parent, undefined, setUploadProgress),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['resources', parent] });
+      void invalidateResourceAttachments(queryClient);
       setUploadProgress(null);
       showToast(isLocalResourceRuntime()?'Saved on this PC — pending sync':'File uploaded');
     },
@@ -45,7 +46,7 @@ export default function ResourcesPanel({ parent }: ResourcesPanelProps) {
   const linkMutation = useMutation({
     mutationFn: () => createLink(linkUrl, parent, linkName || undefined),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['resources', parent] });
+      void invalidateResourceAttachments(queryClient);
       setShowLinkModal(false);
       queryClient.invalidateQueries({ queryKey: ['media-downloads'] });
       setLinkUrl('');
@@ -58,7 +59,7 @@ export default function ResourcesPanel({ parent }: ResourcesPanelProps) {
   const deleteMutation = useMutation({
     mutationFn: deleteResource,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['resources', parent] });
+      void invalidateResourceAttachments(queryClient);
       showToast('Resource deleted');
     },
     onError: (err: any) => showToast(err?.message || 'Failed to delete resource', 'error'),

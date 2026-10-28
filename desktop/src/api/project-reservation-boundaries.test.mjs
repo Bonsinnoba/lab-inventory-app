@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {webcrypto} from 'node:crypto';
 
-function load(invoke,{desktop=true,signedIn=true,itemApi={},http}={}) {
+function load(invoke,{desktop=true,signedIn=true,itemApi={},transactionApi={},http}={}) {
   let generation=0,requests=0;const exports={};
   const source=ts.transpileModule(readFileSync(new URL('./projects.ts',import.meta.url),'utf8'),{
     compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}
@@ -18,11 +18,87 @@ function load(invoke,{desktop=true,signedIn=true,itemApi={},http}={}) {
     };
     if(name==='./http')return{apiFetch:async(...args)=>{requests++;return http?http(...args):{ok:true,json:async()=>[{id:'server'}]}}};
     if(name==='./items')return itemApi;
-    if(name==='./transactions')return{};
+    if(name==='./transactions')return transactionApi;
     throw Error(name);
   }});
   return{api:exports,requests:()=>requests,switchAccount:()=>generation++};
 }
+
+const projectOperations=[
+ ['project read',api=>api.getProject('p')],
+ ['workspace read',api=>api.getProjectWorkspace('p')],
+ ['task create',api=>api.createProjectTask('p',{title:'Draft'})],
+ ['task update',api=>api.updateProjectTask('p','t',{title:'Saved'})],
+ ['experiment repeat',api=>api.repeatProjectExperiment('p','e')],
+ ['attachment create',api=>api.attachTaskResource('p','t','r')],
+ ['attachment read',api=>api.getExperimentAttachments('p','e')],
+ ['task delete',api=>api.deleteProjectTask('p','t')],
+];
+test('local project finance preserves known ledger totals when valuation is unavailable',async()=>{
+ for(const mode of ['workspace-error','missing-items','missing-cost','missing-item','inventory-error']){
+  const c=load(async(command)=>{
+   if(command==='list_local_projects')return[{id:'p',name:'Project',budget:100}];
+   if(mode==='workspace-error')throw Error('Unavailable');
+   return mode==='missing-items'?{}:{items:[{item_id:'i',allocated_quantity:2}]};
+  },{transactionApi:{getTransactions:async()=>[{project_id:'p',direction:'expense',amount:20},{project_id:'p',direction:'income',amount:5}]},
+   itemApi:{getItems:async()=>{if(mode==='inventory-error')throw Error('Unavailable');return mode==='missing-item'?[]:[{id:'i',unit_cost:mode==='missing-cost'?null:3}]}}});
+  const [row]=await c.api.getProjectFinancialSummary();
+  assert.equal(row.actual_expense,20,mode);assert.equal(row.net_spend,15,mode);assert.equal(row.budget_remaining,85,mode);
+  assert.equal(row.allocated_inventory_value,null,mode);assert.equal(c.requests(),0);
+ }
+});
+test('local valuation distinguishes confirmed empty, known zero and known cost',async()=>{
+ for(const [items,cost,expected] of [[[],null,0],[[{item_id:'i',allocated_quantity:2}],0,0],[[{item_id:'i',allocated_quantity:'2'}],'3',6]]){
+  const c=load(async command=>command==='list_local_projects'?[{id:'p',budget:null}]:{items},
+   {transactionApi:{getTransactions:async()=>[]},itemApi:{getItems:async()=>[{id:'i',unit_cost:cost}]}});
+  const [row]=await c.api.getProjectFinancialSummary();assert.equal(row.allocated_inventory_value,expected);
+  assert.equal(row.budget_used_percent,null);assert.equal(c.requests(),0);
+ }
+});
+test('project finance rejects malformed ledger values and account changes',async()=>{
+ const create=(getTransactions)=>load(async command=>command==='list_local_projects'?[{id:'p'}]:{items:[]},
+  {transactionApi:{getTransactions},itemApi:{getItems:async()=>[]}});
+ for(const amount of [null,'',NaN,Infinity,'bad']){
+  const c=create(async()=>[{project_id:'p',direction:'expense',amount}]);
+  await assert.rejects(c.api.getProjectFinancialSummary(),/invalid financial/);assert.equal(c.requests(),0);
+ }
+ let c;c=create(async()=>{c.switchAccount();return[]});
+ await assert.rejects(c.api.getProjectFinancialSummary(),/Account changed/);assert.equal(c.requests(),0);
+});
+test('shared native project operations reject absent sessions before IPC',async()=>{
+ for(const [name,operation] of projectOperations){
+  let calls=0;const c=load(async()=>{calls++;return{id:'p'}},{signedIn:false});
+  await assert.rejects(operation(c.api),/Sign in/,name);
+  assert.equal(calls,0,name);assert.equal(c.requests(),0,name);
+ }
+});
+test('shared native project operations suppress old-account results without HTTP retry',async()=>{
+ for(const [name,operation] of projectOperations){
+  let calls=0;let c;c=load(async()=>{calls++;c.switchAccount();return null});
+  await assert.rejects(operation(c.api),/Account changed/,name);
+  assert.equal(calls,1,name);assert.equal(c.requests(),0,name);
+ }
+});
+test('nullish non-delete results reject while completed native deletes stay local',async()=>{
+ for(const result of [null,undefined]){
+  const c=load(async()=>result);
+  await assert.rejects(c.api.createProjectTask('p',{title:'Draft'}),/returned no result/);
+  await c.api.deleteProjectTask('p','t');
+  assert.equal(c.requests(),0);
+ }
+});
+test('failed native project writes never turn into HTTP writes',async()=>{
+ const c=load(async()=>{throw Error('SQLite write failed')});
+ for(const [,operation] of projectOperations)await assert.rejects(operation(c.api),/SQLite write failed/);
+ assert.equal(c.requests(),0);
+});
+test('browser project writes keep the existing HTTP route',async()=>{
+ let calls=0;const c=load(async()=>{throw Error('Unexpected IPC')},{desktop:false,signedIn:false,http:async(url,options)=>{
+  calls++;assert.equal(url,'/projects/p/tasks');assert.equal(options.method,'POST');
+  assert.equal(JSON.parse(options.body).title,'Draft');return{ok:true,json:async()=>({id:'t'})};
+ }});
+ assert.equal((await c.api.createProjectTask('p',{title:'Draft'})).id,'t');assert.equal(calls,1);
+});
 
 test('browser review requires the displayed token and sends it unchanged',async()=>{
   let body;
@@ -57,7 +133,7 @@ test('web reservations retain their existing HTTP read path',async()=>{
   assert.equal((await c.api.getProjectReservations('p'))[0].id,'server');assert.equal(c.requests(),1);
 });
 
-for(const [name,field] of [['getExperimentMeasurements','measurements'],['getExperimentObservations','observations'],['getExperimentRevisions','revisions']]){
+for(const [name,field] of [['getExperimentMeasurements','measurements'],['getExperimentObservations','observations'],['getExperimentRevisions','revisions'],['getProjectExperimentHistory','history']]){
   test(`${name}: desktop records and confirmed empty collections stay local`,async()=>{
     for(const rows of [[],[{id:'record'}]]){
       const c=load(async(command,args)=>{assert.equal(command,'get_local_project_experiments');assert.equal(args.projectId,'p');return[{id:'e',[field]:rows}]});

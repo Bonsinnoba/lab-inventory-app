@@ -5,6 +5,7 @@ import { getItems, Item } from '../api/items';
 import { createProjectBomItem, deleteProjectBomItem, getProjectBom, updateProjectBomItem, type ProjectBomItem } from '../api/projects';
 import { useToast } from '../contexts/ToastContext';
 import { normalizeClientError } from '../api/http';
+import { refreshProjectPlan, validBomForm } from '../api/project-plan-refresh';
 
 const input = 'w-full px-3 py-2 bg-bg border border-border rounded-sm text-sm text-text-primary focus:outline-none focus:border-accent';
 const emptyForm = { name: '', part_number: '', required_quantity: '1', unit: '', preferred_item_id: '', alternative_item_id: '', notes: '' };
@@ -28,21 +29,21 @@ export default function ProjectBomPanel({ projectId, canEdit }: { projectId: str
 
   const create = useMutation({
     mutationFn: () => createProjectBomItem(projectId, { ...form, name: form.name.trim(), required_quantity: Number(form.required_quantity), preferred_item_id: form.preferred_item_id || null, alternative_item_id: form.alternative_item_id || null }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['project-bom', projectId] }); setForm({ ...emptyForm }); showToast('BOM line added'); },
+    onSuccess: () => { void refreshProjectPlan(qc, projectId); setForm({ ...emptyForm }); showToast('BOM line added'); },
     onError: (error) => showToast(normalizeClientError(error, 'Failed to add BOM line').message, 'error'),
   });
   const update = useMutation({
     mutationFn: () => updateProjectBomItem(projectId, editingId!, { ...editForm, name: editForm.name.trim(), required_quantity: Number(editForm.required_quantity), preferred_item_id: editForm.preferred_item_id || null, alternative_item_id: editForm.alternative_item_id || null }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['project-bom', projectId] }); setEditingId(null); showToast('BOM line updated'); },
+    onSuccess: () => { void refreshProjectPlan(qc, projectId); setEditingId(null); showToast('BOM line updated'); },
     onError: (error) => showToast(normalizeClientError(error, 'Failed to update BOM line').message, 'error'),
   });
   const remove = useMutation({
     mutationFn: (id: string) => deleteProjectBomItem(projectId, id),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['project-bom', projectId] }); showToast('BOM line removed'); },
+    onSuccess: () => { void refreshProjectPlan(qc, projectId); showToast('BOM line removed'); },
     onError: (error) => showToast(normalizeClientError(error, 'Failed to remove BOM line').message, 'error'),
   });
 
-  const validForm = (value: BomForm) => value.name.trim().length > 0 && Number.isFinite(Number(value.required_quantity)) && Number(value.required_quantity) > 0 && value.preferred_item_id !== value.alternative_item_id;
+  const validForm = validBomForm;
   const getSortedItems = (componentName: string, partNumber?: string) => {
     const qName = componentName.trim().toLowerCase();
     const qPart = (partNumber || '').trim().toLowerCase();

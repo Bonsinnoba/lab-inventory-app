@@ -55,6 +55,7 @@ export default function NotebookPage() {
   const createMutation = useMutation({
     mutationFn: (note: Omit<Note, 'id' | 'created_at' | 'updated_at'>) => createNote(note),
     onSuccess: (created) => {
+      queryClient.invalidateQueries({ queryKey: ['project-workspace'] });
       queryClient.invalidateQueries({ queryKey: ['notes'] });
       queryClient.invalidateQueries({ queryKey: ['tags'] });
       queryClient.invalidateQueries({ queryKey: ['experience', 'dashboard'] });
@@ -67,6 +68,7 @@ export default function NotebookPage() {
   const updateMutation = useMutation({
     mutationFn: ({ id, note }: { id: string; note: Partial<Note> }) => updateNote(id, note),
     onSuccess: (updated) => {
+      queryClient.invalidateQueries({ queryKey: ['project-workspace'] });
       queryClient.invalidateQueries({ queryKey: ['notes'] });
       queryClient.invalidateQueries({ queryKey: ['tags'] });
       queryClient.invalidateQueries({ queryKey: ['experience', 'dashboard'] });
@@ -79,6 +81,7 @@ export default function NotebookPage() {
   const deleteMutation = useMutation({
     mutationFn: deleteNote,
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['project-workspace'] });
       queryClient.invalidateQueries({ queryKey: ['notes'] });
       queryClient.invalidateQueries({ queryKey: ['tags'] });
       queryClient.invalidateQueries({ queryKey: ['experience', 'dashboard'] });

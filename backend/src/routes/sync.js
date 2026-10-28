@@ -2,6 +2,7 @@ import { syncResponseProjection } from '../sync-receipts.js';
 import { projectDateValue } from '../project-date-value.js';
 import { experimentObservationProjection, assertExperimentObservationText } from '../project-experiment-observations.js';
 import { readExperimentRevisionSnapshot } from '../project-experiment-revisions.js';
+import { readExperimentHistorySnapshot } from '../project-experiment-history.js';
 import { readProjectReviewSnapshots } from '../project-review-snapshot.js';
 import { applyProjectReviewIntent } from '../project-review-sync.js';
 import { moveResourceAttachment, attachmentExpectedRevision } from '../resource-attachment.js';
@@ -717,7 +718,7 @@ router.get('/projects/pull',async(req,res,next)=>{
     for(const project of projects.rows){if(permissions.has('inventory.view'))project.inventory_settlement=await projectInventorySettlement(pool,project.id);}
     const ids=projects.rows.map(p=>p.id);
     const deletedRows=await pool.query("SELECT entity_type,entity_id FROM sync_tombstones WHERE entity_type IN ('project','project_task','project_experiment','project_bom','project_block','project_connector','project_experiment_measurement','project_experiment_observation','project_task_experiment','project_work_attachment','project_resource_requirement') AND (project_id=ANY($1::uuid[]) OR (project_id IS NULL AND entity_type='project')) ORDER BY deleted_at DESC LIMIT 2500",[ids]); const deletedByType={project:[],project_task:[],project_experiment:[],project_bom:[],project_block:[],project_connector:[],project_experiment_measurement:[],project_experiment_observation:[],project_task_experiment:[],project_work_attachment:[],project_resource_requirement:[]}; for(const row of deletedRows.rows)if(deletedByType[row.entity_type])deletedByType[row.entity_type].push(row.entity_id); if(!ids.length)return res.json({projects:[],visible_project_ids:[],deleted_project_ids:deletedByType.project,deleted_project_entities:deletedByType});
-    const [tasks,experiments,bom,items,blocks,connectors,measurements,observations,taskExperiments,attachments,requirements,members,grants,reservations,revisions,reviews]=await Promise.all([
+    const [tasks,experiments,bom,items,blocks,connectors,measurements,observations,taskExperiments,attachments,requirements,members,grants,reservations,revisions,reviews,history]=await Promise.all([
       pool.query('SELECT * FROM project_tasks WHERE project_id=ANY($1::uuid[]) ORDER BY created_at',[ids]),
       pool.query('SELECT * FROM project_experiments WHERE project_id=ANY($1::uuid[]) ORDER BY updated_at DESC',[ids]),
       pool.query('SELECT * FROM project_bom_items WHERE project_id=ANY($1::uuid[]) ORDER BY created_at',[ids]),
@@ -742,7 +743,8 @@ router.get('/projects/pull',async(req,res,next)=>{
         FROM project_reservations r JOIN items i ON i.id=r.item_id JOIN projects p ON p.id=r.project_id
         WHERE r.project_id=ANY($1::uuid[]) ORDER BY r.created_at`,[ids,req.user.userId]),
       readExperimentRevisionSnapshot(pool,ids),
-      readProjectReviewSnapshots(pool,ids)
+      readProjectReviewSnapshots(pool,ids),
+      readExperimentHistorySnapshot(pool,ids)
     ]);
     const resourceAccess=new Map();
     for(const resourceId of new Set([...blocks.rows,...attachments.rows].map(row=>row.resource_id).filter(Boolean))){resourceAccess.set(resourceId,(await getResourceAccess(resourceId,req.user)).access!=='none');}
@@ -755,8 +757,9 @@ router.get('/projects/pull',async(req,res,next)=>{
     const grantMap=new Map(grants.rows.map(row=>[row.entity_id,row.access_level]));
     const reservationMap=by(reservations.rows,'project_id');
     const revisionMap=by(revisions,'experiment_id');
+    const historyMap=by(history,'experiment_id');
     const reviewMap=new Map(reviews.map(row=>[row.id,{project:row.project,events:row.events,token:row.token}]));
-    for(const e of experiments.rows){Object.assign(e,experimentObservationProjection(e,observationMap.get(e.id)||[]));e.measurements=measurementMap.get(e.id)||[];e.attachments=attachmentExperimentMap.get(e.id)||[];e.revisions=revisionMap.get(e.id)||[];}
+    for(const e of experiments.rows){Object.assign(e,experimentObservationProjection(e,observationMap.get(e.id)||[]));e.measurements=measurementMap.get(e.id)||[];e.attachments=attachmentExperimentMap.get(e.id)||[];e.revisions=revisionMap.get(e.id)||[];e.history=historyMap.get(e.id)||[];}
     for(const t of tasks.rows){t.attachments=attachmentTaskMap.get(t.id)||[];t.experiments=taskExperimentMap.get(t.id)||[];}
     res.setHeader('Cache-Control','no-store');
     res.json({projects:projects.rows.map(p=>{const members=memberMap.get(p.id)||[];const memberRole=members.find(member=>member.user_id===req.user.userId)?.member_role||null;const access=effectiveProjectAccess({ownerId:p.owner_id,memberRole,visibility:p.visibility,grantLevel:grantMap.get(p.id)||null,userId:req.user.userId,role:req.user.role,canEdit:permissions.has('projects.edit')});return {...projectFinancialProjection(p,permissions),review_snapshot:reviewMap.get(p.id),members,permissions:{access:access.access,member_role:access.memberRole,can_edit:access.access==='edit'||access.access==='admin',user_id:req.user.userId},tasks:taskMap.get(p.id)||[],experiments:experimentMap.get(p.id)||[],bom:bomMap.get(p.id)||[],items:itemMap.get(p.id)||[],blocks:blockMap.get(p.id)||[],connectors:connectorMap.get(p.id)||[],reservations:reservationMap.get(p.id)||[],requirements:requirementMap.get(p.id)||[],task_experiments:taskExperimentProjectMap.get(p.id)||[]};}),visible_project_ids:ids,deleted_project_ids:deletedByType.project,deleted_project_entities:deletedByType});

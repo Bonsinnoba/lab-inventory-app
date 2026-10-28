@@ -7,8 +7,13 @@ import { captureAccountSession, isAccountSessionCurrent } from './auth';
 function isTauriRuntime(): boolean { return typeof window !== 'undefined' && !!(window as any).__TAURI_IPC__; }
 async function localInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T | null> {
   if (!isTauriRuntime()) return null;
+  const session=captureAccountSession();
+  if(!session)throw new Error('Sign in to access local projects.');
   const result=await invoke<T>(command,args);
-  if(result===null){
+  // Native commands enforce authority at persistence. This guard also prevents a
+  // completed old-account read/write from updating the next account's UI.
+  if(!isAccountSessionCurrent(session))throw new Error('Account changed while accessing local projects. Refresh before continuing.');
+  if(result===null||result===undefined){
     if(command.startsWith('delete_')||command.startsWith('unlink_'))return undefined as T;
     throw new Error(`Local ${command} returned no result; server fallback was not attempted.`);
   }
@@ -16,7 +21,7 @@ async function localInvoke<T>(command: string, args: Record<string, unknown> = {
 }
 
 export interface ProjectFinancialSummary {
-  project_id: string; name: string; budget: number | string | null; actual_expense: number; project_income: number; net_spend: number; allocated_inventory_value: number; budget_remaining: number | null; budget_used_percent: number | null;
+  project_id: string; name: string; budget: number | string | null; actual_expense: number; project_income: number; net_spend: number; allocated_inventory_value: number | null; budget_remaining: number | null; budget_used_percent: number | null;
 }
 
 export interface Project {
@@ -41,24 +46,53 @@ export interface ProjectBomItem { id:string; project_id:string; name:string; par
 
 export async function getProjects(): Promise<Project[]> { const local=await localInvoke<Project[]>('list_local_projects'); if(local!==null)return local; const r=await apiFetch('/projects'); if(!r.ok)throw await apiError(r,'Failed to fetch projects'); return r.json(); }
 export async function getProjectFinancialSummary():Promise<ProjectFinancialSummary[]> {
+  const session=isTauriRuntime()?captureAccountSession():null;
   const local=await localInvoke<Project[]>('list_local_projects');
   if(local!==null){
-    const [transactions, inventory] = await Promise.all([getTransactions(), getItems()]);
-    return Promise.all(local.map(async (p) => {
+    const assertSession=()=>{if(!session||!isAccountSessionCurrent(session))throw new Error('Account changed while loading project finances.');};
+    assertSession();
+    const [transactions, inventory] = await Promise.all([getTransactions(), getItems().catch(()=>null)]);
+    assertSession();
+    if(!Array.isArray(local)||!Array.isArray(transactions))throw new Error('Local project financial data is unavailable.');
+    const amount=(value:unknown):number|null=>{
+      if(value==null||typeof value==='boolean'||(typeof value==='string'&&!value.trim()))return null;
+      if(typeof value!=='number'&&typeof value!=='string')return null;
+      const result=Number(value);return Number.isFinite(result)?result:null;
+    };
+    const rows=await Promise.all(local.map(async (p) => {
       const projectTransactions = transactions.filter((t:any) => t.project_id === p.id);
-      const actual_expense = projectTransactions.filter((t:any) => t.direction === 'expense').reduce((sum:number,t:any)=>sum+Number(t.amount||0),0);
-      const project_income = projectTransactions.filter((t:any) => t.direction === 'income').reduce((sum:number,t:any)=>sum+Number(t.amount||0),0);
-      const workspace = await getProjectWorkspace(p.id).catch(() => ({items:[]} as any));
-      const costByItem = new Map((inventory||[]).map((item:any) => [item.id, Number(item.unit_cost||0)]));
-      const allocated_inventory_value = (workspace.items||[]).reduce((sum:number,item:any)=>sum + Number(item.allocated_quantity||0) * (costByItem.get(item.item_id)||0), 0);
-      const budget = p.budget==null ? null : Number(p.budget);
-      const net_spend = actual_expense - project_income;
+      let actual_expense=0,project_income=0;
+      for(const transaction of projectTransactions){
+        const value=amount(transaction.amount);
+        if(value===null||!['expense','income'].includes(transaction.direction))throw new Error('A project transaction has unavailable or invalid financial data.');
+        if(transaction.direction==='expense')actual_expense+=value;else project_income+=value;
+      }
+      const workspace=await getProjectWorkspace(p.id).catch(()=>null);
+      assertSession();
+      let allocated_inventory_value:number|null=null;
+      if(workspace&&Array.isArray(workspace.items)){
+        if(workspace.items.length===0)allocated_inventory_value=0;
+        else if(Array.isArray(inventory)){
+          let total=0,known=true;
+          for(const allocation of workspace.items){
+            const item=inventory.find(item=>item.id===allocation.item_id);
+            const quantity=amount(allocation.allocated_quantity),cost=amount(item?.unit_cost);
+            if(quantity===null||quantity<0||cost===null||cost<0){known=false;break;}
+            total+=quantity*cost;
+          }
+          if(known&&Number.isFinite(total))allocated_inventory_value=total;
+        }
+      }
+      const budget=amount(p.budget),net_spend=actual_expense-project_income;
+      if(![actual_expense,project_income,net_spend].every(Number.isFinite))throw new Error('Project financial totals exceed supported values.');
       return {
-        project_id:p.id, name:p.name, budget:p.budget??null, actual_expense, project_income, net_spend,
-        allocated_inventory_value, budget_remaining:budget==null?null:budget-net_spend,
-        budget_used_percent:budget&&budget>0?(net_spend/budget)*100:0
+        project_id:p.id,name:p.name,budget,actual_expense,project_income,net_spend,
+        allocated_inventory_value,budget_remaining:budget==null?null:budget-net_spend,
+        budget_used_percent:budget!=null&&budget>0?(net_spend/budget)*100:null
       };
     }));
+    assertSession();
+    return rows;
   }
   const r=await apiFetch('/projects/financial-summary'); if(!r.ok)throw await apiError(r,'Failed to fetch project financial summary'); return r.json();
 }
@@ -82,7 +116,7 @@ export async function createProjectExperiment(id:string,data:Partial<ProjectExpe
 export async function updateProjectExperiment(id:string,experimentId:string,data:Partial<ProjectExperiment>):Promise<ProjectExperiment>{const local=await localInvoke<ProjectExperiment>('update_local_project_experiment',{projectId:id,recordId:experimentId,patch:data});if(local!==null)return local;const r=await apiFetch(`/projects/${id}/experiments/${experimentId}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});if(!r.ok)throw await apiError(r,'Failed to update experiment');return r.json();}
 export async function deleteProjectExperiment(id:string,experimentId:string):Promise<void>{const local=await localInvoke<void>('delete_local_project_experiment',{projectId:id,recordId:experimentId});if(local!==null)return;const r=await apiFetch(`/projects/${id}/experiments/${experimentId}`,{method:'DELETE'});if(!r.ok)throw await apiError(r,'Failed to delete experiment');}
 export async function repeatProjectExperiment(id:string,experimentId:string):Promise<ProjectExperiment>{const local=await localInvoke<ProjectExperiment>('repeat_local_project_experiment',{projectId:id,experimentId});if(local!==null)return local;if(isTauriRuntime())throw new Error('Local project experiments are unavailable. Refresh the project before making changes.');const r=await apiFetch(`/projects/${id}/experiments/${experimentId}/repeat`,{method:'POST'});if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to repeat experiment'));return r.json();}
-export async function getProjectExperimentHistory(id:string,experimentId:string):Promise<any[]>{const r=await apiFetch(`/projects/${id}/experiments/${experimentId}/history`);if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to fetch experiment history'));return r.json();}
+export async function getProjectExperimentHistory(id:string,experimentId:string):Promise<any[]>{return readExperimentCollection(id,experimentId,'history');}
 export async function linkProjectItem(id:string,item_id:string,allocated_quantity:number,notes=''):Promise<ProjectItem>{const local=await localInvoke<ProjectItem>('link_local_project_item',{projectId:id,itemId:item_id,allocatedQuantity:allocated_quantity,notes});if(local!==null)return local;const r=await apiFetch(`/projects/${id}/items`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({item_id,allocated_quantity,notes})});if(!r.ok)throw await apiError(r,'Failed to link inventory item');return r.json();}
 export async function unlinkProjectItem(id:string,itemId:string):Promise<void>{const local=await localInvoke<void>('unlink_local_project_item',{projectId:id,itemId});if(local!==null)return;const r=await apiFetch(`/projects/${id}/items/${itemId}`,{method:'DELETE'});if(!r.ok)throw await apiError(r,'Failed to unlink inventory item');}
 export async function getProjectRequirements(id?:string):Promise<ResourceRequirement[]> {
@@ -121,7 +155,7 @@ export async function deleteProjectBomItem(id:string,bomId:string):Promise<void>
 export async function getTaskExperiments(id:string,taskId:string):Promise<any[]>{const local=await localInvoke<any[]>('get_local_project_task_experiments',{projectId:id,taskId});if(local!==null)return local;const r=await apiFetch(`/projects/${id}/tasks/${taskId}/experiments`);if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to fetch task experiments'));return r.json();}
 export async function linkTaskExperiment(id:string,taskId:string,experiment_id:string,relationship='related'):Promise<any>{const local=await localInvoke<any>('create_local_project_task_experiment',{projectId:id,taskId,record:{experiment_id,relationship}});if(local!==null)return local;const r=await apiFetch(`/projects/${id}/tasks/${taskId}/experiments`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({experiment_id,relationship})});if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to link experiment'));return r.json();}
 export async function unlinkTaskExperiment(id:string,taskId:string,experimentId:string):Promise<void>{const local=await localInvoke<any[]>('get_local_project_task_experiments',{projectId:id,taskId});if(local!==null){const link=local.find((x:any)=>x.experiment_id===experimentId);if(!link)throw new Error('Task experiment link not found');await localInvoke<void>('delete_local_project_task_experiment',{projectId:id,linkId:link.id});return;}const r=await apiFetch(`/projects/${id}/tasks/${taskId}/experiments/${experimentId}`,{method:'DELETE'});if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to unlink experiment'));}
-async function readExperimentCollection(projectId:string,experimentId:string,collection:'measurements'|'observations'|'revisions'):Promise<any[]>{
+async function readExperimentCollection(projectId:string,experimentId:string,collection:'measurements'|'observations'|'revisions'|'history'):Promise<any[]>{
   if(isTauriRuntime()){
     const session=captureAccountSession();
     if(!session)throw new Error('Sign in to read experiment records.');

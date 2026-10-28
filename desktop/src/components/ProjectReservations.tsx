@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { refreshProjectPlan } from '../api/project-plan-refresh';
 import { useMutation,useQuery,useQueryClient } from '@tanstack/react-query';
 import { decideProjectReservation,fulfillProjectReservation,getProjectReservations,requestProjectReservation,Project } from '../api/projects';
 import { getItems } from '../api/items';
@@ -16,9 +17,9 @@ export default function ProjectReservations({project,canEdit}:{project:Project;c
  const [itemId,setItemId]=useState(''),[quantity,setQuantity]=useState('1'),[from,setFrom]=useState(''),[until,setUntil]=useState(''),[note,setNote]=useState(''),[error,setError]=useState('');
  const reservations=useQuery({queryKey:['project-reservations',project.id,session?.accountId,session?.generation],queryFn:()=>getProjectReservations(project.id),retry:false});
  const items=useQuery({queryKey:['items'],queryFn:()=>getItems()});
- const request=useMutation({mutationFn:()=>requestProjectReservation(project.id,{item_id:itemId,quantity:Number(quantity),needed_from:new Date(from).toISOString(),needed_until:until?new Date(until).toISOString():undefined,note}),onSuccess:()=>{setError('');setNote('');qc.invalidateQueries({queryKey:['project-reservations',project.id]});},onError:(e:Error)=>setError(e.message)});
- const decide=useMutation({mutationFn:({id,decision}:{id:string;decision:'confirm'|'reject'|'release'})=>decideProjectReservation(project.id,id,decision,note),onSuccess:()=>{setError('');setNote('');qc.invalidateQueries({queryKey:['project-reservations',project.id]});},onError:(e:Error)=>setError(e.message)});
- const fulfill=useMutation({mutationFn:({id,quantity,requestId}:{id:string;quantity:number;requestId:string})=>fulfillProjectReservation(project.id,id,quantity,requestId),onSuccess:()=>{setError('');qc.invalidateQueries({queryKey:['project-reservations',project.id]});qc.invalidateQueries({queryKey:['items']});},onError:(e:Error)=>setError(e.message)});
+ const request=useMutation({mutationFn:()=>requestProjectReservation(project.id,{item_id:itemId,quantity:Number(quantity),needed_from:new Date(from).toISOString(),needed_until:until?new Date(until).toISOString():undefined,note}),onSuccess:()=>{setError('');setNote('');void refreshProjectPlan(qc,project.id);},onError:(e:Error)=>setError(e.message)});
+ const decide=useMutation({mutationFn:({id,decision}:{id:string;decision:'confirm'|'reject'|'release'})=>decideProjectReservation(project.id,id,decision,note),onSuccess:()=>{setError('');setNote('');void refreshProjectPlan(qc,project.id);},onError:(e:Error)=>setError(e.message)});
+ const fulfill=useMutation({mutationFn:({id,quantity,requestId}:{id:string;quantity:number;requestId:string})=>fulfillProjectReservation(project.id,id,quantity,requestId),onSuccess:()=>{setError('');void refreshProjectPlan(qc,project.id);qc.invalidateQueries({queryKey:['items']});},onError:(e:Error)=>setError(e.message)});
  if(!['planning','active'].includes(project.status))return null;
  return <section className="border border-border rounded-md bg-surface p-4 my-4" aria-label="Project reservations">
   <h3 className="font-semibold">Resource reservations</h3>

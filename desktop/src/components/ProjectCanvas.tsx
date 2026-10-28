@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { refreshProjectPlan } from '../api/project-plan-refresh';
 import { getCanvas, createBlock, updateBlock, deleteBlock, createConnector, deleteConnector, CanvasData, CanvasBlock } from '../api/canvas';
 import { getResource, getResourceAccessUrl, Resource } from '../api/resources';
 import { Plus, X, Image as ImageIcon, Video as VideoIcon, FileText, Music, Link as LinkIcon, Cable, ZoomIn, ZoomOut, Maximize2, Grid, Map, MousePointer2, Trash2, RotateCcw, PanelRight, Search, Crosshair, ChevronDown, ChevronUp, GripVertical } from 'lucide-react';
@@ -72,7 +73,7 @@ export default function ProjectCanvas({ projectId }: ProjectCanvasProps) {
   const minimapDragRef = useRef<{ offsetX: number; offsetY: number } | null>(null);
   const [canvasSearch, setCanvasSearch] = useState('');
 
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ['canvas', projectId] });
+  const invalidate = () => Promise.all([queryClient.invalidateQueries({ queryKey: ['canvas', projectId] }), refreshProjectPlan(queryClient, projectId)]);
   const mutationError = (err: any, fallback: string) => setCanvasError(typeof err?.message === 'string' ? err.message : fallback);
   const updateBlockMutation = useMutation({
     mutationFn: ({ id, patch }: { id: string; patch: Parameters<typeof updateBlock>[1] }) => updateBlock(id, patch),

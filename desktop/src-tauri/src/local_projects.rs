@@ -66,7 +66,7 @@ pub(crate) fn load_all(conn: &Connection) -> Result<Vec<Value>, String> {
         "SELECT value FROM sync_state WHERE key=?1", [local_db::scoped_state_key(conn, STATE_KEY)?], |r| r.get(0)
     ).optional().map_err(|e| format!("Unable to read local projects: {e}"))?;
     match raw {
-        Some(v) => {let mut projects:Vec<Value>=serde_json::from_str(&v).map_err(|e| format!("Invalid local projects state: {e}"))?;for project in &mut projects{normalize_experiment_observations(project);}Ok(projects)},
+        Some(v) => {let mut projects:Vec<Value>=serde_json::from_str(&v).map_err(|e| format!("Invalid local projects state: {e}"))?;for project in &mut projects{normalize_experiment_observations(project);normalize_work_attachments(project);project_task_experiment_views(project);}Ok(projects)},
         None => Ok(Vec::new()),
     }
 }
@@ -287,9 +287,13 @@ fn validate_nested_references(project: &Value, key: &str, record: &mut Value) ->
     let refs: &[(&str, &str, bool)] = match key {
         "tasks" | "experiments" | "bom" => &[("requirement_id", "requirements", false)],
         "task_experiments" => &[("task_id", "tasks", true), ("experiment_id", "experiments", true)],
+        "attachments" => &[("task_id", "tasks", false), ("experiment_id", "experiments", false)],
         "connectors" => &[("source_block_id", "blocks", true), ("target_block_id", "blocks", true)],
         _ => &[],
     };
+    if key=="attachments" && (record.get("task_id").is_some_and(|v|!v.is_null())==record.get("experiment_id").is_some_and(|v|!v.is_null())){
+        return Err("Attachment must reference exactly one task or experiment".into());
+    }
     for &(field, collection, required) in refs {
         let value = record.get(field).unwrap_or(&Value::Null);
         if value.is_null() && !required { continue; }
@@ -307,6 +311,79 @@ fn validate_nested_references(project: &Value, key: &str, record: &mut Value) ->
     Ok(())
 }
 
+fn normalize_work_attachments(project:&mut Value){
+    // An existing canonical list is authoritative, including an explicit empty
+    // list after local deletion. Only legacy/server nested-only shapes are lifted.
+    if project.get("attachments").is_some(){project_work_attachment_views(project);return;}
+    let mut rows=Vec::new();let mut seen=HashSet::new();
+    for key in ["tasks","experiments"]{
+        for work in nested_get(project,key){
+            for row in nested_get(&work,"attachments"){
+                if let Some(id)=row["id"].as_str(){if seen.insert(id.to_string()){rows.push(row);}}
+            }
+        }
+    }
+    project["attachments"]=Value::Array(rows);
+    project_work_attachment_views(project);
+}
+
+fn project_work_attachment_views(project:&mut Value){
+    let rows=nested_get(project,"attachments");
+    for (key,reference) in [("tasks","task_id"),("experiments","experiment_id")]{
+        if let Some(work)=project.get_mut(key).and_then(Value::as_array_mut){
+            for record in work{
+                let id=record["id"].as_str();
+                let attachments=rows.iter().filter(|row|id.is_some()&&row[reference].as_str()==id).cloned().collect();
+                record["attachments"]=Value::Array(attachments);
+            }
+        }
+    }
+}
+
+fn project_task_experiment_views(project:&mut Value){
+    // Do not invent completeness for older snapshots without a canonical list.
+    let Some(links)=project.get("task_experiments").and_then(Value::as_array).cloned() else{return;};
+    if let Some(tasks)=project.get_mut("tasks").and_then(Value::as_array_mut){
+        for task in tasks{
+            let id=task["id"].as_str();
+            task["experiments"]=Value::Array(links.iter().filter(|link|id.is_some()&&link["task_id"].as_str()==id).cloned().collect());
+        }
+    }
+}
+
+fn merge_work_attachments(server:&Value,local:&Value,pending:&HashSet<String>,deleted:&[String])->Vec<Value>{
+    merge_pending_relation_rows(server,local,"attachments","project_work_attachment",pending,deleted)
+}
+
+fn merge_pending_relation_rows(server:&Value,local:&Value,key:&str,entity_type:&str,pending:&HashSet<String>,deleted:&[String])->Vec<Value>{
+    let local_rows=nested_get(local,key);let mut seen=HashSet::new();let mut rows=Vec::new();
+    for row in nested_get(server,key){
+        let Some(id)=row["id"].as_str() else{continue;};
+        if !seen.insert(id.to_string()){continue;}
+        if pending.contains(&format!("{entity_type}:{id}")){
+            // Absence locally plus a pending event is a pending removal.
+            if let Some(saved)=local_rows.iter().find(|r|r["id"]==row["id"]){rows.push(saved.clone());}
+        }else if !deleted.iter().any(|removed|removed==id){rows.push(row);}
+    }
+    for row in local_rows{
+        if let Some(id)=row["id"].as_str(){
+            if pending.contains(&format!("{entity_type}:{id}"))&&seen.insert(id.to_string()){rows.push(row);}
+        }
+    }
+    rows
+}
+
+// Pending authored fields win, but a newer confirmed audit snapshot is not an
+// authored edit. Never copy server title/content over a pending experiment.
+fn pending_experiment_with_history(mut local:Value,server:&Value)->Value{
+    if local["id"].as_str().is_some() && local["id"]==server["id"] {
+        if let Some(history)=server.get("history").filter(|value|value.is_array()){
+            local["history"]=history.clone();
+        }
+    }
+    local
+}
+
 fn nested_create(app: AppHandle, project_id: String, key: &str, mut record: Value, entity_type: &str) -> Result<Value, String> {
     let mut c=conn(&app)?; let mut projects=load(&c)?;
     let p=projects.iter_mut().find(|p| p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
@@ -314,6 +391,7 @@ fn nested_create(app: AppHandle, project_id: String, key: &str, mut record: Valu
     record["id"]=json!(&record_id); record["project_id"]=json!(&project_id);
     record["created_at"]=json!(&timestamp); record["updated_at"]=json!(&timestamp);
     validate_nested_references(p,key,&mut record)?;
+    if key=="attachments"{validate_attachment_resource(&c,&mut record)?;}
     let mut list=nested_get(p,key); list.push(record.clone()); p[key]=Value::Array(list); p["updated_at"]=json!(&timestamp);
     save(&mut c,&projects,vec![(id(),entity_type.into(),record_id,"create".into(),record.clone())])?;
     Ok(record)
@@ -327,6 +405,7 @@ fn nested_update(app: AppHandle, project_id:String, key:&str, record_id:String, 
     if key=="experiments"{require_experiment_observation_text(r)?;require_experiment_observation_text(&patch)?;}
     if let Some(obj)=patch.as_object(){for(k,v)in obj{if k!="id"&&k!="project_id"&&k!="created_at"{r[k]=v.clone();}}}
     validate_nested_references(p,key,r)?;
+    if key=="attachments"{validate_attachment_resource(&c,r)?;}
     r["updated_at"]=json!(now(&c)?); let updated=r.clone(); p[key]=Value::Array(list); p["updated_at"]=json!(now(&c)?);
     save(&mut c,&projects,vec![(id(),entity_type.into(),record_id,"update".into(),json!({"project_id":project_id,"record":updated}))])?;Ok(updated)
 }
@@ -355,7 +434,23 @@ pub fn create_local_project_task_experiment(app:AppHandle,project_id:String,task
 pub fn get_local_project_task_experiments(app:AppHandle,project_id:String,task_id:String)->Result<Vec<Value>,String>{
     let c=conn(&app)?;
     let p=load(&c)?.into_iter().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
-    Ok(nested_get(&p,"task_experiments").into_iter().filter(|r|r.get("task_id").and_then(Value::as_str)==Some(task_id.as_str())).collect())
+    task_experiment_rows(&p,&task_id)
+}
+
+fn task_experiment_rows(project:&Value,task_id:&str)->Result<Vec<Value>,String>{
+    if !nested_get(project,"tasks").iter().any(|t|t["id"].as_str()==Some(task_id)){
+        return Err("Task is not available in this project".into());
+    }
+    let experiments=nested_get(project,"experiments");
+    Ok(nested_get(project,"task_experiments").into_iter()
+        .filter(|r|r["task_id"].as_str()==Some(task_id))
+        .map(|mut link|{
+            let experiment=experiments.iter().find(|e|e["id"].as_str().is_some()&&e["id"]==link["experiment_id"]);
+            // Labels are a read projection, never copied back into the outbox.
+            link["title"]=experiment.map(|e|e["title"].clone()).unwrap_or(json!("Unavailable experiment"));
+            link["status"]=experiment.map(|e|e["status"].clone()).unwrap_or(Value::Null);
+            link
+        }).collect())
 }
 
 #[tauri::command]
@@ -368,18 +463,46 @@ pub fn get_local_project_attachments(app:AppHandle,project_id:String,work_id:Str
     if work_type!="task" && work_type!="experiment" { return Err("work_type must be task or experiment".into()); }
     let c=conn(&app)?;
     let p=load(&c)?.into_iter().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
-    Ok(nested_get(&p,"attachments").into_iter().filter(|a|{
-        a.get(if work_type=="task" {"task_id"} else {"experiment_id"}).and_then(Value::as_str)==Some(work_id.as_str())
+    local_auth::require_local_permission(&c,"resources.view")?;
+    project_attachment_rows(&p,&work_id,&work_type,&crate::local_resources::read_resources(&c)?)
+}
+
+fn project_attachment_rows(project:&Value,work_id:&str,work_type:&str,resources:&[crate::local_resources::LocalResource])->Result<Vec<Value>,String>{
+    let (collection,key)=match work_type{
+        "task"=>("tasks","task_id"),"experiment"=>("experiments","experiment_id"),
+        _=>return Err("work_type must be task or experiment".into())
+    };
+    if !nested_get(project,collection).iter().any(|work|work["id"].as_str()==Some(work_id)){
+        return Err("Work item is not available in this project".into());
+    }
+    Ok(nested_get(project,"attachments").into_iter().filter(|a|a[key].as_str()==Some(work_id)).map(|mut attachment|{
+        let resource=resources.iter().find(|r|Some(r.id.as_str())==attachment["resource_id"].as_str());
+        // Current account-scoped labels only; do not expose paths or rewrite link identity.
+        attachment["name"]=json!(resource.and_then(|r|{
+            if !r.name.trim().is_empty(){Some(r.name.as_str())}
+            else{r.original_filename.as_deref().filter(|name|!name.trim().is_empty())}
+        }).unwrap_or("Unavailable resource"));
+        attachment["original_filename"]=json!(resource.and_then(|r|r.original_filename.as_deref()));
+        attachment
     }).collect())
 }
 
 #[tauri::command]
 pub fn create_local_project_attachment(app:AppHandle,project_id:String,work_id:String,work_type:String,resource_id:String)->Result<Value,String>{
     if work_type!="task" && work_type!="experiment" { return Err("work_type must be task or experiment".into()); }
-    if resource_id.trim().is_empty() { return Err("resourceId is required".into()); }
     let mut record=json!({"resource_id":resource_id});
     if work_type=="task" { record["task_id"]=json!(work_id); } else { record["experiment_id"]=json!(work_id); }
     nested_create(app,project_id,"attachments",record,"project_work_attachment")
+}
+
+fn validate_attachment_resource(c:&Connection,record:&mut Value)->Result<(),String>{
+    let resource_id=record["resource_id"].as_str().and_then(|id|uuid::Uuid::parse_str(id).ok()).ok_or("resourceId must be a UUID")?.to_string();
+    local_auth::require_local_permission(c,"resources.view")?;
+    if !crate::local_resources::read_resources(c)?.iter().any(|resource|uuid::Uuid::parse_str(&resource.id).ok().map(|id|id.to_string())==Some(resource_id.clone())){
+        return Err("Resource is not available in the current local account; synchronize before attaching it".into());
+    }
+    record["resource_id"]=json!(resource_id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -391,7 +514,235 @@ pub fn delete_local_project_attachment(app:AppHandle,project_id:String,attachmen
 pub fn list_local_project_workspace(app:AppHandle,project_id:String)->Result<Value,String>{
     let c=conn(&app)?;let p=load(&c)?.into_iter().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
     let permissions=current_project_access(&c,&p)?;
-    Ok(json!({"members":nested_get(&p,"members"),"tasks":nested_get(&p,"tasks"),"experiments":nested_get(&p,"experiments"),"items":nested_get(&p,"items"),"notes":[],"resources":[],"activity":[],"blocks":nested_get(&p,"blocks"),"connectors":nested_get(&p,"connectors"),"task_experiments":nested_get(&p,"task_experiments"),"attachments":nested_get(&p,"attachments"),"requirements":nested_get(&p,"requirements"),"permissions":permissions}))
+    let activity=crate::local_activity::read_project(&c,&project_id).unwrap_or_else(|_|json!({"items":[],"state":"unavailable","last_synced_at":null}));
+    let grants=local_auth::local_current_permissions(app)?;
+    let resources=if grants.iter().any(|p|p=="resources.view") {
+        local_auth::require_local_permission(&c,"resources.view")?;
+        project_resource_rows(&project_id,crate::local_resources::read_resources(&c)?)
+    } else { Vec::new() };
+    let notes=if grants.iter().any(|p|p=="notes.view") {
+        local_auth::require_local_permission(&c,"notes.view")?;
+        project_note_rows(&project_id,crate::local_notes::load(&c)?)
+    } else { Vec::new() };
+    Ok(json!({"members":nested_get(&p,"members"),"tasks":nested_get(&p,"tasks"),"experiments":nested_get(&p,"experiments"),"items":nested_get(&p,"items"),"notes":notes,"resources":resources,"activity":activity["items"],"activity_state":activity["state"],"activity_last_synced_at":activity["last_synced_at"],"blocks":nested_get(&p,"blocks"),"connectors":nested_get(&p,"connectors"),"task_experiments":nested_get(&p,"task_experiments"),"attachments":nested_get(&p,"attachments"),"requirements":nested_get(&p,"requirements"),"permissions":permissions}))
+}
+
+fn project_note_rows(project_id:&str, notes:Vec<Value>)->Vec<Value>{
+    notes.into_iter().filter(|n|n.get("project_id").and_then(Value::as_str)==Some(project_id)).collect()
+}
+
+fn project_resource_rows(project_id:&str, resources:Vec<crate::local_resources::LocalResource>)->Vec<crate::local_resources::LocalResource>{
+    resources.into_iter().filter(|r|r.project_id.as_deref()==Some(project_id)).collect()
+}
+
+#[cfg(test)]
+mod resource_workspace_tests {
+    use super::*;
+    #[test]
+    fn attachment_snapshot_shapes_and_pending_deletes_converge(){
+        let a=json!({"id":"a","task_id":"t","resource_id":"r"});
+        let b=json!({"id":"b","experiment_id":"e","resource_id":"s"});
+        let mut server=json!({"tasks":[{"attachments":[a.clone()]}],"experiments":[{"attachments":[b.clone(),a.clone()]}]});
+        normalize_work_attachments(&mut server);assert_eq!(server["attachments"],json!([a,b]));
+        let mut removed=server.clone();removed["attachments"]=json!([]);
+        normalize_work_attachments(&mut removed);assert_eq!(removed["attachments"],json!([]));
+        let local=json!({"attachments":[{"id":"c","resource_id":"local"}]});
+        let pending=HashSet::from(["project_work_attachment:a".to_string(),"project_work_attachment:c".to_string()]);
+        let rows=merge_work_attachments(&server,&local,&pending,&[]);
+        assert_eq!(rows.len(),2);assert_eq!(rows[0]["id"],"b");assert_eq!(rows[1]["id"],"c");
+        assert_eq!(merge_work_attachments(&server,&json!({"attachments":rows}),&pending,&[]),rows);
+        assert!(merge_work_attachments(&server,&local,&HashSet::new(),&["a".into(),"b".into()]).is_empty());
+        assert!(merge_work_attachments(&json!({"attachments":[]}),&local,&HashSet::new(),&[]).is_empty());
+    }
+    #[test]
+    fn confirmed_history_refresh_preserves_pending_authored_fields(){
+        let local=json!({"id":"e","title":"Unsynced title","observations":"Unsynced prose","history":[{"id":"old"}]});
+        let server=json!({"id":"e","title":"Server title","observations":"Server prose","history":[{"id":"new"}]});
+        let merged=pending_experiment_with_history(local.clone(),&server);
+        assert_eq!(merged["title"],local["title"]);assert_eq!(merged["observations"],local["observations"]);
+        assert_eq!(merged["history"],server["history"]);
+        assert_eq!(pending_experiment_with_history(merged.clone(),&server),merged);
+        for invalid in [json!({"id":"other","history":[]}),json!({"id":"e"}),json!({"id":"e","history":null}),json!({"id":"e","history":"bad"})]{
+            assert_eq!(pending_experiment_with_history(local.clone(),&invalid),local);
+        }
+        assert_eq!(pending_experiment_with_history(local,&json!({"id":"e","history":[]}))["history"],json!([]));
+    }
+
+    #[test]
+    fn task_nested_links_follow_canonical_presence_without_inventing_legacy_state(){
+        let legacy=json!({"tasks":[{"id":"t","experiments":[{"id":"old"}]}]});
+        let mut project=legacy.clone();project_task_experiment_views(&mut project);assert_eq!(project,legacy);
+        project["task_experiments"]=json!([]);project_task_experiment_views(&mut project);
+        assert_eq!(project["tasks"][0]["experiments"],json!([]));
+        project["task_experiments"]=json!([{"id":"one","task_id":"t"},{"id":"other","task_id":"elsewhere"}]);
+        project_task_experiment_views(&mut project);
+        assert_eq!(project["tasks"][0]["experiments"],json!([{"id":"one","task_id":"t"}]));
+        let once=project.clone();project_task_experiment_views(&mut project);assert_eq!(project,once);
+    }
+
+    #[test]
+    fn experiment_history_and_pending_event_survive_disk_reopen(){
+        let path=std::env::temp_dir().join(format!("labos-history-{}.sqlite",uuid::Uuid::new_v4()));
+        let account="10000000-0000-4000-8000-000000000001";
+        let mut c=Connection::open(&path).unwrap();local_db::ensure_schema(&c).unwrap();
+        c.execute_batch("CREATE TABLE local_users(id TEXT PRIMARY KEY,central_user_id TEXT,role TEXT,username TEXT,is_active INTEGER,offline_expires_at TEXT,permissions_json TEXT);CREATE TABLE local_session(id INTEGER PRIMARY KEY,user_id TEXT);").unwrap();
+        c.execute("INSERT INTO local_users VALUES('a',?1,'researcher','fixture',1,datetime('now','+24 hours'),'[\"projects.view\",\"projects.edit\"]')",[account]).unwrap();
+        c.execute("INSERT INTO local_session VALUES(1,'a')",[]).unwrap();
+        let experiment=json!({"id":"e","title":"Pending local title","observations":"Pending local prose"});
+        let payload=json!({"project_id":"p","record":experiment});
+        let mut project=json!({"id":"p","visibility":"lab","permissions":{"user_id":account,"access":"edit","can_edit":true},"experiments":[experiment]});
+        save(&mut c,&[project.clone()],vec![("change-history".into(),"project_experiment".into(),"e".into(),"update".into(),payload.clone())]).unwrap();
+        project["attachments"]=json!([{"id":"local-attachment","experiment_id":"e","resource_id":"local-resource"}]);
+        project["tasks"]=json!([{"id":"t"}]);
+        project["experiments"][0]["measurements"]=json!([{"id":"local-m","value":7}]);
+        project["experiments"][0]["observation_records"]=json!([{"id":"local-o","content":"local"}]);
+        project["task_experiments"]=json!([{"id":"pending-link","task_id":"t","experiment_id":"e","label":"local"}]);
+        save(&mut c,&[project.clone()],vec![
+            ("measurement-create".into(),"project_experiment_measurement".into(),"local-m".into(),"create".into(),json!({"project_id":"p","experiment_id":"e","value":7})),
+            ("measurement-delete".into(),"project_experiment_measurement".into(),"removed-m".into(),"delete".into(),json!({"project_id":"p","experiment_id":"e","record":{"id":"removed-m"}})),
+            ("observation-create".into(),"project_experiment_observation".into(),"local-o".into(),"create".into(),json!({"project_id":"p","experiment_id":"e","content":"local"})),
+            ("observation-delete".into(),"project_experiment_observation".into(),"removed-o".into(),"delete".into(),json!({"project_id":"p","experiment_id":"e","record":{"id":"removed-o"}})),
+            ("task-delete".into(),"project_task".into(),"removed-task".into(),"delete".into(),json!({"project_id":"p","record":{"id":"removed-task"}})),
+            ("experiment-delete".into(),"project_experiment".into(),"removed-experiment".into(),"delete".into(),json!({"project_id":"p","record":{"id":"removed-experiment"}})),
+            ("link-change".into(),"project_task_experiment".into(),"pending-link".into(),"create".into(),json!({"project_id":"p","record":project["task_experiments"][0]})),
+            ("unlink-change".into(),"project_task_experiment".into(),"removed-link".into(),"delete".into(),json!({"project_id":"p","record":{"id":"removed-link"}})),
+            ("attach-change".into(),"project_work_attachment".into(),"local-attachment".into(),"create".into(),json!({"project_id":"p","id":"local-attachment"})),
+            ("detach-change".into(),"project_work_attachment".into(),"removed-attachment".into(),"delete".into(),json!({"project_id":"p","record":{"id":"removed-attachment"}}))
+        ]).unwrap();
+        let collections=[("bom","project_bom"),("blocks","project_block"),("connectors","project_connector"),("requirements","project_resource_requirement"),("items","project_item")];
+        let mut collection_events=Vec::new();
+        for (key,entity) in collections{
+            let identity=if key=="items"{"item_id"}else{"id"};
+            project[key]=json!([{identity:"edited","value":"local"},{identity:"created","value":"local"},{identity:"obsolete","value":"old"}]);
+            for (record_id,operation) in [("edited","update"),("created","create"),("removed","delete")]{
+                let event_id=if key=="items"{format!("p:{record_id}")}else{record_id.into()};
+                collection_events.push((format!("{key}-{record_id}"),entity.into(),event_id,operation.into(),json!({"project_id":"p","record":{identity:record_id}})));
+            }
+        }
+        save(&mut c,&[project.clone()],collection_events).unwrap();
+        let mut server=project.clone();
+        for (key,_) in collections{
+            let identity=if key=="items"{"item_id"}else{"id"};
+            server[key]=json!([{identity:"edited","value":"server"},{identity:"removed"},{identity:"confirmed","value":"server"}]);
+        }
+        server["task_experiments"]=json!([{"id":"pending-link","task_id":"t","experiment_id":"e","label":"server"},{"id":"removed-link","task_id":"t","experiment_id":"e"}]);
+        server.as_object_mut().unwrap().remove("attachments");
+        server["experiments"][0]=json!({"id":"e","title":"Server title","observations":"Server prose","history":[{"id":"audit","action":"UPDATE"}],"attachments":[{"id":"server-attachment","experiment_id":"e","resource_id":"server-resource"},{"id":"removed-attachment","experiment_id":"e","resource_id":"removed-resource"}]});
+        server["tasks"].as_array_mut().unwrap().push(json!({"id":"removed-task"}));
+        server["experiments"][0]["measurements"]=json!([{"id":"local-m","value":99},{"id":"removed-m"},{"id":"server-m","value":8}]);
+        server["experiments"][0]["observation_records"]=json!([{"id":"local-o","content":"server"},{"id":"removed-o"},{"id":"server-o","content":"confirmed"}]);
+        server["experiments"].as_array_mut().unwrap().push(json!({"id":"removed-experiment"}));
+        for _ in 0..2{apply_project_pull(&mut c,json!([server.clone()]).to_string(),vec!["p".into()],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],account.into()).unwrap();}
+        project=load(&c).unwrap().remove(0);
+        assert_eq!(project["experiments"][0]["title"],"Pending local title");
+        assert_eq!(project["experiments"][0]["observations"],"Pending local prose");
+        assert_eq!(project["experiments"][0]["measurements"],json!([{"id":"local-m","value":7},{"id":"server-m","value":8}]));
+        assert_eq!(project["experiments"][0]["observation_records"],json!([{"id":"local-o","content":"local"},{"id":"server-o","content":"confirmed"}]));
+        assert_eq!(project["experiments"][0]["history"],server["experiments"][0]["history"]);
+        assert_eq!(project["experiments"].as_array().unwrap().len(),1);
+        assert_eq!(project["tasks"].as_array().unwrap().len(),1);
+        assert_eq!(project["tasks"][0]["id"],"t");
+        assert_eq!(project["tasks"][0]["experiments"],project["task_experiments"]);
+        for (key,_) in collections{
+            let identity=if key=="items"{"item_id"}else{"id"};
+            assert_eq!(project[key],json!([{identity:"edited","value":"local"},{identity:"confirmed","value":"server"},{identity:"created","value":"local"}]),"{key} pending merge");
+        }
+        assert_eq!(project["attachments"].as_array().unwrap().len(),2);
+        assert_eq!(project["attachments"][0]["id"],"server-attachment");
+        assert_eq!(project["attachments"][1]["id"],"local-attachment");
+        assert_eq!(project["experiments"][0]["attachments"],project["attachments"]);
+        assert_eq!(project["task_experiments"],json!([{"id":"pending-link","task_id":"t","experiment_id":"e","label":"local"}]));
+        assert!(apply_project_pull(&mut c,json!([server.clone()]).to_string(),vec!["p".into()],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],"foreign-account".into()).is_err());
+        assert_eq!(load(&c).unwrap()[0],project);
+        drop(c);
+        let mut c=Connection::open(&path).unwrap();
+        assert_eq!(load(&c).unwrap()[0]["experiments"],project["experiments"]);
+        assert_eq!(load(&c).unwrap()[0]["attachments"],project["attachments"]);
+        assert_eq!(load(&c).unwrap()[0]["task_experiments"],project["task_experiments"]);
+        let (raw,ack):(String,Option<String>)=c.query_row("SELECT payload_json,synced_at FROM sync_outbox WHERE change_id='change-history'",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&raw).unwrap(),payload);assert!(ack.is_none());
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM sync_outbox WHERE synced_at IS NULL",[],|r|r.get::<_,i64>(0)).unwrap(),26);
+        for (key,_) in collections{assert_eq!(load(&c).unwrap()[0][key],project[key],"{key} reopen");}
+        // Simulate confirmed ACKs only in this isolated fixture, then deliver the
+        // authoritative post-operation snapshot. Production pull never ACKs rows.
+        for (key,_) in collections{
+            for record_id in ["edited","created","removed"]{
+                c.execute("UPDATE sync_outbox SET synced_at=datetime('now') WHERE change_id=?1",[format!("{key}-{record_id}")]).unwrap();
+            }
+            let identity=if key=="items"{"item_id"}else{"id"};
+            server[key]=json!([{identity:"edited","value":"confirmed edit"},{identity:"created","value":"confirmed create"}]);
+        }
+        apply_project_pull(&mut c,json!([server.clone()]).to_string(),vec!["p".into()],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],account.into()).unwrap();
+        let confirmed=load(&c).unwrap().remove(0);
+        for (key,_) in collections{assert_eq!(confirmed[key],server[key],"{key} acknowledged convergence");}
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM sync_outbox WHERE synced_at IS NULL",[],|r|r.get::<_,i64>(0)).unwrap(),11);
+        drop(c);std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn attachments_require_one_current_project_work_reference(){
+        let task="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let experiment="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        let project=json!({"tasks":[{"id":task}],"experiments":[{"id":experiment}]});
+        for field in ["task_id","experiment_id"]{
+            let id=if field=="task_id"{task}else{experiment};
+            let mut record=json!({field:id.to_uppercase()});
+            validate_nested_references(&project,"attachments",&mut record).unwrap();
+            assert_eq!(record[field],id);
+        }
+        for mut record in [json!({}),json!({"task_id":null}),json!({"task_id":task,"experiment_id":experiment}),json!({"task_id":experiment}),json!({"experiment_id":task}),json!({"task_id":"bad"})]{
+            assert!(validate_nested_references(&project,"attachments",&mut record).is_err());
+        }
+        assert!(validate_nested_references(&json!({"tasks":[]}),"attachments",&mut json!({"task_id":task})).is_err());
+    }
+    #[test]
+    fn attachment_labels_preserve_links_and_use_current_account_resource_rows(){
+        let p=json!({"tasks":[{"id":"t"}],"experiments":[{"id":"e"}],"attachments":[
+            {"id":"a","task_id":"t","resource_id":"r","name":"Stale"},
+            {"id":"b","experiment_id":"e","resource_id":"r"},
+            {"id":"c","task_id":"t","resource_id":"missing","name":"Old private name","original_filename":"old.pdf"},
+            {"id":"d","task_id":"other","resource_id":"r"}]});
+        let before=p.clone();
+        let mut resource:crate::local_resources::LocalResource=serde_json::from_value(json!({"id":"r","name":"Current name","kind":"file","file_type":"pdf","created_at":"now","updated_at":"now","tags":[],"original_filename":"file.pdf"})).unwrap();
+        let rows=project_attachment_rows(&p,"t","task",&[resource.clone()]).unwrap();
+        assert_eq!(rows.len(),2);assert_eq!(rows[0]["id"],"a");assert_eq!(rows[0]["resource_id"],"r");
+        assert_eq!(rows[0]["name"],"Current name");assert_eq!(rows[1]["name"],"Unavailable resource");assert!(rows[1]["original_filename"].is_null());
+        resource.name=" ".into();
+        assert_eq!(project_attachment_rows(&p,"e","experiment",&[resource]).unwrap()[0]["name"],"file.pdf");
+        assert_eq!(project_attachment_rows(&p,"t","task",&[]).unwrap()[0]["name"],"Unavailable resource");
+        assert!(project_attachment_rows(&p,"other","task",&[]).is_err());
+        assert!(project_attachment_rows(&p,"t","invalid",&[]).is_err());assert_eq!(p,before);
+    }
+    #[test]
+    fn task_experiment_links_join_current_project_labels_without_changing_identity(){
+        let p=json!({"tasks":[{"id":"t"}],"experiments":[{"id":"e","title":"Current title","status":"planned"}],"task_experiments":[
+            {"id":"link","task_id":"t","experiment_id":"e","relationship":"validates","title":"Old label"},
+            {"id":"missing","task_id":"t","experiment_id":"absent","title":"Stale title"},
+            {"id":"other","task_id":"other","experiment_id":"e"}]});
+        let before=p.clone();let rows=task_experiment_rows(&p,"t").unwrap();
+        assert_eq!(rows.len(),2);assert_eq!(rows[0]["id"],"link");assert_eq!(rows[0]["title"],"Current title");
+        assert_eq!(rows[0]["relationship"],"validates");assert_eq!(rows[1]["title"],"Unavailable experiment");
+        assert_eq!(p,before);assert!(task_experiment_rows(&p,"missing-task").is_err());
+        assert!(task_experiment_rows(&json!({"tasks":[{"id":"t"}]}),"t").unwrap().is_empty());
+    }
+    #[test]
+    fn project_notes_follow_current_local_project_and_preserve_unsynced_content(){
+        let linked=json!({"id":"note","project_id":"p","title":"Local edit","body":"Not synced yet","tags":["lab"]});
+        let rows=project_note_rows("p",vec![linked.clone(),json!({"id":"other","project_id":"q"}),json!({"id":"none","project_id":null}),json!({"id":"missing"})]);
+        assert_eq!(rows,vec![linked.clone()]);
+        let mut moved=linked;moved["project_id"]=json!("q");
+        assert!(project_note_rows("p",vec![moved.clone()]).is_empty());
+        assert_eq!(project_note_rows("q",vec![moved.clone()]),vec![moved]);
+        assert!(project_note_rows("p",vec![]).is_empty());
+    }
+    #[test]
+    fn project_resources_follow_current_local_attachment_not_joined_names(){
+        let row=|id:&str,project:Option<&str>|serde_json::from_value(json!({"id":id,"name":id,"kind":"file","file_type":"pdf","created_at":"now","updated_at":"now","tags":[],"project_id":project})).unwrap();
+        let rows=project_resource_rows("p",vec![row("linked",Some("p")),row("other",Some("q")),row("unattached",None)]);
+        assert_eq!(rows.len(),1);assert_eq!(rows[0].id,"linked");assert!(rows[0].project_name.is_none());
+        let mut moved=rows[0].clone();moved.project_id=Some("q".into());
+        assert!(project_resource_rows("p",vec![moved.clone()]).is_empty());
+        assert_eq!(project_resource_rows("q",vec![moved]).len(),1);
+    }
 }
 
 #[tauri::command]
@@ -537,11 +888,15 @@ pub fn unlink_local_project_item(app:AppHandle,project_id:String,item_id:String)
 
 #[tauri::command]
 pub fn apply_server_project_pull(app: AppHandle, projects_json: String, visible_project_ids: Vec<String>, deleted_project_ids: Vec<String>, deleted_project_task_ids: Vec<String>, deleted_project_experiment_ids: Vec<String>, deleted_project_bom_ids: Vec<String>, deleted_project_block_ids: Vec<String>, deleted_project_connector_ids: Vec<String>, deleted_project_measurement_ids: Vec<String>, deleted_project_observation_ids: Vec<String>, deleted_project_attachment_ids: Vec<String>, _deleted_project_task_experiment_ids: Vec<String>, deleted_project_requirement_ids: Vec<String>, expected_account_id: String) -> Result<(), String> {
+    let mut c=conn(&app)?;
+    apply_project_pull(&mut c,projects_json,visible_project_ids,deleted_project_ids,deleted_project_task_ids,deleted_project_experiment_ids,deleted_project_bom_ids,deleted_project_block_ids,deleted_project_connector_ids,deleted_project_measurement_ids,deleted_project_observation_ids,deleted_project_attachment_ids,_deleted_project_task_experiment_ids,deleted_project_requirement_ids,expected_account_id)
+}
+
+fn apply_project_pull(c:&mut Connection, projects_json: String, visible_project_ids: Vec<String>, deleted_project_ids: Vec<String>, deleted_project_task_ids: Vec<String>, deleted_project_experiment_ids: Vec<String>, deleted_project_bom_ids: Vec<String>, deleted_project_block_ids: Vec<String>, deleted_project_connector_ids: Vec<String>, deleted_project_measurement_ids: Vec<String>, deleted_project_observation_ids: Vec<String>, deleted_project_attachment_ids: Vec<String>, _deleted_project_task_experiment_ids: Vec<String>, deleted_project_requirement_ids: Vec<String>, expected_account_id: String) -> Result<(), String> {
     let mut incoming: Vec<Value> = serde_json::from_str(&projects_json).map_err(|e| format!("Invalid server project payload: {e}"))?;
-    for project in &mut incoming{normalize_experiment_observations(project);}
+    for project in &mut incoming{normalize_experiment_observations(project);normalize_work_attachments(project);}
     let visible: std::collections::HashSet<String> = visible_project_ids.into_iter().collect();
     let deleted: std::collections::HashSet<String> = deleted_project_ids.into_iter().collect();
-    let mut c = conn(&app)?;
     local_db::require_sync_account(&c, &expected_account_id)?;
     let mut projects = load(&c)?;
     let pending: std::collections::HashSet<String> = {
@@ -561,64 +916,38 @@ pub fn apply_server_project_pull(app: AppHandle, projects_json: String, visible_
             refreshed_reservations.extend(rows.iter().filter(|r|r["applied_intent_ids"].is_array()).filter_map(|r|r["id"].as_str().map(ToOwned::to_owned)));
         }
         if let Some(existing) = projects.iter().find(|p| p.get("id").and_then(Value::as_str) == Some(project_id.as_str())).cloned() {
-            let server_task_experiments=project.get("task_experiments").and_then(Value::as_array).cloned().unwrap_or_default();
-            let old_task_experiments=existing.get("task_experiments").and_then(Value::as_array).cloned().unwrap_or_default();
-            let mut task_experiments=Vec::new();
-            let mut server_keys=std::collections::HashSet::new();
-            for row in server_task_experiments {
-                let rid=row.get("id").and_then(Value::as_str).unwrap_or_default();
-                if rid.is_empty(){continue;}
-                server_keys.insert(rid.to_string());
-                if !pending.contains(&format!("project_task_experiment:{}",rid)){task_experiments.push(row);}
-            }
-            // The project pull is authoritative for server links; pending local links survive
-            // until their outbox change is acknowledged.
-            for oldrow in old_task_experiments {
-                if let Some(rid)=oldrow.get("id").and_then(Value::as_str) {
-                    if pending.contains(&format!("project_task_experiment:{}",rid))&&!server_keys.contains(rid){task_experiments.push(oldrow);}
-                }
-            }
-            project["task_experiments"]=Value::Array(task_experiments);
+            project["attachments"]=json!(merge_work_attachments(&project,&existing,&pending,&deleted_project_attachment_ids));
+            project["task_experiments"]=Value::Array(merge_pending_relation_rows(&project,&existing,"task_experiments","project_task_experiment",&pending,&_deleted_project_task_experiment_ids));
             for key in ["tasks","experiments","bom","blocks","connectors","requirements","items"] {
                 let pending_key = match key { "tasks"=>"project_task", "experiments"=>"project_experiment", "bom"=>"project_bom", "blocks"=>"project_block", "connectors"=>"project_connector", "requirements"=>"project_resource_requirement", "items"=>"project_item", _=>"" };
                 let deleted_ids: std::collections::HashSet<String> = match key { "items"=>std::collections::HashSet::new(), "tasks"=>deleted_project_task_ids.iter().cloned().collect(), "experiments"=>deleted_project_experiment_ids.iter().cloned().collect(), "bom"=>deleted_project_bom_ids.iter().cloned().collect(), "blocks"=>deleted_project_block_ids.iter().cloned().collect(), "connectors"=>deleted_project_connector_ids.iter().cloned().collect(), "requirements"=>deleted_project_requirement_ids.iter().cloned().collect(), _=>std::collections::HashSet::new() };
                 let mut merged = project.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
-                if key=="tasks" || key=="experiments" {
-                    for work in &mut merged {
-                        let work_id=work.get("id").and_then(Value::as_str).unwrap_or_default();
-                        let oldwork=existing.get(key).and_then(Value::as_array).and_then(|a|a.iter().find(|v|v.get("id").and_then(Value::as_str)==Some(work_id))).cloned().unwrap_or_else(||json!({}));
-                        let mut attachments=work.get("attachments").and_then(Value::as_array).cloned().unwrap_or_default();
-                        let oldattachments=oldwork.get("attachments").and_then(Value::as_array).cloned().unwrap_or_default();
-                        attachments.retain(|v|{let rid=v.get("id").and_then(Value::as_str).unwrap_or_default();!deleted_project_attachment_ids.iter().any(|x|x==rid)||pending.contains(&format!("project_work_attachment:{rid}"))});
-                        for oldrow in oldattachments{if let Some(rid)=oldrow.get("id").and_then(Value::as_str){if pending.contains(&format!("project_work_attachment:{rid}"))&&!attachments.iter().any(|v|v.get("id").and_then(Value::as_str)==Some(rid)){attachments.push(oldrow);}}}
-                        work["attachments"]=Value::Array(attachments);
-                    }
-                }
-                if key=="experiments" {
-                    for exp in &mut merged {
-                        let eid=exp.get("id").and_then(Value::as_str).unwrap_or_default();
-                        let oldexp=existing.get("experiments").and_then(Value::as_array).and_then(|a|a.iter().find(|v|v.get("id").and_then(Value::as_str)==Some(eid))).cloned().unwrap_or_else(||json!({}));
-                        for sub in ["measurements","observation_records"] {
-                            let et=if sub=="measurements"{"project_experiment_measurement"}else{"project_experiment_observation"};
-                            let dels:std::collections::HashSet<String>=if sub=="measurements"{deleted_project_measurement_ids.iter().cloned().collect()}else{deleted_project_observation_ids.iter().cloned().collect()};
-                            let mut subrows=exp.get(sub).and_then(Value::as_array).cloned().unwrap_or_default();
-                            let oldrows=oldexp.get(sub).and_then(Value::as_array).cloned().unwrap_or_default();
-                            subrows.retain(|v|{let rid=v.get("id").and_then(Value::as_str).unwrap_or_default();!dels.contains(rid)||pending.contains(&format!("{et}:{rid}"))});
-                            for oldrow in oldrows{if let Some(rid)=oldrow.get("id").and_then(Value::as_str){if pending.contains(&format!("{et}:{rid}"))&&!subrows.iter().any(|v|v.get("id").and_then(Value::as_str)==Some(rid)){subrows.push(oldrow);}}}
-                            exp[sub]=Value::Array(subrows);
-                        }
-                    }
-                }
                 merged.retain(|v| {
                     let rid=v.get("id").and_then(Value::as_str).or_else(|| if key=="items" { v.get("item_id").and_then(Value::as_str) } else { None }).unwrap_or_default();
                     let pending_id=if key=="items"{format!("{}:{}",project_id,rid)}else{rid.to_string()};
-                    !deleted_ids.contains(rid) || pending.contains(&format!("{pending_key}:{pending_id}"))
+                    if pending.contains(&format!("{pending_key}:{pending_id}")) {
+                        // A pending deletion has no local row to overlay. Do not
+                        // resurrect the stale server row while waiting for ACK.
+                        nested_get(&existing,key).iter().any(|old|old.get("id").and_then(Value::as_str).or_else(||if key=="items"{old.get("item_id").and_then(Value::as_str)}else{None})==Some(rid))
+                    }else{!deleted_ids.contains(rid)}
                 });
                 for old in existing.get(key).and_then(Value::as_array).cloned().unwrap_or_default() {
                     if let Some(id) = old.get("id").and_then(Value::as_str).or_else(|| if key=="items" { old.get("item_id").and_then(Value::as_str) } else { None }) {
                         let pending_id=if key=="items"{format!("{}:{}",project_id,id)}else{id.to_string()};
                         if pending.contains(&format!("{pending_key}:{pending_id}")) {
-                            if let Some(pos)=merged.iter().position(|v| v.get("id").and_then(Value::as_str).or_else(|| if key=="items" { v.get("item_id").and_then(Value::as_str) } else { None })==Some(id)) { merged[pos]=old; } else { merged.push(old); }
+                            if let Some(pos)=merged.iter().position(|v| v.get("id").and_then(Value::as_str).or_else(|| if key=="items" { v.get("item_id").and_then(Value::as_str) } else { None })==Some(id)) { merged[pos]=if key=="experiments"{pending_experiment_with_history(old,&merged[pos])}else{old}; } else { merged.push(old); }
+                        }
+                    }
+                }
+                if key=="experiments" {
+                    // Reconcile child records after the pending parent overlay:
+                    // editing experiment prose must not freeze independent rows.
+                    for exp in &mut merged {
+                        let eid=exp["id"].as_str().unwrap_or_default();
+                        let Some(server)=project[key].as_array().and_then(|rows|rows.iter().find(|row|row["id"].as_str()==Some(eid))) else{continue;};
+                        let old=existing[key].as_array().and_then(|rows|rows.iter().find(|row|row["id"].as_str()==Some(eid))).cloned().unwrap_or_else(||json!({}));
+                        for (sub,entity,deleted) in [("measurements","project_experiment_measurement",&deleted_project_measurement_ids),("observation_records","project_experiment_observation",&deleted_project_observation_ids)]{
+                            exp[sub]=Value::Array(merge_pending_relation_rows(server,&old,sub,entity,&pending,deleted));
                         }
                     }
                 }
@@ -629,7 +958,8 @@ pub fn apply_server_project_pull(app: AppHandle, projects_json: String, visible_
             projects.push(project);
         }
     }
-    save_checked(&mut c, &projects, Vec::new(), Some(&expected_account_id), &refreshed_reservations)
+    for project in &mut projects{project_work_attachment_views(project);project_task_experiment_views(project);}
+    save_checked(c, &projects, Vec::new(), Some(&expected_account_id), &refreshed_reservations)
 }
 
 fn nested_create_nested(app:AppHandle,project_id:String,parent_key:&str,key:&str,parent_id:String,mut record:Value,entity_type:&str)->Result<Value,String>{let mut c=conn(&app)?;let mut projects=load(&c)?;let p=projects.iter_mut().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;let mut parents=nested_get(p,parent_key);let parent=parents.iter_mut().find(|x|x.get("id").and_then(Value::as_str)==Some(parent_id.as_str())).ok_or("Parent record not found")?;let rid=id();let ts=now(&c)?;record["id"]=json!(&rid);record["project_id"]=json!(&project_id);record["created_at"]=json!(&ts);record["updated_at"]=json!(&ts);let mut rows=nested_get(parent,key);rows.push(record.clone());parent[key]=Value::Array(rows);p[parent_key]=Value::Array(parents);p["updated_at"]=json!(&ts);save(&mut c,&projects,vec![(id(),entity_type.into(),rid,"create".into(),record.clone())])?;Ok(record)}

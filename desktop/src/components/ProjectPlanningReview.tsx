@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { decideProjectReview, getProjectReview, Project } from '../api/projects';
 import { getStoredUser } from '../api/auth';
+import { refreshProjectPlan } from '../api/project-plan-refresh';
 
 export default function ProjectPlanningReview({project,canEdit}:{project:Project;canEdit:boolean}){
  const qc=useQueryClient();
@@ -12,7 +13,7 @@ export default function ProjectPlanningReview({project,canEdit}:{project:Project
  const review=useQuery({queryKey:['project-review',project.id],queryFn:()=>getProjectReview(project.id),enabled:project.status==='planning'});
  const decision=useMutation({
   mutationFn:(choice:'submit'|'request_changes'|'approve')=>decideProjectReview(project.id,choice,note,review.data?.token),
-  onSuccess:(updated)=>{setMessage(updated.local_review_pending?'Review decision saved on this PC; awaiting server validation.':'');setNote('');qc.setQueryData(['project',project.id],updated);qc.invalidateQueries({queryKey:['project-review',project.id]});qc.invalidateQueries({queryKey:['projects']});},
+  onSuccess:(updated)=>{setMessage(updated.local_review_pending?'Review decision saved on this PC; awaiting server validation.':'');setNote('');qc.setQueryData(['project',project.id],updated);void refreshProjectPlan(qc,project.id);},
   onError:(error:Error)=>setMessage(error.message)
  });
  if(project.status!=='planning')return null;
