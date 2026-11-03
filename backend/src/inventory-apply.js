@@ -1,6 +1,7 @@
 import {randomUUID} from 'crypto';
 import {assertReservationStockFloor} from './reservation-stock.js';
 import {getUserPermissions} from './middleware/permissions.js';
+import {requireUsableStock} from './stock-condition.js';
 function generateItemSku(name, type) {
   const namePart = String(name || 'item').toUpperCase().replace(/[^A-Z0-9]+/g, '').slice(0, 8) || 'ITEM';
   const typePart = String(type || 'item').toUpperCase().replace(/[^A-Z0-9]+/g, '').slice(0, 6) || 'ITEM';
@@ -26,6 +27,7 @@ async function applyMovement(client,change,userId){
   const itemResult=await client.query('SELECT * FROM items WHERE id=$1 FOR UPDATE',[itemId]);
   if(!itemResult.rowCount)fail(409,'ITEM_NOT_FOUND',`Item ${itemId} does not exist on the server`);
   const item=itemResult.rows[0];
+  if(!payload.custody_id&&['checkout','consume'].includes(type))requireUsableStock(item);
   let next=number(item.current_quantity,'Current quantity');
   let custodySettlement = null;
   let custodyRecord = null;

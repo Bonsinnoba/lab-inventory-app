@@ -40,7 +40,7 @@ fn uuid_and_invalid_snapshot_fail_closed_without_advancing_cursor(){
 
 #[test]
 fn movement_write_and_history_refresh_keep_pending_work_atomic(){
-    let mut c=fixture();let base=vec![json!({"id":I,"current_quantity":10,"sync_version":1})];let next=vec![json!({"id":I,"current_quantity":8,"sync_version":2})];write(&c,&base).unwrap();
+    let mut c=fixture();let base=vec![json!({"id":I,"status":"available","current_quantity":10,"sync_version":1})];let next=vec![json!({"id":I,"status":"available","current_quantity":8,"sync_version":2})];write(&c,&base).unwrap();
     let movement=json!({"id":J,"item_id":I,"quantity":2,"movement_type":"consume","quantity_after":8});
     let make=|base:&Vec<Value>,next:&Vec<Value>,movement:Value,change:&str|crate::local_inventory::LocalMovementWriteInput{snapshot_json:json!(next).to_string(),expected_snapshot_json:json!(base).to_string(),expected_account_id:A.into(),movement_json:movement.to_string(),item_id:I.into(),change_id:change.into()};
     crate::local_inventory::save_movement(&mut c,make(&base,&next,movement.clone(),"one")).unwrap();
@@ -92,4 +92,17 @@ fn discard_inventory_chain_includes_shared_batches_not_unrelated_work(){
     enqueue(&c,"item",Some(&other),"update",json!({"id":other}),"unrelated");
     discard_connected(&c,"first","accept_server").unwrap();
     let pending:Vec<String>=c.prepare("SELECT change_id FROM sync_outbox WHERE synced_at IS NULL").unwrap().query_map([],|r|r.get(0)).unwrap().map(Result::unwrap).collect();assert_eq!(pending,vec!["unrelated"]);
+}
+
+#[test]
+fn unusable_stock_cannot_be_issued_by_forging_the_next_snapshot(){
+    let mut c=fixture();
+    for status in ["needs_repair","damaged","needs_replacement","retired"]{
+        let base=vec![json!({"id":I,"status":status,"current_quantity":10,"sync_version":1})];write(&c,&base).unwrap();
+        let next=vec![json!({"id":I,"status":"available","current_quantity":8,"sync_version":2})];
+        let movement=json!({"id":J,"item_id":I,"movement_type":"consume","quantity":2,"quantity_after":8});
+        let input=crate::local_inventory::LocalMovementWriteInput{snapshot_json:json!(next).to_string(),expected_snapshot_json:json!(base).to_string(),expected_account_id:A.into(),movement_json:movement.to_string(),item_id:I.into(),change_id:local_db::new_uuid()};
+        assert!(crate::local_inventory::save_movement(&mut c,input).unwrap_err().contains("not cleared"));
+        assert_eq!(read(&c).unwrap().unwrap(),base);assert_eq!(c.query_row("SELECT COUNT(*) FROM sync_outbox",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    }
 }

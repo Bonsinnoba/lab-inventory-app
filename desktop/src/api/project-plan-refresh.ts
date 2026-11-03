@@ -16,7 +16,7 @@ export async function refreshProjectPlan(client: Pick<QueryClient, 'invalidateQu
 }
 
 export function validBomForm(value: {name:string; required_quantity:string; preferred_item_id:string; alternative_item_id:string}):boolean {
-  const quantity=Number(value.required_quantity);
-  return value.name.trim().length>0 && Number.isFinite(quantity) && quantity>0
+  const quantity=Number(value.required_quantity),scaled=quantity*1000;
+  return value.name.trim().length>0 && Number.isFinite(quantity) && quantity>0 && quantity<1e9 && Math.abs(scaled-Math.round(scaled))<=Math.max(1,Math.abs(scaled))*Number.EPSILON*4
     && (!value.preferred_item_id || !value.alternative_item_id || value.preferred_item_id!==value.alternative_item_id);
 }

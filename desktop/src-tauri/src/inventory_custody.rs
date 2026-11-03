@@ -1,6 +1,8 @@
 //! Pure custody arithmetic. Persistence and permission checks live in local_inventory.
 use serde_json::{json, Value};
 
+use crate::inventory_sync_state::require_usable_stock;
+
 fn uuid(value: &Value, label: &str) -> Result<String, String> {
     uuid::Uuid::parse_str(value.as_str().ok_or_else(|| format!("{label} is required"))?)
         .map(|v| v.to_string()).map_err(|_| format!("Invalid {label}"))
@@ -22,6 +24,7 @@ pub(super) struct Plan {
 }
 
 pub(super) fn plan(item: &Value, intent: &Value, current: Option<&Value>, actor: &str) -> Result<Plan, String> {
+    if current.is_none(){require_usable_stock(item)?;}
     let item_id = uuid(&item["id"], "item ID")?;
     let movement_id = uuid(&intent["id"], "movement ID")?;
     if uuid(&intent["item_id"], "movement item ID")? != item_id { return Err("Custody item mismatch".into()); }
@@ -120,7 +123,7 @@ mod tests {
     const M: &str = "20000000-0000-4000-8000-000000000002";
     const A: &str = "20000000-0000-4000-8000-000000000003";
     const B: &str = "20000000-0000-4000-8000-000000000004";
-    fn item() -> Value { json!({"id":I,"current_quantity":10,"storage_location":"Shelf A","unit":"pcs"}) }
+    fn item() -> Value { json!({"id":I,"status":"available","current_quantity":10,"storage_location":"Shelf A","unit":"pcs"}) }
     fn issue() -> Value { json!({"id":M,"item_id":I,"movement_type":"checkout","quantity":4,"recipient_id":A,"created_at":"2026-10-19T00:00:00Z"}) }
     #[test]
     fn issue_and_partial_return_keep_stable_identity_and_balances() {
@@ -164,5 +167,17 @@ mod tests {
         intent["quantity"]=json!(0.2);
         let r=plan(&q.item,&intent,Some(&q.records[0]),A).unwrap();assert_eq!(r.records[0]["outstanding_quantity"],0.0);assert_eq!(r.records[0]["status"],"settled");
         intent["quantity"]=json!(0.0001);assert!(plan(&item(),&intent,Some(&p.records[0]),A).is_err());
+    }
+    #[test]
+    fn unusable_stock_blocks_new_issue_but_not_existing_custody_settlement(){
+        let issued=plan(&item(),&issue(),None,A).unwrap();
+        for status in ["needs_repair","damaged","needs_replacement","retired","unknown"]{
+            let mut stock=issued.item.clone();stock["status"]=json!(status);
+            assert!(plan(&stock,&issue(),None,A).is_err());
+            let mut settle=issue();settle["id"]=json!(B);settle["custody_id"]=json!(M);settle["movement_type"]=json!("consume");settle["settlement_type"]=json!("damage");settle["quantity"]=json!(1);
+            let result=plan(&stock,&settle,Some(&issued.records[0]),A).unwrap();assert_eq!(result.item["current_quantity"],stock["current_quantity"]);assert_eq!(result.records[0]["outstanding_quantity"],3.0);
+        }
+        assert!(require_usable_stock(&json!({})).is_err());
+        for status in ["available","low_stock","in_use"]{assert!(require_usable_stock(&json!({"status":status})).is_ok());}
     }
 }

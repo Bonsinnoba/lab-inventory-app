@@ -1,11 +1,13 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { Send, Bot, User, ShieldCheck, Plus, History, ExternalLink, Wrench, Settings2, Volume2, Square, StickyNote, Trash2, X, MoreVertical, ListOrdered } from 'lucide-react';
+import { Mic, Send, Bot, User, ShieldCheck, Plus, History, ExternalLink, Wrench, Settings2, Volume2, Square, StickyNote, Trash2, X, MoreVertical, ListOrdered } from 'lucide-react';
 import { apiFetch } from '../api/http';
 import { getProjects, Project } from '../api/projects';
 import { createNote } from '../api/notes';
 import { useQuery } from '@tanstack/react-query';
 import { useToast } from '../contexts/ToastContext';
-import audioFocusCoordinator, { type SuspensionReason } from '../lib/audioFocus';
+import {FocusedSpeech} from '../lib/focusedSpeech';
+import VoiceInputModal from './VoiceInputModal';
+import AssistantProposalsModal from './AssistantProposalsModal';
 
 interface ChatMessage { role: 'user' | 'model'; content: string; }
 interface SourceRef { type: string; id: string; title: string; }
@@ -42,6 +44,8 @@ export default function AssistantChat({ fullPage = false, onClose }: Props) {
   const [conversationId,setConversationId]=useState<string|null>(null); const [conversations,setConversations]=useState<Conversation[]>([]); const [sources,setSources]=useState<SourceRef[]>([]);
   const [toolStatus,setToolStatus]=useState<string|null>(null); const [capabilities,setCapabilities]=useState<any>(null); const [showHistory,setShowHistory]=useState(false); const [showContext,setShowContext]=useState(false); const [showAssistantMenu,setShowAssistantMenu]=useState(false); const [error,setError]=useState<string|null>(null); const [speakingIndex,setSpeakingIndex]=useState<number|null>(null);
   const [showJumpMenu,setShowJumpMenu]=useState(false);
+  const [showVoice,setShowVoice]=useState(false);
+  const [showProposals,setShowProposals]=useState(false);
   const assistantMenuRef=useRef<HTMLDivElement>(null);
   const jumpMenuRef=useRef<HTMLDivElement>(null);
   const jumpButtonRef=useRef<HTMLButtonElement>(null);
@@ -49,7 +53,7 @@ export default function AssistantChat({ fullPage = false, onClose }: Props) {
   const {data:projects=[]}=useQuery<Project[]>({queryKey:['assistant-projects'],queryFn:getProjects,enabled:showContext&&context.scope!=='none',staleTime:30000});
 
   // Audio focus state for TTS
-  const ttsFocusOwner = useRef<{ id: string; generation: number } | null>(null);
+  const speech = useRef<FocusedSpeech|null>(null);
 
   const loadConversations=async()=>{try{const r=await apiFetch('/assistant/conversations');if(r.ok)setConversations(await r.json());}catch{}};
   useEffect(()=>{ apiFetch('/assistant/capabilities').then(async r=>r.ok&&setCapabilities(await r.json())).catch(()=>null); apiFetch('/assistant/preferences').then(async r=>{if(r.ok){const p=await r.json();setContext({scope:p.context_scope||'none',projectId:p.context_project_id||null,customTools:Array.isArray(p.context_tools)?p.context_tools:[]});}}).catch(()=>null); loadConversations(); },[]);
@@ -58,18 +62,10 @@ export default function AssistantChat({ fullPage = false, onClose }: Props) {
   useEffect(()=>{if(!showContext&&!showHistory)return;const onKeyDown=(event:KeyboardEvent)=>{if(event.key==='Escape'){event.preventDefault();setShowContext(false);setShowHistory(false);}};window.addEventListener('keydown',onKeyDown);return()=>window.removeEventListener('keydown',onKeyDown);},[showContext,showHistory]);
   useEffect(()=>{const on=()=>setIsOnline(true),off=()=>setIsOnline(false);window.addEventListener('online',on);window.addEventListener('offline',off);return()=>{window.removeEventListener('online',on);window.removeEventListener('offline',off)}},[]);
 
-  // Cleanup TTS audio focus on unmount
   useEffect(()=>{
-    return()=>{
-      if(ttsFocusOwner.current){
-        audioFocusCoordinator.release({
-          id: ttsFocusOwner.current.id,
-          generation: ttsFocusOwner.current.generation,
-          suspensionReason: 'close',
-        });
-        ttsFocusOwner.current = null;
-      }
-    };
+    const controller=new FocusedSpeech(speaking=>{if(!speaking)setSpeakingIndex(null);});
+    speech.current=controller;
+    return()=>{controller.dispose();if(speech.current===controller)speech.current=null;};
   },[]);
   useEffect(()=>{scrollRef.current?.scrollTo({top:scrollRef.current.scrollHeight,behavior:'smooth'});},[messages,toolStatus]);
   useEffect(()=>{const textarea=composerInputRef.current;if(!textarea)return;const maxHeight=162;textarea.style.height='auto';const contentHeight=textarea.scrollHeight;textarea.style.height=`${Math.max(54,Math.min(contentHeight,maxHeight))}px`;textarea.style.overflowY=contentHeight>maxHeight?'auto':'hidden';},[input]);
@@ -87,57 +83,8 @@ export default function AssistantChat({ fullPage = false, onClose }: Props) {
   };
 
   const readAloud=(text:string,index:number)=>{
-    if(speakingIndex===index){
-      // Stop TTS - release audio focus
-      window.speechSynthesis.cancel();
-      if(ttsFocusOwner.current){
-        audioFocusCoordinator.release({
-          id: ttsFocusOwner.current.id,
-          generation: ttsFocusOwner.current.generation,
-          suspensionReason: 'manual',
-        });
-        ttsFocusOwner.current = null;
-      }
-      setSpeakingIndex(null);
-      return;
-    }
-
-    // Start TTS - acquire audio focus
-    window.speechSynthesis.cancel();
-    const { id, generation } = audioFocusCoordinator.acquire({
-      type: 'tts',
-      id: 'assistant-tts',
-      allowPreempt: true,
-    });
-    ttsFocusOwner.current = { id, generation };
-
-    const u=new SpeechSynthesisUtterance(text);
-    u.onend=()=>{
-      // Release audio focus on completion
-      if(ttsFocusOwner.current){
-        audioFocusCoordinator.release({
-          id: ttsFocusOwner.current.id,
-          generation: ttsFocusOwner.current.generation,
-          suspensionReason: 'automatic',
-        });
-        ttsFocusOwner.current = null;
-      }
-      setSpeakingIndex(null);
-    };
-    u.onerror=()=>{
-      // Release audio focus on error
-      if(ttsFocusOwner.current){
-        audioFocusCoordinator.release({
-          id: ttsFocusOwner.current.id,
-          generation: ttsFocusOwner.current.generation,
-          suspensionReason: 'error',
-        });
-        ttsFocusOwner.current = null;
-      }
-      setSpeakingIndex(null);
-    };
-    setSpeakingIndex(index);
-    window.speechSynthesis.speak(u);
+    if(speakingIndex===index){speech.current?.stop();return;}
+    speech.current?.speak(text);setSpeakingIndex(index);
   };
   const exportToNotes=async(text:string)=>{try{await createNote({title:`Assistant response — ${new Date().toLocaleString()}`,body:text,tags:['assistant']});showToast('Response exported to Notes');}catch(e){showToast(e instanceof Error?e.message:'Failed to export response','error');}};
   const allowedCustom=useMemo(()=>capabilities?.tools||customOptions.map(x=>x[0]),[capabilities]);
@@ -157,11 +104,12 @@ export default function AssistantChat({ fullPage = false, onClose }: Props) {
 
   return <div className={`${shellClass} relative`}>
     <div className="assistant-header relative z-30 flex items-center gap-2 px-3 py-2 border-b border-border flex-shrink-0 min-h-[56px]">
-      <div className="assistant-header-avatar w-8 h-8 rounded-md bg-accent/10 text-accent flex items-center justify-center shrink-0"><Bot size={17}/></div><div className="assistant-header-copy min-w-0 flex-1"><div className="flex items-center gap-2"><strong className="text-sm">Lab Assistant</strong><span className="assistant-header-status text-[10px] uppercase tracking-wider text-status-ok flex items-center gap-1" aria-label="Read-only"><ShieldCheck size={12}/><span className="assistant-header-status-label">Read-only</span></span></div><div className="assistant-header-meta text-xs text-text-secondary truncate mt-0.5">{capabilities?.enabled?`Connected · ${capabilities.model}`:'Database-aware assistant'}</div></div>
+      <div className="assistant-header-avatar w-8 h-8 rounded-md bg-accent/10 text-accent flex items-center justify-center shrink-0"><Bot size={17}/></div><div className="assistant-header-copy min-w-0 flex-1"><div className="flex items-center gap-2"><strong className="text-sm">Lab Assistant</strong><span className="assistant-header-status text-[10px] uppercase tracking-wider text-status-ok flex items-center gap-1" aria-label="Human review required"><ShieldCheck size={12}/><span className="assistant-header-status-label">Review first</span></span></div><div className="assistant-header-meta text-xs text-text-secondary truncate mt-0.5">{capabilities?.enabled?`Configured · ${capabilities.model}`:'Database-aware assistant'}</div></div>
       <div className="flex items-center gap-0.5 shrink-0">
         <div ref={assistantMenuRef} className="assistant-header-menu relative">
           <button type="button" onClick={()=>setShowAssistantMenu(value=>!value)} aria-expanded={showAssistantMenu} aria-haspopup="menu" title="Assistant options" aria-label="Assistant options" className={`w-8 h-8 flex items-center justify-center rounded-md transition-colors text-text-secondary hover:text-text-primary hover:bg-surface-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 ${showAssistantMenu||showHistory?'bg-accent/10 text-accent':''}`}><MoreVertical size={18}/></button>
           {showAssistantMenu&&<div role="menu" aria-label="Assistant options" className="absolute right-0 top-full mt-2 z-50 w-52 rounded-md border border-border bg-surface p-1.5 shadow-xl">
+            <button type="button" role="menuitem" onClick={()=>{setShowProposals(true);setShowAssistantMenu(false);}} className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-xs text-text-secondary hover:bg-surface-raised"><Plus size={15}/><span>Planning drafts</span></button>
             <button type="button" role="menuitem" onClick={()=>{startNew();setShowContext(false);setShowHistory(false);setShowAssistantMenu(false);}} disabled={isStreaming} className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-xs text-text-secondary hover:bg-surface-raised hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"><Plus size={15}/><span>New conversation</span></button>
             <button type="button" role="menuitem" onClick={()=>{setShowHistory(value=>!value);setShowContext(false);setShowAssistantMenu(false);}} aria-expanded={showHistory} className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-xs text-text-secondary hover:bg-surface-raised hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"><History size={15}/><span className="flex-1">Conversation history</span>{showHistory&&<span className="text-accent">Open</span>}</button>
           </div>}
@@ -218,10 +166,10 @@ export default function AssistantChat({ fullPage = false, onClose }: Props) {
             </button>
             <span
               className="inline-flex items-center gap-1 text-[10px] text-status-ok font-medium px-1.5 py-0.5 rounded bg-status-ok/10 shrink-0"
-              title="Read-only: Assistant has no write permissions. Context scope is not write authority."
+              title="Chat tools read authorized data. Planning drafts require explicit human approval; context scope never grants write authority."
             >
               <ShieldCheck size={11} className="shrink-0"/>
-              <span>Read-only</span>
+              <button type="button" onClick={()=>setShowProposals(true)}>Planning drafts</button>
             </span>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
@@ -259,10 +207,13 @@ export default function AssistantChat({ fullPage = false, onClose }: Props) {
                 )}
               </div>
             )}
+            <button type="button" onClick={()=>setShowVoice(true)} disabled={isStreaming||!isOnline} aria-label="Voice input" title="Record and review voice input" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-secondary hover:bg-surface-raised disabled:opacity-40"><Mic size={16}/></button>
             <button type="button" onClick={sendMessage} disabled={isStreaming||!input.trim()||!isOnline} aria-label="Send message" title="Send message" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-accent text-bg disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"><Send size={15}/></button>
           </div>
         </div>
       </div>
     </div>
+    {showProposals&&<AssistantProposalsModal onClose={()=>setShowProposals(false)}/>}
+    {showVoice&&<VoiceInputModal onClose={()=>setShowVoice(false)} onInsert={text=>setInput(current=>current?`${current} ${text}`:text)}/>}
   </div>;
 }

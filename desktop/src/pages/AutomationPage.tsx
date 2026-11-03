@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { BellRing, CalendarClock, CheckCircle2, RefreshCw, AlertCircle } from 'lucide-react';
-import { getAutomationDue, runAutomation } from '../api/automation';
+import { getAutomationDue, getAutomationState, runAutomation } from '../api/automation';
 import { useToast } from '../contexts/ToastContext';
 
 export default function AutomationPage() {
@@ -8,12 +8,14 @@ export default function AutomationPage() {
   const { showToast } = useToast();
   const due = useQuery({ queryKey: ['automation-due'], queryFn: getAutomationDue });
 
+  const state=useQuery({queryKey:['automation-state'],queryFn:getAutomationState,refetchInterval:15000});
   const run = useMutation({
     mutationFn: runAutomation,
     onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: ['automation-due'] });
       qc.invalidateQueries({ queryKey: ['notifications'] });
-      showToast(`${result.created} reminder${result.created === 1 ? '' : 's'} created`);
+      qc.invalidateQueries({queryKey:['automation-state']});
+      showToast(result.queued?'Reminder run saved on this PC, pending server execution':`${result.created} reminder${result.created===1?'':'s'} created`);
     },
     onError: (e: Error) => showToast(e.message || 'Unable to run reminders', 'error'),
   });
@@ -80,6 +82,9 @@ export default function AutomationPage() {
         </button>
       </header>
 
+      {data.availability&&<div className="rounded-md border border-border bg-surface p-3 text-sm text-text-secondary">Local due-work snapshot. May include unsynced changes; server freshness and lab-wide completeness are not verified.{Object.values(data.availability.sections).some(value=>value!=='available')&&' Some local sections are unavailable; visible counts may be incomplete.'}</div>}
+      {!!state.data?.pending.length&&<div role="status" className="rounded-md border border-border bg-surface p-3 text-sm">{state.data.pending.length} reminder run pending synchronization or review. Reminders have not been confirmed as executed.</div>}
+      {state.data?.last_confirmation&&<div className="text-xs text-text-secondary">Last confirmed run: {state.data.last_confirmation.created} reminders created.</div>}
       <div className="grid md:grid-cols-3 gap-4" aria-label="Due work summary">
         {[
           ['Maintenance due', data.maintenance.length, CalendarClock],

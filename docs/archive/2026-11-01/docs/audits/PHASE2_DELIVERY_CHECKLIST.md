@@ -1,5 +1,176 @@
 # Phase 2 fixed delivery checklist
 
+November 1 V1 2.2.4 owner update: installed and reopened after a full V1 profile
+and WebView backup (1,411 files, 2,498,673,127 bytes; all SHA-256 checks pass).
+Installed executable reports 2.2.4; live V1 SQLite integrity is OK and the
+dashboard displays local data. The viewer's folder browsing, native Save action,
+zoom/pan, minimized/expanded states, and the sidebar change were carried in the
+same source files used by V2. The shared viewer, folder browser, zoom component,
+resources page, sidebar, and music components matched the isolated V1 2.2.4
+snapshot byte for byte on this date. V2's App.tsx separately contains the same
+lease-expiry polling and login-routing behavior, with other V2 work layered on top.
+
+Open viewer issue for V1 and V2: the media aspect-ratio selector often produces
+nearly identical output. ResourceViewerModal.tsx applies `aspectRatio` to an
+image/video that also uses `objectFit: 'contain'`; the original media remains
+fully contained, so changing the element box mainly changes letterboxing. Define
+the control's intended modes (for example Original, Fit, Fill/crop, and explicit
+ratio framing), constrain a distinct preview frame in each pane, and apply the
+chosen fit/crop behavior to that frame. Keep the underlying file unchanged and
+check portrait/landscape images and video in both normal and split views. This is
+recorded for the next viewer pass; no aspect-ratio behavior change is claimed in
+2.2.4.
+
+October30 primary B1/B2/B4 condition guard: new checkout/consumption and direct
+reservation fulfillment now reject damaged/repair/replacement/retired stock.
+Native checks use stored status, not a forged next snapshot. Already-issued
+custody can still record damage/loss/consumption without another stock debit.
+28 native checks PASS, two opt-in live checks ignored; actual PostgreSQL HTTP
+and independent condition-change race PASS, including packaged API verification.
+Development API and native Preview builds PASS; unchanged frontend assets reused.
+No parent closure or V1 update; GUI and separate repair lifecycle remain open.
+[Evidence](../handoffs/phase2-parallel/PRIMARY_STOCK_CONDITION_GUARDS_2026-10-30.md).
+
+October29 primary desktop acceptance: separate Preview restored its cached session,
+and cold-started with development API confirmed stopped; cached dashboard/project/
+stock summaries were present in its accessibility state. SQLite baseline had no
+pending changes and a downloaded empty salvage snapshot; backup retained. Recovery
+form/reconnect mutation acceptance remains NOT RUN because both native inspectors
+returned mismatched screenshots/invalid input geometry. No authored records or
+stock changes were made; V1 untouched. API restoration tracked in evidence.
+[Acceptance evidence](../handoffs/phase2-parallel/PRIMARY_SALVAGE_DESKTOP_ACCEPTANCE_2026-10-29.md).
+
+October29 primary B1/B2 inspected custody returns: quarantined return intentions
+now link the issued holder/quantity and reuse canonical return accounting at
+release. Stock, custody settlement, audit and outer receipt commit or roll back
+together. Real PostgreSQL HTTP/ordinary-return race, disk SQLite and 13 adapter
+checks PASS. Damaged stock cannot enter usable inventory through this path.
+Combined Preview/API builds and development deployment PASS; packaged probes PASS
+and API/database/storage health OK. GUI acceptance and separate repair handling
+remain; V1 untouched. No parent closure.
+[Evidence](../handoffs/phase2-parallel/PRIMARY_SALVAGE_CUSTODY_RETURNS_2026-10-29.md).
+
+October29 primary B2 disassembly batches: one native outbox intention now saves
+2–25 outputs atomically with one shared source claim. Outputs retain independent
+inspection/valuation/release; scrap never credits usable stock. Eleven adapter
+checks, TypeScript, real SQLite and actual PostgreSQL HTTP/concurrency matrices
+PASS. Combined Preview/API builds PASS; packaged PostgreSQL probes PASS and
+development API health is OK. New additive migration applied only to development.
+GUI/reconnect acceptance and custody-linked returns remain; no parent closure.
+[Evidence](../handoffs/phase2-parallel/PRIMARY_SALVAGE_OUTPUT_BATCHES_2026-10-29.md).
+
+October29 primary B2 follow-on: real PostgreSQL independent concurrent releases
+PASS same-recovery idempotency, shared-source ceiling, shared-item ledger balances,
+stale-version denial, disabled-actor denial and failure rollback. Consumption-source
+selection now uses guarded cached history on desktop and project-filtered browser
+reads. Nine adapter checks, disk-backed native test, TypeScript/Vite and combined
+Preview native build PASS. GUI acceptance remains separate; Docker is currently
+unavailable, so new API deployment is not claimed.
+Shared-source multi-output batches and custody-linked returns still need code.
+[Evidence](../handoffs/phase2-parallel/PRIMARY_SALVAGE_CONCURRENCY_AND_SOURCE_PICKER_2026-10-29.md).
+
+October29 V1 music hotfix: shared transport replaces render-dependent focus
+ownership and delayed play/source races in both full players. Mini controls use
+the same guarded transport.23 transport/coordinator checks and real React/browser
+audio pause/resume/navigation/mini/focus checks PASS. Shared V2 source retains
+the exact same implementation; broader C3/Phase3 audio integration is still open.
+V1 2.2.3 installed and relaunched; SQLite and524 music/settings storage files
+hash-verified unchanged across installation. Actual owner-file WebView2 playback
+smoke check remains; desktop inspector recovery timed out. Evidence is separate.
+[Music evidence](../handoffs/phase2-parallel/PRIMARY_V1_MUSIC_TRANSPORT_2026-10-29.md).
+
+October29 owner-requested V1 resource/viewer hotfix delivered separately as2.2.2:
+batch/folder selection, Windows frontend drops, folder browsing, movable minimized
+viewer,99% expansion, file-header toggle, media display ratios and reachable
+image/PDF zoom/pan. Installed and reopened; existing database verified unchanged
+by installer, V1 API/database/storage healthy.20 focused checks and isolated viewer
+interactions PASS. No Phase2 parent closure or V2 backend shipment to V1.
+[V1 evidence](../handoffs/phase2-parallel/PRIMARY_V1_RESOURCE_VIEWER_UPDATE_2026-10-29.md).
+
+October29 primary salvage offline workflow: native account-scoped snapshots and
+create/inspect/release intentions now use SQLite -> immutable outbox -> generic
+server transactional receipts -> authorized pull. Inventory recovery section and
+centered dialogs distinguish pending requests from confirmed stock. Seven adapter
+checks, disk-backed SQLite and actual PostgreSQL/authenticated HTTP matrices PASS;
+final native/build/deployment/GUI acceptance tracked in the evidence. No V1 changes
+and no parent closure.
+[Evidence](../handoffs/phase2-parallel/PRIMARY_SALVAGE_OFFLINE_WORKFLOW_2026-10-29.md).
+
+October29 primary salvage authority: shared project visibility now filters
+salvage reads. Inspection/release recheck current active user, domain permission
+and project edit scope in their transaction. Real PostgreSQL/authenticated HTTP
+grant/view/edit/revocation/disabled-account cases PASS, including filtered read
+and released-record retry denial; fixtures absent. Source only; native cache/
+outbox integration and deployment remain. No parent closure.
+[Evidence](../handoffs/phase2-parallel/PRIMARY_SALVAGE_ACCESS_2026-10-29.md).
+
+October29 primary salvage source contract: additive consumption-movement link,
+serialized released-source quantity ceiling, source/project matching, explicit
+legacy attestation and outstanding-custody return guard implemented. Real
+PostgreSQL service and authenticated HTTP matrix PASS; fixtures/migration rolled
+back. Source only; native intents, full visibility and multi-output/race tests
+remain. No parent closure.
+[Evidence](../handoffs/phase2-parallel/PRIMARY_SALVAGE_SOURCE_CLAIMS_2026-10-29.md).
+
+October29 primary salvage correctness: server release now uses valid item types,
+real stock movement balances, repeated-release protection and separate reviewed
+valuation; inspection cannot overwrite released state. Real development
+PostgreSQL rollback probe PASS, fixtures absent. Source only; native salvage
+outbox/provenance/over-recovery and integrated concurrency acceptance remain.
+This is partial B2 work, not phase closure.
+[Evidence](../handoffs/phase2-parallel/PRIMARY_SALVAGE_RELEASE_CORRECTNESS_2026-10-29.md).
+
+October29 coordinated deployment: development API image rebuilt/deployed,
+health API/database/storage OK; runtime reconciliation source hashes match.
+Packaged rollback-only HTTP/PostgreSQL probes PASS from the new container with
+all fixtures absent. Preview combined frontend/native build PASS; launch and
+desktop acceptance pending failed computer-use recovery. V1 healthy/unchanged.
+Dependency audit triage remains; no parent closure.
+[Evidence](../handoffs/phase2-parallel/PRIMARY_COORDINATED_PREVIEW_BUILD_2026-10-29.md).
+
+October29 primary project edit permissions: unchanged full-record fields no
+longer become unintended server updates; ordinary edits do not require finance
+authority merely for carrying an unchanged budget. Native actual budget changes
+require finance.edit. Conflicting authored fields enter explicit preserved-work
+review. Real PostgreSQL HTTP/replay/denial/conflict cases PASS; 17 native tests
+PASS with API stopped; eight conflict UI tests and TypeScript PASS. Legacy
+without-before behavior and full desktop deployment remain separate boundaries.
+[Evidence](../handoffs/phase2-parallel/PRIMARY_PROJECT_EDIT_PERMISSIONS_2026-10-29.md).
+
+October29 primary project save/date checkpoint: timestamp-backed calendar fields
+now initialize correctly. Production native update/outbox failure rollback and
+disk reopen PASS; 17 native project tests PASS with development API stopped.
+50 frontend checks and TypeScript PASS. Real PostgreSQL authenticated review
+route confirms overlap/consumable allocation rules and unchanged physical stock;
+all rollback fixtures absent. Coordinated Preview deployment, GUI restart and
+concurrent/reconnect acceptance remain open. No parent closure.
+[Evidence](../handoffs/phase2-parallel/PRIMARY_PROJECT_SAVE_DATES_AND_QUEUE_PARITY_2026-10-29.md).
+
+October29 primary local review queue: desktop central reservation review now
+derives from existing authorized SQLite project/inventory readers without HTTP
+fallback. Missing data stays unknown; local scope and queued decisions are
+explicit. Boundary/projection checks 47 PASS; final projection checks 7 PASS.
+Header project Save repair rebuilt successfully. Integrated queue deployment,
+desktop save/restart and real server reconciliation remain open; GUI input
+reported invalid 12x12 window bounds after recovery. No parent closure.
+[Evidence](../handoffs/phase2-parallel/PRIMARY_LOCAL_RESERVATION_REVIEW_2026-10-29.md).
+
+October29 task write checkpoint: real authenticated sync-push HTTP + development
+PostgreSQL PASS create/update/delete replay, payload/device mismatch rejection,
+single tombstone, receipt-insert fault rollback and unchanged-event retry. Four
+unique successful receipts; all fixtures absent after rollback. Savepoints isolate
+route transactions, so concurrent/independent commit and actual desktop reconnect
+remain unverified. V1 stayed running and unchanged; no parent closure.
+[Evidence](../handoffs/phase2-parallel/PRIMARY_PROJECT_TASK_WRITE_HTTP_2026-10-29.md).
+
+October29 consolidated project checkpoint: production JWT middleware + actual
+project-pull router PASS nine HTTP cases on real development PostgreSQL in an
+isolated rollback harness; all fixtures confirmed absent. Backend project/
+visibility suite 40 PASS / 1 SKIP, native project suite 16 PASS with API/DB stopped,
+TypeScript and whitespace checks PASS. Actual desktop, deployed configuration,
+write receipts and reconnect remain open; no parent closure or deployment.
+[Evidence](../handoffs/phase2-parallel/PRIMARY_PROJECT_CONSOLIDATED_ACCEPTANCE_2026-10-29.md).
+
 October28 project visibility checkpoint: eight production SQL policy cases PASS
 on development PostgreSQL, including restricted grants and membership/grant
 revocation; rollback absence verified. Ten focused visibility/source-contract
@@ -538,11 +709,21 @@ No parent closure. Evidence:
 | ID | State | Required closure behavior / remaining boundary |
 | --- | --- | --- |
 | B1 | PARTIAL | Quantity-aware custody: separate responsible person from physical issue; split issues, recipients/transfers, partial return/consumption/damage/loss and outstanding balances. Consuming issued stock cannot deduct storeroom stock twice. Preserve provenance, units, permissions and provisional offline allocation. Existing assigned_to is not evidence of a physical issue. |
-| B2 | PLANNED | Traceable salvage/returns/disassembly/scrap linked to source project and issue/consumption. Human confirmation/inspection before usable stock, no over-recovery or duplicate credit, preserve historical consumption. Separate recovery value, carrying/replacement value and actual repair expense; no invented purchase/cash refund. Reviewed recovery valuation is owner-approved below; implementation remains. |
+| B2 | PARTIAL | Quarantine/source claims, inspected release, native outbox/source pickers, shared-source output batches and usable custody-linked returns implemented. PostgreSQL HTTP/concurrency, SQLite, coordinated Preview/API builds and development deployment PASS. Complete GUI outage/reconnect acceptance. Separate damaged-return repair handling and browser authoring/retry parity remain boundaries. Preserve original consumption, reviewed valuation and no invented cash refund. See October29 primary evidence. |
 | B3 | PARTIAL | Audit and complete canonical links among projects, BOM revisions, requirements, reservations, tasks, experiments, canvas, notes/resources and financial evidence. Shared demand must not be double-counted; visual references must not duplicate/delete underlying records. Finish remaining local mutation/repeat/revision paths and remove missing-record server fallbacks. |
 | B4 | PARTIAL | Finish project review/reservation/history/context projections and queued submissions/decisions. Define and implement revision, cancellation, reservation release, archive/delete and closure propagation while preserving custody/results/audit/finance history. Task completion must not silently consume stock or fabricate results; global acceptance remains distinct from local intent. |
 | B5 | PARTIAL | Finish finance/purchase local templates, export, preview and transactional workbook imports; remaining purchase/finance mutations use stable retry identity, atomic local/outbox writes and server reconciliation. Enforce financial permissions, concurrency and all-or-nothing effects. Retain existing inventory-import implementation. |
 | B6 | PARTIAL | Close remaining inventory/storage relationships, field/assignment history and authorized assignee directory; local inventory templates/export, workbook parser hardening and legacy-event recovery. Preserve existing versioned CRUD/bulk/movements/import/history fixes and explicit snapshot completeness. Apply the common sync contract across remaining uncovered domain operations. |
+
+November 1 primary B2 bounded subcheck — salvage sync audit atomicity: salvage
+outbox application now writes its required audit row on the same PostgreSQL
+transaction as the mutation and idempotency receipt. Audit failure aborts the
+whole operation; idempotent replay does not add another audit row. Code-path
+review only; real PostgreSQL fault-injection and normal/replay audit-cardinality
+checks remain for the phase-end sweep. Legacy direct browser salvage routes have
+separate audit gaps and remain open. B2 remains PARTIAL; no parent or closure
+count changed. Evidence:
+`docs/handoffs/phase2-parallel/PRIMARY_SALVAGE_SYNC_AUDIT_ATOMICITY_2026-11-01.md`.
 
 Batch exit: functional connected workflows, not isolated forms; explicit stock,
 custody and finance effects with no double accounting. Resolve business-rule
@@ -620,7 +801,7 @@ a deployed-build or integrated-acceptance claim.
 | A3/A4 | Remaining composite snapshot completeness and file/thumbnail consumer coverage | CODE REMAINING | Continue existing projections/replication; no unresolved policy choice. |
 | A5 | Mixed and partially acknowledged chains, unsynced destinations, nested moves and legacy recovery | CODE REMAINING | Use existing grant/provenance/receipt foundations; preserve unsupported authored work. |
 | B1 | Quantity custody ledger and optional serials | CODE REMAINING | Main business rules approved; no longer blocked on owner selection. |
-| B2 | Quarantined salvage, inspection and reviewed recovery valuation | DEPENDENCY | B1 custody/provenance quantities; independent schema/UI planning can proceed. Valuation policy approved. |
+| B2 | Quarantined salvage, inspection and reviewed recovery valuation | PARTIAL — batches and usable custody returns implemented; acceptance and repair boundaries remain | October29: native outbox/source pickers, generic receipts, atomic shared-source batches and canonical custody return reconciliation. PostgreSQL HTTP/races, SQLite and adapters PASS. Current build/deployment and GUI/reconnect acceptance tracked in primary evidence. Separate damaged-return repair handling and browser authoring/retry parity remain. |
 | B3 | Connected requirements/BOM/tasks/experiments/canvas and remaining local mutations | CODE REMAINING | Canonical demand approved; integrate B1 quantities where stock effects apply. |
 | B4 | Cancellation/closure propagation and settlement | PARTIAL — core awaiting deployment/verification | October 21: revision-fenced cancellation/completion/archive, unused reservation release and inventory settlement implemented. Coordinated migration/native build, in-flight pull/concurrency and end-to-end acceptance remain; broader review/recovery/history work remains separate. |
 | B5/B6 | Remaining finance/import and inventory relationship/history/recovery paths | CODE REMAINING | Existing ordinary permission/version/outbox contract; custody-specific consumers depend on B1. |

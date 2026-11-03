@@ -107,8 +107,22 @@ export async function getResourceManifest(id: string): Promise<ResourceManifest>
   }
   const response=await apiFetch(`/resources/${id}/manifest`);if(!response.ok)throw new Error('Failed to fetch resource manifest');return response.json();
 }
-export function getResourceDownloadUrl(id: string, forceDownload = false): string { if(isTauriRuntime()){const local=localFileUrl(id);if(local)return local;} if (!forceDownload && localMediaResourceIds.has(id)) return getLocalMediaUrl(id); const token = getToken(); const params = new URLSearchParams(); if (forceDownload) params.set('download', 'true'); if (token) params.set('access_token', token); const query = params.toString(); return apiUrl(`/resources/${id}/download${query ? `?${query}` : ''}`); }
-export async function getResourceAccessUrl(id: string, forceDownload = false): Promise<string> { const response = await apiFetch(`/resources/${id}/access-url`); if (!response.ok) throw new Error('Failed to create resource access URL'); const body = await response.json(); return `${body.url}${forceDownload ? (body.url.includes('?') ? '&' : '?') + 'download=true' : ''}`; }
+export function getResourceDownloadUrl(id: string, forceDownload = false): string { if(isTauriRuntime())return localFileUrl(id)||''; if (!forceDownload && localMediaResourceIds.has(id)) return getLocalMediaUrl(id); const token = getToken(); const params = new URLSearchParams(); if (forceDownload) params.set('download', 'true'); if (token) params.set('access_token', token); const query = params.toString(); return apiUrl(`/resources/${id}/download${query ? `?${query}` : ''}`); }
+export async function exportResourceToDevice(id:string):Promise<boolean>{
+ if(!isTauriRuntime())throw new Error('Native file export requires the desktop app');
+ const result=await localEditorCommand<boolean>('export_local_resource_file',id);
+ if(typeof result!=='boolean')throw new Error('Local file export was not confirmed; no server fallback');
+ return result;
+}
+export async function getResourcePreviewText(id:string):Promise<string>{
+ const session=captureAccountSession();if(!session)throw new Error('Sign in to preview resource text');
+ const url=getResourceDownloadUrl(id);if(!url)throw new Error('A verified file copy is not available on this PC yet');
+ const response=await fetch(url,{cache:'no-store',redirect:isTauriRuntime()?'error':'follow'});
+ if(!isAccountSessionCurrent(session))throw new Error('Account changed while loading resource text');
+ if(!response.ok)throw new Error(response.status===413?'This file is too large for a text preview. Export it to your device to open it.':`Unable to load resource (${response.status})`);
+ const text=await response.text();if(!isAccountSessionCurrent(session))throw new Error('Account changed while loading resource text');return text;
+}
+export async function getResourceAccessUrl(id: string, forceDownload = false): Promise<string> { if(isTauriRuntime()){const local=localFileUrl(id);if(!local)throw new Error('A verified file copy is not available on this PC yet');return local;} const response = await apiFetch(`/resources/${id}/access-url`); if (!response.ok) throw new Error('Failed to create resource access URL'); const body = await response.json(); return `${body.url}${forceDownload ? (body.url.includes('?') ? '&' : '?') + 'download=true' : ''}`; }
 export async function getResourceText(id: string, expectedRevision?:string): Promise<string> { if(isTauriRuntime())return localEditorCommand<string>('read_local_resource_markdown',id,{expectedRevision}); const response = await apiFetch(`/resource-editor/${id}/content`); if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to read resource content')); return response.text(); }
 export async function saveResourceText(id: string, content: string, expectedRevision?:string): Promise<Resource> { if(isTauriRuntime()){if(!expectedRevision)throw new Error('Reopen the editor to verify the document revision');return localEditorCommand<Resource>('save_local_resource_markdown',id,{content,expectedRevision});} const response = await apiFetch(`/resource-editor/${id}/content`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }) }); if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to save resource content')); return response.json(); }
 export async function getDocxHtml(id: string, expectedRevision?:string): Promise<{ html: string; messages: Array<{ type?: string; message?: string }> }> { if(isTauriRuntime())return localEditorCommand('read_local_docx',id,{expectedRevision}); const response = await apiFetch(`/resource-editor/${id}/docx`); if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to open DOCX')); return response.json(); }

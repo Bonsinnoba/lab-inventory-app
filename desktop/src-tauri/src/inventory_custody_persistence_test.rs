@@ -18,7 +18,7 @@ impl Database {
         conn.execute("INSERT INTO local_users VALUES('a',?1,1,datetime('now','+24 hours'),'[\"inventory.view\",\"inventory.adjust_stock\"]')", [ACCOUNT]).unwrap();
         conn.execute("INSERT INTO local_session VALUES(1,'a')", []).unwrap();
         conn.execute("INSERT INTO local_assignee_directory(user_id,account_id,directory_json) VALUES(?1,?2,?3)", params![format!("account:{ACCOUNT}:{RECIPIENT}"), ACCOUNT, json!({"id":RECIPIENT}).to_string()]).unwrap();
-        state::write(&conn, &[json!({"id":ITEM,"current_quantity":10,"sync_version":1,"location":"Shelf A"})]).unwrap();
+        state::write(&conn, &[json!({"id":ITEM,"status":"available","current_quantity":10,"sync_version":1,"location":"Shelf A"})]).unwrap();
         (Self(path), conn)
     }
     fn reopen(&self) -> Connection { Connection::open(&self.0).unwrap() }
@@ -238,7 +238,7 @@ fn accepting_server_preserves_recovery_and_blocks_new_stock_writes_until_pull() 
     assert!(save_custody_movement(&mut conn,request).unwrap_err().contains("preserved for recovery"));
     assert!(state::merge(&mut conn,RECIPIENT,vec![json!({"id":ITEM,"current_quantity":9,"sync_version":5})],vec![],Some("wrong-account")).is_err());
     let request=input(&conn,&issue());assert!(save_custody_movement(&mut conn,request).is_err());
-    state::merge(&mut conn,ACCOUNT,vec![json!({"id":ITEM,"current_quantity":9,"sync_version":5})],vec![],Some("reconciled")).unwrap();
+    state::merge(&mut conn,ACCOUNT,vec![json!({"id":ITEM,"status":"available","current_quantity":9,"sync_version":5})],vec![],Some("reconciled")).unwrap();
     let request=input(&conn,&issue());save_custody_movement(&mut conn,request).unwrap();
     assert_eq!(state::read(&conn).unwrap().unwrap()[0]["current_quantity"],5.0);
     let retained:String=conn.query_row("SELECT value FROM sync_state WHERE key LIKE ?1",[format!("account:{ACCOUNT}:inventory_recovery_%")],|r|r.get(0)).unwrap();

@@ -39,3 +39,8 @@ test('metadata predecessors join the dependency graph without changing saved pay
   assert.deepEqual(filter(changes,new Set(['a'])).map(c=>c.change_id),['other']);
   assert.equal(JSON.stringify(changes),before);
 });
+
+test('failed folder withholds nested children, copies and later edits across legacy payload shapes',()=>{
+ const changes=[change('child','file',{resource:{parent_resource_id:'nested'}}),change('nested','nested',{record:{parent_resource_id:'folder'}}),change('copy','copy',{copy:{source_id:'file'}}),change('edit','copy',{edit:{previous_change_id:'copy'}}),change('link','link',{parent_resource_id:'folder'}),change('other','unrelated'),change('note','folder',{},'note')];
+ const before=JSON.stringify(changes);assert.deepEqual(filter(changes,new Set(['folder'])).map(c=>c.change_id),['other','note']);assert.equal(JSON.stringify(changes),before);
+});

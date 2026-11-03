@@ -37,6 +37,7 @@ export interface AcquireOptions {
   id: string;
   onPreempt?: (preemptedBy: AudioFocusOwner) => void;
   allowPreempt?: boolean;
+  replaceEqual?: boolean;
 }
 
 export interface ReleaseOptions {
@@ -107,7 +108,7 @@ class AudioFocusCoordinator {
    * @returns Owner token with generation counter
    */
   acquire(options: AcquireOptions): { id: string; generation: number } {
-    const { type, id, onPreempt, allowPreempt = true } = options;
+    const { type, id, onPreempt, allowPreempt = true, replaceEqual = false } = options;
     const generation = ++this.generationCounter;
     const ownerId = id || this.generateOwnerId(type);
     const newOwner: AudioFocusOwner = {
@@ -140,7 +141,7 @@ class AudioFocusCoordinator {
     const priorityDiff = this.comparePriority(type, current.type);
 
     // Higher priority - preempt current owner
-    if (priorityDiff > 0 && allowPreempt) {
+    if ((priorityDiff > 0 || (priorityDiff === 0 && replaceEqual)) && allowPreempt) {
       const suspensionReason: SuspensionReason = 'automatic';
       this.state.suspendedOwners.set(current.id, {
         owner: current,

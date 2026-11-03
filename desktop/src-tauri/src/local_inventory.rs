@@ -365,6 +365,9 @@ pub fn list_local_item_custody(
     item_id: String,
 ) -> Result<Option<Vec<String>>, String> {
     let conn = connection(&app)?;
+    list_custody(&conn,&item_id)
+}
+pub(crate) fn list_custody(conn:&Connection,item_id:&str)->Result<Option<Vec<String>>,String>{
     let item_id = crate::inventory_sync_state::canonical_id(&item_id)?;
     ensure_movement_schema(&conn)?;
     local_auth::require_local_permission(&conn, "inventory.view")?;

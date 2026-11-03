@@ -11,7 +11,8 @@ test('BOM demand does not require inventory already selected',()=>{
  assert.equal(exports.validBomForm({...form,preferred_item_id:'a',alternative_item_id:'a'}),false);
 });
 test('invalid demand still cannot be submitted',()=>{
- for(const required_quantity of ['','0','-1','NaN','Infinity','abc']) assert.equal(exports.validBomForm({...form,required_quantity}),false);
+ for(const required_quantity of ['','0','-1','NaN','Infinity','abc','0.0001','1000000000']) assert.equal(exports.validBomForm({...form,required_quantity}),false);
+ for(const required_quantity of ['0.001','1.001','999999999.999'])assert.equal(exports.validBomForm({...form,required_quantity}),true);
  assert.equal(exports.validBomForm({...form,name:'  '}),false);
 });
 test('plan mutations invalidate connected projections without clearing cached data',async()=>{

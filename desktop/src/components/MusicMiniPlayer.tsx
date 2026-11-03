@@ -24,7 +24,7 @@ export default function MusicMiniPlayer({ onRestore, onClose }: Props) {
   const [trackSubtitle, setTrackSubtitle] = useState('Your music library');
   const [artwork, setArtwork] = useState('');
   const drag = useRef({ active: false, moved: false, startX: 0, startY: 0, originX: 0, originY: 0, left: 0, top: 0, width: 0, height: 0 });
-  const getAudio = () => document.querySelector('audio') as HTMLAudioElement | null;
+  const getAudio = () => document.querySelector('audio[data-labos-music="true"]') as HTMLAudioElement | null;
   const clickMusicControl = (label: string) => {
     const button = document.querySelector(`[aria-label="Music player"] button[aria-label="${label}"]`) as HTMLButtonElement | null;
     button?.click();
@@ -92,8 +92,7 @@ export default function MusicMiniPlayer({ onRestore, onClose }: Props) {
   const toggle = () => {
     const audio = getAudio();
     if (!audio) return;
-    if (audio.paused) audio.play().catch(() => undefined);
-    else audio.pause();
+    audio.dispatchEvent(new Event('labos:music-toggle'));
   };
   const secondaryButton = 'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-text-secondary transition-colors hover:bg-surface hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60';
   const progress = duration > 0 ? Math.min(position / duration, 1) : 0;

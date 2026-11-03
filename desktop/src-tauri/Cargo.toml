@@ -11,7 +11,7 @@ edition = "2021"
 tauri-build = { version = "1.5", features = [] }
 
 [dependencies]
-tauri = { version = "1.5", features = [ "http-all", "shell-open", "system-tray" ] }
+tauri = { version = "1.5", features = [ "http-all", "shell-open", "system-tray", "dialog-save", "fs-write-file" ] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 rusqlite = { version = "0.31", features = ["bundled"] }
@@ -22,7 +22,7 @@ sha2 = "0.10.9"
 reqwest = { version = "0.11.27", default-features = false, features = ["json", "native-tls"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.48.0", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+windows-sys = { version = "0.48.0", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Storage_FileSystem"] }
 
 [features]
 default = [ "custom-protocol" ]

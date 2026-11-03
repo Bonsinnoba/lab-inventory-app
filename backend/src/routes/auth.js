@@ -1,3 +1,4 @@
+import {requireAccountManagementAuthority} from '../account-management-authority.js';
 import { Router } from 'express';
 import { pool } from '../db.js';
 import bcrypt from 'bcrypt';
@@ -123,12 +124,16 @@ router.post('/users', authenticateToken, hasPermission('users.create'), async (r
   try {
     const passwordHash = await bcrypt.hash(password, 12);
     await client.query('BEGIN');
+    const authority=await requireAccountManagementAuthority(client,req.user,'users.create');
+    if(role!=='member'&&!authority.permissions.has('users.manage_roles'))throw Object.assign(Error('Permission required: users.manage_roles'),{status:403,code:'PERMISSION_DENIED'});
+    if(role==='admin'&&authority.actor.role!=='admin')throw Object.assign(Error('Only an administrator can create an administrator'),{status:403,code:'ADMIN_ROLE_REQUIRED'});
     const result = await client.query(`INSERT INTO users (username, password_hash, role) VALUES ($1, $2, $3) RETURNING id, username, role, created_at`, [username.trim(), passwordHash, role]);
     await writeAuditLog({ req, action: 'CREATE', entityType: 'user', entityId: result.rows[0].id, newValue: result.rows[0], client, required: true });
     await client.query('COMMIT');
     res.status(201).json({ user: result.rows[0] });
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch {}
+    if(err.status)return res.status(err.status).json({error:{code:err.code,message:err.message}});
     console.error(err);
     if (err.code === '23505') return res.status(409).json({ error: 'Username already exists' });
     res.status(500).json({ error: 'Failed to create user' });
@@ -147,17 +152,20 @@ router.patch('/users/:id', authenticateToken, hasPermission('users.edit'), async
     await client.query('BEGIN');
     // Serialize role/status changes, including the last-active-admin invariant.
     await client.query('SELECT pg_advisory_xact_lock($1)', [981235]);
+    const authority=await requireAccountManagementAuthority(client,req.user,'users.edit',req.params.id);
+    if(role!==undefined&&!authority.permissions.has('users.manage_roles'))throw Object.assign(Error('Permission required: users.manage_roles'),{status:403,code:'PERMISSION_DENIED'});
+    if(authority.actor.id===authority.target.id&&is_active===false)throw Object.assign(Error('You cannot disable your own account'),{status:400,code:'SELF_DISABLE_DENIED'});
     const current = await client.query('SELECT id, username, role, is_active FROM users WHERE id = $1 FOR UPDATE', [req.params.id]); if (!current.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'User not found' }); }
     const before = current.rows[0]; const nextRole = role ?? before.role; const nextActive = is_active ?? before.is_active;
-    if (!canManageTarget(req.user, before)) { await client.query('ROLLBACK'); return res.status(403).json(deny('Only an administrator can manage an administrator account', 'ADMIN_TARGET_PROTECTED', 'users.edit')); }
-    if (nextRole === 'admin' && req.user.role !== 'admin') { await client.query('ROLLBACK'); return res.status(403).json(deny('Only an administrator can assign the administrator role', 'ADMIN_ROLE_REQUIRED', 'users.manage_roles')); }
+    if (!canManageTarget(authority.actor, before)) { await client.query('ROLLBACK'); return res.status(403).json(deny('Only an administrator can manage an administrator account', 'ADMIN_TARGET_PROTECTED', 'users.edit')); }
+    if (nextRole === 'admin' && authority.actor.role !== 'admin') { await client.query('ROLLBACK'); return res.status(403).json(deny('Only an administrator can assign the administrator role', 'ADMIN_ROLE_REQUIRED', 'users.manage_roles')); }
     if (before.role === 'admin' && nextRole !== 'admin') { const count = await client.query("SELECT COUNT(*)::int AS count FROM users WHERE role = 'admin' AND is_active = TRUE"); if (count.rows[0].count <= 1) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'At least one active administrator is required' }); } }
     if (before.role === 'admin' && before.is_active && nextActive === false) { const count = await client.query("SELECT COUNT(*)::int AS count FROM users WHERE role = 'admin' AND is_active = TRUE"); if (count.rows[0].count <= 1) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'At least one active administrator is required' }); } }
     const result = await client.query('UPDATE users SET role = $1, is_active = $2 WHERE id = $3 RETURNING id, username, role, is_active, last_login_at, created_at', [nextRole, nextActive, req.params.id]);
     await writeAuditLog({ req, action: 'UPDATE', entityType: 'user', entityId: req.params.id, oldValue: before, newValue: result.rows[0], client, required: true });
     await client.query('COMMIT');
     res.json({ user: result.rows[0] });
-  } catch (err) { try { await client.query('ROLLBACK'); } catch {} console.error(err); res.status(500).json({ error: 'Failed to update user' }); } finally { client.release(); }
+  } catch (err) { try { await client.query('ROLLBACK'); } catch {} if(err.status)return res.status(err.status).json({error:{code:err.code,message:err.message}});console.error(err); res.status(500).json({ error: 'Failed to update user' }); } finally { client.release(); }
 });
 
 router.post('/users/:id/password', authenticateToken, hasPermission('users.reset_password'), async (req, res) => {
@@ -167,22 +175,24 @@ router.post('/users/:id/password', authenticateToken, hasPermission('users.reset
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const authority=await requireAccountManagementAuthority(client,req.user,'users.reset_password',req.params.id);
     const target = await client.query('SELECT id, username, role FROM users WHERE id = $1 FOR UPDATE', [req.params.id]);
     if (!target.rowCount) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'User not found' });
     }
-    if (!canManageTarget(req.user, target.rows[0])) {
+    if (!canManageTarget(authority.actor, target.rows[0])) {
       await client.query('ROLLBACK');
       return res.status(403).json(deny('Only an administrator can reset an administrator password', 'ADMIN_TARGET_PROTECTED', 'users.reset_password'));
     }
     const passwordHash = await bcrypt.hash(new_password, 12);
     await client.query('UPDATE users SET password_hash = $1 WHERE id = $2', [passwordHash, req.params.id]);
-    await writeAuditLog({ req, action: 'UPDATE', entityType: 'user_password', entityId: req.params.id, metadata: { username: target.rows[0].username, reset_by_admin: req.user.role === 'admin' }, client, required: true });
+    await writeAuditLog({ req, action: 'UPDATE', entityType: 'user_password', entityId: req.params.id, metadata: { username: target.rows[0].username, reset_by_admin: authority.actor.role === 'admin' }, client, required: true });
     await client.query('COMMIT');
     res.json({ message: 'Password reset successfully. The account must sign in again.', reauthentication_required: true });
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch {}
+    if(err.status)return res.status(err.status).json({error:{code:err.code,message:err.message}});
     console.error(err);
     res.status(500).json({ error: 'Failed to reset password' });
   } finally { client.release(); }
@@ -215,6 +225,7 @@ router.put('/users/:id/permissions', authenticateToken, hasPermission('users.man
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    await requireAccountManagementAuthority(client,req.user,'users.manage_permissions',req.params.id);
     target.rows[0]=await requirePermissionReplacementAuthority(client,req.user.userId,req.params.id,entries);
     await client.query('DELETE FROM user_permission_overrides WHERE user_id = $1', [req.params.id]);
     for (const [permission, effect] of deduped) await client.query('INSERT INTO user_permission_overrides (user_id, permission, effect, updated_by) VALUES ($1,$2,$3,$4)', [req.params.id, permission, effect, req.user.userId]);

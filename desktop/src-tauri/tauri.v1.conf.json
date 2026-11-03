@@ -3,6 +3,6 @@
   "tauri": {
     "bundle": { "identifier": "com.lab-inventory.app.v1" },
     "allowlist": { "http": { "scope": ["http://localhost:4010/*"] } },
-    "windows": [{ "title": "LabOS V1 — Personal Lab" }]
+    "windows": [{ "title": "LabOS V1 — Personal Lab", "fileDropEnabled": false }]
   }
 }

@@ -1,6 +1,7 @@
+import {captureAccountSession,isAccountSessionCurrent} from '../api/auth';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { refreshProjectPlan } from '../api/project-plan-refresh';
-import { getCanvas, createBlock, updateBlock, deleteBlock, createConnector, deleteConnector, CanvasData, CanvasBlock } from '../api/canvas';
+import { getCanvas, createBlock, updateBlock, deleteBlock, createConnector, deleteConnector, CanvasData, CanvasBlock, CanvasConnector } from '../api/canvas';
 import { getResource, getResourceAccessUrl, Resource } from '../api/resources';
 import { Plus, X, Image as ImageIcon, Video as VideoIcon, FileText, Music, Link as LinkIcon, Cable, ZoomIn, ZoomOut, Maximize2, Grid, Map, MousePointer2, Trash2, RotateCcw, PanelRight, Search, Crosshair, ChevronDown, ChevronUp, GripVertical } from 'lucide-react';
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
@@ -59,6 +60,7 @@ export default function ProjectCanvas({ projectId }: ProjectCanvasProps) {
   const [connectSource, setConnectSource] = useState<string | null>(null);
   const [canvasError, setCanvasError] = useState<string | null>(null);
   const [liveGeometry, setLiveGeometry] = useState<Record<string, { x: number; y: number; width: number; height: number }>>({});
+  const draftBases=useRef<Record<string,CanvasBlock>>({});
   const [textDrafts, setTextDrafts] = useState<Record<string, string>>({});
   const [editingTitleId, setEditingTitleId] = useState<string | null>(null);
   const [titleDraft, setTitleDraft] = useState('');
@@ -76,10 +78,14 @@ export default function ProjectCanvas({ projectId }: ProjectCanvasProps) {
   const invalidate = () => Promise.all([queryClient.invalidateQueries({ queryKey: ['canvas', projectId] }), refreshProjectPlan(queryClient, projectId)]);
   const mutationError = (err: any, fallback: string) => setCanvasError(typeof err?.message === 'string' ? err.message : fallback);
   const updateBlockMutation = useMutation({
-    mutationFn: ({ id, patch }: { id: string; patch: Parameters<typeof updateBlock>[1] }) => updateBlock(id, patch),
-    onSuccess: (_saved, variables) => {
+    mutationFn: ({ id, patch, expected }: { id: string; patch: Parameters<typeof updateBlock>[1];expected?:CanvasBlock }) => updateBlock(id, {...patch,project_id:projectId},expected??canvas?.blocks.find(b=>b.id===id)),
+    onSuccess: (saved, variables) => {
       setLiveGeometry(prev => { const next = { ...prev }; delete next[variables.id]; return next; });
-      if ('text_content' in variables.patch) setTextDrafts(prev => { const next = { ...prev }; delete next[variables.id]; return next; });
+      if ('title' in variables.patch) delete draftBases.current[`title:${variables.id}`];
+      if ('text_content' in variables.patch) setTextDrafts(prev => {
+        if(prev[variables.id]!==variables.patch.text_content){if(prev[variables.id]!==undefined)draftBases.current[`text:${variables.id}`]=saved;return prev;}
+        delete draftBases.current[`text:${variables.id}`];const next={...prev};delete next[variables.id];return next;
+      });
       invalidate();
     },
     onError: (err: any) => mutationError(err, 'Failed to save canvas change')
@@ -87,13 +93,15 @@ export default function ProjectCanvas({ projectId }: ProjectCanvasProps) {
   const createBlockMutation = useMutation({ mutationFn: (block: Parameters<typeof createBlock>[1]) => createBlock(projectId, block), onSuccess: () => { invalidate(); setShowAddBlock(false); }, onError: (err: any) => mutationError(err, 'Failed to create block') });
   // F2.2 DELETE HARDENING: optimistic cache removal + rollback on API failure.
   const deleteBlockMutation = useMutation({
-    mutationFn: async (blockId: string) => {
+    mutationFn: async (block: CanvasBlock) => {
+      const blockId=block.id;
       // Pass the owning project so the local-first API can route the delete
       // through the workstation SQLite runtime and queue its sync outbox entry.
-      await deleteBlock(blockId, projectId);
+      await deleteBlock(blockId, projectId,block);
       return blockId;
     },
-    onMutate: async (id) => {
+    onMutate: async (block:CanvasBlock) => {
+      const id=block.id,session=captureAccountSession();
       await queryClient.cancelQueries({ queryKey: ['canvas', projectId] });
       const previousCanvas = queryClient.getQueryData<CanvasData>(['canvas', projectId]);
       queryClient.setQueryData<CanvasData | undefined>(['canvas', projectId], (current) => {
@@ -108,19 +116,18 @@ export default function ProjectCanvas({ projectId }: ProjectCanvasProps) {
       });
       setSelectedBlockId((selected) => selected === id ? null : selected);
       setConnectSource((source) => source === id ? null : source);
-      setLiveGeometry(prev => { const next = { ...prev }; delete next[id]; return next; });
-      setTextDrafts(prev => { const next = { ...prev }; delete next[id]; return next; });
-      return { previousCanvas };
+      return { previousCanvas,session };
     },
     onError: (err: any, _id, context) => {
+      if(!context?.session||!isAccountSessionCurrent(context.session))return;
       if (context?.previousCanvas) queryClient.setQueryData(['canvas', projectId], context.previousCanvas);
       mutationError(err, 'Failed to delete block');
     },
-    onSuccess: () => setCanvasError(null),
+    onSuccess: (_saved,block) => {setCanvasError(null);setLiveGeometry(prev=>{const next={...prev};delete next[block.id];return next;});setTextDrafts(prev=>{const next={...prev};delete next[block.id];return next;});delete draftBases.current[`text:${block.id}`];delete draftBases.current[`title:${block.id}`];},
     onSettled: () => invalidate(),
   });
   const createConnectorMutation = useMutation({ mutationFn: (payload: { source_block_id: string; target_block_id: string }) => createConnector(projectId, payload), onSuccess: invalidate, onError: (err: any) => mutationError(err, 'Failed to create connector') });
-  const deleteConnectorMutation = useMutation({ mutationFn: (connectorId: string) => deleteConnector(connectorId, projectId), onSuccess: invalidate, onError: (err: any) => mutationError(err, 'Failed to remove connector') });
+  const deleteConnectorMutation = useMutation({ mutationFn: (connector:CanvasConnector) => deleteConnector(connector.id, projectId,connector), onSuccess: invalidate, onError: (err: any) => mutationError(err, 'Failed to remove connector') });
 
   useEffect(() => { if (!viewingResourceId) { setViewingResource(null); return; } getResource(viewingResourceId).then(setViewingResource).catch(() => setViewingResource(null)); }, [viewingResourceId]);
 
@@ -153,7 +160,7 @@ export default function ProjectCanvas({ projectId }: ProjectCanvasProps) {
     const label = block.title || TYPE_LABEL[block.block_type] || 'this block';
     if (!window.confirm(`Delete \"${label}\" from the canvas?`)) return;
     setCanvasError(null);
-    deleteBlockMutation.mutate(blockId);
+    deleteBlockMutation.mutate(block);
   }, [canEdit, canvas?.blocks, deleteBlockMutation]);
 
   useEffect(() => {
@@ -171,14 +178,14 @@ export default function ProjectCanvas({ projectId }: ProjectCanvasProps) {
     if (connectMode || !canEdit) return; e.preventDefault(); setSelectedBlockId(block.id);
     const startMouseX = e.clientX, startMouseY = e.clientY, start = geometryFor(block);
     const onMove = (m: MouseEvent) => setLiveGeometry(prev => ({ ...prev, [block.id]: { ...start, x: Math.max(0, start.x + (m.clientX - startMouseX) / zoom), y: Math.max(0, start.y + (m.clientY - startMouseY) / zoom) } }));
-    const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); setLiveGeometry(prev => { const final = prev[block.id]; if (final) updateBlockMutation.mutate({ id: block.id, patch: { x: final.x, y: final.y } }); return prev; }); };
+    const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); setLiveGeometry(prev => { const final = prev[block.id]; if (final) updateBlockMutation.mutate({ id: block.id, expected:block, patch: { x: final.x, y: final.y } }); return prev; }); };
     window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', onUp);
   }, [connectMode, canEdit, geometryFor, updateBlockMutation, zoom]);
 
   const handleResizeStart = useCallback((block: CanvasBlock, e: React.MouseEvent) => {
     if (!canEdit) return; e.preventDefault(); e.stopPropagation(); setSelectedBlockId(block.id); const start = geometryFor(block), sx=e.clientX, sy=e.clientY;
     const onMove=(m:MouseEvent)=>setLiveGeometry(prev=>({...prev,[block.id]:{...start,width:Math.max(MIN_WIDTH,start.width+(m.clientX-sx)/zoom),height:Math.max(MIN_HEIGHT,start.height+(m.clientY-sy)/zoom)}}));
-    const onUp=()=>{window.removeEventListener('mousemove',onMove);window.removeEventListener('mouseup',onUp);setLiveGeometry(prev=>{const final=prev[block.id];if(final)updateBlockMutation.mutate({id:block.id,patch:{width:final.width,height:final.height}});return prev;});};
+    const onUp=()=>{window.removeEventListener('mousemove',onMove);window.removeEventListener('mouseup',onUp);setLiveGeometry(prev=>{const final=prev[block.id];if(final)updateBlockMutation.mutate({id:block.id,expected:block,patch:{width:final.width,height:final.height}});return prev;});};
     window.addEventListener('mousemove',onMove); window.addEventListener('mouseup',onUp);
   }, [canEdit, geometryFor, updateBlockMutation, zoom]);
 
@@ -187,9 +194,9 @@ export default function ProjectCanvas({ projectId }: ProjectCanvasProps) {
     if (!connectSource) setConnectSource(blockId); else if (connectSource !== blockId) { createConnectorMutation.mutate({ source_block_id: connectSource, target_block_id: blockId }); setConnectSource(null); }
   };
   const textValueFor=(b:CanvasBlock)=>textDrafts[b.id] ?? b.text_content ?? '';
-  const saveText=(b:CanvasBlock)=>{const d=textDrafts[b.id];if(d!==undefined&&d!==b.text_content)updateBlockMutation.mutate({id:b.id,patch:{text_content:d}})};
-  const startTitle=(b:CanvasBlock)=>{setEditingTitleId(b.id);setTitleDraft(b.title??'')};
-  const saveTitle=(b:CanvasBlock)=>{const v=titleDraft.trim();if(v!==(b.title??''))updateBlockMutation.mutate({id:b.id,patch:{title:v||null}});setEditingTitleId(null)};
+  const saveText=(b:CanvasBlock)=>{const d=textDrafts[b.id];if(d!==undefined&&d!==b.text_content)updateBlockMutation.mutate({id:b.id,expected:draftBases.current[`text:${b.id}`]??b,patch:{text_content:d}})};
+  const startTitle=(b:CanvasBlock)=>{draftBases.current[`title:${b.id}`]=b;setEditingTitleId(b.id);setTitleDraft(b.title??'')};
+  const saveTitle=(b:CanvasBlock)=>{const v=titleDraft.trim();if(v!==(b.title??''))updateBlockMutation.mutate({id:b.id,expected:draftBases.current[`title:${b.id}`]??b,patch:{title:v||null}},{onSuccess:()=>setEditingTitleId(current=>current===b.id?null:current)});else setEditingTitleId(null)};
   const handleCreateBlock=(payload:{block_type:CanvasBlock['block_type'];title?:string;text_content?:string;resource_id?:string})=>{const count=canvas?.blocks.length??0;createBlockMutation.mutate({...payload,x:80+(count%4)*40,y:80+(count%4)*40,width:DEFAULT_WIDTH,height:DEFAULT_HEIGHT})};
   const startMinimapDrag = (event: React.PointerEvent<HTMLDivElement>) => {
     const area = canvasAreaRef.current;
@@ -254,13 +261,13 @@ export default function ProjectCanvas({ projectId }: ProjectCanvasProps) {
           <div className="canvas-stage" style={{width:CANVAS_SIZE.width,height:CANVAS_SIZE.height,transform:`scale(${zoom})`}}>
             <svg className="absolute inset-0 pointer-events-none" width={CANVAS_SIZE.width} height={CANVAS_SIZE.height}>
               <defs><marker id={`arrow-${projectId}`} markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="var(--color-accent)"/></marker></defs>
-              {canvas.connectors.map(conn=>{const s=blockById(conn.source_block_id),t=blockById(conn.target_block_id);if(!s||!t)return null;const sg=geometryFor(s),tg=geometryFor(t);const x1=sg.x+sg.width/2,y1=sg.y+sg.height/2,x2=tg.x+tg.width/2,y2=tg.y+tg.height/2;const dx=Math.max(50,Math.abs(x2-x1)*.35);return <g key={conn.id} className="pointer-events-auto"><path d={`M ${x1} ${y1} C ${x1+dx} ${y1}, ${x2-dx} ${y2}, ${x2} ${y2}`} fill="none" stroke="var(--color-accent)" strokeWidth="2" opacity=".65" markerEnd={`url(#arrow-${projectId})`}/><circle cx={(x1+x2)/2} cy={(y1+y2)/2} r="7" fill="var(--color-surface)" stroke="var(--color-border)" className="cursor-pointer" onClick={()=>{if(canEdit)deleteConnectorMutation.mutate(conn.id)}}/></g>})}
+              {canvas.connectors.map(conn=>{const s=blockById(conn.source_block_id),t=blockById(conn.target_block_id);if(!s||!t)return null;const sg=geometryFor(s),tg=geometryFor(t);const x1=sg.x+sg.width/2,y1=sg.y+sg.height/2,x2=tg.x+tg.width/2,y2=tg.y+tg.height/2;const dx=Math.max(50,Math.abs(x2-x1)*.35);return <g key={conn.id} className="pointer-events-auto"><path d={`M ${x1} ${y1} C ${x1+dx} ${y1}, ${x2-dx} ${y2}, ${x2} ${y2}`} fill="none" stroke="var(--color-accent)" strokeWidth="2" opacity=".65" markerEnd={`url(#arrow-${projectId})`}/><circle cx={(x1+x2)/2} cy={(y1+y2)/2} r="7" fill="var(--color-surface)" stroke="var(--color-border)" className="cursor-pointer" onClick={()=>{if(canEdit)deleteConnectorMutation.mutate(conn)}}/></g>})}
             </svg>
             {canvas.blocks.map(block=>{const geo=geometryFor(block),Icon=TYPE_ICON[block.block_type],selected=selectedBlockId===block.id,visible=filteredBlocks.some(b=>b.id===block.id),source=connectSource===block.id;return <div key={block.id} style={{left:geo.x,top:geo.y,width:geo.width,height:geo.height,opacity:visible?1:.18}} className={`canvas-block absolute bg-surface-raised border rounded-md flex flex-col overflow-hidden ${selected||source?'selected':''} ${connectMode?'cursor-pointer':''}`} onClick={()=>handleBlockClick(block.id)}>
               <div onMouseDown={e=>handleDragStart(block,e)} className="flex items-center justify-between gap-2 px-2.5 py-2 border-b border-border bg-surface cursor-move flex-shrink-0">
-                <div className="flex items-center gap-2 min-w-0 flex-1"><span className="w-6 h-6 rounded-sm bg-accent/10 text-accent flex items-center justify-center flex-shrink-0">{Icon&&<Icon size={13}/>}</span>{editingTitleId===block.id?<input autoFocus value={titleDraft} onChange={e=>setTitleDraft(e.target.value)} onMouseDown={e=>e.stopPropagation()} onClick={e=>e.stopPropagation()} onKeyDown={e=>{if(e.key==='Enter')e.currentTarget.blur();if(e.key==='Escape')setEditingTitleId(null)}} onBlur={()=>saveTitle(block)} placeholder="Block title…" className="min-w-0 flex-1 bg-transparent text-xs focus:outline-none border-b border-accent"/>:<button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();if(canEdit&&!connectMode)startTitle(block)}} className="min-w-0 flex-1 text-left truncate"><span className={block.title?'text-text-primary font-medium':'text-text-secondary uppercase font-mono'}>{block.title||TYPE_LABEL[block.block_type]}</span></button>}</div><button onClick={e=>{e.stopPropagation();requestDeleteBlock(block.id)}} className="p-1 text-text-secondary hover:text-status-danger"><X size={13}/></button>
+                <div className="flex items-center gap-2 min-w-0 flex-1"><span className="w-6 h-6 rounded-sm bg-accent/10 text-accent flex items-center justify-center flex-shrink-0">{Icon&&<Icon size={13}/>}</span>{editingTitleId===block.id?<input autoFocus disabled={updateBlockMutation.isPending} value={titleDraft} onChange={e=>setTitleDraft(e.target.value)} onMouseDown={e=>e.stopPropagation()} onClick={e=>e.stopPropagation()} onKeyDown={e=>{if(e.key==='Enter')e.currentTarget.blur();if(e.key==='Escape')setEditingTitleId(null)}} onBlur={()=>saveTitle(block)} placeholder="Block title…" className="min-w-0 flex-1 bg-transparent text-xs focus:outline-none border-b border-accent"/>:<button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();if(canEdit&&!connectMode)startTitle(block)}} className="min-w-0 flex-1 text-left truncate"><span className={block.title?'text-text-primary font-medium':'text-text-secondary uppercase font-mono'}>{block.title||TYPE_LABEL[block.block_type]}</span></button>}</div><button onClick={e=>{e.stopPropagation();requestDeleteBlock(block.id)}} className="p-1 text-text-secondary hover:text-status-danger"><X size={13}/></button>
               </div>
-              <div className="flex-1 min-h-0 overflow-hidden flex flex-col">{block.block_type==='text'?<><textarea value={textValueFor(block)} onChange={e=>setTextDrafts(p=>({...p,[block.id]:e.target.value}))} onBlur={()=>saveText(block)} onKeyDown={e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){e.preventDefault();saveText(block)}}} onMouseDown={e=>{if(!connectMode)e.stopPropagation()}} onClick={e=>{if(!connectMode)e.stopPropagation()}} readOnly={connectMode||!canEdit} placeholder="Write a project note…" className="w-full flex-1 min-h-0 text-text-primary text-sm whitespace-pre-wrap break-words p-3 bg-transparent resize-none focus:outline-none"/><div className="flex items-center justify-end px-2 py-1 border-t border-border bg-surface"><button disabled={!canEdit||connectMode||textDrafts[block.id]===undefined||textDrafts[block.id]===block.text_content||updateBlockMutation.isPending} onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();saveText(block)}} className="px-2 py-1 text-[10px] rounded-sm text-accent hover:bg-accent/10 disabled:opacity-40 disabled:cursor-not-allowed">{updateBlockMutation.isPending?'Saving…':'Save'}</button></div></>:<BlockContent block={block} connectMode={connectMode} onOpen={()=>{if(!block.resource_id)return;if(block.block_type==='folder')setBrowsingFolderId(block.resource_id);else setViewingResourceId(block.resource_id)}}/>}</div>
+              <div className="flex-1 min-h-0 overflow-hidden flex flex-col">{block.block_type==='text'?<><textarea value={textValueFor(block)} onChange={e=>{draftBases.current[`text:${block.id}`]??=block;setTextDrafts(p=>({...p,[block.id]:e.target.value}))}} onBlur={()=>saveText(block)} onKeyDown={e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){e.preventDefault();saveText(block)}}} onMouseDown={e=>{if(!connectMode)e.stopPropagation()}} onClick={e=>{if(!connectMode)e.stopPropagation()}} readOnly={connectMode||!canEdit} placeholder="Write a project note…" className="w-full flex-1 min-h-0 text-text-primary text-sm whitespace-pre-wrap break-words p-3 bg-transparent resize-none focus:outline-none"/><div className="flex items-center justify-end px-2 py-1 border-t border-border bg-surface"><button disabled={!canEdit||connectMode||textDrafts[block.id]===undefined||textDrafts[block.id]===block.text_content||updateBlockMutation.isPending} onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();saveText(block)}} className="px-2 py-1 text-[10px] rounded-sm text-accent hover:bg-accent/10 disabled:opacity-40 disabled:cursor-not-allowed">{updateBlockMutation.isPending?'Saving…':'Save'}</button></div></>:<BlockContent block={block} connectMode={connectMode} onOpen={()=>{if(!block.resource_id)return;if(block.block_type==='folder')setBrowsingFolderId(block.resource_id);else setViewingResourceId(block.resource_id)}}/>}</div>
               <div onMouseDown={e=>handleResizeStart(block,e)} className="absolute bottom-0 right-0 w-5 h-5 cursor-nwse-resize" style={{background:'linear-gradient(135deg, transparent 50%, var(--color-border) 50%)'}}/>
             </div>})}
           </div>

@@ -6,6 +6,7 @@ import ResourceViewerModal from './ResourceViewerModal';
 interface FolderBrowserModalProps {
   folderResourceId: string;
   onClose: () => void;
+  onOpenResource?: (resource:Resource) => void;
 }
 
 function iconForMime(mime: string) {
@@ -22,16 +23,25 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export default function FolderBrowserModal({ folderResourceId, onClose }: FolderBrowserModalProps) {
+export default function FolderBrowserModal({ folderResourceId, onClose, onOpenResource }: FolderBrowserModalProps) {
   const [manifest, setManifest] = useState<ResourceManifest | null>(null);
+  const [folderResource, setFolderResource] = useState<Resource | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [openingFile, setOpeningFile] = useState<Resource | null>(null);
   const [openError, setOpenError] = useState<string | null>(null);
 
   useEffect(() => {
-    getResourceManifest(folderResourceId)
-      .then(setManifest)
-      .catch(() => setError('Could not load this folder.'));
+    let active = true;
+    Promise.all([getResourceManifest(folderResourceId), getResource(folderResourceId)])
+      .then(([folderManifest, folder]) => {
+        if (!active) return;
+        setManifest(folderManifest);
+        setFolderResource(folder);
+      })
+      .catch(() => {
+        if (active) setError('Could not load this folder.');
+      });
+    return () => { active = false; };
   }, [folderResourceId]);
 
   const openFile = async (fileId: string) => {
@@ -42,11 +52,7 @@ export default function FolderBrowserModal({ folderResourceId, onClose }: Folder
       // to a plain message rather than pretending to open them — there's
       // no built-in viewer for e.g. .docx here, and silently doing nothing
       // would be its own kind of dead affordance.
-      if (['image', 'video', 'audio', 'pdf', 'youtube'].includes(resource.file_type)) {
-        setOpeningFile(resource);
-      } else {
-        setOpenError(`"${resource.name}" doesn't have an in-app preview yet for this file type.`);
-      }
+      if(onOpenResource)onOpenResource(resource);else setOpeningFile(resource);
     } catch {
       setOpenError('Could not open that file.');
     }
@@ -131,7 +137,11 @@ export default function FolderBrowserModal({ folderResourceId, onClose }: Folder
       </div>
 
       {openingFile && (
-        <ResourceViewerModal resource={openingFile} onClose={() => setOpeningFile(null)} />
+        <ResourceViewerModal
+          resource={openingFile}
+          resources={folderResource ? [folderResource] : []}
+          onClose={() => setOpeningFile(null)}
+        />
       )}
     </div>
   );

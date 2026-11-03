@@ -43,25 +43,16 @@ The goal is more than storing records: LabOS preserves the relationships between
 
 ## Current Status
 
-LabOS is in the **V1 completion and launch-preparation stage**.
-
-The major application areas and core architecture are implemented. Current work is focused on final functional verification, reliability, UI/UX polish, production hardening, and a repeatable release mechanism.
-
-**Current software baseline:** `2.2.1`
-
-The version above identifies the current repository software baseline; it does not mean that V1 has already been publicly released.
+V1 **2.2.4** is installed for the owner's personal laboratory. V2 development
+continues against the approved three-phase plan; Phase 2 is still in progress.
+The installed V1 version and the V2 repository development baseline are separate.
 
 ## V1 Launch Plan
 
-The remaining launch work is organized into five phases:
-
-1. **V1 Completion** — close remaining functional gaps and verify existing features.
-2. **V1 Polish & Hardening** — improve consistency, reliability, security, recovery, and production readiness.
-3. **Release System** — establish repeatable versioning, builds, installers, artifacts, checksums, and GitHub releases.
-4. **Launch & Real-World Validation** — perform fresh-machine installation and end-to-end testing, then use V1 in real laboratory workflows.
-5. **V2 Planning** — use real V1 usage and feedback to define the next major release.
-
-V2 development will be planned separately so it does not destabilize V1.
+The current scope, Phase 2 closure items, remaining boundaries and acceptance
+rules live in [the central plan](docs/PLAN.md). Earlier five-phase release plans
+are retained there as historical material. V1 updates use a coordinated,
+data-preserving build and installation procedure.
 
 ## Product Direction
 
@@ -117,10 +108,14 @@ The desktop application does **not** connect directly to PostgreSQL.
 
 | Document | Purpose |
 |---|---|
-| `README.md` | Product overview and project information |
-| `DEVELOPMENT.md` | Technical architecture, development, testing, security, operations, and release information |
+| [Plan and current status](docs/PLAN.md) | Controlling scope, checklist, blockers and next work |
+| [Dated work log](docs/WORK_LOG.md) | Changes, primary/helper identities, reviews and verification evidence |
+| [Architecture and operations](docs/REFERENCE.md) | Contracts, decisions, audits, development, backup and release guides |
 
-For technical setup, development commands, database migrations, synchronization, testing, troubleshooting, and the release mechanism, see [`DEVELOPMENT.md`](DEVELOPMENT.md).
+Start with these three documents. Add future dated reports to the work log and
+update the corresponding plan item; do not create another per-change Markdown
+file. Original documents are preserved in `docs/archive/2026-11-01`, with a
+SHA-256 manifest, for historical traceability.
 
 ## Project Philosophy
 

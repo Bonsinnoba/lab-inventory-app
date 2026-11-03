@@ -10,22 +10,37 @@ function load(invoke,{desktop=true,signedIn=true,itemApi={},transactionApi={},ht
   const source=ts.transpileModule(readFileSync(new URL('./projects.ts',import.meta.url),'utf8'),{
     compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}
   }).outputText;
-  vm.runInNewContext(source,{exports,crypto:webcrypto,window:desktop?{__TAURI_IPC__:true}:{},require:name=>{
+  const retryStorage=new Map();
+  const context={exports,crypto:webcrypto,window:desktop?{__TAURI_IPC__:true}:{},sessionStorage:{getItem:key=>retryStorage.get(key)??null,setItem:(key,value)=>retryStorage.set(key,value)},require:name=>{
     if(name==='@tauri-apps/api/tauri')return{invoke};
     if(name==='./auth')return{
-      captureAccountSession:()=>signedIn?{accountId:'a',generation}:null,
+      captureAccountSession:()=>signedIn?{accountId:'a',generation,token:'server-token'}:null,
       isAccountSessionCurrent:s=>!!s&&signedIn&&s.generation===generation
     };
     if(name==='./http')return{apiFetch:async(...args)=>{requests++;return http?http(...args):{ok:true,json:async()=>[{id:'server'}]}}};
     if(name==='./items')return itemApi;
+    if(name==='./local-inventory')return{getLocalInventorySnapshot:async()=>itemApi.getItems?itemApi.getItems():null};
+    if(name==='./reservation-review-projection'){
+      const projection={};
+      vm.runInNewContext(ts.transpileModule(readFileSync(new URL('./reservation-review-projection.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText,{exports:projection});
+      return projection;
+    }
     if(name==='./transactions')return transactionApi;
+    if(name==='./project-access-http')return{writeProjectAccessHttp:async()=>{throw Error('Unexpected administrative server write in an offline project operation');}};
+    if(name==='./project-work-http'){
+      const work={};
+      vm.runInNewContext(ts.transpileModule(readFileSync(new URL('./project-work-http.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{...context,exports:work});
+      return work;
+    }
     throw Error(name);
-  }});
+  }};
+  vm.runInNewContext(source,context);
   return{api:exports,requests:()=>requests,switchAccount:()=>generation++};
 }
 
 const projectOperations=[
  ['project read',api=>api.getProject('p')],
+ ['project update',api=>api.updateProject('p',{description:'Authored edit'})],
  ['workspace read',api=>api.getProjectWorkspace('p')],
  ['task create',api=>api.createProjectTask('p',{title:'Draft'})],
  ['task update',api=>api.updateProjectTask('p','t',{title:'Saved'})],
@@ -34,6 +49,26 @@ const projectOperations=[
  ['attachment read',api=>api.getExperimentAttachments('p','e')],
  ['task delete',api=>api.deleteProjectTask('p','t')],
 ];
+
+test('desktop reservation review uses native project and inventory snapshots without HTTP',async()=>{
+ const c=load(async command=>command==='list_local_projects'?[{id:'p'}]:{id:'p',name:'Cached',reservations:[{id:'r',item_id:'i',status:'pending_review',quantity:1}]},
+  {itemApi:{getItems:async()=>[{id:'i',name:'Meter',type:'equipment',current_quantity:3}]}});
+ const result=await c.api.getReservationReviewQueue();
+ assert.equal(result.source,'local');assert.equal(result.items.length,1);assert.equal(result.items[0].current_quantity,3);assert.equal(c.requests(),0);
+});
+test('desktop review errors and account changes never trigger HTTP fallback',async()=>{
+ const broken=load(async()=>{throw Error('SQLITE_FAILURE')});
+ await assert.rejects(()=>broken.api.getReservationReviewQueue(),/SQLITE_FAILURE/);assert.equal(broken.requests(),0);
+ let changed;
+ changed=load(async command=>{if(command==='list_local_projects')return[{id:'p'}];changed.switchAccount();return{id:'p',reservations:[]};});
+ await assert.rejects(()=>changed.api.getReservationReviewQueue(),/Account changed/);assert.equal(changed.requests(),0);
+});
+test('missing inventory stays unknown and browser review retains server path',async()=>{
+ const local=load(async command=>command==='list_local_projects'?[{id:'p'}]:{id:'p',reservations:[{id:'r',item_id:'missing',status:'pending_review'}]});
+ assert.equal((await local.api.getReservationReviewQueue()).items[0].current_quantity,null);assert.equal(local.requests(),0);
+ const web=load(async()=>{throw Error('native used')},{desktop:false});
+ assert.equal((await web.api.getReservationReviewQueue()).source,'server');assert.equal(web.requests(),1);
+});
 test('local project finance preserves known ledger totals when valuation is unavailable',async()=>{
  for(const mode of ['workspace-error','missing-items','missing-cost','missing-item','inventory-error']){
   const c=load(async(command)=>{
@@ -93,9 +128,9 @@ test('failed native project writes never turn into HTTP writes',async()=>{
  assert.equal(c.requests(),0);
 });
 test('browser project writes keep the existing HTTP route',async()=>{
- let calls=0;const c=load(async()=>{throw Error('Unexpected IPC')},{desktop:false,signedIn:false,http:async(url,options)=>{
+ let calls=0;const c=load(async()=>{throw Error('Unexpected IPC')},{desktop:false,http:async(url,options)=>{
   calls++;assert.equal(url,'/projects/p/tasks');assert.equal(options.method,'POST');
-  assert.equal(JSON.parse(options.body).title,'Draft');return{ok:true,json:async()=>({id:'t'})};
+  assert.equal(JSON.parse(options.body).title,'Draft');assert.ok(options.headers['Idempotency-Key']);return{ok:true,status:201,json:async()=>({id:'t',project_id:'p'})};
  }});
  assert.equal((await c.api.createProjectTask('p',{title:'Draft'})).id,'t');assert.equal(calls,1);
 });

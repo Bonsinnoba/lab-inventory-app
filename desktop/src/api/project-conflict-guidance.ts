@@ -3,6 +3,12 @@ export type ProjectConflict = {entity_type:string;operation:string;error_code?:s
 // Presentation only. Native conflict resolution remains authoritative.
 export function projectConflictGuidance(conflict:ProjectConflict) {
   if(conflict.entity_type!=='project')return null;
+  if(conflict.error_code==='PROJECT_EDIT_CONFLICT')return {
+    retryBlocked:true,acceptLabel:'Review server project',
+    explanation:conflict.access_restricted?'Access changed. Saved work is retained; a fresh authorized sync is required.':'A field you edited also changed on the server. Retain your saved edit, synchronize the current project, then review and apply the intended changes.',
+    confirmation:'Retire this conflicting edit from automatic retries? Its original payload remains retained for recovery. Synchronize the current project before creating a new edit.',
+    result:'Conflicting edit retained for recovery; synchronize and review the current project.'
+  };
   const deletion=conflict.operation==='delete';
   const protectedHistory=deletion&&['PROJECT_INVENTORY_HISTORY_PROTECTED','PROJECT_RECORDED_HISTORY_PROTECTED'].includes(conflict.error_code??'');
   const staleLifecycle=conflict.error_code==='PROJECT_LIFECYCLE_CONFLICT';

@@ -12,8 +12,8 @@ import { resourceBindings } from '../resource-authority.js';
  * notes become project-scoped when note.project_id is set. Resources with no
  * project/note context remain intentionally shared/unattached resources.
  */
-export async function getResourceContext(resourceId) {
-  const result = await pool.query(`
+export async function getResourceContext(resourceId, client = pool) {
+  const result = await client.query(`
     WITH RECURSIVE resource_chain AS (
       SELECT r.*, 0 AS depth, ARRAY[r.id] AS visited
       FROM resources r

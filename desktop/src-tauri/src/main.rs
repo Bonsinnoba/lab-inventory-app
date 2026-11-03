@@ -4,6 +4,7 @@ mod local_auth;
 mod native_authorization;
 mod local_inventory;
 mod local_reservations;
+mod local_salvage;
 mod local_project_review;
 mod inventory_sync_state;
 mod local_finance;
@@ -20,6 +21,8 @@ mod local_system;
 mod local_maintenance;
 mod local_catalog;
 mod local_notifications;
+mod local_automation;
+mod local_proposals;
 mod local_activity;
 mod local_downloads;
 mod local_resource_posters;
@@ -28,6 +31,8 @@ mod local_resource_replication;
 mod local_resource_attachments;
 mod local_resource_edits;
 mod resource_dependencies;
+mod resource_file_response;
+mod local_resource_export;
 mod local_resource_authority;
 mod local_resource_destinations;
 mod local_docx;
@@ -42,6 +47,11 @@ fn main() {
         local_db::get_local_sync_queue_status,
         local_inventory::save_local_inventory_custody_movement,
         local_reservations::save_local_reservation_intent,
+        local_salvage::get_local_salvage_snapshot,
+        local_salvage::get_local_salvage_sources,
+        local_salvage::get_local_salvage_custody_sources,
+        local_salvage::apply_server_salvage_pull,
+        local_salvage::save_local_salvage_intent,
         local_project_review::save_local_project_review_intent,
         local_auth::local_authorization_guard,
         local_resource_authority::refresh_local_resource_authority,
@@ -52,11 +62,20 @@ fn main() {
         local_comments::list_local_comments,
         local_comments::mutate_local_comment,
         local_comments::apply_server_comments_pull,
+        local_proposals::save_local_assistant_proposal,
+        local_proposals::accept_local_assistant_proposal,
+        local_proposals::list_local_assistant_proposals,
+        local_proposals::acknowledge_local_assistant_proposal,
+        local_proposals::apply_server_assistant_proposals,
+        local_automation::queue_local_automation_run,
+        local_automation::get_local_automation_state,
+        local_automation::acknowledge_local_automation_run,
         local_notifications::list_local_notifications,
         local_activity::list_local_activity,
         local_downloads::get_local_download_snapshot,
         local_resource_posters::read_local_resource_poster,
         local_presentations::open_local_presentation,
+        local_resource_export::export_local_resource_file,
         local_resource_replication::replicate_local_resource,
         local_resource_replication::local_resource_copy_status,
         local_resource_attachments::move_local_resource_attachment,

@@ -17,6 +17,8 @@ export function syncResponseProjection(entityType, value, permissions) {
   if (entityType === 'resource' && value.kind === 'file' && (permissions.has('resources.create') || permissions.has('resources.edit'))) {
     return { ...receipt, ...pick(value, ['id','updated_at']) };
   }
+  if (entityType==='assistant_proposal')return {...receipt,...pick(value,['id','revision','state','project_id','graph_digest','applied','provenance','created_at','updated_at'])};
+  if (entityType==='automation_run'&&permissions.has('automation.run'))return {...receipt,...pick(value,['run_id','created','executed'])};
   if (permissions.has('resources.edit')) {
     if (entityType === 'resource_download_job') return { ...receipt, ...pick(value, jobFields) };
     if (entityType === 'media_download_settings') return { ...receipt, ...pick(value, settingsFields) };

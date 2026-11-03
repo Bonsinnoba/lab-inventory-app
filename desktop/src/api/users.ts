@@ -1,5 +1,4 @@
-import { apiFetch, getApiErrorMessage } from './http';
-
+import {administrativeJson} from './administrative-http';
 export type AccountRole = 'admin' | 'researcher' | 'technician' | 'viewer' | 'member';
 
 export interface ManagedUser {
@@ -11,40 +10,18 @@ export interface ManagedUser {
   created_at: string;
 }
 
-async function ensureOk(response: Response, fallback: string): Promise<void> {
-  if (!response.ok) throw new Error(await getApiErrorMessage(response, fallback));
+export async function getManagedUsers():Promise<ManagedUser[]>{
+ const users=await administrativeJson<ManagedUser[]>('/auth/users',undefined,'Failed to load users');
+ if(!Array.isArray(users))throw new Error('Managed user directory is incomplete');return users;
 }
-
-export async function getManagedUsers(): Promise<ManagedUser[]> {
-  const response = await apiFetch('/auth/users');
-  await ensureOk(response, 'Failed to load users');
-  return response.json();
+export async function createManagedUser(data:{username:string;password:string;role:AccountRole}):Promise<ManagedUser>{
+ const result=await administrativeJson<{user:ManagedUser}>('/auth/users',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)},'Failed to create user');
+ if(!result?.user?.id)throw new Error('User creation was not confirmed');return result.user;
 }
-
-export async function createManagedUser(data: { username: string; password: string; role: AccountRole }): Promise<ManagedUser> {
-  const response = await apiFetch('/auth/users', {
-    method: 'POST',
-    body: JSON.stringify(data),
-  });
-  await ensureOk(response, 'Failed to create user');
-  const result = await response.json();
-  return result.user;
+export async function updateManagedUser(id:string,data:{role?:AccountRole;is_active?:boolean}):Promise<ManagedUser>{
+ const result=await administrativeJson<{user:ManagedUser}>(`/auth/users/${id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)},'Failed to update user');
+ if(result?.user?.id!==id)throw new Error('User update was not confirmed');return result.user;
 }
-
-export async function updateManagedUser(id: string, data: { role?: AccountRole; is_active?: boolean }): Promise<ManagedUser> {
-  const response = await apiFetch(`/auth/users/${id}`, {
-    method: 'PATCH',
-    body: JSON.stringify(data),
-  });
-  await ensureOk(response, 'Failed to update user');
-  const result = await response.json();
-  return result.user;
-}
-
-export async function resetManagedUserPassword(id: string, new_password: string): Promise<void> {
-  const response = await apiFetch(`/auth/users/${id}/password`, {
-    method: 'POST',
-    body: JSON.stringify({ new_password }),
-  });
-  await ensureOk(response, 'Failed to reset password');
+export async function resetManagedUserPassword(id:string,new_password:string):Promise<void>{
+ await administrativeJson(`/auth/users/${id}/password`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({new_password})},'Failed to reset password');
 }

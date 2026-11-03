@@ -30,5 +30,8 @@ test('sync refreshes authority after note, project and resource pulls and includ
   assert.ok(refresh>0);
   for(const declaration of ['const notesPullSucceeded=','const projectPullSucceeded=','const resourcePullSucceeded='])assert.ok(source.indexOf(declaration)<refresh);
   assert.equal(source.split('await refreshResourceAuthority(').length-1,1);
-  assert.match(source,/const pullSucceeded=authorityPullSucceeded&&/);
+  const conjunction=source.match(/const pullSucceeded=([^;]+);/)?.[1];
+  assert.ok(conjunction?.split('&&').includes('authorityPullSucceeded'));
+  assert.ok(conjunction?.split('&&').includes('proposalPullSucceeded'));
+  assert.ok(!conjunction.includes('||'),'Every pull must succeed; no successful step can mask another failure');
 });

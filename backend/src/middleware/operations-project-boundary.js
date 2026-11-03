@@ -8,6 +8,9 @@ import { getProjectAccess } from './project-access.js';
 export async function operationsProjectBoundary(req, res, next) {
   try {
     if (req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'OPTIONS') {
+      // Versioned requirement routes authorize stored scope in their mutation
+      // transaction. A pre-read would break owned delete receipt replay.
+      if(/^\/requirements(?:\/|$)/.test(req.path)&&req.get?.('Idempotency-Key')&&req.body?.project_id)return next();
       let projectId = req.body?.project_id || req.body?.projectId;
 
       const requirementId=req.params?.id || /^\/requirements\/([0-9a-f-]+)\/?$/i.exec(req.path)?.[1];

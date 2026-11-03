@@ -9,7 +9,8 @@ import { useState, useRef, useEffect } from 'react';
 import { useToast } from '../contexts/ToastContext';
 import SymbolPickerModal from '../components/SymbolPickerModal';
 import NoteRevisionsPanel from '../components/NoteRevisionsPanel';
-import audioFocusCoordinator, { type SuspensionReason } from '../lib/audioFocus';
+import VoiceInputModal from '../components/VoiceInputModal';
+import {FocusedSpeech} from '../lib/focusedSpeech';
 
 type Draft = { id: string | 'new' | null; title: string; body: string; tags: string[]; project_id?: string | null };
 const EMPTY_DRAFT: Draft = { id: null, title: '', body: '', tags: [], project_id: null };
@@ -23,16 +24,18 @@ export default function NotebookPage() {
   const [tagInput, setTagInput] = useState('');
   const [showSymbolPicker, setShowSymbolPicker] = useState(false);
   const [isListCollapsed, setIsListCollapsed] = useState(false);
-  const [isListening, setIsListening] = useState(false);
+  const [showVoice, setShowVoice] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const { data: projects = [] } = useQuery<Project[]>({ queryKey: ['projects-for-notebook'], queryFn: getProjects, staleTime: 30000 });
   const bodyRef = useRef<HTMLTextAreaElement>(null);
-  const recognitionRef = useRef<any>(null);
+  const voiceDraft=useRef<Draft|null>(null);
+  const currentDraft=useRef(draft);currentDraft.current=draft;
 
   // Audio focus state for TTS and microphone
-  const ttsFocusOwner = useRef<{ id: string; generation: number } | null>(null);
-  const micFocusOwner = useRef<{ id: string; generation: number } | null>(null);
+  const speech = useRef<FocusedSpeech|null>(null);
+  useEffect(()=>{const controller=new FocusedSpeech((speaking,paused)=>{setIsSpeaking(speaking);setIsPaused(paused);});speech.current=controller;return()=>{controller.dispose();if(speech.current===controller)speech.current=null;};},[]);
+  useEffect(()=>{setShowVoice(false);speech.current?.stop();},[draft.id]);
 
   const { data: notes = [], isLoading, error } = useQuery<Note[]>({
     queryKey: ['notes', { tag: selectedTag, search: searchQuery }],
@@ -157,11 +160,11 @@ export default function NotebookPage() {
   const handleReadAloud = () => {
     if (isSpeaking) {
       if (isPaused) {
-        window.speechSynthesis.resume();
+        speech.current?.resume();
         setIsPaused(false);
         return;
       }
-      window.speechSynthesis.pause();
+      speech.current?.pause();
       setIsPaused(true);
       return;
     }
@@ -180,175 +183,10 @@ export default function NotebookPage() {
       return;
     }
 
-    window.speechSynthesis.cancel();
-
-    // Acquire audio focus for TTS
-    const { id, generation } = audioFocusCoordinator.acquire({
-      type: 'tts',
-      id: 'notebook-tts',
-      allowPreempt: true,
-    });
-    ttsFocusOwner.current = { id, generation };
-
-    const utterance = new SpeechSynthesisUtterance(textToRead);
-    utterance.onend = () => {
-      // Release audio focus on completion
-      if(ttsFocusOwner.current){
-        audioFocusCoordinator.release({
-          id: ttsFocusOwner.current.id,
-          generation: ttsFocusOwner.current.generation,
-          suspensionReason: 'automatic',
-        });
-        ttsFocusOwner.current = null;
-      }
-      setIsSpeaking(false);
-      setIsPaused(false);
-    };
-    utterance.onerror = () => {
-      // Release audio focus on error
-      if(ttsFocusOwner.current){
-        audioFocusCoordinator.release({
-          id: ttsFocusOwner.current.id,
-          generation: ttsFocusOwner.current.generation,
-          suspensionReason: 'error',
-        });
-        ttsFocusOwner.current = null;
-      }
-      setIsSpeaking(false);
-      setIsPaused(false);
-    };
-    setIsSpeaking(true);
-    setIsPaused(false);
-    window.speechSynthesis.speak(utterance);
+    speech.current?.speak(textToRead);
   };
 
-  const handleStopReadAloud = () => {
-    window.speechSynthesis.cancel();
-    // Release audio focus on manual stop
-    if(ttsFocusOwner.current){
-      audioFocusCoordinator.release({
-        id: ttsFocusOwner.current.id,
-        generation: ttsFocusOwner.current.generation,
-        suspensionReason: 'manual',
-      });
-      ttsFocusOwner.current = null;
-    }
-    setIsSpeaking(false);
-    setIsPaused(false);
-  };
-
-  // Voice dictation. Unlike read-aloud, this needs microphone access and
-  // relies on the Web Speech API's SpeechRecognition, whose availability
-  // and reliability inside a Tauri webview can't be verified from here --
-  // it's feature-detected and fails gracefully with a clear message
-  // rather than assumed to work.
-  const handleToggleDictation = () => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      showToast('Voice input isn\'t available in this app build', 'error');
-      return;
-    }
-
-    if (isListening) {
-      recognitionRef.current?.stop();
-      // Release microphone focus
-      if(micFocusOwner.current){
-        audioFocusCoordinator.release({
-          id: micFocusOwner.current.id,
-          generation: micFocusOwner.current.generation,
-          suspensionReason: 'manual',
-        });
-        micFocusOwner.current = null;
-      }
-      setIsListening(false);
-      return;
-    }
-
-    // Acquire microphone focus (highest priority)
-    const { id, generation } = audioFocusCoordinator.acquire({
-      type: 'microphone',
-      id: 'notebook-dictation',
-      allowPreempt: true,
-    });
-    micFocusOwner.current = { id, generation };
-
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = false;
-    recognition.onresult = (event: any) => {
-      const transcript = Array.from(event.results)
-        .map((r: any) => r[0].transcript)
-        .join(' ');
-      setDraft((prev) => ({ ...prev, body: prev.body ? `${prev.body} ${transcript}` : transcript }));
-    };
-    recognition.onerror = () => {
-      showToast('Voice input stopped unexpectedly', 'error');
-      // Release microphone focus on error
-      if(micFocusOwner.current){
-        audioFocusCoordinator.release({
-          id: micFocusOwner.current.id,
-          generation: micFocusOwner.current.generation,
-          suspensionReason: 'error',
-        });
-        micFocusOwner.current = null;
-      }
-      setIsListening(false);
-    };
-    recognition.onend = () => {
-      // Release microphone focus on end
-      if(micFocusOwner.current){
-        audioFocusCoordinator.release({
-          id: micFocusOwner.current.id,
-          generation: micFocusOwner.current.generation,
-          suspensionReason: 'automatic',
-        });
-        micFocusOwner.current = null;
-      }
-      setIsListening(false);
-    };
-
-    recognitionRef.current = recognition;
-    setIsListening(true);
-    try {
-      recognition.start();
-    } catch {
-      showToast('Could not start voice input', 'error');
-      // Release microphone focus on failure
-      if(micFocusOwner.current){
-        audioFocusCoordinator.release({
-          id: micFocusOwner.current.id,
-          generation: micFocusOwner.current.generation,
-          suspensionReason: 'error',
-        });
-        micFocusOwner.current = null;
-      }
-      setIsListening(false);
-    }
-  };
-
-  useEffect(() => {
-    return () => {
-      recognitionRef.current?.stop();
-      window.speechSynthesis.cancel();
-      // Release audio focus on unmount
-      if(ttsFocusOwner.current){
-        audioFocusCoordinator.release({
-          id: ttsFocusOwner.current.id,
-          generation: ttsFocusOwner.current.generation,
-          suspensionReason: 'close',
-        });
-        ttsFocusOwner.current = null;
-      }
-      if(micFocusOwner.current){
-        audioFocusCoordinator.release({
-          id: micFocusOwner.current.id,
-          generation: micFocusOwner.current.generation,
-          suspensionReason: 'close',
-        });
-        micFocusOwner.current = null;
-      }
-    };
-  }, []);
+  const handleStopReadAloud = () => {speech.current?.stop();};
 
   const isSaving = createMutation.isPending || updateMutation.isPending;
 
@@ -456,9 +294,9 @@ export default function NotebookPage() {
               />
               <div className="flex items-center gap-0.5 flex-shrink-0">
                 <button
-                  onClick={handleToggleDictation}
+                  onClick={()=>{voiceDraft.current=draft;setShowVoice(true);}}
                   title="Voice input"
-                  className={`p-1.5 rounded-sm transition-colors ${isListening ? 'bg-status-danger/20 text-status-danger' : 'hover:bg-surface-raised text-text-secondary hover:text-text-primary'}`}
+                  className={`p-1.5 rounded-sm transition-colors ${showVoice ? 'bg-accent/20 text-accent' : 'hover:bg-surface-raised text-text-secondary hover:text-text-primary'}`}
                 >
                   <Mic size={16} />
                 </button>
@@ -549,6 +387,7 @@ export default function NotebookPage() {
         )}
       </div>
 
+      {showVoice&&<VoiceInputModal onClose={()=>setShowVoice(false)} onInsert={text=>{const base=voiceDraft.current;if(currentDraft.current!==base)return false;setDraft(previous=>previous===base?{...previous,body:previous.body?`${previous.body} ${text}`:text}:previous);return true;}}/>}
       {showSymbolPicker && (
         <SymbolPickerModal
           onInsert={insertSymbol}

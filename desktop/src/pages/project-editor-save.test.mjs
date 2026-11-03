@@ -17,16 +17,23 @@ function saveHandler(component,onSave){
  assert.ok(initializer);
  const state={saving:false,editing:true,error:'old error'};
  const form={title:'Draft',description:'Keep this',assignee_id:'',due_date:'',hypothesis:'Working idea'};
- const context={form,e:{id:'experiment'},onSave,saving:false,
+ const context={form,e:{id:'experiment'},editBase:{title:'Reviewed original'},onSave,saving:false,
   setSaving:value=>{state.saving=value;context.saving=value},
   setEditing:value=>{state.editing=value},setSaveError:value=>{state.error=value},
   normalizeClientError:(error,fallback)=>({message:error?.message||fallback})};
  vm.runInNewContext(ts.transpileModule(`globalThis.save=${initializer.getText(file)}`,{
   compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}
  }).outputText,context);
- return {save:context.save,state,form};
+ return {save:context.save,state,form,context};
 }
 for(const component of ['TaskCard','ExperimentCard']){
+ test(`${component} submits the reviewed draft base despite refreshed props`,async()=>{
+  let reviewed;
+  const handler=saveHandler(component,async(value,base)=>{reviewed=base;});
+  handler.context.e={id:'experiment',title:'Server changed while editing'};
+  handler.context.task={title:'Server changed while editing'};
+  await handler.save();assert.equal(reviewed.title,'Reviewed original');
+ });
  test(`${component} waits for successful persistence before closing`,async()=>{
   let finish;let calls=0;let payload;
   const handler=saveHandler(component,value=>{calls++;payload=value;return new Promise(resolve=>{finish=resolve})});
@@ -57,8 +64,8 @@ for(const component of ['TaskCard','ExperimentCard']){
  });
 }
 test('edit callbacks expose mutation promises, while status actions retain mutation error handlers',()=>{
- assert.match(source,/onSave=\{\(data:any\)=>edit\.mutateAsync\(\{id:t\.id,\.\.\.data\}\)\}/);
- assert.match(source,/onSave=\{\(data:any\)=>edit\.mutateAsync\(data\)\}/);
+ assert.match(source,/onSave=\{\(data:any,expected:ProjectTask\)=>edit\.mutateAsync\(\{id:t\.id,\.\.\.data,expected\}\)\}/);
+ assert.match(source,/onSave=\{\(data:any,expected:ProjectExperiment\)=>edit\.mutateAsync\(\{\.\.\.data,expected\}\)\}/);
  assert.match(source,/onUpdate=\{\(data:any\)=>edit\.mutate\(/);
  assert.match(source,/onStatus=\{\(data:any\)=>edit\.mutate\(/);
 });

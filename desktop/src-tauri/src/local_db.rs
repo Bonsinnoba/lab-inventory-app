@@ -196,7 +196,8 @@ pub fn list_pending_sync_changes(app:AppHandle,limit:Option<i64>,expected_accoun
     let account=active_account(&conn)?;
     if account!=expected_account_id{return Err("Account changed during sync; retry under the active account".into())}
     let limit=limit.unwrap_or(50).clamp(1,500);
-    let blocked=serde_json::to_string(&crate::resource_dependencies::blocked_changes(&conn)?).map_err(|e|e.to_string())?;
+    let mut blocked=crate::resource_dependencies::blocked_changes(&conn)?;blocked.extend(crate::local_proposals::blocked_changes(&conn)?);
+    let blocked=serde_json::to_string(&blocked).map_err(|e|e.to_string())?;
     let mut stmt=conn.prepare("SELECT o.change_id,o.device_id,o.entity_type,o.entity_id,o.operation,o.payload_json,o.created_at,o.attempt_count,o.last_error FROM sync_outbox o LEFT JOIN sync_conflicts c ON c.change_id=o.change_id AND c.resolved_at IS NULL WHERE o.synced_at IS NULL AND o.account_id=?1 AND c.change_id IS NULL AND o.change_id NOT IN(SELECT value FROM json_each(?3)) ORDER BY o.rowid ASC LIMIT ?2").map_err(|e|format!("Unable to prepare sync queue query: {e}"))?;
     let rows=stmt.query_map(params![account,limit,blocked],|r|{let payload:String=r.get(5)?;let payload_json=serde_json::from_str::<serde_json::Value>(&payload).unwrap_or(serde_json::Value::Null);Ok(serde_json::json!({"change_id":r.get::<_,String>(0)?,"device_id":r.get::<_,String>(1)?,"entity_type":r.get::<_,String>(2)?,"entity_id":r.get::<_,Option<String>>(3)?,"operation":r.get::<_,String>(4)?,"payload":payload_json,"created_at":r.get::<_,String>(6)?,"attempt_count":r.get::<_,i64>(7)?,"last_error":r.get::<_,Option<String>>(8)?}))}).map_err(|e|format!("Unable to read sync queue: {e}"))?;
     rows.map(|r|r.map_err(|e|format!("Unable to decode sync queue row: {e}"))).collect()
@@ -219,6 +220,11 @@ pub fn list_sync_conflicts(app:AppHandle,expected_account_id:String)->Result<Vec
 }
 
 fn require_conflict_permission(conn:&Connection,entity:&str,operation:&str,payload:&Value,write:bool)->Result<(),String>{
+    if entity=="salvage_recovery" {
+        crate::local_auth::require_local_permission(conn,"inventory.view")?;
+        if let Some(project)=payload.pointer("/record/project_id").and_then(Value::as_str){crate::local_projects::require_cached_project_access(conn,project,write)?;}
+        return if write{crate::local_auth::require_local_permission(conn,match operation{"create"|"create_batch"=>"inventory.create","release"=>"inventory.adjust_stock",_=>"inventory.edit"})}else{Ok(())};
+    }
     if entity=="project_review" {
         let id=payload["project_id"].as_str().ok_or("Review project missing")?;
         return if write{crate::local_project_review::require_authority(conn,id,payload["decision"].as_str().unwrap_or(""))}else{crate::local_projects::require_cached_project_access(conn,id,false)};
@@ -245,6 +251,8 @@ fn require_conflict_permission(conn:&Connection,entity:&str,operation:&str,paylo
         return Ok(())
     }
     if ["media_download_settings","resource_download_job"].contains(&entity){return crate::local_auth::require_local_permission(conn,"resources.edit")}
+    if entity=="assistant_proposal" {return crate::local_proposals::authority(conn,payload.get("graph").ok_or("Proposal graph unavailable for recovery")?,write&&operation=="accept")}
+    if entity=="automation_run" {return crate::local_auth::require_local_permission(conn,if write{"automation.run"}else{"automation.view"})}
     if entity=="daily_preferences"||entity=="notification_read" {active_account(conn)?;return Ok(())}
     if entity=="project_comment" {return crate::local_comments::require_comment_project_access(conn,payload.pointer("/record/project_id").and_then(Value::as_str).ok_or("Comment project missing")?,write)}
     let domain=match entity{
@@ -310,6 +318,9 @@ fn resolve_conflict_for_account(conn:&mut Connection,change_id:&str,resolution:&
         "SELECT o.entity_type,o.entity_id,o.operation,o.payload_json,c.error_code FROM sync_outbox o JOIN sync_conflicts c ON c.change_id=o.change_id WHERE o.change_id=?1 AND c.resolved_at IS NULL",[change_id],
         |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(|e|e.to_string())?;
     if resolution=="keep_local" {
+        if entity=="salvage_recovery"&&code=="SALVAGE_VERSION_CONFLICT" {
+            return Err("Recovery changed. Your saved review is retained; synchronize and review the current recovery before creating a new intention.".into());
+        }
         if entity=="project_review"&&code=="REVIEW_VERSION_CONFLICT" {
             return Err("Review snapshot changed. Preserve the note, accept the server state, synchronize and author a new decision; an old approval cannot overwrite a newer plan.".into());
         }
@@ -344,6 +355,7 @@ fn resolve_conflict_for_account(conn:&mut Connection,change_id:&str,resolution:&
             tx.execute("UPDATE sync_outbox SET attempt_count=0,last_error=NULL,synced_at=NULL WHERE change_id=?1",[change_id]).map_err(|e|e.to_string())?;
         }
     } else {
+        if entity=="assistant_proposal"&&operation=="accept" {let saved:Value=serde_json::from_str(&payload).map_err(|e|e.to_string())?;crate::local_proposals::discard_projection(&tx,&saved,&entity_id.clone().unwrap_or_default())?;}
         if entity=="project"&&operation=="delete" {
             preserve_project_delete_recovery(&tx,change_id,&payload,resolution)?;
         }

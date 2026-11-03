@@ -1,40 +1,32 @@
-import { filterReadableRows } from '../middleware/read-visibility.js';
-import { Router } from 'express';
-import { pool } from '../db.js';
-import { hasPermission } from '../middleware/permissions.js';
-
-const router = Router();
-
-async function dueRows(user) {
-  const [maintenance, calibration, tasks] = await Promise.all([
-    pool.query(`SELECT i.id,i.name,i.next_maintenance_date FROM items i WHERE i.next_maintenance_date IS NOT NULL AND i.next_maintenance_date <= current_date + 7 ORDER BY i.next_maintenance_date`),
-    pool.query(`SELECT i.id,i.name,i.next_calibration_date FROM items i WHERE i.next_calibration_date IS NOT NULL AND i.next_calibration_date <= current_date + 30 ORDER BY i.next_calibration_date`),
-    pool.query(`SELECT t.id,t.project_id,t.title,t.assignee_id,t.due_date,p.name AS project_name FROM project_tasks t JOIN projects p ON p.id=t.project_id WHERE t.due_date IS NOT NULL AND t.due_date <= current_date AND t.status NOT IN ('done','cancelled') AND ($1 = 'admin' OR p.owner_id = $2 OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id=t.project_id AND pm.user_id=$2)) ORDER BY t.due_date`, [user?.role, user?.userId]),
-  ]);
-  return { maintenance: maintenance.rows, calibration: calibration.rows, tasks: await filterReadableRows('tasks',tasks.rows,user) };
-}
-
-router.get('/due', hasPermission('automation.view'), async (req, res) => {
-  try { res.json(await dueRows(req.user)); }
-  catch (err) { console.error(err); res.status(500).json({ error: 'Failed to load automation due items' }); }
+import {Router} from 'express';
+import {pool} from '../db.js';
+import {hasPermission} from '../middleware/permissions.js';
+import {writeAuditLog} from '../middleware/audit.js';
+import {catalogUuid} from '../catalog-sync.js';
+import {automationDue,authorizeAutomationRun,applyAutomationRun} from '../automation-run.js';
+const router=Router();
+router.get('/due',hasPermission('automation.view'),async(req,res,next)=>{
+ try{res.setHeader('Cache-Control','no-store');res.json(await automationDue(pool,req.user));}catch(error){next(error);}
 });
-
-router.post('/run', hasPermission('automation.run'), async (req, res) => {
-  try {
-    const due = await dueRows(req.user);
-    const recipients = await pool.query("SELECT id FROM users WHERE is_active=TRUE AND (role='admin' OR role IN ('researcher','technician'))");
-    let created = 0;
-    const notify = async (userId, type, title, body, entityType, entityId, key) => {
-      const exists = await pool.query("SELECT 1 FROM notifications WHERE user_id=$1 AND metadata->>'reminder_key'=$2", [userId, key]);
-      if (exists.rowCount) return;
-      const delivered=await pool.query(`INSERT INTO notifications(user_id,type,title,body,entity_type,entity_id,metadata) VALUES($1,$2,$3,$4,$5,$6,$7)`, [userId,type,title,body,entityType,entityId,JSON.stringify({ reminder_key:key })]);
-      created+=delivered.rowCount;
-    };
-    for (const item of due.maintenance) for (const user of recipients.rows) await notify(user.id,'maintenance_due','Maintenance due',`${item.name} has maintenance due on ${item.next_maintenance_date}.`,'item',item.id,`maintenance:${item.id}:${item.next_maintenance_date}`);
-    for (const item of due.calibration) for (const user of recipients.rows) await notify(user.id,'calibration_due','Calibration due',`${item.name} has calibration due on ${item.next_calibration_date}.`,'item',item.id,`calibration:${item.id}:${item.next_calibration_date}`);
-    for (const task of due.tasks) { const targets = task.assignee_id ? [{ id: task.assignee_id }] : recipients.rows; for (const user of targets) await notify(user.id,'task_due','Task overdue',`${task.title} in ${task.project_name} is overdue.`,'project_task',task.id,`task:${task.id}:${task.due_date}`); }
-    res.json({ created, due });
-  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to run automation reminders' }); }
+router.post('/run',hasPermission('automation.run'),async(req,res,next)=>{
+ let client;
+ try{
+  const runId=catalogUuid(req.get('Idempotency-Key'));
+  const change={entity_id:runId,operation:'run',payload:{run_id:runId}};
+  client=await pool.connect();await client.query('BEGIN');
+  await authorizeAutomationRun(client,req.user.userId);
+  await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',['sync-change:'+runId]);
+  const prior=(await client.query('SELECT * FROM sync_idempotency WHERE change_id=$1 FOR UPDATE',[runId])).rows[0];
+  let result;
+  if(prior){
+   if(prior.user_id!==req.user.userId||prior.device_id!=='automation-http'||prior.entity_type!=='automation_run'||prior.entity_id!==runId||prior.operation!=='run')throw Object.assign(Error('Retry key belongs to another operation'),{status:409,code:'IDEMPOTENCY_MISMATCH'});
+   result=prior.response_json;
+  }else{
+   result=await applyAutomationRun(client,change,req.user);
+   await writeAuditLog({req,action:'automation:run',entityType:'automation_run',entityId:runId,newValue:result,client,required:true});
+   await client.query("INSERT INTO sync_idempotency(change_id,device_id,user_id,entity_type,entity_id,operation,payload_json,response_json,response_status) VALUES($1,'automation-http',$2,'automation_run',$1,'run',$3,$4,200)",[runId,req.user.userId,change.payload,result]);
+  }
+  await client.query('COMMIT');res.json(result);
+ }catch(error){if(client)await client.query('ROLLBACK').catch(()=>{});next(error);}finally{client?.release();}
 });
-
 export default router;

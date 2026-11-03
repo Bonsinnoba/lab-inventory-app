@@ -29,7 +29,8 @@ fn current_principal(conn: &Connection) -> Result<(String, String), String> {
 }
 
 fn readable_for_user(project: &Value, user_id: &str) -> bool {
-    project.pointer("/permissions/user_id").and_then(Value::as_str) == Some(user_id)
+    (project.pointer("/permissions/user_id").and_then(Value::as_str) == Some(user_id)
+        && matches!(project.pointer("/permissions/access").and_then(Value::as_str),Some("view"|"edit"|"admin")))
         || matches!(project.get("visibility").and_then(Value::as_str), None | Some("lab"))
 }
 
@@ -43,7 +44,7 @@ fn access_for_user(project: &Value, user_id: &str) -> Value {
 fn current_project_access(conn: &Connection, project: &Value) -> Result<Value, String> {
     let (user_id, _) = current_principal(conn)?;
     let mut access = access_for_user(project, &user_id);
-    if local_auth::require_local_permission(conn, "projects.edit").is_err() {
+    if local_auth::require_local_permission(conn, "projects.edit").is_err() || project["assistant_acceptance_pending"].is_string() {
         access["access"] = json!("view");
         access["can_edit"] = json!(false);
     }
@@ -51,6 +52,7 @@ fn current_project_access(conn: &Connection, project: &Value) -> Result<Value, S
 }
 
 fn require_local_project_editor(project: &Value, user_id: &str) -> Result<(), String> {
+    if project["assistant_acceptance_pending"].is_string(){return Err("This project's reviewed proposal is awaiting server confirmation. Its saved graph is preserved; synchronize or reconcile that approval first.".into())}
     let access = access_for_user(project, user_id);
     if access.get("can_edit").and_then(Value::as_bool) == Some(true)
         && matches!(access.get("access").and_then(Value::as_str), Some("edit" | "admin")) {
@@ -109,6 +111,53 @@ pub(crate) fn require_cached_project_access(conn:&Connection,project_id:&str,edi
     }Ok(())
 }
 
+pub(crate) fn require_cached_proposal_target(c:&Connection,id:&str)->Result<(),String>{
+    local_auth::require_local_permission(c,"projects.edit")?;
+    let mut project=load(c)?.into_iter().find(|p|p["id"]==id).ok_or("Project unavailable for this account")?;
+    project.as_object_mut().unwrap().remove("assistant_acceptance_pending");
+    require_local_project_editor(&project,&local_db::active_account(c)?)
+}
+
+// The proposal repository owns the encompassing IMMEDIATE transaction and one
+// immutable graph outbox event. These cache effects never enqueue child events.
+pub(crate) fn apply_proposal_projection(c:&Connection,graph:&Value,proposal:&str,account:&str)->Result<(),String>{
+    let id=graph["target"]["project_id"].as_str().ok_or("Proposal project missing")?;
+    let mut projects=load_all(c)?;let is_new=graph["target"]["mode"]=="new";
+    if is_new{
+        if projects.iter().any(|p|p["id"]==id){return Err("Proposed project already exists".into())}
+        let mut project=json!({"id":id,"name":graph["target"]["name"],"description":graph["target"]["description"],"priority":graph["target"]["priority"],"status":"planning","review_status":"draft","visibility":"project","owner_id":account,"lifecycle_revision":1,"created_at":now(c)?,"updated_at":now(c)?,"permissions":{"user_id":account,"access":"edit","can_edit":true,"member_role":"lead"}});
+        for key in ["tasks","experiments","task_experiments","attachments","items","bom","blocks","connectors","requirements","members"]{project[key]=json!([]);}
+        projects.push(project);
+    }else{require_cached_proposal_target(c,id)?;}
+    let project=projects.iter_mut().find(|p|p["id"]==id).ok_or("Proposal project unavailable")?;
+    if project["assistant_acceptance_pending"].is_string(){return Err("Another proposal approval is pending for this project".into())}
+    if !is_new&&(project["lifecycle_revision"]!=graph["target"]["expected_lifecycle_revision"]||matches!(project["status"].as_str(),Some("completed"|"cancelled"|"archived"))){return Err("Project changed or is closed. Review its current lifecycle before accepting.".into())}
+    for (source,key) in [("tasks","tasks"),("experiments","experiments"),("links","task_experiments")]{
+        let mut rows=nested_get(project,key);
+        for mut row in graph[source].as_array().ok_or("Proposal work missing")?.clone(){
+            if rows.iter().any(|r|r["id"]==row["id"]){return Err("Proposed work already exists".into())}
+            row["project_id"]=json!(id);row["created_at"]=json!(now(c)?);row["updated_at"]=row["created_at"].clone();
+            if source=="tasks"{row["status"]=json!("todo");row["created_by"]=json!(account);row["assignee_id"]=Value::Null;row["completed_at"]=Value::Null;}
+            if source=="experiments"{row["status"]=json!("planned");for field in ["observations","result","conclusion"]{row[field]=json!("");}row["performed_by"]=Value::Null;row["attachments"]=json!([]);}
+            if source=="links"{row["relationship"]=json!("related");row["created_by"]=json!(account);}
+            rows.push(row);
+        }project[key]=json!(rows);
+    }
+    project["assistant_acceptance_pending"]=json!(proposal);project_task_experiment_views(project);
+    c.execute("INSERT INTO sync_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![local_db::scoped_state_key(c,STATE_KEY)?,serde_json::to_string(&projects).map_err(|e|e.to_string())?]).map_err(|e|e.to_string())?;Ok(())
+}
+
+pub(crate) fn finish_proposal_projection(c:&Connection,graph:&Value,proposal:&str,discard:bool)->Result<(),String>{
+    let id=graph["target"]["project_id"].as_str().ok_or("Proposal project missing")?;let mut projects=load_all(c)?;
+    if let Some(project)=projects.iter_mut().find(|p|p["id"]==id){
+        if project["assistant_acceptance_pending"]!=proposal{return Err("Proposal projection ownership changed".into())}
+        if discard{for(source,key)in [("tasks","tasks"),("experiments","experiments"),("links","task_experiments")]{let ids=graph[source].as_array().ok_or("Proposal work unavailable")?;project[key]=json!(nested_get(project,key).into_iter().filter(|row|!ids.iter().any(|r|r["id"]==row["id"])).collect::<Vec<_>>());}}
+        project.as_object_mut().unwrap().remove("assistant_acceptance_pending");project_task_experiment_views(project);
+    }
+    if discard&&graph["target"]["mode"]=="new"{projects.retain(|p|p["id"]!=id);}
+    c.execute("INSERT INTO sync_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![local_db::scoped_state_key(c,STATE_KEY)?,serde_json::to_string(&projects).map_err(|e|e.to_string())?]).map_err(|e|e.to_string())?;Ok(())
+}
+
 fn save(conn: &mut Connection, projects: &[Value], changes: Vec<(String, String, String, String, Value)>) -> Result<(), String> {
     save_checked(conn, projects, changes, None, &[])
 }
@@ -150,6 +199,20 @@ fn save_checked(conn: &mut Connection, projects: &[Value], changes: Vec<(String,
     // A second native writer must not replace a newly queued lifecycle with an
     // older full-project payload after waiting for this SQLite transaction.
     for (_,entity,entity_id,operation,payload) in &changes {
+        if matches!(entity.as_str(),"project_item"|"project_bom"|"project_block"|"project_connector"|"project_resource_requirement") && payload.get("expected").is_some(){
+            let record=&payload["record"];
+            let project_id=record["project_id"].as_str().ok_or("Project reference is required")?;
+            let current=load_all(&tx)?.into_iter().find(|p|p["id"]==project_id).ok_or("Project is no longer cached")?;
+            require_local_project_editor(&current,&user_id)?;
+            let actual=if entity=="project_item" {
+                nested_get(&current,"items").into_iter().find(|r|r["item_id"]==record["item_id"]).map(|r|planning_item_base(&r)).transpose()?.unwrap_or(Value::Null)
+            }else{
+                let key=match entity.as_str(){"project_bom"=>"bom","project_block"=>"blocks","project_connector"=>"connectors",_=>"requirements"};
+                nested_get(&current,key).into_iter().find(|r|r["id"]==*entity_id).map(|r|work_review_snapshot(key,&r)).transpose()?.unwrap_or(Value::Null)
+            };
+            let expected=if payload["expected"].is_null(){Value::Null}else if entity=="project_item"{planning_item_base(&payload["expected"])?}else{let key=match entity.as_str(){"project_bom"=>"bom","project_block"=>"blocks","project_connector"=>"connectors",_=>"requirements"};work_review_snapshot(key,&payload["expected"])?};
+            if actual!=expected{return Err("Project planning data changed during save; reload and review before retrying".into());}
+        }
         if entity=="project"&&operation=="update" {
             let current=load_all(&tx)?.into_iter().find(|p|p["id"]==*entity_id).ok_or("Project is no longer cached")?;
             if current["lifecycle_revision"]!=payload["before"]["lifecycle_revision"]||current["status"]!=payload["before"]["status"] {
@@ -240,9 +303,20 @@ pub fn create_local_project(app: AppHandle, mut project: Value) -> Result<Value,
 
 #[tauri::command]
 pub fn update_local_project(app: AppHandle, project_id: String, patch: Value) -> Result<Value, String> {
-    let mut c = conn(&app)?; let mut projects = load(&c)?;
+    let mut c = conn(&app)?;
+    update_project(&mut c, project_id, patch)
+}
+
+fn update_project(c:&mut Connection, project_id:String, patch:Value)->Result<Value,String>{
+    let mut projects = load(c)?;
     let p = projects.iter_mut().find(|p| p.get("id").and_then(Value::as_str) == Some(project_id.as_str())).ok_or("Project not found")?;
     let old = p.clone();
+    if let Some(budget)=patch.get("budget") {
+        let number=|v:&Value|v.as_f64().or_else(||v.as_str().and_then(|s|s.parse::<f64>().ok()));
+        if number(budget)!=number(&old["budget"]) || (budget.is_null()!=old["budget"].is_null() && number(budget).is_none()) {
+            local_auth::require_local_permission(c,"finance.edit")?;
+        }
+    }
     prepare_lifecycle_patch(p,&patch)?;
     if patch.get("status").and_then(Value::as_str) == Some("active") && old.get("status").and_then(Value::as_str) != Some("active") { return Err("Activation requires online admin approval. Sync your planning changes and ask an admin to activate this project.".into()); }
     if let Some(obj) = patch.as_object() {
@@ -252,9 +326,9 @@ pub fn update_local_project(app: AppHandle, project_id: String, patch: Value) ->
         if !matches!(visibility, "lab" | "project" | "restricted") { return Err("visibility must be lab, project, or restricted".into()); }
     }
     if p.get("name").and_then(Value::as_str).map(|s| s.trim().is_empty()).unwrap_or(true) { return Err("name cannot be empty".into()); }
-    p["updated_at"] = json!(now(&c)?);
+    p["updated_at"] = json!(now(c)?);
     let updated = p.clone();
-    save(&mut c, &projects, vec![(id(), "project".into(), project_id.clone(), "update".into(), json!({"id":project_id,"before":old,"project":updated}))])?;
+    save(c, &projects, vec![(id(), "project".into(), project_id.clone(), "update".into(), json!({"id":project_id,"before":old,"project":updated}))])?;
     Ok(updated)
 }
 
@@ -391,31 +465,50 @@ fn nested_create(app: AppHandle, project_id: String, key: &str, mut record: Valu
     record["id"]=json!(&record_id); record["project_id"]=json!(&project_id);
     record["created_at"]=json!(&timestamp); record["updated_at"]=json!(&timestamp);
     validate_nested_references(p,key,&mut record)?;
-    if key=="attachments"{validate_attachment_resource(&c,&mut record)?;}
+    if key=="requirements"{validate_requirement_record(&record)?;}
+    if key=="blocks"{validate_local_canvas(&c,&project_id,&mut record)?;}
+    if key=="bom"{if record.get("required_quantity").is_none(){record["required_quantity"]=json!(1);}validate_bom_quantity(&record)?;}
+    if key=="attachments"{validate_attachment_resource(&c,&project_id,&mut record)?;validate_attachment_unique(p,&record,None)?;}
     let mut list=nested_get(p,key); list.push(record.clone()); p[key]=Value::Array(list); p["updated_at"]=json!(&timestamp);
     save(&mut c,&projects,vec![(id(),entity_type.into(),record_id,"create".into(),record.clone())])?;
     Ok(record)
 }
 
 fn nested_update(app: AppHandle, project_id:String, key:&str, record_id:String, patch:Value, entity_type:&str)->Result<Value,String>{
+    nested_update_reviewed(app,project_id,key,record_id,patch,entity_type,None)
+}
+fn nested_update_reviewed(app:AppHandle,project_id:String,key:&str,record_id:String,patch:Value,entity_type:&str,expected:Option<Value>)->Result<Value,String>{
     let mut c=conn(&app)?; let mut projects=load(&c)?;
     let p=projects.iter_mut().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
     let mut list=nested_get(p,key);
     let r=list.iter_mut().find(|r|r.get("id").and_then(Value::as_str)==Some(record_id.as_str())).ok_or("Record not found")?;
+    let before=r.clone();
+    if let Some(ref base)=expected {if work_review_snapshot(key,&before)?!=work_review_snapshot(key,base)?{return Err("Project work changed while editing; preserve the draft and review before retrying".into());}}
     if key=="experiments"{require_experiment_observation_text(r)?;require_experiment_observation_text(&patch)?;}
+    if key=="attachments"{validate_attachment_edit(r,&patch)?;}
     if let Some(obj)=patch.as_object(){for(k,v)in obj{if k!="id"&&k!="project_id"&&k!="created_at"{r[k]=v.clone();}}}
     validate_nested_references(p,key,r)?;
-    if key=="attachments"{validate_attachment_resource(&c,r)?;}
+    if key=="bom"{validate_bom_quantity(r)?;}
+    if key=="requirements"{validate_requirement_record(r)?;}
+    if key=="blocks"{validate_local_canvas(&c,&project_id,r)?;}
+    if key=="attachments"{validate_attachment_resource(&c,&project_id,r)?;validate_attachment_unique(p,r,Some(&record_id))?;}
     r["updated_at"]=json!(now(&c)?); let updated=r.clone(); p[key]=Value::Array(list); p["updated_at"]=json!(now(&c)?);
-    save(&mut c,&projects,vec![(id(),entity_type.into(),record_id,"update".into(),json!({"project_id":project_id,"record":updated}))])?;Ok(updated)
+    let payload=if matches!(key,"bom"|"blocks"|"requirements"){json!({"project_id":project_id,"record":updated,"expected":work_review_snapshot(key,&before)?})}else{json!({"project_id":project_id,"record":updated})};
+    save(&mut c,&projects,vec![(id(),entity_type.into(),record_id,"update".into(),payload)])?;Ok(updated)
 }
 
 fn nested_delete(app:AppHandle,project_id:String,key:&str,record_id:String,entity_type:&str)->Result<(),String>{
+    nested_delete_reviewed(app,project_id,key,record_id,entity_type,None)
+}
+fn nested_delete_reviewed(app:AppHandle,project_id:String,key:&str,record_id:String,entity_type:&str,expected:Option<Value>)->Result<(),String>{
     let mut c=conn(&app)?;let mut projects=load(&c)?;
     let p=projects.iter_mut().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
     let mut list=nested_get(p,key);let before=list.iter().find(|r|r.get("id").and_then(Value::as_str)==Some(record_id.as_str())).cloned().ok_or("Record not found")?;
+    if matches!(key,"bom"|"connectors"|"requirements") {if let Some(ref base)=expected {if work_review_snapshot(key,&before)?!=work_review_snapshot(key,base)?{return Err("Project work changed; review before deleting".into());}}}
+    if key=="requirements"{validate_requirement_removal(p,&record_id)?;}
     list.retain(|r|r.get("id").and_then(Value::as_str)!=Some(record_id.as_str()));p[key]=Value::Array(list);p["updated_at"]=json!(now(&c)?);
-    save(&mut c,&projects,vec![(id(),entity_type.into(),record_id,"delete".into(),json!({"project_id":project_id,"record":before}))])
+    let payload=if matches!(key,"bom"|"connectors"|"requirements"){json!({"project_id":project_id,"record":before,"expected":work_review_snapshot(key,&before)?})}else{json!({"project_id":project_id,"record":before})};
+    save(&mut c,&projects,vec![(id(),entity_type.into(),record_id,"delete".into(),payload)])
 }
 
 #[tauri::command]
@@ -495,11 +588,38 @@ pub fn create_local_project_attachment(app:AppHandle,project_id:String,work_id:S
     nested_create(app,project_id,"attachments",record,"project_work_attachment")
 }
 
-fn validate_attachment_resource(c:&Connection,record:&mut Value)->Result<(),String>{
+fn attachment_resource_in_project(resource:&crate::local_resources::LocalResource,project_id:&str)->bool{
+    let project=uuid::Uuid::parse_str(project_id).ok();
+    project.is_some() && resource.project_id.as_deref().and_then(|id|uuid::Uuid::parse_str(id).ok())==project
+        && resource.item_id.is_none() && resource.note_id.is_none() && resource.parent_resource_id.is_none()
+}
+
+fn validate_attachment_edit(record:&Value,patch:&Value)->Result<(),String>{
+    for field in ["resource_id","task_id","experiment_id"] {
+        if let Some(value)=patch.get(field) {
+            let normalized=|v:&Value|v.as_str().and_then(|id|uuid::Uuid::parse_str(id).ok());
+            if normalized(value)!=normalized(&record[field]) {return Err("Attachment endpoints cannot be edited; detach and attach the resource instead".into());}
+        }
+    }
+    Ok(())
+}
+
+fn validate_attachment_unique(project:&Value,record:&Value,excluding:Option<&str>)->Result<(),String>{
+    let same=|a:&Value,b:&Value|a.as_str().and_then(|id|uuid::Uuid::parse_str(id).ok())==b.as_str().and_then(|id|uuid::Uuid::parse_str(id).ok());
+    if nested_get(project,"attachments").iter().any(|existing|existing["id"].as_str()!=excluding
+        && same(&existing["resource_id"],&record["resource_id"])
+        && same(&existing["task_id"],&record["task_id"])
+        && same(&existing["experiment_id"],&record["experiment_id"])){
+        return Err("This resource is already attached to the work item".into());
+    }
+    Ok(())
+}
+
+fn validate_attachment_resource(c:&Connection,project_id:&str,record:&mut Value)->Result<(),String>{
     let resource_id=record["resource_id"].as_str().and_then(|id|uuid::Uuid::parse_str(id).ok()).ok_or("resourceId must be a UUID")?.to_string();
     local_auth::require_local_permission(c,"resources.view")?;
-    if !crate::local_resources::read_resources(c)?.iter().any(|resource|uuid::Uuid::parse_str(&resource.id).ok().map(|id|id.to_string())==Some(resource_id.clone())){
-        return Err("Resource is not available in the current local account; synchronize before attaching it".into());
+    if !crate::local_resources::read_resources(c)?.iter().any(|resource|uuid::Uuid::parse_str(&resource.id).ok().map(|id|id.to_string())==Some(resource_id.clone()) && attachment_resource_in_project(resource,project_id)){
+        return Err("Choose an available resource attached directly to this project; synchronize before attaching it".into());
     }
     record["resource_id"]=json!(resource_id);
     Ok(())
@@ -538,6 +658,92 @@ fn project_resource_rows(project_id:&str, resources:Vec<crate::local_resources::
 #[cfg(test)]
 mod resource_workspace_tests {
     use super::*;
+    #[test]
+    fn canvas_projection_hides_inaccessible_media_and_dangling_connectors_without_mutation(){
+        let resource="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let project=json!({"blocks":[{"id":"t","block_type":"text","text_content":"Keep"},{"id":"m","block_type":"image","resource_id":resource,"title":"Private title"}],"connectors":[{"id":"c","source_block_id":"t","target_block_id":"m"}]});
+        let before=project.clone();let (blocks,connectors)=readable_canvas_projection(&project,&[]);assert_eq!(blocks.len(),1);assert!(connectors.is_empty());assert_eq!(project,before);
+        let row:crate::local_resources::LocalResource=serde_json::from_value(json!({"id":resource,"name":"File","kind":"file","file_type":"image","created_at":"now","updated_at":"now","tags":[]})).unwrap();
+        let (blocks,connectors)=readable_canvas_projection(&project,&[row]);assert_eq!(blocks.len(),2);assert_eq!(connectors.len(),1);assert_eq!(project,before);
+    }
+
+    #[test]
+    fn requirement_references_block_local_deletion_and_review_values_are_complete(){
+        let record=json!({"name":"Demand","quantity":1});
+        let base=work_review_snapshot("requirements",&record).unwrap();
+        assert_eq!(base["quantity"],"1.000");assert_eq!(base["status"],"required");assert_eq!(base["notes"],"");
+        assert!(validate_requirement_record(&json!({"name":"Demand","quantity":0.0001})).is_err());
+        assert!(validate_requirement_record(&json!({"name":"Demand","quantity":1,"status":"unknown"})).is_err());
+        for key in ["tasks","experiments","bom"]{let mut project=json!({});project[key]=json!([{"requirement_id":"requirement"}]);assert!(validate_requirement_removal(&project,"requirement").is_err());}
+        assert!(validate_requirement_removal(&json!({"tasks":[]}),"requirement").is_ok());
+    }
+
+    #[test]
+    fn planning_quantities_preserve_supported_precision_and_review_snapshots(){
+        for value in [0.001,1.001,999999999.999]{assert!(validate_planning_quantity(value,false).is_ok());}
+        assert!(validate_planning_quantity(0.0,true).is_ok());
+        for value in [0.0,-1.0,0.0001,1e9,f64::NAN,f64::INFINITY]{assert!(validate_planning_quantity(value,false).is_err());}
+        assert_eq!(planning_item_base(&json!({"allocated_quantity":2,"notes":"plan"})).unwrap(),planning_item_base(&json!({"allocated_quantity":"2.000","notes":"plan","current_quantity":999})).unwrap());
+        let bom=bom_review_snapshot(&json!({"name":"Part","required_quantity":1})).unwrap();
+        assert_eq!(bom["required_quantity"],"1.000");assert_eq!(bom["notes"],"");assert!(bom["requirement_id"].is_null());
+    }
+
+    #[test]
+    fn reviewed_planning_intent_rejects_stale_snapshot_and_survives_disk_restart(){
+        let path=std::env::temp_dir().join(format!("labos-planning-{}.sqlite",uuid::Uuid::new_v4()));
+        let account="10000000-0000-4000-8000-000000000001";
+        let item="20000000-0000-4000-8000-000000000002";
+        let mut c=Connection::open(&path).unwrap();local_db::ensure_schema(&c).unwrap();
+        c.execute_batch("CREATE TABLE local_users(id TEXT PRIMARY KEY,central_user_id TEXT,role TEXT,username TEXT,is_active INTEGER,offline_expires_at TEXT,permissions_json TEXT);CREATE TABLE local_session(id INTEGER PRIMARY KEY,user_id TEXT);").unwrap();
+        c.execute("INSERT INTO local_users VALUES('a',?1,'researcher','fixture',1,datetime('now','+24 hours'),'[\"projects.view\",\"projects.edit\"]')",[account]).unwrap();
+        c.execute("INSERT INTO local_session VALUES(1,'a')",[]).unwrap();
+        let before=json!({"project_id":"p","item_id":item,"allocated_quantity":1,"notes":"reviewed"});
+        let original=json!({"id":"p","name":"Plan","visibility":"lab","permissions":{"user_id":account,"access":"edit","can_edit":true},"items":[before.clone()]});
+        save(&mut c,&[original.clone()],vec![]).unwrap();
+        let mut newer=original.clone();newer["items"][0]["allocated_quantity"]=json!(2);save(&mut c,&[newer.clone()],vec![]).unwrap();
+        let mut authored=newer.clone();authored["items"][0]["allocated_quantity"]=json!(3);
+        let record=authored["items"][0].clone();
+        let payload=json!({"record":record,"expected":before});
+        assert!(save(&mut c,&[authored.clone()],vec![(id(),"project_item".into(),format!("p:{}",item),"upsert".into(),payload)]).is_err());
+        assert_eq!(load_all(&c).unwrap()[0]["items"][0]["allocated_quantity"],2);
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM sync_outbox",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        let payload=json!({"record":record,"expected":newer["items"][0]});
+        save(&mut c,&[authored],vec![(id(),"project_item".into(),format!("p:{}",item),"upsert".into(),payload.clone())]).unwrap();drop(c);
+        let c=Connection::open(&path).unwrap();assert_eq!(load_all(&c).unwrap()[0]["items"][0]["allocated_quantity"],3);
+        let raw:String=c.query_row("SELECT payload_json FROM sync_outbox",[],|r|r.get(0)).unwrap();assert_eq!(serde_json::from_str::<Value>(&raw).unwrap(),payload);
+        assert_eq!(c.query_row("PRAGMA integrity_check",[],|r|r.get::<_,String>(0)).unwrap(),"ok");drop(c);let _=std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn pending_project_work_preserves_payload_while_team_and_authority_refresh(){
+        let path=std::env::temp_dir().join(format!("labos-access-refresh-{}.sqlite",uuid::Uuid::new_v4()));
+        let account="10000000-0000-4000-8000-000000000001";
+        let mut c=Connection::open(&path).unwrap();local_db::ensure_schema(&c).unwrap();
+        c.execute_batch("CREATE TABLE local_users(id TEXT PRIMARY KEY,central_user_id TEXT,role TEXT,username TEXT,is_active INTEGER,offline_expires_at TEXT,permissions_json TEXT);CREATE TABLE local_session(id INTEGER PRIMARY KEY,user_id TEXT);").unwrap();
+        c.execute("INSERT INTO local_users VALUES('a',?1,'researcher','fixture',1,datetime('now','+24 hours'),'[\"projects.view\",\"projects.edit\"]')",[account]).unwrap();
+        c.execute("INSERT INTO local_session VALUES(1,'a')",[]).unwrap();
+        let original=json!({"id":"p","name":"Saved project","description":"Original","visibility":"lab","permissions":{"user_id":account,"access":"edit","can_edit":true},"members":[]});
+        save(&mut c,&[original.clone()],vec![]).unwrap();
+        update_project(&mut c,"p".into(),json!({"description":"Authored offline work"})).unwrap();
+        let before:String=c.query_row("SELECT payload_json FROM sync_outbox WHERE entity_type='project' AND synced_at IS NULL",[],|r|r.get(0)).unwrap();
+        let mut server=original.clone();server["description"]=json!("Other server edit");
+        server["members"]=json!([{"user_id":"new-member","member_role":"member"}]);
+        server["permissions"]=json!({"user_id":account,"access":"view","can_edit":false});
+        apply_project_pull(&mut c,json!([server.clone()]).to_string(),vec!["p".into()],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],account.into()).unwrap();
+        let local=load(&c).unwrap().remove(0);assert_eq!(local["description"],"Authored offline work");assert_eq!(local["members"],server["members"]);
+        assert!(require_cached_project_access(&c,"p",true).is_err());
+        apply_project_pull(&mut c,"[]".into(),vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],account.into()).unwrap();
+        assert!(load(&c).unwrap().is_empty());assert_eq!(load_all(&c).unwrap()[0]["description"],"Authored offline work");
+        assert!(require_cached_project_access(&c,"p",false).is_err());
+        drop(c);let mut c=Connection::open(&path).unwrap();
+        assert!(load(&c).unwrap().is_empty());
+        let after:String=c.query_row("SELECT payload_json FROM sync_outbox WHERE entity_type='project' AND synced_at IS NULL",[],|r|r.get(0)).unwrap();assert_eq!(before,after);
+        server["permissions"]=original["permissions"].clone();
+        apply_project_pull(&mut c,json!([server]).to_string(),vec!["p".into()],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],account.into()).unwrap();
+        assert_eq!(load(&c).unwrap()[0]["description"],"Authored offline work");assert!(require_cached_project_access(&c,"p",true).is_ok());
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM sync_outbox WHERE synced_at IS NULL",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+        drop(c);std::fs::remove_file(path).unwrap();
+    }
     #[test]
     fn attachment_snapshot_shapes_and_pending_deletes_converge(){
         let a=json!({"id":"a","task_id":"t","resource_id":"r"});
@@ -578,6 +784,39 @@ mod resource_workspace_tests {
         project_task_experiment_views(&mut project);
         assert_eq!(project["tasks"][0]["experiments"],json!([{"id":"one","task_id":"t"}]));
         let once=project.clone();project_task_experiment_views(&mut project);assert_eq!(project,once);
+    }
+
+    #[test]
+    fn project_edit_and_outbox_are_atomic_and_survive_restart(){
+        let path=std::env::temp_dir().join(format!("labos-project-edit-{}.sqlite",uuid::Uuid::new_v4()));
+        let account="10000000-0000-4000-8000-000000000001";
+        let mut c=Connection::open(&path).unwrap();local_db::ensure_schema(&c).unwrap();
+        c.execute_batch("CREATE TABLE local_users(id TEXT PRIMARY KEY,central_user_id TEXT,role TEXT,username TEXT,is_active INTEGER,offline_expires_at TEXT,permissions_json TEXT);CREATE TABLE local_session(id INTEGER PRIMARY KEY,user_id TEXT);").unwrap();
+        c.execute("INSERT INTO local_users VALUES('a',?1,'researcher','fixture',1,datetime('now','+24 hours'),'[\"projects.view\",\"projects.edit\"]')",[account]).unwrap();
+        c.execute("INSERT INTO local_session VALUES(1,'a')",[]).unwrap();
+        let original=json!({"id":"p","name":"Saved project","description":"Original","budget":"100.00","status":"active","lifecycle_revision":2,"start_date":"2026-10-01","due_date":"2026-11-01","visibility":"lab","permissions":{"user_id":account,"access":"edit","can_edit":true}});
+        save(&mut c,&[original.clone()],vec![]).unwrap();
+        // A failed outbox insert must roll back the matching project snapshot.
+        c.execute_batch("CREATE TRIGGER reject_probe BEFORE INSERT ON sync_outbox BEGIN SELECT RAISE(ABORT,'probe outbox failure'); END;").unwrap();
+        assert!(super::update_project(&mut c,"p".into(),json!({"description":"Must roll back"})).is_err());
+        assert_eq!(load_all(&c).unwrap()[0]["description"],"Original");
+        c.execute_batch("DROP TRIGGER reject_probe;").unwrap();
+        let updated=super::update_project(&mut c,"p".into(),json!({"description":"Offline authored description","budget":100})).unwrap();
+        assert_eq!(updated["start_date"],original["start_date"]);
+        assert_eq!(updated["due_date"],original["due_date"]);
+        assert_eq!(updated["lifecycle_revision"],2);
+        drop(c);
+        let c=Connection::open(&path).unwrap();
+        assert_eq!(load_all(&c).unwrap()[0]["description"],"Offline authored description");
+        let (raw,count):(String,i64)=c.query_row("SELECT payload_json,(SELECT COUNT(*) FROM sync_outbox) FROM sync_outbox",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+        let payload:Value=serde_json::from_str(&raw).unwrap();
+        assert_eq!(count,1);assert_eq!(payload["before"]["description"],"Original");
+        assert_eq!(payload["project"]["description"],"Offline authored description");
+        assert_eq!(payload["project"]["due_date"],"2026-11-01");
+        let mut c=c;
+        assert!(super::update_project(&mut c,"p".into(),json!({"budget":200})).is_err());
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM sync_outbox",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+        drop(c);std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -695,6 +934,33 @@ mod resource_workspace_tests {
         assert!(validate_nested_references(&json!({"tasks":[]}),"attachments",&mut json!({"task_id":task})).is_err());
     }
     #[test]
+    fn attachment_scope_requires_direct_matching_project_and_normalizes_ids(){
+        let project="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let mut resource:crate::local_resources::LocalResource=serde_json::from_value(json!({"id":"r","name":"File","kind":"file","file_type":"pdf","created_at":"now","updated_at":"now","tags":[],"project_id":"AAAAAAAAAAAA4AAA8AAAAAAAAAAAAAAA"})).unwrap();
+        assert!(attachment_resource_in_project(&resource,project));
+        assert!(!attachment_resource_in_project(&resource,"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"));
+        resource.parent_resource_id=Some("folder".into());assert!(!attachment_resource_in_project(&resource,project));
+        resource.parent_resource_id=None;resource.note_id=Some("note".into());assert!(!attachment_resource_in_project(&resource,project));
+        resource.note_id=None;resource.project_id=None;assert!(!attachment_resource_in_project(&resource,project));
+    }
+
+    #[test]
+    fn attachment_duplicates_are_per_resource_and_work_parent(){
+        let resource="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let task="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        let other="cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        let project=json!({"attachments":[{"id":"old","resource_id":resource,"task_id":task}]});
+        let record=json!({"resource_id":"AAAAAAAAAAAA4AAA8AAAAAAAAAAAAAAA","task_id":task});
+        assert!(validate_attachment_unique(&project,&record,None).is_err());
+        assert!(validate_attachment_unique(&project,&record,Some("old")).is_ok());
+        assert!(validate_attachment_unique(&project,&json!({"resource_id":resource,"task_id":other}),None).is_ok());
+        assert!(validate_attachment_unique(&project,&json!({"resource_id":resource,"experiment_id":task}),None).is_ok());
+        assert!(validate_attachment_edit(&record,&json!({"resource_id":resource})).is_ok());
+        assert!(validate_attachment_edit(&record,&json!({"task_id":other})).is_err());
+        assert!(validate_attachment_edit(&record,&json!({"experiment_id":task})).is_err());
+    }
+
+    #[test]
     fn attachment_labels_preserve_links_and_use_current_account_resource_rows(){
         let p=json!({"tasks":[{"id":"t"}],"experiments":[{"id":"e"}],"attachments":[
             {"id":"a","task_id":"t","resource_id":"r","name":"Stale"},
@@ -781,15 +1047,27 @@ pub fn repeat_local_project_experiment(app:AppHandle,project_id:String,experimen
 #[tauri::command]
 pub fn create_local_project_bom(app:AppHandle,project_id:String,record:Value)->Result<Value,String>{nested_create(app,project_id,"bom",record,"project_bom")}
 #[tauri::command]
-pub fn update_local_project_bom(app:AppHandle,project_id:String,record_id:String,patch:Value)->Result<Value,String>{nested_update(app,project_id,"bom",record_id,patch,"project_bom")}
+pub fn update_local_project_bom(app:AppHandle,project_id:String,record_id:String,patch:Value,expected:Option<Value>)->Result<Value,String>{nested_update_reviewed(app,project_id,"bom",record_id,patch,"project_bom",expected)}
 #[tauri::command]
-pub fn delete_local_project_bom(app:AppHandle,project_id:String,record_id:String)->Result<(),String>{nested_delete(app,project_id,"bom",record_id,"project_bom")}
+pub fn delete_local_project_bom(app:AppHandle,project_id:String,record_id:String,expected:Option<Value>)->Result<(),String>{nested_delete_reviewed(app,project_id,"bom",record_id,"project_bom",expected)}
 
 #[tauri::command]
 pub fn get_local_project_canvas(app:AppHandle,project_id:String)->Result<Value,String>{
     let c=conn(&app)?;let p=load(&c)?.into_iter().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
     let permissions=current_project_access(&c,&p)?;
-    Ok(json!({"blocks":nested_get(&p,"blocks"),"connectors":nested_get(&p,"connectors"),"permissions":permissions}))
+    let resources=if local_auth::require_local_permission(&c,"resources.view").is_ok(){crate::local_resources::read_resources(&c)?}else{Vec::new()};
+    let (blocks,connectors)=readable_canvas_projection(&p,&resources);
+    Ok(json!({"blocks":blocks,"connectors":connectors,"permissions":permissions}))
+}
+fn readable_canvas_projection(project:&Value,resources:&[crate::local_resources::LocalResource])->(Vec<Value>,Vec<Value>){
+    let visible:HashSet<String>=resources.iter().filter_map(|r|uuid::Uuid::parse_str(&r.id).ok().map(|id|id.to_string())).collect();
+    let blocks:Vec<Value>=nested_get(project,"blocks").into_iter().filter(|b|{
+        if let Some(resource)=b["resource_id"].as_str(){return uuid::Uuid::parse_str(resource).ok().is_some_and(|id|visible.contains(&id.to_string()));}
+        b["block_type"].as_str()==Some("text")
+    }).collect();
+    let ids:HashSet<String>=blocks.iter().filter_map(|b|b["id"].as_str().map(str::to_string)).collect();
+    let connectors=nested_get(project,"connectors").into_iter().filter(|c|c["source_block_id"].as_str().is_some_and(|id|ids.contains(id))&&c["target_block_id"].as_str().is_some_and(|id|ids.contains(id))).collect();
+    (blocks,connectors)
 }
 #[tauri::command]
 pub fn create_local_project_block(app:AppHandle,project_id:String,mut record:Value)->Result<Value,String>{
@@ -804,19 +1082,21 @@ pub fn create_local_project_block(app:AppHandle,project_id:String,mut record:Val
     nested_create(app,project_id,"blocks",record,"project_block")
 }
 #[tauri::command]
-pub fn update_local_project_block(app:AppHandle,project_id:String,record_id:String,patch:Value)->Result<Value,String>{
+pub fn update_local_project_block(app:AppHandle,project_id:String,record_id:String,patch:Value,expected:Option<Value>)->Result<Value,String>{
     if let Some(obj)=patch.as_object(){if let Some(w)=obj.get("width").and_then(Value::as_f64){if w<120.0{return Err("Canvas block width must be at least 120".into());}}if let Some(h)=obj.get("height").and_then(Value::as_f64){if h<80.0{return Err("Canvas block height must be at least 80".into());}}}
-    nested_update(app,project_id,"blocks",record_id,patch,"project_block")
+    nested_update_reviewed(app,project_id,"blocks",record_id,patch,"project_block",expected)
 }
 #[tauri::command]
-pub fn delete_local_project_block(app:AppHandle,project_id:String,record_id:String)->Result<(),String>{
+pub fn delete_local_project_block(app:AppHandle,project_id:String,record_id:String,expected:Option<Value>)->Result<(),String>{
     let mut c=conn(&app)?;let mut projects=load(&c)?;let p=projects.iter_mut().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
     let mut blocks=nested_get(p,"blocks");if !blocks.iter().any(|b|b.get("id").and_then(Value::as_str)==Some(record_id.as_str())){return Err("Block not found".into());}
+    let before=blocks.iter().find(|b|b["id"]==record_id).cloned().ok_or("Block not found")?;
+    if let Some(ref base)=expected {if work_review_snapshot("blocks",&before)?!=work_review_snapshot("blocks",base)?{return Err("Canvas block changed; review before deleting".into());}}
     blocks.retain(|b|b.get("id").and_then(Value::as_str)!=Some(record_id.as_str()));p["blocks"]=Value::Array(blocks);
     let mut connectors=nested_get(p,"connectors");let removed:Vec<Value>=connectors.iter().filter(|v|v.get("source_block_id").and_then(Value::as_str)==Some(record_id.as_str())||v.get("target_block_id").and_then(Value::as_str)==Some(record_id.as_str())).cloned().collect();
     connectors.retain(|v|v.get("source_block_id").and_then(Value::as_str)!=Some(record_id.as_str())&&v.get("target_block_id").and_then(Value::as_str)!=Some(record_id.as_str()));p["connectors"]=Value::Array(connectors);p["updated_at"]=json!(now(&c)?);
-    let mut changes=vec![(id(),"project_block".into(),record_id,"delete".into(),json!({"project_id":project_id}))];
-    for connector in removed{if let Some(cid)=connector.get("id").and_then(Value::as_str){changes.push((id(),"project_connector".into(),cid.to_string(),"delete".into(),json!({"project_id":project_id})));}}
+    let mut changes=vec![(id(),"project_block".into(),record_id,"delete".into(),json!({"project_id":project_id,"record":before,"expected":work_review_snapshot("blocks",&before)?}))];
+    for connector in removed{if let Some(cid)=connector.get("id").and_then(Value::as_str){changes.push((id(),"project_connector".into(),cid.to_string(),"delete".into(),json!({"project_id":project_id,"record":connector,"expected":work_review_snapshot("connectors",&connector)?})));}}
     save(&mut c,&projects,changes)
 }
 #[tauri::command]
@@ -826,10 +1106,11 @@ pub fn create_local_project_connector(app:AppHandle,project_id:String,record:Val
     if source==target{return Err("source_block_id and target_block_id cannot be the same".into());}
     let c=conn(&app)?;let p=load(&c)?.into_iter().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;let blocks=nested_get(&p,"blocks");
     if !blocks.iter().any(|b|b.get("id").and_then(Value::as_str)==Some(source.as_str()))||!blocks.iter().any(|b|b.get("id").and_then(Value::as_str)==Some(target.as_str())){return Err("Connector blocks must belong to this project".into());}
+    for block in blocks.iter().filter(|b|b["id"].as_str()==Some(source.as_str())||b["id"].as_str()==Some(target.as_str())){validate_local_canvas(&c,&project_id,&mut block.clone())?;}
     drop(c);let mut value=record;value["project_id"]=json!(project_id.clone());nested_create(app,project_id,"connectors",value,"project_connector")
 }
 #[tauri::command]
-pub fn delete_local_project_connector(app:AppHandle,project_id:String,record_id:String)->Result<(),String>{nested_delete(app,project_id,"connectors",record_id,"project_connector")}
+pub fn delete_local_project_connector(app:AppHandle,project_id:String,record_id:String,expected:Option<Value>)->Result<(),String>{nested_delete_reviewed(app,project_id,"connectors",record_id,"project_connector",expected)}
 
 #[tauri::command]
 pub fn get_local_project_tasks(app:AppHandle,project_id:String)->Result<Vec<Value>,String>{let c=conn(&app)?;let p=load(&c)?.into_iter().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;Ok(nested_get(&p,"tasks"))}
@@ -850,20 +1131,21 @@ pub fn get_local_resource_requirements(app: AppHandle, project_id: Option<String
 pub fn create_local_resource_requirement(app: AppHandle, project_id: String, mut record: Value) -> Result<Value, String> {
     let name=record.get("name").and_then(Value::as_str).unwrap_or("").trim().to_string();
     if name.is_empty(){return Err("name is required".into());}
-    if record.get("quantity").and_then(Value::as_f64).unwrap_or(0.0)<=0.0{return Err("quantity must be greater than zero".into());}
+    if record.get("quantity").is_none(){record["quantity"]=json!(1);}
+    validate_requirement_record(&record)?;
     record["name"]=json!(name); record["status"]=record.get("status").cloned().unwrap_or(json!("required"));
     record["requirement_type"]=record.get("requirement_type").cloned().unwrap_or(json!("component"));
     nested_create(app,project_id,"requirements",record,"project_resource_requirement")
 }
 #[tauri::command]
-pub fn update_local_resource_requirement(app: AppHandle, project_id: String, record_id: String, patch: Value) -> Result<Value, String> {
+pub fn update_local_resource_requirement(app: AppHandle, project_id: String, record_id: String, patch: Value,expected:Option<Value>) -> Result<Value, String> {
     if let Some(q)=patch.get("quantity").and_then(Value::as_f64) { if q<=0.0{return Err("quantity must be greater than zero".into());} }
     if let Some(n)=patch.get("name").and_then(Value::as_str) { if n.trim().is_empty(){return Err("name cannot be empty".into());} }
-    nested_update(app,project_id,"requirements",record_id,patch,"project_resource_requirement")
+    nested_update_reviewed(app,project_id,"requirements",record_id,patch,"project_resource_requirement",expected)
 }
 #[tauri::command]
-pub fn delete_local_resource_requirement(app: AppHandle, project_id: String, record_id: String) -> Result<(), String> {
-    nested_delete(app,project_id,"requirements",record_id,"project_resource_requirement")
+pub fn delete_local_resource_requirement(app: AppHandle, project_id: String, record_id: String,expected:Option<Value>) -> Result<(), String> {
+    nested_delete_reviewed(app,project_id,"requirements",record_id,"project_resource_requirement",expected)
 }
 
 #[tauri::command]
@@ -871,18 +1153,108 @@ pub fn get_local_project_bom(app:AppHandle,project_id:String)->Result<Vec<Value>
 
 #[tauri::command]
 pub fn link_local_project_item(app:AppHandle,project_id:String,item_id:String,allocated_quantity:f64,notes:String)->Result<Value,String>{
+    validate_planning_quantity(allocated_quantity,true)?;
+    let item_id=uuid::Uuid::parse_str(&item_id).map_err(|_|"Inventory item ID must be a UUID")?.to_string();
     let mut c=conn(&app)?;let mut projects=load(&c)?;let p=projects.iter_mut().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
     let mut items=nested_get(p,"items");let existing=items.iter_mut().find(|x|x.get("item_id").and_then(Value::as_str)==Some(item_id.as_str()));
+    let before=existing.as_deref().cloned();
     let record=json!({"project_id":project_id,"item_id":item_id,"allocated_quantity":allocated_quantity,"notes":notes});
     if let Some(e)=existing{*e=record.clone();}else{items.push(record.clone());}p["items"]=Value::Array(items);p["updated_at"]=json!(now(&c)?);
-    save(&mut c,&projects,vec![(id(),"project_item".into(),format!("{}:{}",project_id,item_id),"upsert".into(),record.clone())])?;Ok(record)
+    save(&mut c,&projects,vec![(id(),"project_item".into(),format!("{}:{}",project_id,item_id),"upsert".into(),json!({"record":record.clone(),"expected":before}))])?;Ok(record)
 }
 
 #[tauri::command]
 pub fn unlink_local_project_item(app:AppHandle,project_id:String,item_id:String)->Result<(),String>{
+    let item_id=uuid::Uuid::parse_str(&item_id).map_err(|_|"Inventory item ID must be a UUID")?.to_string();
     let mut c=conn(&app)?;let mut projects=load(&c)?;let p=projects.iter_mut().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
-    let mut items=nested_get(p,"items");items.retain(|x|x.get("item_id").and_then(Value::as_str)!=Some(item_id.as_str()));p["items"]=Value::Array(items);p["updated_at"]=json!(now(&c)?);
-    save(&mut c,&projects,vec![(id(),"project_item".into(),format!("{}:{}",project_id,item_id),"delete".into(),json!({"project_id":project_id,"item_id":item_id}))])
+    let mut items=nested_get(p,"items");let before=items.iter().find(|x|x.get("item_id").and_then(Value::as_str)==Some(item_id.as_str())).cloned().ok_or("Project item link not found")?;
+    items.retain(|x|x.get("item_id").and_then(Value::as_str)!=Some(item_id.as_str()));p["items"]=Value::Array(items);p["updated_at"]=json!(now(&c)?);
+    save(&mut c,&projects,vec![(id(),"project_item".into(),format!("{}:{}",project_id,item_id),"delete".into(),json!({"record":{"project_id":project_id,"item_id":item_id},"expected":before}))])
+}
+
+fn validate_planning_quantity(value:f64,allow_zero:bool)->Result<(),String>{
+    let scaled=value*1000.0;
+    if !value.is_finite()||value<0.0||(!allow_zero&&value==0.0)||value>=1e9||(scaled-scaled.round()).abs()>scaled.abs().max(1.0)*f64::EPSILON*4.0 {
+        return Err("Planning quantity must fit nine whole digits and at most three decimal places".into());
+    }
+    Ok(())
+}
+fn validate_bom_quantity(record:&Value)->Result<(),String>{
+    let quantity=record["required_quantity"].as_f64().or_else(||record["required_quantity"].as_str().and_then(|v|v.parse::<f64>().ok())).ok_or("BOM quantity must be a number")?;
+    validate_planning_quantity(quantity,false)
+}
+fn planning_item_base(record:&Value)->Result<Value,String>{
+    let quantity=record["allocated_quantity"].as_f64().or_else(||record["allocated_quantity"].as_str().and_then(|v|v.parse().ok())).ok_or("Item-link quantity is unavailable")?;
+    validate_planning_quantity(quantity,true)?;
+    Ok(json!({"allocated_quantity":format!("{:.3}",quantity),"notes":record["notes"].as_str().unwrap_or("")}))
+}
+fn bom_review_snapshot(record:&Value)->Result<Value,String>{
+    validate_bom_quantity(record)?;
+    let mut snapshot=json!({});
+    for field in ["name","part_number","required_quantity","unit","preferred_item_id","alternative_item_id","notes","requirement_id"]{
+        snapshot[field]=record[field].clone();
+    }
+    if snapshot["notes"].is_null(){snapshot["notes"]=json!("");}
+    let quantity=record["required_quantity"].as_f64().or_else(||record["required_quantity"].as_str().and_then(|v|v.parse().ok())).ok_or("BOM quantity is unavailable")?;
+    snapshot["required_quantity"]=json!(format!("{:.3}",quantity));
+    Ok(snapshot)
+}
+fn validate_requirement_record(record:&Value)->Result<(),String>{
+    if record["name"].as_str().is_none_or(|v|v.trim().is_empty()){return Err("Requirement name is required".into());}
+    let quantity=record["quantity"].as_f64().or_else(||record["quantity"].as_str().and_then(|v|v.parse().ok())).ok_or("Requirement quantity is unavailable")?;
+    validate_planning_quantity(quantity,false)?;
+    if !matches!(record["requirement_type"].as_str().unwrap_or("component"),"component"|"equipment"|"tool"|"material"|"consumable"|"resource"|"other")||!matches!(record["status"].as_str().unwrap_or("required"),"required"|"available"|"allocated"|"ordered"|"fulfilled"|"cancelled"){return Err("Invalid requirement type or status".into());}
+    Ok(())
+}
+fn validate_requirement_removal(project:&Value,id:&str)->Result<(),String>{
+    if ["tasks","experiments","bom"].iter().any(|key|nested_get(project,key).iter().any(|r|r["requirement_id"].as_str()==Some(id))){return Err("Requirement is referenced by project work; retain it and review the links instead of deleting it".into());}
+    Ok(())
+}
+fn work_review_snapshot(key:&str,record:&Value)->Result<Value,String>{
+    if key=="bom"{return bom_review_snapshot(record);}
+    let fields:&[&str]=match key{
+        "blocks"=>&["block_type","text_content","resource_id","title","x","y","width","height"],
+        "connectors"=>&["source_block_id","target_block_id","label"],
+        "requirements"=>&["name","requirement_type","quantity","unit","required_by","preferred_item_id","notes","status"],
+        _=>return Err("Unsupported reviewed project work".into())
+    };
+    let mut value=json!({});for field in fields{value[*field]=record[*field].clone();}
+    if key=="requirements"{
+        validate_requirement_record(record)?;
+        let q=record["quantity"].as_f64().or_else(||record["quantity"].as_str().and_then(|v|v.parse().ok())).ok_or("Requirement quantity unavailable")?;
+        value["quantity"]=json!(format!("{:.3}",q));
+        for (field,default) in [("notes",""),("requirement_type","component"),("status","required")]{if value[field].is_null(){value[field]=json!(default);}}
+        if value["required_by"].as_str().is_some_and(|v|v.trim().is_empty()){value["required_by"]=Value::Null;}
+    }
+    Ok(value)
+}
+fn validate_local_canvas(c:&Connection,project_id:&str,record:&mut Value)->Result<(),String>{
+    let kind=record["block_type"].as_str().unwrap_or("");
+    if !matches!(kind,"text"|"image"|"video"|"audio"|"pdf"|"link"|"folder"){return Err("Invalid canvas block type".into());}
+    if kind=="text"&&record["text_content"].as_str().is_none_or(|v|v.trim().is_empty()){return Err("Canvas text is required".into());}
+    if kind!="text"&&record["resource_id"].as_str().is_none(){return Err("Canvas resource is required".into());}
+    for (field,default) in [("x",0.0),("y",0.0),("width",320.0),("height",200.0)]{
+        let raw=if record.get(field).is_none(){default}else{record[field].as_f64().ok_or("Canvas geometry must be numeric")?};
+        let value=raw.round();if !value.is_finite()||value<(i32::MIN as f64)||value>(i32::MAX as f64)||(field=="width"&&value<120.0)||(field=="height"&&value<80.0){return Err("Invalid canvas geometry".into());}record[field]=json!(value as i32);
+    }
+    if let Some(resource)=record["resource_id"].as_str(){
+        local_auth::require_local_permission(c,"resources.view")?;
+        let resources=crate::local_resources::read_resources(c)?;
+        let mut current=uuid::Uuid::parse_str(resource).map_err(|_|"Canvas resource ID must be a UUID")?.to_string();let mut seen=HashSet::new();
+        for depth in 0..32{
+            if !seen.insert(current.clone()){return Err("Invalid canvas resource folder cycle".into());}
+            let row=resources.iter().find(|r|uuid::Uuid::parse_str(&r.id).ok().map(|id|id.to_string())==Some(current.clone())).ok_or("Canvas resource is not available in this account")?;
+            if depth>0&&row.kind!="folder"{return Err("Invalid canvas resource ancestor".into());}
+            if row.project_id.as_deref().is_some_and(|id|uuid::Uuid::parse_str(id).ok()!=uuid::Uuid::parse_str(project_id).ok()){return Err("Canvas resource belongs to another project".into());}
+            if let Some(note_id)=row.note_id.as_deref(){
+                let notes=crate::local_notes::load(c)?;let note=notes.iter().find(|n|n["id"].as_str()==Some(note_id)).ok_or("Canvas note context unavailable")?;
+                if note["project_id"].as_str().is_some_and(|id|uuid::Uuid::parse_str(id).ok()!=uuid::Uuid::parse_str(project_id).ok()){return Err("Canvas note belongs to another project".into());}
+            }
+            match row.parent_resource_id.as_deref(){Some(parent)=>current=uuid::Uuid::parse_str(parent).map_err(|_|"Invalid canvas folder ID")?.to_string(),None=>return Ok(())}
+        }
+        return Err("Canvas resource folder chain is incomplete".into());
+    }
+    Ok(())
 }
 
 
@@ -892,18 +1264,24 @@ pub fn apply_server_project_pull(app: AppHandle, projects_json: String, visible_
     apply_project_pull(&mut c,projects_json,visible_project_ids,deleted_project_ids,deleted_project_task_ids,deleted_project_experiment_ids,deleted_project_bom_ids,deleted_project_block_ids,deleted_project_connector_ids,deleted_project_measurement_ids,deleted_project_observation_ids,deleted_project_attachment_ids,_deleted_project_task_experiment_ids,deleted_project_requirement_ids,expected_account_id)
 }
 
-fn apply_project_pull(c:&mut Connection, projects_json: String, visible_project_ids: Vec<String>, deleted_project_ids: Vec<String>, deleted_project_task_ids: Vec<String>, deleted_project_experiment_ids: Vec<String>, deleted_project_bom_ids: Vec<String>, deleted_project_block_ids: Vec<String>, deleted_project_connector_ids: Vec<String>, deleted_project_measurement_ids: Vec<String>, deleted_project_observation_ids: Vec<String>, deleted_project_attachment_ids: Vec<String>, _deleted_project_task_experiment_ids: Vec<String>, deleted_project_requirement_ids: Vec<String>, expected_account_id: String) -> Result<(), String> {
+pub(crate) fn apply_project_pull(c:&mut Connection, projects_json: String, visible_project_ids: Vec<String>, deleted_project_ids: Vec<String>, deleted_project_task_ids: Vec<String>, deleted_project_experiment_ids: Vec<String>, deleted_project_bom_ids: Vec<String>, deleted_project_block_ids: Vec<String>, deleted_project_connector_ids: Vec<String>, deleted_project_measurement_ids: Vec<String>, deleted_project_observation_ids: Vec<String>, deleted_project_attachment_ids: Vec<String>, _deleted_project_task_experiment_ids: Vec<String>, deleted_project_requirement_ids: Vec<String>, expected_account_id: String) -> Result<(), String> {
     let mut incoming: Vec<Value> = serde_json::from_str(&projects_json).map_err(|e| format!("Invalid server project payload: {e}"))?;
     for project in &mut incoming{normalize_experiment_observations(project);normalize_work_attachments(project);}
     let visible: std::collections::HashSet<String> = visible_project_ids.into_iter().collect();
     let deleted: std::collections::HashSet<String> = deleted_project_ids.into_iter().collect();
     local_db::require_sync_account(&c, &expected_account_id)?;
-    let mut projects = load(&c)?;
-    let pending: std::collections::HashSet<String> = {
+    // Include retained inaccessible work so a later authorized snapshot can
+    // refresh its authority without dropping the author's pending record.
+    let mut projects = load_all(&c)?;
+    let mut pending: std::collections::HashSet<String> = {
         let mut stmt = c.prepare("SELECT DISTINCT entity_type || ':' || entity_id FROM active_sync_outbox WHERE synced_at IS NULL AND entity_id IS NOT NULL AND entity_type IN ('project','project_task','project_experiment','project_experiment_measurement','project_experiment_observation','project_bom','project_block','project_connector','project_work_attachment','project_task_experiment','project_resource_requirement','project_item')").map_err(|e| format!("Unable to inspect pending project changes: {e}"))?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| format!("Unable to inspect pending project changes: {e}"))?;
         rows.filter_map(|r| r.ok()).collect()
     };
+    pending.extend(crate::local_proposals::pending_project_ids(c,false)?.into_iter().map(|id|format!("project:{id}")));
+    let mut pending_new=crate::local_proposals::pending_project_ids(c,true)?;
+    let mut new_stmt=c.prepare("SELECT entity_id FROM active_sync_outbox WHERE entity_type='project' AND operation='create' AND synced_at IS NULL").map_err(|e|e.to_string())?;
+    for id in new_stmt.query_map([],|r|r.get::<_,String>(0)).map_err(|e|e.to_string())?{pending_new.insert(id.map_err(|e|e.to_string())?);}drop(new_stmt);
     projects.retain(|p| {
         let id = p.get("id").and_then(Value::as_str).unwrap_or_default();
         (!deleted.contains(id) && visible.contains(id)) || pending.contains(&format!("project:{id}"))
@@ -911,7 +1289,16 @@ fn apply_project_pull(c:&mut Connection, projects_json: String, visible_project_
     let mut refreshed_reservations=Vec::new();
     for mut project in incoming {
         let Some(project_id) = project.get("id").and_then(Value::as_str).map(ToOwned::to_owned) else { continue; };
-        if pending.contains(&format!("project:{project_id}")) { continue; }
+        if pending.contains(&format!("project:{project_id}")) {
+            // Pending authored prose is not authority. Update server-managed
+            // access/team fields without rewriting that immutable intention.
+            if let Some(local)=projects.iter_mut().find(|p|p["id"].as_str()==Some(project_id.as_str())) {
+                for key in ["permissions","visibility","owner_id","members"] {
+                    if let Some(value)=project.get(key) {local[key]=value.clone();}
+                }
+            }
+            continue;
+        }
         if let Some(rows)=project["reservations"].as_array(){
             refreshed_reservations.extend(rows.iter().filter(|r|r["applied_intent_ids"].is_array()).filter_map(|r|r["id"].as_str().map(ToOwned::to_owned)));
         }
@@ -958,7 +1345,17 @@ fn apply_project_pull(c:&mut Connection, projects_json: String, visible_project_
             projects.push(project);
         }
     }
-    for project in &mut projects{project_work_attachment_views(project);project_task_experiment_views(project);}
+    for project in &mut projects{
+        let id=project["id"].as_str().unwrap_or_default();
+        if pending.contains(&format!("project:{id}"))&&((!visible.contains(id)&&!pending_new.contains(id))||deleted.contains(id)) {
+            // Keep the original work for recovery, but a pending event cannot
+            // preserve stale edit/read authority after revocation or deletion.
+            project["permissions"]=json!({"user_id":expected_account_id,"access":"none","can_edit":false});
+            project["visibility"]=json!("restricted");
+            project["members"]=json!([]);
+        }
+        project_work_attachment_views(project);project_task_experiment_views(project);
+    }
     save_checked(c, &projects, Vec::new(), Some(&expected_account_id), &refreshed_reservations)
 }
 

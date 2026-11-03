@@ -25,6 +25,11 @@ test('lifecycle conflict requires review rather than silent rebase',()=>{
   assert.equal(result.retryBlocked,true);assert.equal(result.acceptLabel,'Use server status');
   assert.match(result.confirmation,/original payload remains retained/);
 });
+test('authored field conflict preserves work and blocks blind retries',()=>{
+ const result=guidance({entity_type:'project',operation:'update',error_code:'PROJECT_EDIT_CONFLICT'});
+ assert.equal(result.retryBlocked,true);assert.match(result.confirmation,/retained for recovery/);
+ assert.match(result.explanation,/field you edited/);
+});
 test('transient busy deletion remains retryable',()=>{
   assert.equal(guidance({entity_type:'project',operation:'delete',error_code:'PROJECT_HISTORY_BUSY'}).retryBlocked,false);
 });

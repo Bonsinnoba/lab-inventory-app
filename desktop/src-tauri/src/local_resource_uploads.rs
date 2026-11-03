@@ -235,22 +235,21 @@ pub fn serve_file(app:&AppHandle,request:&tauri::http::Request)->Result<tauri::h
         let revision=format!("{:x}",Sha256::digest(format!("{}:{size}",file_path.to_string_lossy()).as_bytes()));
         if url.query_pairs().any(|(key,value)|key=="revision"&&value!=revision){return Err("Local file revision changed".into())}
         let range=request.headers().get("range").and_then(|v|v.to_str().ok());
-        let (start,end)=if let Some(range)=range{
-            let pair=range.strip_prefix("bytes=").ok_or("Invalid range")?.split_once('-').ok_or("Invalid range")?;
-            let start=pair.0.parse::<u64>().map_err(err)?;
-            let requested=if pair.1.is_empty(){size.saturating_sub(1)}else{pair.1.parse::<u64>().map_err(err)?};
-            if start>=size||requested<start{return Err("Invalid range".into())}(start,requested.min(size-1).min(start+4*1024*1024-1))
-        }else{if request.method().as_str()!="HEAD"&&size>32*1024*1024{return Err("Large files require ranged access".into())}(0,size.saturating_sub(1))};
-        let length=if size==0{0}else{end-start+1};
+        let origin=request.headers().get("origin").and_then(|v|v.to_str().ok()).filter(|o|["http://localhost:1420","http://127.0.0.1:1420","tauri://localhost","http://tauri.localhost","https://tauri.localhost"].contains(o)).unwrap_or("http://tauri.localhost");
+        let plan=match crate::resource_file_response::plan(size,range,request.method().as_str()=="HEAD"){
+            Ok(plan)=>plan,
+            Err(crate::resource_file_response::ReadError::Unsatisfiable)=>return tauri::http::ResponseBuilder::new().status(416).header("Cache-Control","no-store").header("Content-Range",format!("bytes */{size}")).header("Access-Control-Allow-Origin",origin).header("Access-Control-Expose-Headers","Content-Range").body(Vec::new()).map_err(err),
+            Err(crate::resource_file_response::ReadError::RequiresExport)=>return tauri::http::ResponseBuilder::new().status(413).header("Cache-Control","no-store").header("Accept-Ranges","bytes").header("Access-Control-Allow-Origin",origin).body(Vec::new()).map_err(err),
+        };
+        let start=plan.start;let length=plan.length;let end=start.saturating_add(length).saturating_sub(1);
         let mut file=fs::File::open(&file_path).map_err(err)?;
         if file.metadata().map_err(err)?.len()!=size{return Err("Local file changed".into())}
         let mut bytes=if request.method().as_str()=="HEAD"{Vec::new()}else{vec![0;length as usize]};file.seek(SeekFrom::Start(start)).map_err(err)?;file.read_exact(&mut bytes).map_err(err)?;
         if resolved_file(app,&c,parts[0])?.0!=file_path{return Err("Local file revision changed".into())}if capability(&c,parts[0])?!=parts[1]{return Err("Session changed".into())}
         let mime=if mime.starts_with("image/")||mime.starts_with("audio/")||mime.starts_with("video/")||mime=="application/pdf"{mime}else{"text/plain".into()};
-        let origin=request.headers().get("origin").and_then(|v|v.to_str().ok()).filter(|o|["http://localhost:1420","http://127.0.0.1:1420","tauri://localhost","http://tauri.localhost","https://tauri.localhost"].contains(o)).unwrap_or("http://tauri.localhost");
-        let mut builder=tauri::http::ResponseBuilder::new().status(if range.is_some(){206}else{200}).header("Content-Type",mime).header("Cache-Control","no-store").header("Accept-Ranges","bytes").header("Content-Length",length.to_string()).header("Access-Control-Allow-Origin",origin).header("Access-Control-Expose-Headers","Content-Range, Content-Length, Accept-Ranges").header("Content-Security-Policy","default-src 'none'; sandbox").header("X-Content-Type-Options","nosniff");
+        let mut builder=tauri::http::ResponseBuilder::new().status(if plan.partial{206}else{200}).header("Content-Type",mime).header("Cache-Control","no-store").header("Accept-Ranges","bytes").header("Content-Length",length.to_string()).header("Access-Control-Allow-Origin",origin).header("Access-Control-Expose-Headers","Content-Range, Content-Length, Accept-Ranges").header("Content-Security-Policy","default-src 'none'; sandbox").header("X-Content-Type-Options","nosniff");
         builder=builder.header("X-LabOS-File-Revision",revision).header("Access-Control-Expose-Headers","Content-Range, Content-Length, Accept-Ranges, X-LabOS-File-Revision");
-        if range.is_some(){builder=builder.header("Content-Range",format!("bytes {start}-{end}/{size}"));}
+        if plan.partial{builder=builder.header("Content-Range",format!("bytes {start}-{end}/{size}"));}
         builder.body(bytes).map_err(err)
     })();
     match response{Ok(r)=>Ok(r),Err(_)=>tauri::http::ResponseBuilder::new().status(403).header("Cache-Control","no-store").body(Vec::new())}

@@ -4,14 +4,14 @@ import ts from 'typescript';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-function load({failMove=false,switchOnGuard=false,switchOnMove=false,failEditor=false,switchOnEditor=false,mutationProtocol=1}={}){
+function load({failMove=false,switchOnGuard=false,switchOnMove=false,failEditor=false,switchOnEditor=false,mutationProtocol=1,localUrl=null,textReply='Preview',switchOnText=false,switchOnBody=false}={}){
   const exports={},calls=[];let current=true;
   const source=ts.transpileModule(readFileSync(new URL('./resources.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
-  vm.runInNewContext(source,{exports,URLSearchParams,XMLHttpRequest:class{constructor(){throw Error('Unexpected HTTP upload');}},require:p=>{
+  vm.runInNewContext(source,{exports,URLSearchParams,fetch:async url=>{calls.push({command:'fetch',args:url});if(switchOnText)current=false;return{ok:true,text:async()=>{if(switchOnBody)current=false;return textReply;}};},XMLHttpRequest:class{constructor(){throw Error('Unexpected HTTP upload');}},require:p=>{
     if(p==='../lib/runtime')return{isTauriRuntime:()=>true};
     if(p==='./auth')return{captureAccountSession:()=>({accountId:'account'}),isAccountSessionCurrent:()=>current};
     if(p==='./http')return{apiFetch:()=>{throw Error('Unexpected HTTP');}};
-    if(p==='./resource-uploads')return{stageResourceFolderFiles:async(...args)=>{calls.push({command:'stageFolder',args});return[];},stagePdfReplacement:async(...args)=>{calls.push({command:'stagePdf',args});return{id:args[0]};},refreshLocalFileAccess:async()=>{},localFilePending:()=>false,localFileUrl:()=>null};
+    if(p==='./resource-uploads')return{stageResourceFolderFiles:async(...args)=>{calls.push({command:'stageFolder',args});return[];},stagePdfReplacement:async(...args)=>{calls.push({command:'stagePdf',args});return{id:args[0]};},refreshLocalFileAccess:async()=>{},localFilePending:()=>false,localFileUrl:()=>localUrl};
     if(p==='@tauri-apps/api/tauri')return{invoke:async(command,args)=>{
       calls.push({command,args});
       if(command==='local_database_status')return{resource_mutation_protocol:mutationProtocol};
@@ -21,8 +21,9 @@ function load({failMove=false,switchOnGuard=false,switchOnMove=false,failEditor=
       if(command==='create_local_resource_folder')return{id:'folder'};
       if(command==='local_authorization_guard'){if(switchOnGuard)current=false;return 'native-session';}
       if(command==='move_local_resource_attachment'){if(failMove)throw Error('SQLite write failed');if(switchOnMove)current=false;return{id:args.resourceId,project_id:args.destination.project_id};}
-      if(['create_local_pdf_edit_copy','read_local_resource_markdown','save_local_resource_markdown','list_local_markdown_versions','read_local_markdown_version','read_local_docx','save_local_docx_copy'].includes(command)){
+      if(['export_local_resource_file','create_local_pdf_edit_copy','read_local_resource_markdown','save_local_resource_markdown','list_local_markdown_versions','read_local_markdown_version','read_local_docx','save_local_docx_copy'].includes(command)){
         if(failEditor)throw Error('Local source unavailable');if(switchOnEditor)current=false;
+        if(command==='export_local_resource_file')return true;
         if(command==='read_local_docx')return{html:'<p>Local DOCX</p>',messages:[]};
         if(command==='list_local_markdown_versions')return[{change_id:'version',status:'discarded'}];
         if(command==='read_local_markdown_version')return '# Preserved';
@@ -33,6 +34,20 @@ function load({failMove=false,switchOnGuard=false,switchOnMove=false,failEditor=
     return{};
   }});return{api:exports,calls,switch:()=>{current=false;}};
 }
+
+test('native export uses a session-fenced command without renderer destination paths or HTTP',async()=>{
+ const c=load();assert.equal(await c.api.exportResourceToDevice('file'),true);
+ const call=c.calls.find(c=>c.command==='export_local_resource_file');assert.deepEqual(JSON.parse(JSON.stringify(call.args)),{expectedAccountId:'account',expectedSessionToken:'native-session',resourceId:'file'});
+ for(const options of [{failEditor:true},{switchOnGuard:true},{switchOnEditor:true}]){const c=load(options);await assert.rejects(c.api.exportResourceToDevice('file'),/Local source unavailable|Account changed/);}
+});
+
+test('missing native file access never returns a token-bearing server download or access URL',async()=>{
+ const c=load();assert.equal(c.api.getResourceDownloadUrl('file',true),'');await assert.rejects(c.api.getResourceAccessUrl('file'),/not available on this PC/);await assert.rejects(c.api.getResourcePreviewText('file'),/not available on this PC/);assert.equal(c.calls.length,0);
+});
+test('text preview reads only the current native capability and discards late account replies',async()=>{
+ const c=load({localUrl:'labos-file://file.capability'});assert.equal(await c.api.getResourcePreviewText('file'),'Preview');assert.deepEqual(c.calls.map(c=>c.args),['labos-file://file.capability']);
+ for(const option of [{switchOnText:true},{switchOnBody:true}]){const c=load({localUrl:'labos-file://file.capability',...option});await assert.rejects(c.api.getResourcePreviewText('file'),/Account changed/);}
+});
 
 test('metadata writes capture the native session and never fall back to HTTP',async()=>{
   const c=load();await c.api.updateResourceMetadata('resource',{description:'saved'});

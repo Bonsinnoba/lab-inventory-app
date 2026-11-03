@@ -5,6 +5,9 @@ use std::collections::HashSet;
 use crate::{local_auth,local_db};
 
 pub(crate) fn canonical_id(id:&str)->Result<String,String>{uuid::Uuid::parse_str(id).map(|id|id.to_string()).map_err(|_|"Invalid inventory UUID".into())}
+pub(crate) fn require_usable_stock(item:&Value)->Result<(),String>{
+    if matches!(item["status"].as_str(),Some("available"|"low_stock"|"in_use")){Ok(())}else{Err("Inventory is not cleared for issue or consumption; inspect/repair and clear its status first".into())}
+}
 pub(crate) fn decode(raw:&str)->Result<Vec<Value>,String>{
     let mut rows:Vec<Value>=serde_json::from_str(raw).map_err(|e|format!("Invalid inventory snapshot: {e}"))?;
     let mut ids=HashSet::new();
@@ -103,6 +106,9 @@ pub(crate) fn stamp_versions(c:&Connection,kind:&str,entity:Option<&str>,op:&str
         let awaiting:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM sync_state WHERE key=?1)",[local_db::scoped_state_key(c,&format!("inventory_reconciliation_{id}"))?],|r|r.get(0)).map_err(|e|e.to_string())?;
         if awaiting{return Err("Synchronize this inventory item before recording more changes. Rejected local work has been preserved for recovery.".into())}
         let old=current.iter().find(|r|r["id"]==*id);
+        if kind=="item_movement"&&payload["custody_id"].is_null()&&matches!(payload["movement_type"].as_str(),Some("checkout"|"consume")){
+            require_usable_stock(old.ok_or("Inventory target missing")?)?;
+        }
         let version=if creating{if old.is_some()||predecessors.contains_key(id){return Err("Inventory identity already exists or has pending work".into())}0}
         else{old.and_then(|r|r["sync_version"].as_i64()).filter(|v|*v>0).ok_or("Refresh inventory online to obtain its version before editing")?};
         bases.push(serde_json::json!({"id":id,"version":version,"depends_on":predecessors.get(id)}));

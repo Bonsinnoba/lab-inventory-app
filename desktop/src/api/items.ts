@@ -4,6 +4,7 @@ import { listMaintenance, mutateMaintenance } from './maintenance';
 import { ensureItemSku } from './item-sku';
 import { captureAccountSession, isAccountSessionCurrent, type AccountSession } from './auth';
 import { isLocalBackendAvailable as isTauriRuntime } from './local-backend';
+import {localBackend} from './local-backend';
 import { createLocalCustodyMovement, hasCustodyIntent } from './local-inventory';
 import { bulkDeleteLocalInventoryItems, bulkUpdateLocalInventoryStatus, cacheLocalAssigneeDirectory, cacheLocalInventorySnapshot, cacheLocalItemAssignmentHistory, cacheLocalItemCustody, cacheLocalItemFieldHistory, cacheLocalItemMovements, createLocalInventoryItem, createLocalItemMovement, deleteLocalInventoryItem, getLocalAssigneeDirectory, getLocalInventoryOrRemote, getLocalInventorySnapshot, getLocalItemAssignmentHistory, getLocalItemCustody, getLocalItemFieldHistory, getLocalItemMovements, updateLocalInventoryItem } from './local-inventory';
 function requireLocalInventoryWrite(): never { throw new Error('Local inventory is unavailable. Refresh or reconnect to LabOS before changing items.'); }
@@ -172,6 +173,16 @@ export async function getAssigneeDirectory(): Promise<AssigneeUser[]> {
 
 export interface SalvageRecovery {
   id: string;
+  source_custody_id?:string|null;
+  custody_settlement_id?:string|null;
+  repair_received_at?:string|null;
+  repair_completed_at?:string|null;
+  repair_verification_notes?:string|null;
+  batch_id?:string|null;
+  sync_version?:number|string;
+  local_pending_action?:string;
+  local_error?:string|null;
+  source_movement_id?: string | null;
   source_item_id?: string | null;
   source_item_name?: string | null;
   project_id?: string | null;
@@ -197,36 +208,88 @@ export interface SalvageRecovery {
 }
 
 export async function getSalvageRecoveries(filters?: { status?: string; project_id?: string }): Promise<SalvageRecovery[]> {
+  const session=captureAccountSession();if(!session)throw new Error('Sign in to read salvage recoveries');
+  if(isTauriRuntime()){
+    const snapshot=await localBackend.invoke<{records:SalvageRecovery[];downloaded:boolean;pending_count?:number}>('get_local_salvage_snapshot',{expectedAccountId:session.accountId});
+    if(!isAccountSessionCurrent(session))throw new Error('Account changed while reading salvage');
+    if(!Array.isArray(snapshot?.records)||(snapshot.downloaded!==true&&!snapshot.records.some(row=>row.local_pending_action)))throw new Error('Synchronize salvage once to make recovery records available on this PC');
+    return snapshot.records.filter(row=>(!filters?.status||row.quarantine_status===filters.status)&&(!filters?.project_id||row.project_id===filters.project_id));
+  }
   const p = new URLSearchParams();
   if (filters?.status) p.append('status', filters.status);
   if (filters?.project_id) p.append('project_id', filters.project_id);
   const r = await apiFetch(`/items/salvage/recoveries?${p}`);
   if (!r.ok) throw new Error(await getApiErrorMessage(r, 'Failed to fetch salvage recoveries'));
-  return r.json();
+  const records=await r.json();
+  if(!isAccountSessionCurrent(session))throw new Error('Account changed while reading salvage');
+  return records;
+}
+
+const salvageAttempts=new Map<string,{id:string;change:string}>();
+export async function getSalvageCustodySources(itemId:string):Promise<ItemCustodyRecord[]>{
+ const session=captureAccountSession();if(!session)throw new Error('Sign in to read issued custody');
+ if(!isTauriRuntime()){
+  const response=await apiFetch(`/items/${encodeURIComponent(itemId)}/salvage-custody-sources`);
+  if(!response.ok)throw new Error(await getApiErrorMessage(response,'Failed to read issued custody sources'));
+  const records=await response.json();
+  if(!isAccountSessionCurrent(session))throw new Error('Account changed while reading issued custody');
+  if(!Array.isArray(records))throw new Error('Invalid issued custody source history');
+  return records;
+ }
+ const result=await localBackend.invoke<{downloaded:boolean;records:ItemCustodyRecord[]}>('get_local_salvage_custody_sources',{expectedAccountId:session.accountId,itemId});
+ if(!isAccountSessionCurrent(session))throw new Error('Account changed while reading issued custody');
+ if(!result||!Array.isArray(result.records))throw new Error('Invalid cached custody history');
+ if(!result.downloaded)throw new Error('Issued custody for this item has not been downloaded to this PC');
+ return result.records;
+}
+export async function getSalvageSourceMovements(itemId:string):Promise<ItemMovement[]>{
+ const session=captureAccountSession();if(!session)throw new Error('Sign in to read recovery sources');
+ if(isTauriRuntime()){
+  const result=await localBackend.invoke<{downloaded:boolean;records:ItemMovement[]}>('get_local_salvage_sources',{expectedAccountId:session.accountId,itemId});
+  if(!isAccountSessionCurrent(session))throw new Error('Account changed while reading recovery sources');
+  if(!result||!Array.isArray(result.records))throw new Error('Invalid local recovery source history');
+  if(!result.downloaded)throw new Error('Consumption history for this item has not been downloaded to this PC. You can use explicit historical-source attestation instead.');
+  return result.records;
+ }
+ const response=await apiFetch(`/items/${encodeURIComponent(itemId)}/salvage-sources`);
+ if(!response.ok)throw new Error(await getApiErrorMessage(response,'Unable to read recovery sources'));
+ const records=await response.json();if(!isAccountSessionCurrent(session))throw new Error('Account changed while reading recovery sources');
+ if(!Array.isArray(records))throw new Error('Invalid recovery source history');return records;
+}
+async function queueSalvage(operation:'create'|'create_batch'|'inspect'|'release',record:object,id?:string,reviewedVersion?:number):Promise<SalvageRecovery>{
+ const session=captureAccountSession();if(!session)throw new Error('Sign in to save recovery intentions');
+ let version:number|null=null;
+ if(!['create','create_batch'].includes(operation)){
+  version=inventoryVersion(reviewedVersion);
+ }
+ const signature=JSON.stringify([session.accountId,operation,id,record,version]);
+ let attempt=salvageAttempts.get(signature);if(!attempt){attempt={id:id||crypto.randomUUID(),change:crypto.randomUUID()};salvageAttempts.set(signature,attempt);}
+ const result=await localBackend.invoke<SalvageRecovery>('save_local_salvage_intent',{input:{expected_account_id:session.accountId,change_id:attempt.change,recovery_id:attempt.id,operation,record,expected_version:version}});
+ if(!isAccountSessionCurrent(session))throw new Error('Account changed after saving; original account owns the recovery intention');
+ if(!result?.id)throw new Error('Recovery was not confirmed saved locally; server fallback was not attempted');
+ salvageAttempts.delete(signature);return result;
 }
 
 export async function createSalvageRecovery(data: Partial<SalvageRecovery>): Promise<SalvageRecovery> {
-  const r = await apiFetch('/items/salvage/recoveries', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  });
-  if (!r.ok) throw new Error(await getApiErrorMessage(r, 'Failed to record salvage recovery'));
-  return r.json();
+  if(isTauriRuntime())return queueSalvage('create',data,data.id);
+  return writeInventoryHttp<SalvageRecovery>('/items/salvage/recoveries','POST',{...data},!data.id);
 }
 
-export async function inspectSalvageRecovery(id: string, data: { condition?: string; reviewed_valuation?: number; valuation_notes?: string; approval: 'approved' | 'rejected' }): Promise<SalvageRecovery> {
-  const r = await apiFetch(`/items/salvage/recoveries/${id}/inspect`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  });
-  if (!r.ok) throw new Error(await getApiErrorMessage(r, 'Failed to inspect salvage recovery'));
-  return r.json();
+export type SalvageBatchOutput={id:string;recovered_item_name:string;recovered_quantity:number;unit:string;recovery_type:'disassembly_output'|'scrap'};
+export async function createSalvageBatch(data:{source_item_id:string|null;source_movement_id:string|null;project_id:string|null;source_quantity:number;attestation_notes:string;outputs:SalvageBatchOutput[]}):Promise<{id:string;records?:SalvageRecovery[]}>{
+ if(data.outputs.length<2||data.outputs.length>25)throw new Error('A disassembly batch requires 2 to 25 outputs');
+ if(isTauriRuntime())return queueSalvage('create_batch',data,data.outputs[0].id);
+ return writeInventoryHttp('/items/salvage/recoveries/batch','POST',{...data,id:data.outputs[0].id});
 }
 
-export async function releaseSalvageRecovery(id: string): Promise<SalvageRecovery> {
-  const r = await apiFetch(`/items/salvage/recoveries/${id}/release`, { method: 'POST' });
-  if (!r.ok) throw new Error(await getApiErrorMessage(r, 'Failed to release salvage recovery'));
-  return r.json();
+export async function inspectSalvageRecovery(id: string, data: { condition?: string; reviewed_valuation?: number; valuation_notes?: string; attestation_notes?:string; repair_verification_notes?:string; approval: 'approved' | 'rejected' },expectedVersion:number|string|undefined): Promise<SalvageRecovery> {
+  const version=inventoryVersion(Number(expectedVersion));
+  if(isTauriRuntime())return queueSalvage('inspect',data,id,version);
+  return writeInventoryHttp<SalvageRecovery>(`/items/salvage/recoveries/${id}/inspect`,'POST',{...data,expected_version:version});
+}
+
+export async function releaseSalvageRecovery(id: string,expectedVersion:number|string|undefined): Promise<SalvageRecovery> {
+  const version=inventoryVersion(Number(expectedVersion));
+  if(isTauriRuntime())return queueSalvage('release',{},id,version);
+  return writeInventoryHttp<SalvageRecovery>(`/items/salvage/recoveries/${id}/release`,'POST',{expected_version:version});
 }

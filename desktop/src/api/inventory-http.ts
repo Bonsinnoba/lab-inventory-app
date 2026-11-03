@@ -24,6 +24,12 @@ export async function writeInventoryHttp<T>(path:string,method:string,body:Recor
   // unresolved semantic action, then replay its ORIGINAL persisted base/body;
   // otherwise another click could apply the same stock delta twice.
   const {expected_version,item_bases,...action}=body;
+  if(path==='/items/salvage/recoveries/batch'&&Array.isArray(action.outputs)){
+    // Reopening a form regenerates UI IDs. Recover the original unresolved
+    // action's IDs/key/body rather than duplicating a batch after a lost ACK.
+    delete action.id;
+    action.outputs=action.outputs.map(output=>{const {id,...record}=output;return record;});
+  }
   if(path==='/excel/inventory/import'&&Array.isArray(action.rows)){
     action.rows=action.rows.map(row=>{if(row.operation!=='create')return row;const {id,...record}=row.record;return{...row,record};});
   }

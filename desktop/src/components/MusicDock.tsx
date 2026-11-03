@@ -3,7 +3,8 @@ import { ListMusic, Pause, Play, SkipBack, SkipForward, Trash2, Upload, Volume2,
 import { parseBlob } from 'music-metadata';
 import { useToast } from '../contexts/ToastContext';
 import { useMusicDefaults } from '../hooks/useMusicDefaults';
-import audioFocusCoordinator, { type SuspensionReason } from '../lib/audioFocus';
+import {useMusicTransport} from '../hooks/useMusicTransport';
+import {nextMusicTrack} from '../lib/musicTransport';
 
 type Track = { id: string; name: string; blob: Blob; artwork?: Blob; artworkChecked?: boolean; addedAt?: number; lastModified?: number; collectionId?: string; collectionName?: string; relativePath?: string };
 type Playlist = { id: string; name: string; trackIds: string[]; createdAt: number };
@@ -25,92 +26,15 @@ export default function MusicDock({ onClose, onMinimize, onRestore, minimized = 
   const artworkUrls = useRef<Map<string, string>>(new Map());
   const artworkProcessing = useRef(new Set<string>());
   const [tracks, setTracks] = useState<Track[]>([]); const [playlists, setPlaylists] = useState<Playlist[]>([]); const [currentId, setCurrentId] = useState<string | null>(null); const [queue, setQueue] = useState<string[]>([]); const [tab, setTab] = useState<'library' | 'queue' | 'playlists'>('library'); const [playing, setPlaying] = useState(false); const [volume, setVolume] = useState(.65); const [duration, setDuration] = useState(0); const [position, setPosition] = useState(0); const [search, setSearch] = useState(''); const [shuffle, setShuffle] = useState(false); const [repeat, setRepeat] = useState<RepeatMode>('off'); const [newPlaylist, setNewPlaylist] = useState(''); const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null); const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(null); const [libraryOpen, setLibraryOpen] = useState(false); const [importProgress, setImportProgress] = useState<string | null>(null); const [loading, setLoading] = useState(true); const [error, setError] = useState(false);
-  const resumeAfterPause = useRef(false); const current = tracks.find(t => t.id === currentId) || null; const visibleTracks = useMemo(() => tracks.filter(t => t.name.toLowerCase().includes(search.toLowerCase())), [tracks, search]); const collections = useMemo<Collection[]>(() => { const grouped = new Map<string, Collection>(); tracks.forEach(track => { const id = track.collectionId || 'imported-files'; const collection = grouped.get(id) || { id, name: track.collectionName || 'Imported files', tracks: [] }; collection.tracks.push(track); grouped.set(id, collection); }); return [...grouped.values()].sort((a,b) => a.name.localeCompare(b.name)); }, [tracks]); const selectedCollection = collections.find(collection => collection.id === selectedCollectionId) || null; const collectionTracks = selectedCollection?.tracks.filter(track => track.name.toLowerCase().includes(search.toLowerCase())) || []; const queueTracks = queue.map(id => tracks.find(t => t.id === id)).filter(Boolean) as Track[]; const selectedPlaylist = playlists.find(p => p.id === selectedPlaylistId) || null; const src = current ? (urls.current.get(current.id) || (urls.current.set(current.id, URL.createObjectURL(current.blob)), urls.current.get(current.id)!)) : '';
+  const current = tracks.find(t => t.id === currentId) || null; const visibleTracks = useMemo(() => tracks.filter(t => t.name.toLowerCase().includes(search.toLowerCase())), [tracks, search]); const collections = useMemo<Collection[]>(() => { const grouped = new Map<string, Collection>(); tracks.forEach(track => { const id = track.collectionId || 'imported-files'; const collection = grouped.get(id) || { id, name: track.collectionName || 'Imported files', tracks: [] }; collection.tracks.push(track); grouped.set(id, collection); }); return [...grouped.values()].sort((a,b) => a.name.localeCompare(b.name)); }, [tracks]); const selectedCollection = collections.find(collection => collection.id === selectedCollectionId) || null; const collectionTracks = selectedCollection?.tracks.filter(track => track.name.toLowerCase().includes(search.toLowerCase())) || []; const queueTracks = queue.map(id => tracks.find(t => t.id === id)).filter(Boolean) as Track[]; const selectedPlaylist = playlists.find(p => p.id === selectedPlaylistId) || null; const src = current ? musicUrl(current) : '';
+  function musicUrl(track:Track){if(!(track.blob instanceof Blob)||!track.blob.size)return '';let url=urls.current.get(track.id);if(!url){url=URL.createObjectURL(track.blob);urls.current.set(track.id,url);}return url;}
+  const playback=useMusicTransport(audio,{source:src,id:currentId,volume,autoPause,ownerId:'music-dock',playing:setPlaying,reset:()=>{setPosition(0);setDuration(0);},error:message=>showToast(message,'error')});
+  const queueRef=useRef(queue);queueRef.current=queue;
 
-  // Audio focus state
-  const focusOwner = useRef<{ id: string; generation: number } | null>(null);
-  const suspensionReason = useRef<SuspensionReason | null>(null);
-  const savedPlaybackState = useRef<{ position: number; playing: boolean } | null>(null);
   const load = async () => { try { setError(false); const [ts, ps] = await Promise.all([readStore<Track>(TRACK_STORE), readStore<Playlist>(PLAYLIST_STORE)]); ts.sort((a, b) => (a.addedAt || 0) - (b.addedAt || 0)); setTracks(ts); setPlaylists(ps); setCurrentId(id => id || ts[0]?.id || null); } catch { setError(true); } finally { setLoading(false); } };
   useMusicDefaults(setVolume);
   useEffect(() => { load(); return () => { urls.current.forEach(URL.revokeObjectURL); artworkUrls.current.forEach(URL.revokeObjectURL); }; }, []);
   useEffect(() => { if (!libraryOpen) return; const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setLibraryOpen(false); }; window.addEventListener('keydown', closeOnEscape); return () => window.removeEventListener('keydown', closeOnEscape); }, [libraryOpen]);
-  useEffect(() => {
-    // Subscribe to audio focus state changes
-    const unsubscribe = audioFocusCoordinator.subscribe((state) => {
-      const currentOwner = state.currentOwner;
-      const isMusicOwner = currentOwner?.type === 'music' && currentOwner?.id === focusOwner.current?.id;
-
-      if (!isMusicOwner && audio.current && !audio.current.paused) {
-        // Preempted by higher priority audio source
-        savedPlaybackState.current = {
-          position: audio.current.currentTime,
-          playing: true,
-        };
-        suspensionReason.current = 'automatic';
-        audio.current.pause();
-        setPlaying(false);
-      } else if (isMusicOwner && suspensionReason.current === 'automatic' && savedPlaybackState.current) {
-        // Resuming after automatic suspension
-        const saved = savedPlaybackState.current;
-        savedPlaybackState.current = null;
-        suspensionReason.current = null;
-        if (audio.current && saved.playing) {
-          audio.current.currentTime = saved.position;
-          audio.current.play().catch(() => setPlaying(false));
-        }
-      }
-    });
-
-    // Legacy event listeners for backward compatibility with TTS
-    const pause = () => {
-      if (autoPause && audio.current && !audio.current.paused) {
-        savedPlaybackState.current = {
-          position: audio.current.currentTime,
-          playing: true,
-        };
-        suspensionReason.current = 'automatic';
-        audio.current.pause();
-      }
-    };
-    const resume = () => {
-      if (suspensionReason.current === 'automatic' && savedPlaybackState.current && audio.current && current) {
-        const saved = savedPlaybackState.current;
-        savedPlaybackState.current = null;
-        suspensionReason.current = null;
-        audio.current.currentTime = saved.position;
-        audio.current.play().catch(() => undefined);
-      }
-    };
-    window.addEventListener('labos:pause-music', pause);
-    window.addEventListener('labos:resume-music', resume);
-
-    // Acquire audio focus when component mounts and music is playing
-    if (playing && !focusOwner.current) {
-      const { id, generation } = audioFocusCoordinator.acquire({
-        type: 'music',
-        id: 'music-dock',
-        allowPreempt: true,
-      });
-      focusOwner.current = { id, generation };
-    }
-
-    return () => {
-      unsubscribe();
-      window.removeEventListener('labos:pause-music', pause);
-      window.removeEventListener('labos:resume-music', resume);
-      // Release audio focus on unmount
-      if (focusOwner.current) {
-        audioFocusCoordinator.release({
-          id: focusOwner.current.id,
-          generation: focusOwner.current.generation,
-          suspensionReason: 'close',
-        });
-        focusOwner.current = null;
-      }
-    };
-  }, [autoPause, playing, current]);
-  useEffect(() => { if (audio.current) audio.current.volume = volume; }, [volume]); useEffect(() => { if (!audio.current) return; audio.current.volume = volume; if (!src) { audio.current.removeAttribute('src'); audio.current.load(); return; } audio.current.src = src; audio.current.load(); setPosition(0); setDuration(0); if (playing) audio.current.play().catch(() => setPlaying(false)); }, [src]);
   useEffect(() => {
     const pending = tracks.filter(track => !track.artworkChecked && !artworkProcessing.current.has(track.id));
     pending.forEach(track => artworkProcessing.current.add(track.id));
@@ -130,51 +54,21 @@ export default function MusicDock({ onClose, onMinimize, onRestore, minimized = 
       }
     })();
   }, [tracks]);
-  const playTrack = async (id: string) => {
-    setCurrentId(id);
-    setPlaying(true);
-    suspensionReason.current = null;
-
-    // Acquire audio focus
-    if (!focusOwner.current) {
-      const { id: focusId, generation } = audioFocusCoordinator.acquire({
-        type: 'music',
-        id: 'music-dock',
-        allowPreempt: true,
-      });
-      focusOwner.current = { id: focusId, generation };
-    }
-
-    setTimeout(() => audio.current?.play().catch(() => setPlaying(false)), 0);
+  const playTrack=(id:string,restart=false,remember=true)=>{
+    const track=tracks.find(t=>t.id===id);if(!track)return;
+    const url=musicUrl(track);if(!url){showToast('This audio file is empty or unavailable. Import it again.','error');return;}
+    playback.transport.current?.select(id,url,true,restart,remember);setCurrentId(id);
   };
-
-  const toggle = async () => {
-    if (!audio.current || !current) return;
-    if (audio.current.paused) {
-      // Manual play - acquire focus if needed
-      if (!focusOwner.current) {
-        const { id, generation } = audioFocusCoordinator.acquire({
-          type: 'music',
-          id: 'music-dock',
-          allowPreempt: true,
-        });
-        focusOwner.current = { id, generation };
-      }
-      suspensionReason.current = null;
-      try {
-        await audio.current.play();
-      } catch {
-        showToast('Unable to play this track', 'error');
-      }
-    } else {
-      // Manual pause - set suspension reason
-      suspensionReason.current = 'manual';
-      savedPlaybackState.current = null;
-      audio.current.pause();
-    }
+  const toggle=()=>playback.transport.current?.toggle();
+  const advance=(ended=false)=>{
+    const t=playback.transport.current,selected=t?.currentId||currentId;
+    const next=nextMusicTrack(tracks.map(t=>t.id),selected,queueRef.current,shuffle,repeat,ended);
+    queueRef.current=next.queue;setQueue(next.queue);
+    if(next.id)playTrack(next.id,true);else t?.pause();
   };
-  const advance = () => { if (!currentId) return; if (repeat === 'one') { if (audio.current) { audio.current.currentTime = 0; audio.current.play().catch(() => setPlaying(false)); } return; } if (queue.length) { const next = queue[0]; setQueue(q => q.slice(1)); setCurrentId(next); setPlaying(true); return; } if (!tracks.length) return setPlaying(false); const index = tracks.findIndex(t => t.id === currentId); const nextId = shuffle ? tracks[Math.floor(Math.random() * tracks.length)]?.id : tracks[index + 1]?.id || (repeat === 'all' ? tracks[0]?.id : undefined); if (nextId) { setCurrentId(nextId); setPlaying(true); } else setPlaying(false); };
-  const previous = () => { const i = currentId ? tracks.findIndex(t => t.id === currentId) : -1; if (i > 0) playTrack(tracks[i - 1].id); }; const addToQueue = (id: string) => setQueue(q => q.includes(id) ? q : [...q, id]); const moveQueue = (id: string, delta: number) => setQueue(q => { const i = q.indexOf(id), j = i + delta; if (i < 0 || j < 0 || j >= q.length) return q; const n = [...q]; [n[i], n[j]] = [n[j], n[i]]; return n; });
+  const previous=()=>{const id=playback.transport.current?.previous(tracks.map(t=>t.id));if(id)playTrack(id,true,false);};
+  const addToQueue=(id:string)=>setQueue(q=>q.includes(id)?q:[...q,id]);
+  const moveQueue=(id:string,delta:number)=>setQueue(q=>{const i=q.indexOf(id),j=i+delta;if(i<0||j<0||j>=q.length)return q;const n=[...q];[n[i],n[j]]=[n[j],n[i]];return n;});
   const importFiles = async (files: File[], folderImport: boolean) => {
     if (!files.length) return;
     const audioFiles = files.filter(isAudioFile);
@@ -233,9 +127,7 @@ export default function MusicDock({ onClose, onMinimize, onRestore, minimized = 
   const remove = async (id: string) => {
     try {
       if (id === currentId) {
-        suspensionReason.current = 'track_change';
-        savedPlaybackState.current = null;
-        audio.current?.pause();
+        playback.transport.current?.pause();
       }
       await removeStore(TRACK_STORE, id);
       const url = urls.current.get(id);
@@ -251,7 +143,8 @@ export default function MusicDock({ onClose, onMinimize, onRestore, minimized = 
     } catch { showToast('Unable to remove this track', 'error'); }
   };
   const createPlaylist = async () => { const name = newPlaylist.trim(); if (!name) return; const p = { id: crypto.randomUUID(), name, trackIds: [], createdAt: Date.now() }; await writeStore(PLAYLIST_STORE, p); setPlaylists(ps => [...ps, p]); setSelectedPlaylistId(p.id); setNewPlaylist(''); }; const addToPlaylist = async (trackId: string, playlistId: string) => { const p = playlists.find(x => x.id === playlistId); if (!p || p.trackIds.includes(trackId)) return; const next = { ...p, trackIds: [...p.trackIds, trackId] }; await writeStore(PLAYLIST_STORE, next); setPlaylists(ps => ps.map(x => x.id === p.id ? next : x)); }; const deletePlaylist = async (id: string) => { await removeStore(PLAYLIST_STORE, id); setPlaylists(ps => ps.filter(p => p.id !== id)); if (selectedPlaylistId === id) setSelectedPlaylistId(null); }; const removeFromPlaylist = async (trackId: string) => { if (!selectedPlaylist) return; const next = { ...selectedPlaylist, trackIds: selectedPlaylist.trackIds.filter(x => x !== trackId) }; await writeStore(PLAYLIST_STORE, next); setPlaylists(ps => ps.map(p => p.id === next.id ? next : p)); };
-  const art = (small = false, track?: Track) => { let artworkSrc: string | undefined; if (track?.artwork) { artworkSrc = artworkUrls.current.get(track.id); if (!artworkSrc) { artworkSrc = URL.createObjectURL(track.artwork); artworkUrls.current.set(track.id, artworkSrc); } } return <div className={`${small ? 'music-artwork-mini w-10 h-10 rounded-lg' : 'music-artwork w-[min(70%,190px)] aspect-square rounded-2xl'} shrink-0 border border-border text-accent flex items-center justify-center overflow-hidden shadow-lg`}>{artworkSrc ? <img src={artworkSrc} alt="" className="h-full w-full object-cover"/> : <Music2 size={small ? 17 : 34} strokeWidth={1.4} />}</div>; }; const volumeControl = <div className="shrink-0 px-4 py-3 flex items-center gap-2 text-[10px] text-text-secondary"><Volume2 size={15}/><input aria-label="Volume" className="flex-1 accent-current" type="range" min="0" max="1" step="0.01" value={volume} onChange={e => setVolume(Number(e.target.value))}/><span className="w-8 text-right tabular-nums">{Math.round(volume*100)}%</span></div>; const audioElement = <audio ref={audio} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onTimeUpdate={e => setPosition(e.currentTarget.currentTime)} onLoadedMetadata={e => setDuration(e.currentTarget.duration)} onEnded={advance} onError={() => setPlaying(false)} />;
+  const art = (small = false, track?: Track) => { let artworkSrc: string | undefined; if (track?.artwork) { artworkSrc = artworkUrls.current.get(track.id); if (!artworkSrc) { artworkSrc = URL.createObjectURL(track.artwork); artworkUrls.current.set(track.id, artworkSrc); } } return <div className={`${small ? 'music-artwork-mini w-10 h-10 rounded-lg' : 'music-artwork w-[min(70%,190px)] aspect-square rounded-2xl'} shrink-0 border border-border text-accent flex items-center justify-center overflow-hidden shadow-lg`}>{artworkSrc ? <img src={artworkSrc} alt="" className="h-full w-full object-cover"/> : <Music2 size={small ? 17 : 34} strokeWidth={1.4} />}</div>; }; const volumeControl = <div className="shrink-0 px-4 py-3 flex items-center gap-2 text-[10px] text-text-secondary"><Volume2 size={15}/><input aria-label="Volume" className="flex-1 accent-current" type="range" min="0" max="1" step="0.01" value={volume} onChange={e => setVolume(Number(e.target.value))}/><span className="w-8 text-right tabular-nums">{Math.round(volume*100)}%</span></div>;
+  const audioElement=<audio data-labos-music="true" ref={playback.bind} onTimeUpdate={e=>setPosition(e.currentTarget.currentTime)} onLoadedMetadata={e=>setDuration(e.currentTarget.duration)} onEnded={e=>{if(e.currentTarget.ended)advance(true);}}/>;
   if (minimized) return <div className="fixed right-[68px] bottom-5 z-[80] group" aria-label="Minimized music player"><div className="absolute right-0 bottom-full mb-2 pointer-events-none opacity-0 translate-y-1 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-150"><div className="rounded-lg border border-border bg-surface-raised px-3 py-2 shadow-xl whitespace-nowrap"><div className="text-[10px] uppercase tracking-[0.16em] text-text-secondary">Music</div><div className="text-xs font-semibold max-w-48 truncate">{current?.name || 'Nothing playing'}</div></div></div><button type="button" onClick={onRestore} className="relative w-12 h-12 rounded-full border border-border bg-surface-raised text-text-primary shadow-xl flex items-center justify-center hover:bg-surface focus:outline-none focus:ring-2 focus:ring-accent/60" title="Restore music player" aria-label="Restore music player"><Music2 size={19}/>{playing && <span className="absolute -right-0.5 -top-0.5 w-3 h-3 rounded-full bg-accent border-2 border-surface-raised" aria-hidden="true"/>}</button>{audioElement}</div>;
   return <section className={`music-player-shell relative min-h-0 flex flex-col bg-surface ${libraryOpen ? 'is-library-open' : ''}`} aria-label="Music player">
     <header className="music-player-header shrink-0 grid grid-cols-3 items-center px-4 py-1.5"><button type="button" onClick={onMinimize} className="justify-self-start p-2 rounded-full text-text-secondary hover:text-text-primary hover:bg-surface-raised focus:outline-none focus:ring-2 focus:ring-accent/50" title="Minimize music player" aria-label="Minimize music player"><ChevronDown size={19}/></button><div className="text-center text-sm font-medium">Now Playing</div><button type="button" onClick={onClose} className="justify-self-end p-2 rounded-full text-text-secondary hover:text-text-primary hover:bg-surface-raised focus:outline-none focus:ring-2 focus:ring-accent/50" title="Close music player" aria-label="Close music player"><X size={17}/></button></header>
@@ -261,7 +154,7 @@ export default function MusicDock({ onClose, onMinimize, onRestore, minimized = 
         <div className="music-track-details w-full text-center"><div data-track-title className="truncate text-sm font-semibold">{current?.name || 'Nothing playing'}</div><div data-track-subtitle className="mt-1 text-[11px] text-text-secondary">{current ? 'Local audio' : 'Import tracks to get started'}</div></div>
       </div>
       <div className="music-transport music-progress-row mt-3 flex w-full items-center gap-2 text-[10px] tabular-nums text-text-secondary"><span>{fmt(position)}</span><input aria-label="Track progress" className="min-w-0 flex-1 accent-current" type="range" min="0" max={duration || 0} step="0.1" value={Math.min(position, duration || 0)} onChange={e => { const v = Number(e.target.value); setPosition(v); if (audio.current) audio.current.currentTime = v; }}/><span>{fmt(duration)}</span></div>
-      <div className="music-transport music-transport-controls mt-3 flex w-full items-center justify-between"><button type="button" onClick={() => setShuffle(v => !v)} className={`flex h-8 w-8 items-center justify-center rounded-full hover:bg-surface-raised ${shuffle ? 'text-accent' : 'text-text-secondary'}`} aria-label="Toggle shuffle"><Shuffle size={15}/></button><button type="button" onClick={previous} disabled={!currentId} className="flex h-9 w-9 items-center justify-center rounded-full text-text-primary hover:bg-surface-raised disabled:opacity-40" aria-label="Previous track"><SkipBack size={17} fill="currentColor"/></button><button type="button" onClick={toggle} disabled={!current} className="flex h-12 w-12 items-center justify-center rounded-full border border-border bg-surface-raised text-text-primary shadow-md hover:bg-surface disabled:opacity-40" aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={19} fill="currentColor"/> : <Play size={19} fill="currentColor"/>}</button><button type="button" onClick={advance} disabled={!currentId} className="flex h-9 w-9 items-center justify-center rounded-full text-text-primary hover:bg-surface-raised disabled:opacity-40" aria-label="Next track"><SkipForward size={17} fill="currentColor"/></button><button type="button" onClick={() => setRepeat(r => r === 'off' ? 'all' : r === 'all' ? 'one' : 'off')} className={`flex h-8 w-8 items-center justify-center rounded-full hover:bg-surface-raised ${repeat !== 'off' ? 'text-accent' : 'text-text-secondary'}`} aria-label="Toggle repeat">{repeat === 'one' ? <Repeat1 size={15}/> : <Repeat size={15}/>}</button></div>
+      <div className="music-transport music-transport-controls mt-3 flex w-full items-center justify-between"><button type="button" onClick={() => setShuffle(v => !v)} className={`flex h-8 w-8 items-center justify-center rounded-full hover:bg-surface-raised ${shuffle ? 'text-accent' : 'text-text-secondary'}`} aria-label="Toggle shuffle"><Shuffle size={15}/></button><button type="button" onClick={previous} disabled={!currentId} className="flex h-9 w-9 items-center justify-center rounded-full text-text-primary hover:bg-surface-raised disabled:opacity-40" aria-label="Previous track"><SkipBack size={17} fill="currentColor"/></button><button type="button" onClick={toggle} disabled={!current} className="flex h-12 w-12 items-center justify-center rounded-full border border-border bg-surface-raised text-text-primary shadow-md hover:bg-surface disabled:opacity-40" aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={19} fill="currentColor"/> : <Play size={19} fill="currentColor"/>}</button><button type="button" onClick={()=>advance(false)} disabled={!currentId} className="flex h-9 w-9 items-center justify-center rounded-full text-text-primary hover:bg-surface-raised disabled:opacity-40" aria-label="Next track"><SkipForward size={17} fill="currentColor"/></button><button type="button" onClick={() => setRepeat(r => r === 'off' ? 'all' : r === 'all' ? 'one' : 'off')} className={`flex h-8 w-8 items-center justify-center rounded-full hover:bg-surface-raised ${repeat !== 'off' ? 'text-accent' : 'text-text-secondary'}`} aria-label="Toggle repeat">{repeat === 'one' ? <Repeat1 size={15}/> : <Repeat size={15}/>}</button></div>
     </div>
     <button type="button" onClick={() => setLibraryOpen(value => !value)} aria-expanded={libraryOpen} aria-controls="music-library-popup" aria-label={libraryOpen ? 'Close music library' : 'Open music library'} className="music-library-toggle absolute bottom-2 right-2 z-30 flex h-8 w-8 items-center justify-center rounded-full border border-border bg-surface-raised text-text-secondary shadow-sm hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"><ChevronUp size={17} className={`transition-transform duration-200 ${libraryOpen ? 'rotate-180' : ''}`}/></button>
     <div id="music-library-popup" aria-hidden={!libraryOpen} className={`music-library-popup flex min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-2xl ${libraryOpen ? 'is-open' : ''}`}>

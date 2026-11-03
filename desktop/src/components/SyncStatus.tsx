@@ -63,8 +63,9 @@ export default function SyncStatus(){
     const guidance=conflict?projectConflictGuidance(conflict):null;
     if(resolution==='keep_local'&&guidance?.retryBlocked)return;
     if(resolution!=='keep_local'&&guidance&&!window.confirm(guidance.confirmation))return;
-    if(resolution!=='keep_local'&&conflict?.entity_type==='resource'&&['create','create_copy','edit_content'].includes(conflict.operation)&&!window.confirm('Stop syncing this resource change and the pending copies or edits that depend on it? Saved file bytes will be retained for recovery, but these changes will no longer be sent to the server.'))return;
+    if(resolution!=='keep_local'&&conflict?.entity_type==='resource'&&['create','create_copy','edit_content','attach','edit_metadata'].includes(conflict.operation)&&!window.confirm('Stop syncing this resource change and all pending folder children, copies or edits that depend on it? Their saved local file versions and sync history will remain on this PC; those intentions will no longer be sent to the server.'))return;
     if(resolution!=='keep_local'&&['item','item_movement','maintenance_record','daily_preferences','supplier','storage_container','project_comment'].includes(conflicts.find(c=>c.change_id===id)?.entity_type??'')&&!window.confirm('Discard pending changes to this record and connected inventory items/shared batches, then restore server values?'))return;
+    if(!isAccountSessionCurrent(session))return;
     setBusy(true);
     try{await resolveSyncConflict(id,resolution);if(!isAccountSessionCurrent(session))return;await syncPendingChanges(true);if(isAccountSessionCurrent(session))window.dispatchEvent(new Event('labos:manual-sync-complete'));}
     catch(error){if(isAccountSessionCurrent(session))showToast(error instanceof Error?error.message:String(error),'error');}

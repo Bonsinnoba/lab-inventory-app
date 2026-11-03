@@ -56,6 +56,6 @@ export const updateSupplier=(id:string,body:Partial<Supplier>,expectedVersion:nu
 export const deleteSupplier=(record:Pick<Supplier,'id'|'sync_version'>)=>mutateCatalog<{deleted:boolean}>('supplier','delete',{},record.id,record.sync_version);
 export const getRequirements=(projectId?:string)=>localBackend.isAvailable()?getProjectRequirements(projectId):json<ResourceRequirement[]>(`/operations/requirements${projectId?`?project_id=${encodeURIComponent(projectId)}`:''}`);
 function requireProjectContext(): never { throw new Error('Select a project before changing a resource requirement.'); }
-export const createRequirement=(body:Partial<ResourceRequirement>)=>body.project_id?createProjectRequirement(body.project_id,body):localBackend.isAvailable()?requireProjectContext():json<ResourceRequirement>('/operations/requirements',{method:'POST',body:JSON.stringify(body)});
-export const updateRequirement=(id:string,body:Partial<ResourceRequirement>)=>body.project_id?updateProjectRequirement(body.project_id,id,body):localBackend.isAvailable()?requireProjectContext():json<ResourceRequirement>(`/operations/requirements/${id}`,{method:'PATCH',body:JSON.stringify(body)});
-export const deleteRequirement=(id:string,body?:{project_id?:string})=>body?.project_id?deleteProjectRequirement(body.project_id,id):localBackend.isAvailable()?requireProjectContext():json<void>(`/operations/requirements/${id}`,{method:'DELETE'});
+export const createRequirement=(body:Partial<ResourceRequirement>)=>body.project_id?createProjectRequirement(body.project_id,body):requireProjectContext();
+export const updateRequirement=(id:string,body:Partial<ResourceRequirement>,expected?:ResourceRequirement)=>body.project_id?updateProjectRequirement(body.project_id,id,body,expected):requireProjectContext();
+export const deleteRequirement=(id:string,body?:ResourceRequirement)=>body?.project_id?deleteProjectRequirement(body.project_id,id,body):requireProjectContext();

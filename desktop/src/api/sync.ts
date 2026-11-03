@@ -1,3 +1,4 @@
+import {synchronizeAssistantProposals} from './assistant-proposals';
 import {processSyncReceipts,type SyncResult} from './sync-receipts';
 import {applyInventoryPage} from './inventory-pull';
 import {pullActivitySnapshot} from './activity';
@@ -62,6 +63,18 @@ export async function syncPendingChanges(force=false):Promise<number>{
 }
 
 type SyncSession=AccountSession;
+// Serialize confirmed access refreshes with background sync so an older pull
+// cannot finish after the management UI's required authoritative refresh.
+export async function refreshConfirmedProjectAccess(session:AccountSession):Promise<void>{
+ assertSyncSession(session);
+ while(activeSync){await activeSync.catch(()=>{});assertSyncSession(session);}
+ currentSyncSession=session;
+ activeSync=(async()=>{
+  if(!await pullServerProjects())throw Error('Unable to refresh confirmed project access');
+  assertSyncSession(session);return 0;
+ })().finally(()=>{currentSyncSession=null;activeSync=null;});
+ await activeSync;
+}
 let currentSyncSession:SyncSession|null=null;
 function assertSyncSession(session:SyncSession|null=currentSyncSession):void{
   if(!isAccountSessionCurrent(session)){
@@ -157,7 +170,13 @@ async function runSync():Promise<number>{
               // Native receipt binding, authority cache and ACK commit together.
               return;
             }
-            if(['resource_download_job','media_download_settings'].includes(change.entity_type)){
+            if(change.entity_type==='assistant_proposal'){
+              if(!downloadContext.nativeSessionToken||!isServerRequestCurrent(downloadContext))throw new Error('Proposal acknowledgement session changed');
+              await invoke('acknowledge_local_assistant_proposal',{expectedAccountId:accountId,expectedSessionToken:downloadContext.nativeSessionToken,changeId:change.change_id,result:result.result});
+            }else if(change.entity_type==='automation_run'){
+              if(!downloadContext.nativeSessionToken||!isServerRequestCurrent(downloadContext))throw new Error('Automation acknowledgement session changed');
+              await invoke('acknowledge_local_automation_run',{expectedAccountId:accountId,expectedSessionToken:downloadContext.nativeSessionToken,changeId:change.change_id,result:result.result});
+            }else if(['resource_download_job','media_download_settings'].includes(change.entity_type)){
               if(!downloadContext.nativeSessionToken||!isServerRequestCurrent(downloadContext))throw new Error('Download acknowledgement session changed');
               // This native command commits the projection and ACK atomically.
               await invoke('acknowledge_local_download_changes',{expectedAccountId:accountId,expectedSessionToken:downloadContext.nativeSessionToken,results:[result]});
@@ -207,6 +226,8 @@ async function runSync():Promise<number>{
     return true;
   });
   const projectPullSucceeded=await runPullStep('Project pull',pullServerProjects);
+  const proposalPullSucceeded=await runPullStep('Planning drafts pull',synchronizeAssistantProposals);
+  const salvagePullSucceeded=await runPullStep('Salvage pull',pullServerSalvage);
   const commentPullSucceeded=await runPullStep('Comments pull',pullServerComments);
   const resourcePullSucceeded=await runPullStep('Resource pull',pullServerResources);
   const downloadsPullSucceeded=await runPullStep('Downloads pull',pullDownloadSnapshot);
@@ -221,7 +242,7 @@ async function runSync():Promise<number>{
     await refreshResourceAuthority(currentSyncSession!.token,assertSyncSession);
     return true;
   });
-  const pullSucceeded=authorityPullSucceeded&&downloadsPullSucceeded&&activityPullSucceeded&&commentPullSucceeded&&notificationPullSucceeded&&catalogPullSucceeded&&inventoryPullSucceeded&&maintenancePullSucceeded&&preferencesPullSucceeded&&projectPullSucceeded&&resourcePullSucceeded&&financePullSucceeded&&locationPullSucceeded&&engineeringPullSucceeded&&knowledgePullSucceeded&&notesPullSucceeded;
+  const pullSucceeded=proposalPullSucceeded&&salvagePullSucceeded&&authorityPullSucceeded&&downloadsPullSucceeded&&activityPullSucceeded&&commentPullSucceeded&&notificationPullSucceeded&&catalogPullSucceeded&&inventoryPullSucceeded&&maintenancePullSucceeded&&preferencesPullSucceeded&&projectPullSucceeded&&resourcePullSucceeded&&financePullSucceeded&&locationPullSucceeded&&engineeringPullSucceeded&&knowledgePullSucceeded&&notesPullSucceeded;
   if(!pullSucceeded){syncSucceeded=false;publish({status:'error',lastError:getSyncRuntimeState().lastError||'Unable to download the latest server changes'});scheduleRetry();}
   if(syncSucceeded&&pullSucceeded){clearRetryState();publish({status:'idle',lastSuccessAt:new Date().toISOString(),lastError:null});}
   else if(getSyncRuntimeState().status!=='error')publish({status:'error',lastError:getSyncRuntimeState().lastError||'Some changes could not be synchronized'});
@@ -257,6 +278,7 @@ async function pullServerProjects():Promise<boolean>{
     const response=await apiFetch('/sync/projects/pull',{method:'GET',cache:'no-store'});
     if(!response.ok){publish({status:'error',lastError:await getApiErrorMessage(response,'Unable to download project changes')});return false;}
     const body=await response.json() as {projects?:unknown[];visible_project_ids?:string[];deleted_project_ids?:string[];deleted_project_entities?:Record<string,string[]>};
+    if(!Array.isArray(body.projects)||!Array.isArray(body.visible_project_ids)||!Array.isArray(body.deleted_project_ids)||!body.deleted_project_entities||typeof body.deleted_project_entities!=='object'||Array.isArray(body.deleted_project_entities))throw Error('Incomplete project snapshot; existing local state was preserved');
     const deleted=body.deleted_project_entities||{};
     assertSyncSession();
     await invoke('apply_server_project_pull',{projectsJson:JSON.stringify(Array.isArray(body.projects)?body.projects:[]),visibleProjectIds:Array.isArray(body.visible_project_ids)?body.visible_project_ids:[],deletedProjectIds:Array.isArray(body.deleted_project_ids)?body.deleted_project_ids:[],deletedProjectTaskIds:Array.isArray(deleted.project_task)?deleted.project_task:[],deletedProjectExperimentIds:Array.isArray(deleted.project_experiment)?deleted.project_experiment:[],deletedProjectBomIds:Array.isArray(deleted.project_bom)?deleted.project_bom:[],deletedProjectBlockIds:Array.isArray(deleted.project_block)?deleted.project_block:[],deletedProjectConnectorIds:Array.isArray(deleted.project_connector)?deleted.project_connector:[],deletedProjectMeasurementIds:Array.isArray(deleted.project_experiment_measurement)?deleted.project_experiment_measurement:[],deletedProjectObservationIds:Array.isArray(deleted.project_experiment_observation)?deleted.project_experiment_observation:[],deletedProjectAttachmentIds:Array.isArray(deleted.project_work_attachment)?deleted.project_work_attachment:[],deletedProjectTaskExperimentIds:Array.isArray(deleted.project_task_experiment)?deleted.project_task_experiment:[],deletedProjectRequirementIds:Array.isArray(deleted.project_resource_requirement)?deleted.project_resource_requirement:[],expectedAccountId:syncAccountId()});
@@ -360,6 +382,14 @@ async function pullServerCatalogs():Promise<boolean>{
     if(body.snapshot_complete!==true||!Array.isArray(body.records))throw new Error('Incomplete catalog snapshot');
     await invoke('apply_server_catalog_pull',{kind,records:body.records,snapshotComplete:true,expectedAccountId:syncAccountId()});
   }return true;
+}
+
+async function pullServerSalvage():Promise<boolean>{
+  const response=await apiFetch('/sync/salvage/pull',{cache:'no-store'});
+  if(!response.ok)throw new Error(await getApiErrorMessage(response,'Unable to download salvage'));
+  const body=await response.json();assertSyncSession();
+  if(body.snapshot_complete!==true||!Array.isArray(body.records))throw new Error('Incomplete salvage snapshot');
+  await invoke('apply_server_salvage_pull',{records:body.records,snapshotComplete:true,expectedAccountId:syncAccountId()});return true;
 }
 
 async function pullServerMaintenance():Promise<boolean>{

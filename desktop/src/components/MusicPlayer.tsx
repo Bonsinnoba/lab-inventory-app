@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ListMusic, Pause, Play, SkipBack, SkipForward, Trash2, Upload, Volume2, X, Minimize2, Shuffle, Repeat, Repeat1, Plus, Library, FolderPlus, ChevronUp, ChevronDown } from 'lucide-react';
 import { useToast } from '../contexts/ToastContext';
 import { useMusicDefaults } from '../hooks/useMusicDefaults';
-import audioFocusCoordinator, { type SuspensionReason } from '../lib/audioFocus';
+import {useMusicTransport} from '../hooks/useMusicTransport';
+import {nextMusicTrack} from '../lib/musicTransport';
 
 type Track = { id: string; name: string; blob: Blob; addedAt?: number };
 type Playlist = { id: string; name: string; trackIds: string[]; createdAt: number };
@@ -105,17 +106,15 @@ export default function MusicPlayer({ open, onClose, minimized, onMinimize, onRe
   }));
   const minimizedDrag = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
   const minimizedMoved = useRef(false);
-  const resumeAfterPause = useRef(false);
+
   const minimizedHoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const minimizedWidgetRef = useRef<HTMLDivElement | null>(null);
 
-  // Audio focus state
-  const focusOwner = useRef<{ id: string; generation: number } | null>(null);
-  const suspensionReason = useRef<SuspensionReason | null>(null);
-  const savedPlaybackState = useRef<{ position: number; playing: boolean } | null>(null);
-
   const current = tracks.find(t => t.id === currentId) || null;
-  const src = current ? (urls.current.get(current.id) || (urls.current.set(current.id, URL.createObjectURL(current.blob)), urls.current.get(current.id)!)) : '';
+  function musicUrl(track:Track){if(!(track.blob instanceof Blob)||!track.blob.size)return '';let url=urls.current.get(track.id);if(!url){url=URL.createObjectURL(track.blob);urls.current.set(track.id,url);}return url;}
+  const src=current?musicUrl(current):'';
+  const playback=useMusicTransport(audio,{source:src,id:currentId,volume,autoPause,ownerId:'music-player',playing:setPlaying,reset:()=>{setPosition(0);setDuration(0);},error:message=>showToast(message,'error')});
+  const queueRef=useRef(queue);queueRef.current=queue;
   const visibleTracks = useMemo(() => tracks.filter(t => t.name.toLowerCase().includes(search.toLowerCase())), [tracks, search]);
   const selectedPlaylist = playlists.find(p => p.id === selectedPlaylistId) || null;
   const queueTracks = queue.map(id => tracks.find(t => t.id === id)).filter(Boolean) as Track[];
@@ -150,132 +149,12 @@ export default function MusicPlayer({ open, onClose, minimized, onMinimize, onRe
     return () => window.removeEventListener('pointermove', keepOpenWhileUsingWidget);
   }, [minimized, minimizedHover]);
 
-  useEffect(() => {
-    // Subscribe to audio focus state changes
-    const unsubscribe = audioFocusCoordinator.subscribe((state) => {
-      const currentOwner = state.currentOwner;
-      const isMusicOwner = currentOwner?.type === 'music' && currentOwner?.id === focusOwner.current?.id;
-
-      if (!isMusicOwner && audio.current && !audio.current.paused) {
-        // Preempted by higher priority audio source
-        savedPlaybackState.current = {
-          position: audio.current.currentTime,
-          playing: true,
-        };
-        suspensionReason.current = 'automatic';
-        audio.current.pause();
-        setPlaying(false);
-      } else if (isMusicOwner && suspensionReason.current === 'automatic' && savedPlaybackState.current) {
-        // Resuming after automatic suspension
-        const saved = savedPlaybackState.current;
-        savedPlaybackState.current = null;
-        suspensionReason.current = null;
-        if (audio.current && saved.playing) {
-          audio.current.currentTime = saved.position;
-          audio.current.play().catch(() => setPlaying(false));
-        }
-      }
-    });
-
-    // Legacy event listeners for backward compatibility with TTS
-    const pause = () => {
-      if (autoPause && audio.current && !audio.current.paused) {
-        savedPlaybackState.current = {
-          position: audio.current.currentTime,
-          playing: true,
-        };
-        suspensionReason.current = 'automatic';
-        audio.current.pause();
-      }
-    };
-    const resume = () => {
-      if (suspensionReason.current === 'automatic' && savedPlaybackState.current && audio.current && current) {
-        const saved = savedPlaybackState.current;
-        savedPlaybackState.current = null;
-        suspensionReason.current = null;
-        audio.current.currentTime = saved.position;
-        audio.current.play().catch(() => undefined);
-      }
-    };
-    window.addEventListener('labos:pause-music', pause);
-    window.addEventListener('labos:resume-music', resume);
-
-    // Acquire audio focus when component mounts and music is playing
-    if (playing && !focusOwner.current) {
-      const { id, generation } = audioFocusCoordinator.acquire({
-        type: 'music',
-        id: 'music-player',
-        allowPreempt: true,
-      });
-      focusOwner.current = { id, generation };
-    }
-
-    return () => {
-      unsubscribe();
-      window.removeEventListener('labos:pause-music', pause);
-      window.removeEventListener('labos:resume-music', resume);
-      // Release audio focus on unmount
-      if (focusOwner.current) {
-        audioFocusCoordinator.release({
-          id: focusOwner.current.id,
-          generation: focusOwner.current.generation,
-          suspensionReason: 'close',
-        });
-        focusOwner.current = null;
-      }
-    };
-  }, [autoPause, playing, current]);
-
-  useEffect(() => {
-    if (audio.current) audio.current.volume = volume;
-  }, [volume]);
-
-  useEffect(() => {
-    if (!audio.current) return;
-    audio.current.volume = volume;
-    if (!src) {
-      audio.current.removeAttribute('src');
-      audio.current.load();
-      return;
-    }
-    const wasPlaying = !audio.current.paused;
-    if (audio.current.src !== src) {
-      audio.current.src = src;
-      audio.current.load();
-      setPosition(0);
-      setDuration(0);
-      if (playing || wasPlaying) {
-        audio.current.play().catch(() => setPlaying(false));
-      }
-    }
-  }, [src]);
-
-  const playTrack = async (id: string) => {
-    setCurrentId(id);
-    setPlaying(true);
-    suspensionReason.current = null;
-
-    // Acquire audio focus
-    if (!focusOwner.current) {
-      const { id: focusId, generation } = audioFocusCoordinator.acquire({
-        type: 'music',
-        id: 'music-player',
-        allowPreempt: true,
-      });
-      focusOwner.current = { id: focusId, generation };
-    }
-
-    requestAnimationFrame(async () => {
-      try {
-        if (id === currentId && audio.current) {
-          await audio.current.play();
-        }
-      } catch {
-        setPlaying(false);
-        showToast('Unable to play this track', 'error');
-      }
-    });
+  const playTrack=(id:string,restart=false,remember=true)=>{
+    const track=tracks.find(t=>t.id===id);if(!track)return;const url=musicUrl(track);
+    if(!url){showToast('This audio file is empty or unavailable. Import it again.','error');return;}
+    playback.transport.current?.select(id,url,true,restart,remember);setCurrentId(id);
   };
+  const previous=()=>{const id=playback.transport.current?.previous(tracks.map(t=>t.id));if(id)playTrack(id,true,false);};
 
   const addToQueue = (id: string) => setQueue(q => q.includes(id) ? q : [...q, id]);
   const removeFromQueue = (id: string) => setQueue(q => q.filter(x => x !== id));
@@ -285,58 +164,12 @@ export default function MusicPlayer({ open, onClose, minimized, onMinimize, onRe
     const n = [...q]; [n[i], n[j]] = [n[j], n[i]]; return n;
   });
 
-  const advance = () => {
-    if (!currentId) return;
-    if (repeat === 'one') {
-      if (audio.current) {
-        audio.current.currentTime = 0;
-        audio.current.play().catch(() => setPlaying(false));
-      }
-      return;
-    }
-    if (queue.length) {
-      const next = queue[0];
-      setQueue(q => q.slice(1));
-      setCurrentId(next);
-      setPlaying(true);
-      return;
-    }
-    if (!tracks.length) { setPlaying(false); return; }
-    let nextId: string | undefined;
-    if (shuffle) nextId = tracks[Math.floor(Math.random() * tracks.length)]?.id;
-    else {
-      const i = tracks.findIndex(t => t.id === currentId);
-      nextId = tracks[i + 1]?.id;
-      if (!nextId && repeat === 'all') nextId = tracks[0]?.id;
-    }
-    if (nextId) { setCurrentId(nextId); setPlaying(true); } else setPlaying(false);
+  const advance=(ended=false)=>{
+    const next=nextMusicTrack(tracks.map(t=>t.id),playback.transport.current?.currentId||currentId,queueRef.current,shuffle,repeat,ended);
+    queueRef.current=next.queue;setQueue(next.queue);
+    if(next.id)playTrack(next.id,true);else playback.transport.current?.pause();
   };
-
-  const toggle = async () => {
-    if (!audio.current || !current) return;
-    if (!audio.current.paused) {
-      // Manual pause - set suspension reason
-      suspensionReason.current = 'manual';
-      savedPlaybackState.current = null;
-      audio.current.pause();
-    } else {
-      // Manual play - acquire focus if needed
-      if (!focusOwner.current) {
-        const { id, generation } = audioFocusCoordinator.acquire({
-          type: 'music',
-          id: 'music-player',
-          allowPreempt: true,
-        });
-        focusOwner.current = { id, generation };
-      }
-      suspensionReason.current = null;
-      try {
-        await audio.current.play();
-      } catch {
-        showToast('Unable to play this track', 'error');
-      }
-    }
-  };
+  const toggle=()=>playback.transport.current?.toggle();
 
   const addFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
     for (const file of Array.from(e.target.files || [])) {
@@ -348,9 +181,7 @@ export default function MusicPlayer({ open, onClose, minimized, onMinimize, onRe
 
   const remove = async (id: string) => {
     if (currentId === id && audio.current) {
-      suspensionReason.current = 'track_change';
-      savedPlaybackState.current = null;
-      audio.current.pause();
+      playback.transport.current?.pause();
     }
     await deleteTrack(id);
     const url = urls.current.get(id);
@@ -462,17 +293,7 @@ export default function MusicPlayer({ open, onClose, minimized, onMinimize, onRe
     </div>
   );
 
-  const audioElement = (
-    <audio
-      ref={audio}
-      onPlay={() => setPlaying(true)}
-      onPause={() => setPlaying(false)}
-      onTimeUpdate={e => setPosition(e.currentTarget.currentTime)}
-      onLoadedMetadata={e => setDuration(e.currentTarget.duration)}
-      onError={() => setPlaying(false)}
-      onEnded={advance}
-    />
-  );
+  const audioElement=<audio data-labos-music="true" ref={playback.bind} onTimeUpdate={e=>setPosition(e.currentTarget.currentTime)} onLoadedMetadata={e=>setDuration(e.currentTarget.duration)} onEnded={e=>{if(e.currentTarget.ended)advance(true);}}/>;
 
   return (
     <>
@@ -519,9 +340,9 @@ export default function MusicPlayer({ open, onClose, minimized, onMinimize, onRe
               />
             </div>
             <div className="mt-1 flex items-center justify-center gap-1">
-              <button onClick={() => { const i = currentId ? tracks.findIndex(t => t.id === currentId) : -1; if (i > 0) playTrack(tracks[i - 1].id); }} className="p-2 hover:bg-surface-raised rounded-full transition-colors" title="Previous"><SkipBack size={16}/></button>
+              <button onClick={previous} className="p-2 hover:bg-surface-raised rounded-full transition-colors" title="Previous"><SkipBack size={16}/></button>
               <button onClick={toggle} disabled={!current} className="w-9 h-9 rounded-full bg-accent text-bg flex items-center justify-center shadow-lg hover:scale-105 transition-transform" title={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={16}/> : <Play size={16}/>}</button>
-              <button onClick={advance} disabled={!current} className="p-2 hover:bg-surface-raised rounded-full transition-colors" title="Next"><SkipForward size={16}/></button>
+              <button onClick={()=>advance(false)} disabled={!current} className="p-2 hover:bg-surface-raised rounded-full transition-colors" title="Next"><SkipForward size={16}/></button>
               <button onClick={() => setShuffle(v => !v)} className={`p-2 hover:bg-surface-raised rounded-full transition-colors ${shuffle ? 'text-accent' : ''}`} title="Shuffle"><Shuffle size={15}/></button>
               <button onClick={onRestore} className="p-2 hover:bg-surface-raised rounded-full transition-colors" title="Expand"><Minimize2 size={15} className="rotate-180"/></button>
             </div>
@@ -577,7 +398,7 @@ export default function MusicPlayer({ open, onClose, minimized, onMinimize, onRe
                 <button onClick={()=>setShuffle(v=>!v)} className={`p-2 rounded-full hover:bg-surface-raised ${shuffle?'text-accent':''}`} title="Shuffle"><Shuffle size={17}/></button>
                 <button onClick={()=>{const i=currentId?tracks.findIndex(t=>t.id===currentId):-1;if(i>0)setCurrentId(tracks[i-1].id);}} className="p-2 rounded-full hover:bg-surface-raised" title="Previous"><SkipBack size={18}/></button>
                 <button disabled={!current} onClick={toggle} className="w-12 h-12 rounded-full bg-accent text-bg flex items-center justify-center shadow-lg hover:scale-105 transition-transform">{playing?<Pause size={20}/>:<Play size={20}/>}</button>
-                <button onClick={advance} disabled={!current} className="p-2 rounded-full hover:bg-surface-raised" title="Next"><SkipForward size={18}/></button>
+                <button onClick={()=>advance(false)} disabled={!current} className="p-2 rounded-full hover:bg-surface-raised" title="Next"><SkipForward size={18}/></button>
                 <button onClick={()=>setRepeat(r=>r==='off'?'all':r==='all'?'one':'off')} className={`p-2 rounded-full hover:bg-surface-raised ${repeat!=='off'?'text-accent':''}`} title={`Repeat: ${repeat}`}>{repeat==='one'?<Repeat1 size={17}/>:<Repeat size={17}/>}</button>
                 <div className="hidden sm:flex items-center gap-2 ml-auto"><Volume2 size={15}/><input type="range" min="0" max="1" step=".01" value={volume} onChange={e=>setVolume(Number(e.target.value))} className="w-20"/></div>
               </div>
@@ -609,8 +430,8 @@ export default function MusicPlayer({ open, onClose, minimized, onMinimize, onRe
         </div>
 
         <div className="flex-1 min-h-0 overflow-auto p-4 pt-3">
-          {tab==='library' && <><div className="flex items-center gap-3 mb-4"><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search music library…" className="flex-1 px-3 py-2.5 bg-surface-raised border border-border rounded-xl text-sm outline-none focus:ring-2 focus:ring-accent/30"/><div className="text-xs text-text-secondary whitespace-nowrap">{visibleTracks.length} tracks</div></div>{visibleTracks.length===0?<div className="h-44 flex flex-col items-center justify-center text-center text-text-secondary"><Library size={30} className="mb-3 opacity-60"/><div className="text-sm">Your music library is empty</div><div className="text-xs mt-1">Import local audio to build your library.</div></div>:<><div className="text-sm font-medium mb-3">Recently added</div><div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3">{visibleTracks.map(t=><div key={t.id} className={`group rounded-2xl border border-border bg-surface-raised/40 p-2.5 hover:bg-surface-raised transition-all duration-200 ${t.id===currentId?'ring-1 ring-accent/60 bg-accent/5':''}`}><button onClick={() => playTrack(t.id)} className="relative block w-full">{libraryArt()}<span className="absolute bottom-2 right-2 w-9 h-9 rounded-full bg-accent text-bg flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-lg">{t.id===currentId&&playing?<Pause size={15}/>:<Play size={15}/>}</span></button><div className="mt-2 min-w-0"><div className="text-xs font-medium truncate" title={t.name}>{t.name}</div><div className="text-[10px] text-text-secondary truncate">Local device</div></div><div className="mt-2 flex items-center justify-end gap-1"><button onClick={() => addToQueue(t.id)} title="Add to queue" className="p-1.5 hover:bg-surface rounded-lg"><Plus size={14}/></button>{selectedPlaylistId&&<button onClick={() => addToPlaylist(t.id, selectedPlaylistId)} title="Add to selected playlist" className="p-1.5 hover:bg-surface rounded-lg"><FolderPlus size={14}/></button>}<button onClick={() => remove(t.id)} title="Remove from library" className="p-1.5 hover:bg-surface rounded-lg text-text-secondary"><Trash2 size={13}/></button></div></div>)}</div></>}</>}
-          {tab==='queue' && <>{queueTracks.length===0?<div className="h-44 flex flex-col items-center justify-center text-text-secondary"><ListMusic size={30} className="mb-3 opacity-60"/><div className="text-sm">Queue is empty</div><div className="text-xs mt-1">Use + in the Library to add tracks.</div></div>:<div className="space-y-1">{queueTracks.map((t,i)=><div key={`${t.id}-${i}`} className="flex items-center gap-2 px-3 py-2 rounded border border-border"><span className="w-5 text-xs text-text-secondary">{i+1}</span><button onClick={() => playTrack(t.id)} className="flex-1 text-left text-sm truncate">{t.name}</button><button onClick={() => moveQueue(t.id,-1)} title="Move up"><ChevronUp size={15}/></button><button onClick={() => moveQueue(t.id,1)} title="Move down"><ChevronDown size={15}/></button><button onClick={() => removeFromQueue(t.id)} title="Remove"><X size={14}/></button></div>)}</div>}</>}
+          {tab==='library' && <><div className="flex items-center gap-3 mb-4"><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search music library…" className="flex-1 px-3 py-2.5 bg-surface-raised border border-border rounded-xl text-sm outline-none focus:ring-2 focus:ring-accent/30"/><div className="text-xs text-text-secondary whitespace-nowrap">{visibleTracks.length} tracks</div></div>{visibleTracks.length===0?<div className="h-44 flex flex-col items-center justify-center text-center text-text-secondary"><Library size={30} className="mb-3 opacity-60"/><div className="text-sm">Your music library is empty</div><div className="text-xs mt-1">Import local audio to build your library.</div></div>:<><div className="text-sm font-medium mb-3">Recently added</div><div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3">{visibleTracks.map(t=><div key={t.id} className={`group rounded-2xl border border-border bg-surface-raised/40 p-2.5 hover:bg-surface-raised transition-all duration-200 ${t.id===currentId?'ring-1 ring-accent/60 bg-accent/5':''}`}><button onClick={() => t.id===currentId?toggle():playTrack(t.id)} className="relative block w-full">{libraryArt()}<span className="absolute bottom-2 right-2 w-9 h-9 rounded-full bg-accent text-bg flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-lg">{t.id===currentId&&playing?<Pause size={15}/>:<Play size={15}/>}</span></button><div className="mt-2 min-w-0"><div className="text-xs font-medium truncate" title={t.name}>{t.name}</div><div className="text-[10px] text-text-secondary truncate">Local device</div></div><div className="mt-2 flex items-center justify-end gap-1"><button onClick={() => addToQueue(t.id)} title="Add to queue" className="p-1.5 hover:bg-surface rounded-lg"><Plus size={14}/></button>{selectedPlaylistId&&<button onClick={() => addToPlaylist(t.id, selectedPlaylistId)} title="Add to selected playlist" className="p-1.5 hover:bg-surface rounded-lg"><FolderPlus size={14}/></button>}<button onClick={() => remove(t.id)} title="Remove from library" className="p-1.5 hover:bg-surface rounded-lg text-text-secondary"><Trash2 size={13}/></button></div></div>)}</div></>}</>}
+          {tab==='queue' && <>{queueTracks.length===0?<div className="h-44 flex flex-col items-center justify-center text-text-secondary"><ListMusic size={30} className="mb-3 opacity-60"/><div className="text-sm">Queue is empty</div><div className="text-xs mt-1">Use + in the Library to add tracks.</div></div>:<div className="space-y-1">{queueTracks.map((t,i)=><div key={`${t.id}-${i}`} className="flex items-center gap-2 px-3 py-2 rounded border border-border"><span className="w-5 text-xs text-text-secondary">{i+1}</span><button onClick={() => t.id===currentId?toggle():playTrack(t.id)} className="flex-1 text-left text-sm truncate">{t.name}</button><button onClick={() => moveQueue(t.id,-1)} title="Move up"><ChevronUp size={15}/></button><button onClick={() => moveQueue(t.id,1)} title="Move down"><ChevronDown size={15}/></button><button onClick={() => removeFromQueue(t.id)} title="Remove"><X size={14}/></button></div>)}</div>}</>}
           {tab==='playlists' && <div className="grid grid-cols-[220px_1fr] gap-4 min-h-full"><aside className="border-r border-border pr-3"><div className="flex gap-2 mb-3"><input value={newPlaylist} onChange={e=>setNewPlaylist(e.target.value)} onKeyDown={e=>e.key==='Enter'&&createPlaylist()} placeholder="New playlist" className="min-w-0 flex-1 px-2 py-2 bg-surface-raised border border-border rounded-sm text-xs"/><button onClick={createPlaylist} className="p-2 bg-accent text-bg rounded-sm"><Plus size={15}/></button></div>{playlists.map(p=><div key={p.id} className={`flex items-center gap-1 mb-1 ${p.id===selectedPlaylistId?'bg-accent/10':''}`}><button onClick={()=>setSelectedPlaylistId(p.id)} className="flex-1 text-left px-2 py-2 text-xs truncate">{p.name}<span className="text-text-secondary ml-1">({p.trackIds.length})</span></button><button onClick={()=>deletePl(p.id)} title="Delete playlist" className="p-2 text-text-secondary"><Trash2 size={13}/></button></div>)}{!playlists.length&&<div className="text-xs text-text-secondary p-2">No playlists yet.</div>}</aside><section>{selectedPlaylist?<><div className="font-semibold text-sm mb-3">{selectedPlaylist.name}</div><div className="space-y-1">{selectedPlaylist.trackIds.map(id=>tracks.find(t=>t.id===id)).filter(Boolean).map(t=><div key={t!.id} className="flex items-center gap-2 px-3 py-2 border border-border rounded"><button onClick={()=>playTrack(t!.id)} className="flex-1 text-left text-sm truncate">{t!.name}</button><button onClick={()=>{const next={...selectedPlaylist,trackIds:selectedPlaylist.trackIds.filter(x=>x!==t!.id)};putPlaylist(next).then(()=>setPlaylists(ps=>ps.map(p=>p.id===next.id?next:p)));}} title="Remove from playlist"><X size={14}/></button></div>)}</div>{selectedPlaylist.trackIds.length===0&&<div className="text-xs text-text-secondary">Select Library and use the folder button to add tracks.</div>}</>:<div className="text-sm text-text-secondary">Select or create a playlist.</div>}</section></div>}
         </div>
 

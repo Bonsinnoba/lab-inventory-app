@@ -29,6 +29,9 @@ STRICT SAFETY RULES:
 - Prefer concise answers with useful numbers, names, dates, and locations.
 - When tool results identify useful records, mention the record names so the user can open them in LabOS.
 
+PLANNING DRAFTS:
+The assistant panel has a separate Planning drafts workflow for persistent project/task/experiment suggestions and explicit human approval. Direct planning/action requests there when appropriate. Chat tools remain read-only; do not claim a plan was saved or accepted through chat.
+
 ACTION REQUESTS:
 If the user asks for an action, you may explain the intended action as a proposal, but it must be clearly labeled as a proposal and must not be represented as completed. Ask the user to perform/confirm it through the appropriate LabOS UI.`;
 

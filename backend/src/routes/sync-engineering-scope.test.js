@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {syncResponseProjection} from '../sync-receipts.js';
 
 const source = readFileSync(new URL('./sync.js', import.meta.url), 'utf8');
 
@@ -27,8 +28,10 @@ test('engineering and knowledge sync writes authorize existing server rows', () 
 });
 
 test('sync acknowledgements do not replay stale record snapshots after revocation', () => {
-  const projection = source.slice(source.indexOf('function syncResponseProjection'), source.indexOf("router.post('/push'"));
-  assert.match(projection, /return \{ acknowledged: true \}/);
-  assert.doesNotMatch(projection, /return value/);
+  const historical={id:'restricted',project_id:'private-project',content:'private historical content',quarantine_status:'released'};
+  for(const entity of ['engineering_calculation','engineering_test','knowledge_note','salvage_recovery']){
+    assert.deepEqual(syncResponseProjection(entity,historical,new Set()),{acknowledged:true});
+    assert.deepEqual(syncResponseProjection(entity,historical,new Set(['resources.edit'])),{acknowledged:true});
+  }
   assert.match(source, /syncResponseProjection\(entityType,prior\.rows\[0\]\.response_json,permissions\)/);
 });

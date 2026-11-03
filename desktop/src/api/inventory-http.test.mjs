@@ -24,6 +24,47 @@ function load(fetch,{store=storage(),desktop=false}={}){
   return{api:get('./items'),http:get('./inventory-http'),requests,store,switchAccount:()=>{account='b'}};
 }
 const success=()=>({ok:true,status:200,json:async()=>({id,sync_version:2})});
+test('repair verification notes and displayed version survive an uncertain inspection response',async()=>{
+ const store=storage(),review={approval:'approved',condition:'good',repair_verification_notes:'Repaired connection and verified operation'};
+ const a=load(async()=>{throw Error('lost ACK')},{store});await assert.rejects(a.api.inspectSalvageRecovery(id,review,3));
+ const b=load(async()=>success(),{store});await b.api.inspectSalvageRecovery(id,review,4);
+ const sent=JSON.parse(b.requests[0].body);assert.equal(sent.repair_verification_notes,review.repair_verification_notes);assert.equal(sent.expected_version,3);
+ assert.equal(a.requests[0].headers['Idempotency-Key'],b.requests[0].headers['Idempotency-Key']);
+});
+test('custody source response cannot cross an account switch',async()=>{
+ let c;c=load(async()=>{c.switchAccount();return{ok:true,status:200,json:async()=>[{id:'held'}]};});
+ await assert.rejects(c.api.getSalvageCustodySources(id),/Account changed/);
+ assert.equal(c.requests.length,1);assert.match(c.requests[0].path,/salvage-custody-sources$/);
+});
+test('salvage batch lost ACK survives regenerated form IDs and retains all original outputs',async()=>{
+  const store=storage(),batch=()=>({source_item_id:null,source_movement_id:null,project_id:null,source_quantity:1,attestation_notes:'Historical provenance',outputs:[
+    {id:randomUUID(),recovered_item_name:'Motor',recovered_quantity:1,unit:'each',recovery_type:'disassembly_output'},
+    {id:randomUUID(),recovered_item_name:'Metal',recovered_quantity:2,unit:'kg',recovery_type:'scrap'}]});
+  const a=load(async()=>{throw Error('lost ACK')},{store});await assert.rejects(a.api.createSalvageBatch(batch()));
+  const b=load(async()=>success(),{store});await b.api.createSalvageBatch(batch());
+  assert.equal(a.requests[0].body,b.requests[0].body);
+  assert.equal(a.requests[0].headers['Idempotency-Key'],b.requests[0].headers['Idempotency-Key']);
+  const body=JSON.parse(b.requests[0].body);assert.equal(body.id,body.outputs[0].id);
+  await b.api.createSalvageBatch(batch());assert.notEqual(b.requests[0].headers['Idempotency-Key'],b.requests[1].headers['Idempotency-Key']);
+});
+test('salvage review uses the version displayed when opened without reading a newer base',async()=>{
+  const c=load(async()=>success());
+  await c.api.inspectSalvageRecovery(id,{approval:'approved',condition:'good'},'3');
+  await c.api.releaseSalvageRecovery(id,4);
+  assert.deepEqual(c.requests.map(r=>r.method),['POST','POST']);
+  assert.equal(JSON.parse(c.requests[0].body).expected_version,3);
+  assert.equal(JSON.parse(c.requests[1].body).expected_version,4);
+  await assert.rejects(c.api.inspectSalvageRecovery(id,{approval:'approved'}),/version/);
+  await assert.rejects(c.api.releaseSalvageRecovery(id),/version/);
+  assert.equal(c.requests.length,2);
+});
+test('an uncertain salvage review retains its original base after a refreshed dialog',async()=>{
+  const store=storage(),data={approval:'approved',condition:'good'};
+  const a=load(async()=>{throw Error('lost ACK')},{store});await assert.rejects(a.api.inspectSalvageRecovery(id,data,3));
+  const b=load(async()=>success(),{store});await b.api.inspectSalvageRecovery(id,data,4);
+  assert.equal(a.requests[0].body,b.requests[0].body);
+  assert.equal(a.requests[0].headers['Idempotency-Key'],b.requests[0].headers['Idempotency-Key']);
+});
 test('browser create uncertain retry survives reload with the same key, ID and body',async()=>{
   const store=storage(),item={name:'new',type:'tool',status:'available',initial_quantity:1,current_quantity:1};
   const a=load(async()=>{throw Error('lost ACK')},{store});await assert.rejects(a.api.createItem(item));

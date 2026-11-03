@@ -1,0 +1,374 @@
+[
+  {
+    "name": "canonical Unicode planning graph",
+    "input": {
+      "schema_version": 1,
+      "target": {
+        "mode": "new",
+        "project_id": "10000000000040008000000000000001",
+        "name": "  Café plan  ",
+        "description": "Пример 🔬",
+        "priority": "normal"
+      },
+      "tasks": [
+        {
+          "id": "20000000-0000-4000-8000-000000000001",
+          "title": " Review ",
+          "description": "",
+          "due_date": "2028-02-29"
+        }
+      ],
+      "experiments": [
+        {
+          "id": "30000000-0000-4000-8000-000000000001",
+          "title": "Test",
+          "hypothesis": "Unverified hypothesis",
+          "procedure": "Human-performed protocol"
+        }
+      ],
+      "links": [
+        {
+          "id": "40000000-0000-4000-8000-000000000001",
+          "task_id": "20000000-0000-4000-8000-000000000001",
+          "experiment_id": "30000000-0000-4000-8000-000000000001"
+        }
+      ]
+    },
+    "valid": true,
+    "normalized": {
+      "schema_version": 1,
+      "target": {
+        "mode": "new",
+        "project_id": "10000000-0000-4000-8000-000000000001",
+        "name": "Café plan",
+        "description": "Пример 🔬",
+        "priority": "normal"
+      },
+      "tasks": [
+        {
+          "id": "20000000-0000-4000-8000-000000000001",
+          "title": "Review",
+          "description": "",
+          "priority": "normal",
+          "due_date": "2028-02-29"
+        }
+      ],
+      "experiments": [
+        {
+          "id": "30000000-0000-4000-8000-000000000001",
+          "title": "Test",
+          "hypothesis": "Unverified hypothesis",
+          "procedure": "Human-performed protocol"
+        }
+      ],
+      "links": [
+        {
+          "id": "40000000-0000-4000-8000-000000000001",
+          "task_id": "20000000-0000-4000-8000-000000000001",
+          "experiment_id": "30000000-0000-4000-8000-000000000001"
+        }
+      ]
+    },
+    "digest": "c3642d45437202aea7420c94b31a73244454f19fde12bd421d7942dd7cd45104"
+  },
+  {
+    "name": "no spending",
+    "input": {
+      "schema_version": 1,
+      "target": {
+        "mode": "new",
+        "project_id": "10000000000040008000000000000001",
+        "name": "  Café plan  ",
+        "description": "Пример 🔬",
+        "priority": "normal"
+      },
+      "tasks": [
+        {
+          "id": "20000000-0000-4000-8000-000000000001",
+          "title": " Review ",
+          "description": "",
+          "due_date": "2028-02-29"
+        }
+      ],
+      "experiments": [
+        {
+          "id": "30000000-0000-4000-8000-000000000001",
+          "title": "Test",
+          "hypothesis": "Unverified hypothesis",
+          "procedure": "Human-performed protocol"
+        }
+      ],
+      "links": [
+        {
+          "id": "40000000-0000-4000-8000-000000000001",
+          "task_id": "20000000-0000-4000-8000-000000000001",
+          "experiment_id": "30000000-0000-4000-8000-000000000001"
+        }
+      ],
+      "budget": 10
+    },
+    "valid": false
+  },
+  {
+    "name": "no completed task",
+    "input": {
+      "schema_version": 1,
+      "target": {
+        "mode": "new",
+        "project_id": "10000000000040008000000000000001",
+        "name": "  Café plan  ",
+        "description": "Пример 🔬",
+        "priority": "normal"
+      },
+      "tasks": [
+        {
+          "id": "20000000-0000-4000-8000-000000000001",
+          "title": " Review ",
+          "description": "",
+          "due_date": "2028-02-29",
+          "status": "done"
+        }
+      ],
+      "experiments": [
+        {
+          "id": "30000000-0000-4000-8000-000000000001",
+          "title": "Test",
+          "hypothesis": "Unverified hypothesis",
+          "procedure": "Human-performed protocol"
+        }
+      ],
+      "links": [
+        {
+          "id": "40000000-0000-4000-8000-000000000001",
+          "task_id": "20000000-0000-4000-8000-000000000001",
+          "experiment_id": "30000000-0000-4000-8000-000000000001"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "no scientific result",
+    "input": {
+      "schema_version": 1,
+      "target": {
+        "mode": "new",
+        "project_id": "10000000000040008000000000000001",
+        "name": "  Café plan  ",
+        "description": "Пример 🔬",
+        "priority": "normal"
+      },
+      "tasks": [
+        {
+          "id": "20000000-0000-4000-8000-000000000001",
+          "title": " Review ",
+          "description": "",
+          "due_date": "2028-02-29"
+        }
+      ],
+      "experiments": [
+        {
+          "id": "30000000-0000-4000-8000-000000000001",
+          "title": "Test",
+          "hypothesis": "Unverified hypothesis",
+          "procedure": "Human-performed protocol",
+          "result": "passed"
+        }
+      ],
+      "links": [
+        {
+          "id": "40000000-0000-4000-8000-000000000001",
+          "task_id": "20000000-0000-4000-8000-000000000001",
+          "experiment_id": "30000000-0000-4000-8000-000000000001"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "cross-bundle link",
+    "input": {
+      "schema_version": 1,
+      "target": {
+        "mode": "new",
+        "project_id": "10000000000040008000000000000001",
+        "name": "  Café plan  ",
+        "description": "Пример 🔬",
+        "priority": "normal"
+      },
+      "tasks": [
+        {
+          "id": "20000000-0000-4000-8000-000000000001",
+          "title": " Review ",
+          "description": "",
+          "due_date": "2028-02-29"
+        }
+      ],
+      "experiments": [
+        {
+          "id": "30000000-0000-4000-8000-000000000001",
+          "title": "Test",
+          "hypothesis": "Unverified hypothesis",
+          "procedure": "Human-performed protocol"
+        }
+      ],
+      "links": [
+        {
+          "id": "40000000-0000-4000-8000-000000000001",
+          "task_id": "50000000-0000-4000-8000-000000000001",
+          "experiment_id": "30000000-0000-4000-8000-000000000001"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "duplicate UUID",
+    "input": {
+      "schema_version": 1,
+      "target": {
+        "mode": "new",
+        "project_id": "10000000000040008000000000000001",
+        "name": "  Café plan  ",
+        "description": "Пример 🔬",
+        "priority": "normal"
+      },
+      "tasks": [
+        {
+          "id": "10000000000040008000000000000001",
+          "title": " Review ",
+          "description": "",
+          "due_date": "2028-02-29"
+        }
+      ],
+      "experiments": [
+        {
+          "id": "30000000-0000-4000-8000-000000000001",
+          "title": "Test",
+          "hypothesis": "Unverified hypothesis",
+          "procedure": "Human-performed protocol"
+        }
+      ],
+      "links": [
+        {
+          "id": "40000000-0000-4000-8000-000000000001",
+          "task_id": "20000000-0000-4000-8000-000000000001",
+          "experiment_id": "30000000-0000-4000-8000-000000000001"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "invalid day",
+    "input": {
+      "schema_version": 1,
+      "target": {
+        "mode": "new",
+        "project_id": "10000000000040008000000000000001",
+        "name": "  Café plan  ",
+        "description": "Пример 🔬",
+        "priority": "normal"
+      },
+      "tasks": [
+        {
+          "id": "20000000-0000-4000-8000-000000000001",
+          "title": " Review ",
+          "description": "",
+          "due_date": "2026-02-30"
+        }
+      ],
+      "experiments": [
+        {
+          "id": "30000000-0000-4000-8000-000000000001",
+          "title": "Test",
+          "hypothesis": "Unverified hypothesis",
+          "procedure": "Human-performed protocol"
+        }
+      ],
+      "links": [
+        {
+          "id": "40000000-0000-4000-8000-000000000001",
+          "task_id": "20000000-0000-4000-8000-000000000001",
+          "experiment_id": "30000000-0000-4000-8000-000000000001"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "year zero",
+    "input": {
+      "schema_version": 1,
+      "target": {
+        "mode": "new",
+        "project_id": "10000000000040008000000000000001",
+        "name": "  Café plan  ",
+        "description": "Пример 🔬",
+        "priority": "normal"
+      },
+      "tasks": [
+        {
+          "id": "20000000-0000-4000-8000-000000000001",
+          "title": " Review ",
+          "description": "",
+          "due_date": "0000-01-01"
+        }
+      ],
+      "experiments": [
+        {
+          "id": "30000000-0000-4000-8000-000000000001",
+          "title": "Test",
+          "hypothesis": "Unverified hypothesis",
+          "procedure": "Human-performed protocol"
+        }
+      ],
+      "links": [
+        {
+          "id": "40000000-0000-4000-8000-000000000001",
+          "task_id": "20000000-0000-4000-8000-000000000001",
+          "experiment_id": "30000000-0000-4000-8000-000000000001"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "numeric priority",
+    "input": {
+      "schema_version": 1,
+      "target": {
+        "mode": "new",
+        "project_id": "10000000000040008000000000000001",
+        "name": "  Café plan  ",
+        "description": "Пример 🔬",
+        "priority": "normal"
+      },
+      "tasks": [
+        {
+          "id": "20000000-0000-4000-8000-000000000001",
+          "title": " Review ",
+          "description": "",
+          "due_date": "2028-02-29",
+          "priority": 2
+        }
+      ],
+      "experiments": [
+        {
+          "id": "30000000-0000-4000-8000-000000000001",
+          "title": "Test",
+          "hypothesis": "Unverified hypothesis",
+          "procedure": "Human-performed protocol"
+        }
+      ],
+      "links": [
+        {
+          "id": "40000000-0000-4000-8000-000000000001",
+          "task_id": "20000000-0000-4000-8000-000000000001",
+          "experiment_id": "30000000-0000-4000-8000-000000000001"
+        }
+      ]
+    },
+    "valid": false
+  }
+]

@@ -16,6 +16,7 @@ for (const [name,create,remove] of [['notes','createNote','deleteNote'],['knowle
     vm.runInNewContext(compiled,{exports,window:{__TAURI_IPC__:true},URLSearchParams,require:(dependency)=>{
       if(dependency==='@tauri-apps/api/tauri')return {invoke:async()=>{if(fault==='reject')throw new Error('disk unavailable');return null;}};
       if(dependency==='./http')return {apiFetch:async()=>{writes++;throw new Error('HTTP MUST NOT RUN');},getApiErrorMessage:async()=>''};
+      if(dependency==='./auth')return {captureAccountSession:()=>({accountId:'test-account'}),isAccountSessionCurrent:()=>true};
       return {};
     }});
     await assert.rejects(()=>exports[create]({name:'test',title:'test'}));
@@ -27,7 +28,7 @@ for (const [name,create,remove] of [['notes','createNote','deleteNote'],['knowle
 for (const moduleName of ['notes', 'knowledge', 'locations', 'projects']) {
   test(`${moduleName} does not turn a null desktop IPC result into an HTTP write`, () => {
     const source = readFileSync(new URL(`./${moduleName}.ts`, import.meta.url), 'utf8');
-    assert.match(source, /if\s*\(result===null\)/);
+    assert.match(source, /if\s*\(result===null(?:\|\|result===undefined)?\)/);
     assert.match(source, /server fallback was not attempted/);
     assert.match(source, /return undefined as T/);
   });

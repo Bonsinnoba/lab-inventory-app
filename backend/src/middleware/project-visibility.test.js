@@ -5,6 +5,7 @@ import { effectiveProjectAccess } from './project-access.js';
 
 const access = readFileSync(new URL('./project-access.js', import.meta.url), 'utf8');
 const routes = readFileSync(new URL('../routes/projects.js', import.meta.url), 'utf8');
+const grantWrites = readFileSync(new URL('../project-access-http.js', import.meta.url), 'utf8');
 const sync = readFileSync(new URL('../routes/sync.js', import.meta.url), 'utf8');
 const localProjects = readFileSync(new URL('../../../desktop/src-tauri/src/local_projects.rs', import.meta.url), 'utf8');
 
@@ -23,8 +24,9 @@ test('project routes scope list results and offer audited grant administration',
   assert.match(financialSummary, /JOIN projects p ON p\.id=pfs\.project_id/);
   assert.match(routes, /router\.put\('\/:id\/visibility'/);
   assert.match(routes, /router\.get\('\/:id\/access-grants'/);
-  assert.match(routes, /project_access_grant/);
-  assert.match(routes, /canManageEntityGrants/);
+  assert.match(routes, /projectAccessHttpMutation\('grant','set'\)/);
+  assert.match(grantWrites, /project_access_grant/);
+  assert.match(grantWrites, /project\.owner_id!==actorId&&member\?\.member_role!=='lead'/);
 });
 
 test('project sync carries scope and reconciles the authorized snapshot', () => {

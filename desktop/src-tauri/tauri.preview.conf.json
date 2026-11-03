@@ -8,7 +8,8 @@
     },
     "windows": [
       {
-        "title": "LabOS Preview"
+        "title": "LabOS Preview",
+        "fileDropEnabled": false
       }
     ]
   }

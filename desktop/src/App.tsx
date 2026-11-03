@@ -36,11 +36,12 @@ const AutomationPage = lazy(() => import("./pages/AutomationPage"));
 const OperationsPage = lazy(() => import("./pages/OperationsPage"));
 const DailyUsePanel = lazy(() => import("./components/DailyUsePanel"));
 import MediaManager from "./components/MediaManager";
+import audioFocusCoordinator from "./lib/audioFocus";
 import LoginPage from "./pages/LoginPage";
 import CommandPalette from "./components/CommandPalette";
 const LabIntelligencePage = lazy(() => import("./pages/LabIntelligencePage"));
 const DownloadsPage = lazy(() => import("./pages/DownloadsPage"));
-import { getToken, setToken, removeToken, getStoredUser, setStoredUser, removeStoredUser, getCurrentUser, getCurrentPermissions, logout, captureAccountSession, isAccountSessionCurrent, DESKTOP_REAUTH_REQUIRED } from "./api/auth";
+import { getToken, setToken, removeToken, getStoredUser, setStoredUser, removeStoredUser, getCurrentUser, getCurrentPermissions, getLocalAuthStatus, logout, captureAccountSession, isAccountSessionCurrent, DESKTOP_REAUTH_REQUIRED } from "./api/auth";
 import type { User } from "./api/auth";
 import { getDailyUsePreferences } from './api/system';
 import { syncPendingChanges } from './api/sync';
@@ -57,6 +58,7 @@ function AppContent() {
   const queryClient = useQueryClient();
   const [user, setUser] = useState<User | null>(null);
   const [permissions, setPermissions] = useState<string[]>([]);
+  useEffect(()=>{audioFocusCoordinator.reset();return()=>audioFocusCoordinator.reset();},[user?.id]);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [signInNotice, setSignInNotice] = useState<string | null>(null);
   const [rightPanelContent, setRightPanelContent] = useState<DockableContent>('assistant');
@@ -92,6 +94,41 @@ function AppContent() {
     window.addEventListener('labos:auth-expired', expired);
     return () => window.removeEventListener('labos:auth-expired', expired);
   }, [queryClient]);
+
+  // An offline login can expire while the workspace is already open. Native
+  // reads correctly deny access at the lease boundary, but without this check
+  // the shell would stay on data pages showing repeated load errors. Check on
+  // resume and periodically, and return to sign-in while preserving SQLite and
+  // its pending changes.
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    let active = true;
+    const checkOfflineLease = async () => {
+      const token = getToken();
+      if (!token?.startsWith('local:')) return;
+      try {
+        const status = await getLocalAuthStatus();
+        if (!active || getToken() !== token || !status || status.authenticated) return;
+        setSignInNotice(DESKTOP_REAUTH_REQUIRED);
+        removeToken();
+        removeStoredUser();
+        window.dispatchEvent(new Event('labos:auth-expired'));
+      } catch {
+        // A transient SQLite read failure does not itself prove lease expiry.
+      }
+    };
+    const onResume = () => { void checkOfflineLease(); };
+    void checkOfflineLease();
+    const timer = window.setInterval(onResume, 10_000);
+    window.addEventListener('focus', onResume);
+    document.addEventListener('visibilitychange', onResume);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', onResume);
+      document.removeEventListener('visibilitychange', onResume);
+    };
+  }, [isAuthenticated, user?.id]);
 
   useEffect(() => {
     const f = (e: KeyboardEvent) => {

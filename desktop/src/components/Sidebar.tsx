@@ -4,12 +4,18 @@ import { Link, useLocation } from 'react-router-dom';
 import { useTheme } from '../contexts/ThemeContext';
 
 const primaryItems = [
-  { icon: LayoutDashboard, label: 'Dashboard', path: '/dashboard' }, { icon: Layers, label: 'Projects', path: '/projects' }, { icon: BookOpen, label: 'Notebook', path: '/notebook' }, { icon: Download, label: 'Downloads', path: '/downloads' }, { icon: Users, label: 'Collaboration', path: '/collaboration' }, { icon: DollarSign, label: 'Financials', path: '/financials' }, { icon: FileBarChart, label: 'Reports', path: '/reports' },
+  { icon: LayoutDashboard, label: 'Dashboard', path: '/dashboard' },
+  { icon: Layers, label: 'Projects', path: '/projects' },
+  { icon: BookOpen, label: 'Notebook', path: '/notebook' },
+  { icon: Box, label: 'Inventory', path: '/inventory' },
+  { icon: Library, label: 'Resources', path: '/resources' },
+  { icon: Download, label: 'Downloads', path: '/downloads' },
+  { icon: Users, label: 'Collaboration', path: '/collaboration' },
+  { icon: DollarSign, label: 'Financials', path: '/financials' },
+  { icon: FileBarChart, label: 'Reports', path: '/reports' },
 ];
 const standaloneItems = [
   { icon: Brain, label: 'Knowledge', path: '/knowledge' },
-  { icon: Library, label: 'Resources', path: '/resources' },
-  { icon: Box, label: 'Inventory', path: '/inventory' },
   { icon: GitMerge, label: 'Sync conflicts', path: '/sync/conflicts' },
 ];
 const groups = [
