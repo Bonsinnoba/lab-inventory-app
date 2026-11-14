@@ -9,6 +9,9 @@ fn err(e: impl std::fmt::Display) -> String { e.to_string() }
 // Called while the copy writer holds its IMMEDIATE transaction. Unsupported
 // metadata/attachment intents stay blocked rather than guessing their revision.
 pub(crate) fn source_predecessor(c:&Connection, id:&str)->Result<Option<String>,String>{
+    if let Some(record)=local_resources::read_resources(c)?.into_iter().find(|r|r.id==id){
+        if let Some((_,previous))=crate::local_resource_attachments::pending_mutation_origin(c,&record)?{return Ok(Some(previous))}
+    }
     crate::local_resource_edits::schema(c)?;
     let device:String=c.query_row("SELECT device_id FROM device_identity WHERE id=1",[],|r|r.get(0)).map_err(err)?;
     let mut stmt=c.prepare("SELECT o.change_id,o.device_id,o.operation,o.payload_json,
@@ -36,6 +39,7 @@ pub(crate) fn source_predecessor(c:&Connection, id:&str)->Result<Option<String>,
 // design. That exception never grants access to a previously confirmed source.
 // Follow the whole copy ancestry so a derived copy cannot hide a revoked source.
 pub(crate) fn require_editor_access(c:&Connection, record:&local_resources::LocalResource)->Result<(),String>{
+    crate::local_resource_tree_moves::require_no_pending_tree(c,&record.id)?;
     crate::local_resource_uploads::schema(c)?;
     crate::local_resource_posters::schema(c)?;
     let account=local_db::active_account(c)?;
@@ -44,7 +48,8 @@ pub(crate) fn require_editor_access(c:&Connection, record:&local_resources::Loca
     let mut visited=HashSet::new();
     loop {
         if visited.len()>=128||!visited.insert(current.id.clone()){return Err("Invalid resource copy ancestry; files are preserved".into())}
-        let authored=crate::local_resource_authority::require_own_pending_creation(c,current)?;
+        let mixed=crate::local_resource_authority::require_pending_mutation_editor(c,current)?.is_some();
+        let authored=if mixed{true}else{crate::local_resource_authority::require_own_pending_creation(c,current)?};
         if !authored{crate::local_resource_attachments::require_cached_resource_editor(c,current)?;}
         let creating:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM active_sync_outbox o JOIN local_resource_uploads u ON u.account_id=o.account_id AND u.change_id=o.change_id WHERE o.entity_type='resource' AND o.entity_id=?1 AND o.operation IN ('create','create_copy') AND o.synced_at IS NULL AND u.resource_id=o.entity_id AND u.state='ready' AND u.server_revision IS NULL)",[&current.id],|r|r.get(0)).map_err(err)?;
         let denied:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM local_resource_poster_denials WHERE account_id=?1 AND resource_id=?2)",params![account,current.id],|r|r.get(0)).map_err(err)?;
@@ -60,7 +65,7 @@ struct Intent { id:String, entity:String, previous:Vec<String>, conflicted:bool 
 fn pending(c:&Connection)->Result<Vec<Intent>,String>{
     let mut stmt=c.prepare("SELECT o.change_id,o.entity_id,o.payload_json,EXISTS(SELECT 1 FROM sync_conflicts f WHERE f.change_id=o.change_id AND f.resolved_at IS NULL),o.operation FROM sync_outbox o WHERE o.account_id=?1 AND o.entity_type='resource' AND o.synced_at IS NULL ORDER BY o.rowid").map_err(err)?;
     let rows=stmt.query_map([local_db::active_account(c)?],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,String>(2)?,r.get::<_,bool>(3)?,r.get::<_,String>(4)?))).map_err(err)?;
-    let mut creations=HashMap::new();let mut intents=Vec::new();
+    let mut creations=HashMap::new();let mut trees:HashMap<String,String>=HashMap::new();let mut intents=Vec::new();
     for row in rows{
         let (id,entity,raw,conflicted,operation)=row.map_err(err)?;
         let payload:Value=serde_json::from_str(&raw).map_err(err)?;
@@ -70,6 +75,9 @@ fn pending(c:&Connection)->Result<Vec<Intent>,String>{
         let record=payload.get("resource").or_else(||payload.get("record")).unwrap_or(&payload);
         for reference in [record["parent_resource_id"].as_str(),payload["copy"]["source_id"].as_str()].into_iter().flatten(){if let Some(prior)=creations.get(reference){if !previous.contains(prior){previous.push(prior.clone());}}}
         let entity=entity.unwrap_or_default();
+        for reference in [Some(entity.as_str()),record["parent_resource_id"].as_str(),payload["copy"]["source_id"].as_str()].into_iter().flatten(){if let Some(prior)=trees.get(reference){if !previous.contains(prior){previous.push(prior.clone());}}}
+        if operation=="move_tree"{if let Some(members)=payload["tree_move"]["members"].as_array(){for member in members{if let Some(member)=member["id"].as_str(){trees.insert(member.into(),id.clone());}}}}
+
         if ["create","create_copy"].contains(&operation.as_str())&&!entity.is_empty(){creations.insert(entity.clone(),id.clone());}
         intents.push(Intent{id,entity,previous,conflicted});
     }Ok(intents)
@@ -161,4 +169,11 @@ mod tests {
         assert_eq!(c.query_row("SELECT count(*) FROM sync_outbox WHERE change_id='root' AND synced_at IS NULL",[],|r|r.get::<_,i64>(0)).unwrap(),1);
         drop(c);std::fs::remove_file(path).unwrap();
     }
+    #[test]
+    fn rejected_tree_retirement_archives_later_member_edits_and_source_copies_atomically(){
+        use crate::local_resource_recovery::tests::{fixture,ACCOUNT};let(mut c,path)=fixture();let device:String=c.query_row("SELECT device_id FROM device_identity WHERE id=1",[],|r|r.get(0)).unwrap();
+        for(change,entity,operation,payload)in [("tree-review","root","move_tree",serde_json::json!({"id":"root","tree_move":{"members":[{"id":"root"},{"id":"child"}]}})),("child-edit","child","edit_metadata",serde_json::json!({"id":"child","metadata":{"fields":{"description":"preserved"}}})),("child-copy","copy","create_copy",serde_json::json!({"copy":{"source_id":"child"}})),("independent","other","edit_metadata",serde_json::json!({"id":"other"}))]{c.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES(?1,?2,'resource',?3,?4,?5)",params![change,device,entity,operation,payload.to_string()]).unwrap();}
+        let tx=c.transaction().unwrap();discard_descendants(&tx,"tree-review","dismiss").unwrap();tx.commit().unwrap();let archived:String=c.query_row("SELECT change_ids_json FROM local_resource_recoveries WHERE account_id=?1",[ACCOUNT],|r|r.get(0)).unwrap();let ids:Vec<String>=serde_json::from_str(&archived).unwrap();assert_eq!(ids.len(),3);assert!(ids.contains(&"child-copy".into()));assert_eq!(c.query_row("SELECT count(*) FROM sync_outbox WHERE synced_at IS NULL",[],|r|r.get::<_,i64>(0)).unwrap(),1);drop(c);std::fs::remove_file(path).unwrap();
+    }
+
 }

@@ -6,7 +6,7 @@ import {pool} from 'file:///app/src/db.js';
 
 const packet=globalThis.labosCustodyProbe;
 if(!packet?.source || !packet?.migration || !packet?.baseline) throw Error('Explicit probe sources required');
-const moduleFrom=source=>import('data:text/javascript;base64,'+Buffer.from(source.replace("'./reservation-stock.js'","'file:///app/src/reservation-stock.js'")).toString('base64'));
+const moduleFrom=source=>import('data:text/javascript;base64,'+Buffer.from(source.replace(/from\s+(['"])(\.[^'"]+)\1/g,(_match,quote,specifier)=>`from ${quote}${new URL(specifier,'file:///app/src/inventory-apply.js').href}${quote}`)).toString('base64'));
 const current=await moduleFrom(packet.source), baseline=await moduleFrom(packet.baseline);
 const client=await pool.connect(), actor=randomUUID(), recipient=randomUUID(), item=randomUUID();
 const results=[];let failures=0,savepoint=0;

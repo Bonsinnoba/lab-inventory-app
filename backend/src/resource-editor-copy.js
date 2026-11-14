@@ -1,4 +1,4 @@
-import { requireResourceEditor } from './middleware/resource-access.js';
+import {requireLockedResourceEditor} from './resource-scope-lock.js';
 import { checkAttachmentRevision } from './resource-attachment.js';
 import { predecessorRevision } from './resource-content-edit.js';
 
@@ -51,7 +51,7 @@ export async function authorizeEditorCopy(client, record, descriptor, user, chan
   const revision = copyRevision(descriptor, prior, change, user);
   const source = (await client.query('SELECT * FROM resources WHERE id=$1 FOR UPDATE',[descriptor.source_id])).rows[0];
   if (!source) fail(409, 'EDITOR_COPY_SOURCE_MISSING', 'The source no longer exists; your local copy is preserved for review');
-  const access = await requireResourceEditor(source.id,user);
+  const access = await requireLockedResourceEditor(client,source.id,user);
   if (!access.ok) fail(access.status,access.error.code,access.error.message);
   validateEditorCopy(source,record,{...descriptor,source_updated_at:revision});
 }

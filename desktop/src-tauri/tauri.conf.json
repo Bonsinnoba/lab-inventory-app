@@ -16,18 +16,9 @@
         "all": false,
         "open": "^(((mailto:\\w+)|(tel:\\w+)|(https?://\\w+)).+|[A-Za-z]:\\\\[^\\r\\n]+\\\\labos-presentation-[0-9a-f-]{36}\\\\Presentation\\.pptx?)$"
       },
-      "http": {
-        "all": true,
-        "request": true,
-        "scope": ["http://localhost:4000/*"]
-      },
       "dialog": {
         "all": false,
         "save": true
-      },
-      "fs": {
-        "all": false,
-        "writeFile": true
       }
     },
     "systemTray": {
@@ -36,12 +27,16 @@
     "bundle": {
       "active": true,
       "targets": "all",
-      "resources": ["runtime/docx-03483d22-1e81-4f95-839a-e451bf922112/"],
+      "resources": [
+        "runtime/docx-d315a460-6320-49df-8673-9c6980c06d36/"
+      ],
       "identifier": "com.lab-inventory.app",
-      "icon": ["icons/icon.ico"]
+      "icon": [
+        "icons/icon.ico"
+      ]
     },
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost labos-file: http://labos-file.localhost https://labos-file.localhost asset: http://asset.localhost https://asset.localhost http://localhost:4000; img-src 'self' data: blob: labos-file: http://labos-file.localhost https://labos-file.localhost asset: http://asset.localhost https://asset.localhost http://localhost:4000 https://img.youtube.com https://i.ytimg.com; media-src 'self' blob: data: labos-file: http://labos-file.localhost https://labos-file.localhost asset: http://asset.localhost https://asset.localhost http://localhost:4000; font-src 'self' data:; worker-src 'self' blob:; frame-src 'self' blob: https://www.youtube.com https://www.youtube-nocookie.com; object-src 'none'; base-uri 'none'; form-action 'none'"
     },
     "updater": {
       "active": false

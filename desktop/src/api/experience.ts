@@ -3,7 +3,7 @@ import { apiFetch, getApiErrorMessage } from './http';
 import { getProjects, Project, getProjectWorkspace } from './projects';
 import { getItems } from './items';
 import { getNotes } from './notes';
-import { getAllResources } from './resources';
+import { getAllResourceMetadata } from './resources';
 import {captureAccountSession} from './auth';
 import {readLocalSections,readWithDeadline,assertReadAccount,type ReadAvailability} from './read-availability';
 
@@ -23,7 +23,7 @@ function localDate(value:any): Date | null {
 
 async function getLocalExperienceDashboard(): Promise<ExperienceDashboard> {
   const session=captureAccountSession();
-  const {values,availability}=await readLocalSections({projects:getProjects,inventory:getItems,notes:getNotes,resources:getAllResources},session);
+  const {values,availability}=await readLocalSections({projects:getProjects,inventory:getItems,notes:getNotes,resources:getAllResourceMetadata},session);
   const projects=values.projects??[],items=values.inventory??[],notes=values.notes??[],resources=values.resources??[];
 
   const now = Date.now();

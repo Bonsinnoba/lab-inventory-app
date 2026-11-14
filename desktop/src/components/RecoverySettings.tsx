@@ -1,0 +1,31 @@
+import {useEffect,useState} from 'react';
+import {getRecoveryStatus,createRecoveryBackup,restoreRecoveryPackage,recoverRecoveryKey,cancelRecoveryOperation,type RecoveryStatus,type RecoveryResult} from '../api/recovery';
+import {isTauriRuntime} from '../lib/runtime';
+import RecoveryBackupCatalog from './RecoveryBackupCatalog';
+export default function RecoverySettings(){
+ const [status,setStatus]=useState<RecoveryStatus|null>(null),[error,setError]=useState(''),[secret,setSecret]=useState(''),[confirmed,setConfirmed]=useState(false),[busy,setBusy]=useState(false),[result,setResult]=useState<RecoveryResult|null>(null);
+ const [cancelling,setCancelling]=useState(false),[cancelNotice,setCancelNotice]=useState('');
+ useEffect(()=>{let current=true;if(isTauriRuntime())getRecoveryStatus().then(value=>{if(current)setStatus(value);}).catch(e=>{if(current)setError(e instanceof Error?e.message:'Recovery status unavailable');});return()=>{current=false;};},[]);
+ const run=async(action:'backup'|'restore'|'key')=>{
+  if(busy||!confirmed)return;setBusy(true);setError('');setResult(null);setCancelNotice('');setCancelling(false);
+  try{const next=await(action==='key'?recoverRecoveryKey(secret):action==='restore'?restoreRecoveryPackage(secret):createRecoveryBackup(secret));setResult(next);setStatus(await getRecoveryStatus());}
+  catch(e){setError(e instanceof Error?e.message:'Recovery operation failed');}
+  finally{setSecret('');setConfirmed(false);setBusy(false);}
+ };
+ const cancel=async()=>{if(cancelling)return;setCancelling(true);try{const accepted=await cancelRecoveryOperation();setCancelNotice(accepted?'Cancellation requested. Finishing the current block safely.':'No cancellable operation remains for this sign-in; publication may already be finishing.');}catch(e){setError(e instanceof Error?e.message:'Cancellation unavailable');setCancelling(false);}};
+ return <section id="recovery" className="scroll-mt-6 space-y-4 rounded-md border border-border bg-surface p-5 md:p-6">
+  <div><h3 className="font-semibold">Encrypted recovery backups</h3><p className="mt-1 text-sm text-text-secondary">Keep a verified recovery package and its separate secret in different safe places. Backups contain this PC’s SQLite work and managed files, including pending changes. External files and WebView cache are excluded.</p></div>
+  {!isTauriRuntime()?<p className="text-sm text-text-secondary">Use the Windows desktop app to create or inspect recovery packages.</p>:<>
+   {status&&<p className="text-sm text-text-secondary">{status.key_locked?'The Windows recovery key is unavailable. Recover it from your verified package and separate secret.':status.configured?(status.is_custodian?'You are this PC’s enrolled recovery custodian.':'Another account is this PC’s recovery custodian.'):'The administrator who creates the first verified backup becomes this PC’s recovery custodian.'} Windows protects the local recovery key; the separate package and secret support recovery on a replacement PC.</p>}
+   {status&&!status.working_data_encrypted&&<p className="rounded border border-status-warn/40 bg-status-warn/5 p-3 text-sm text-status-warn">These controls encrypt recovery packages. Working SQLite data and managed files are not yet encrypted at rest.</p>}
+   <label className="block max-w-lg text-sm">Separate recovery secret<input type="password" autoComplete="new-password" value={secret} disabled={busy} onChange={e=>setSecret(e.target.value)} minLength={20} maxLength={1024} className="mt-1 block w-full rounded border border-border bg-bg p-2.5"/><span className="text-xs text-text-secondary">At least 20 characters. Use your existing package’s secret when restoring.</span></label>
+   <label className="flex max-w-2xl items-start gap-2 text-sm"><input type="checkbox" checked={confirmed} disabled={busy} onChange={e=>setConfirmed(e.target.checked)} className="mt-1"/><span>I am the recovery custodian and have safeguarded the separate secret. I understand that losing every package or its secret prevents recovery.</span></label>
+   <div className="flex flex-wrap gap-2"><button type="button" disabled={busy||!status?.supported||(status.configured&&!status.is_custodian)||!confirmed||Array.from(secret).length<20} onClick={()=>void run('backup')} className="rounded bg-accent px-4 py-2 text-sm text-bg disabled:opacity-40">{busy?'Working…':'Create and verify backup'}</button><button type="button" disabled={busy||!status?.supported||!confirmed||Array.from(secret).length<20} onClick={()=>void run('restore')} className="rounded border border-border px-4 py-2 text-sm disabled:opacity-40">Restore to a separate folder</button><button type="button" disabled={busy||!status?.supported||!confirmed||Array.from(secret).length<20} onClick={()=>void run('key')} className="rounded border border-border px-4 py-2 text-sm disabled:opacity-40">Recover Windows key</button></div>
+   <p className="text-xs text-text-secondary">Restore creates a verified separate copy and clears its saved sessions and offline leases. Activation requires review; recovery never reassigns authorship or replaces the current installation. Limits: 50 GiB and 100,000 files per package; 256 MiB SQLite snapshot. Originals are retained when a limit or verification fails.</p>
+   {status?.cancel_supported&&(busy||status.can_cancel)&&<button type="button" disabled={cancelling} onClick={()=>void cancel()} className="rounded border border-border px-4 py-2 text-sm disabled:opacity-40">{cancelling?'Cancelling…':'Cancel recovery operation'}</button>}
+   {cancelNotice&&<p role="status" className="text-sm text-text-secondary">{cancelNotice}</p>}
+   {status?.retention_supported&&status.configured&&status.is_custodian&&!status.key_locked&&<RecoveryBackupCatalog active={!busy} refresh={result?.path||result?.verified?.backup_id||''} onBusyChange={setBusy}/>}
+  </>}
+  {error&&<p role="alert" className="text-sm text-status-danger">{error}</p>}{result&&!result.cancelled&&<p role="status" className="break-all text-sm text-status-success">{result.key_recovered?'Windows key recovered and bound to the original custodian and data set.':<>Verified {result.verified?.files} files ({((result.verified?.bytes||0)/1024/1024).toFixed(1)} MiB). {result.sessions_cleared?'Recovery copy; saved sessions cleared.':'Encrypted backup saved.'} {result.path}</>}</p>}
+ </section>;
+}

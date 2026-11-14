@@ -405,7 +405,14 @@ try{
     assert.ok(once.every(r=>!['confirmed','pending_review'].includes(r.status)));
     ok((await send([change]))[0]);assert.deepEqual(await allocations(),once);
     assert.equal((await client.query('SELECT lifecycle_revision FROM projects WHERE id=$1',[project])).rows[0].lifecycle_revision,before.lifecycle_revision+1);
-    rejected((await send([{...change,change_id:randomUUID(),payload:{before,project:{id:project,status:'planning'}}}]))[0],'PROJECT_LIFECYCLE_CONFLICT');
+    // A full-record save carrying the same status as its reviewed base has no
+    // authored status change. It must not reopen the now-cancelled project.
+    ok((await send([{...change,change_id:randomUUID(),payload:{before,project:{id:project,status:before.status}}}]))[0]);
+    const unchanged=(await client.query('SELECT status,lifecycle_revision FROM projects WHERE id=$1',[project])).rows[0];
+    assert.equal(unchanged.status,'cancelled');assert.equal(unchanged.lifecycle_revision,before.lifecycle_revision+1);
+    assert.deepEqual(await allocations(),once);
+    // An explicitly authored reopen with a stale lifecycle revision still fails.
+    rejected((await send([{...change,change_id:randomUUID(),payload:{before:{...before,status:'cancelled'},project:{id:project,status:'planning'}}}]))[0],'PROJECT_LIFECYCLE_CONFLICT');
   });
   if(packet.projects)await check('browser project update archives without claiming outstanding custody is settled',async()=>{
     const url=data(imports(packet.projects,'file:///app/src/routes/projects.js',{'../db.js':db,'../middleware/audit.js':auditURL,...lifecycleOverride}));

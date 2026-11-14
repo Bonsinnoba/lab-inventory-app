@@ -168,3 +168,6 @@ src-tauri/target/
 backend/yt-dlp.exe
 backend/labos-reset-backups/
 deploy/backups/
+
+# Verified documentation history (intentional tracked archive)
+!/docs/archive/history-through-2026-11-08.zip

@@ -15,16 +15,16 @@ export function effectiveProjectAccess({ ownerId, memberRole, visibility, grantL
  * Every active user can read ordinary project data. Project membership and
  * projects.edit still govern modifications; financial access is separate.
  */
-export async function getProjectAccess(projectId, user) {
+export async function getProjectAccess(projectId, user, client = pool) {
   if (!user?.userId) return { access: 'none', memberRole: null };
 
-  const userResult = await pool.query('SELECT role, is_active FROM users WHERE id = $1', [user.userId]);
+  const userResult = await client.query('SELECT role, is_active FROM users WHERE id = $1', [user.userId]);
   if (!userResult.rowCount || !userResult.rows[0].is_active) return { access: 'none', memberRole: null };
   const role = userResult.rows[0].role;
-  const permissions = await getUserPermissions(user.userId, role);
+  const permissions = await getUserPermissions(user.userId, role, {client});
   // Ordinary project reads are laboratory-wide; no projects.view grant is needed.
 
-  const result = await pool.query(`
+  const result = await client.query(`
     SELECT p.owner_id, p.visibility, pm.member_role, g.access_level AS grant_level
     FROM projects p
     LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $2
@@ -39,7 +39,7 @@ export async function getProjectAccess(projectId, user) {
     entityId: projectId,
     visibility: row.visibility,
     projectId,
-    user: { ...user, role },
+    user: { ...user, role }, client,
   });
   if (!readable) return { access: 'none', memberRole: null };
   return effectiveProjectAccess({

@@ -1,4 +1,4 @@
-use std::{fs::{self, OpenOptions}, io::{Read, Write, Seek, SeekFrom}, path::PathBuf};
+use std::{fs::{self}, io::{Read, Seek, SeekFrom}, path::PathBuf};
 use rusqlite::{params, Connection, TransactionBehavior};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -8,6 +8,32 @@ use crate::{local_auth, local_db, local_resources};
 const CHUNK: usize = 1024 * 1024;
 const MAX_FILE: u64 = 500 * 1024 * 1024;
 fn err(e:impl std::fmt::Display)->String { e.to_string() }
+fn candidate_file_sources(c:&Connection,account:&str)->Result<std::collections::HashMap<String,u8>,String>{
+    let mut statement=c.prepare("SELECT resource_id,1 FROM local_resource_uploads WHERE account_id=?1 AND state='ready' UNION ALL SELECT resource_id,2 FROM local_resource_edits WHERE account_id=?1 UNION ALL SELECT resource_id,4 FROM local_resource_copies WHERE account_id=?1 AND state='ready'").map_err(err)?;
+    let rows=statement.query_map([account],|row|Ok((row.get::<_,String>(0)?,row.get::<_,u8>(1)?))).map_err(err)?;
+    let mut result=std::collections::HashMap::new();for row in rows{let(id,source)=row.map_err(err)?;*result.entry(id).or_insert(0)|=source;}Ok(result)
+}
+#[cfg(test)]
+fn candidate_file_ids(c:&Connection,account:&str)->Result<std::collections::HashSet<String>,String>{Ok(candidate_file_sources(c,account)?.into_keys().collect())}
+
+#[cfg(test)]
+mod candidate_tests{
+    use super::*;
+    #[test]
+    fn pruning_index_is_account_scoped_and_preserves_all_authored_file_sources(){
+        let c=Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE local_resource_uploads(account_id TEXT,resource_id TEXT,state TEXT);CREATE TABLE local_resource_edits(account_id TEXT,resource_id TEXT);CREATE TABLE local_resource_copies(account_id TEXT,resource_id TEXT,state TEXT);
+        INSERT INTO local_resource_uploads VALUES('owner','upload','ready'),('owner','staging','staging'),('other','foreign','ready');
+        INSERT INTO local_resource_edits VALUES('owner','edit'),('other','foreign-edit');
+        INSERT INTO local_resource_copies VALUES('owner','copy','ready'),('owner','partial','copying'),('other','foreign-copy','ready');").unwrap();
+        let ids=candidate_file_ids(&c,"owner").unwrap();
+        assert_eq!(ids,std::collections::HashSet::from(["upload".to_string(),"edit".to_string(),"copy".to_string()]));
+        assert!(candidate_file_ids(&c,"empty-account").unwrap().is_empty());
+          c.execute("INSERT INTO local_resource_copies VALUES('owner','upload','ready')",[]).unwrap();
+          let sources=candidate_file_sources(&c,"owner").unwrap();
+          assert_eq!(sources["upload"],5);assert_eq!(sources["edit"],2);assert_eq!(sources["copy"],4);
+    }
+}
 pub(crate) fn schema(c:&Connection)->Result<(),String>{
     c.execute_batch("CREATE TABLE IF NOT EXISTS local_resource_uploads(account_id TEXT NOT NULL,change_id TEXT NOT NULL,resource_id TEXT NOT NULL,resource_json TEXT NOT NULL,size_bytes INTEGER NOT NULL,sha256 TEXT,server_revision TEXT,state TEXT NOT NULL DEFAULT 'staging',PRIMARY KEY(account_id,change_id),UNIQUE(account_id,resource_id));").map_err(err)
 }
@@ -24,7 +50,7 @@ pub(crate) fn file_path(app:&AppHandle,account:&str,change:&str)->Result<PathBuf
     Ok(root.join("resource-files").join(account).join(change).join("content"))
 }
 pub(crate) fn hash_file(path:&std::path::Path)->Result<String,String>{
-    let mut f=fs::File::open(path).map_err(err)?;let mut hash=Sha256::new();let mut buffer=vec![0;CHUNK];
+    let mut f=crate::working_store::open(path).map_err(err)?;let mut hash=Sha256::new();let mut buffer=vec![0;CHUNK];
     loop{let n=f.read(&mut buffer).map_err(err)?;if n==0{break}hash.update(&buffer[..n]);}
     Ok(format!("{:x}",hash.finalize()))
 }
@@ -50,15 +76,18 @@ pub(crate) fn parent_guard(c:&Connection,record:&Value)->Result<(),String>{
         else if !crate::local_notes::load(c)?.iter().any(|n|n["id"].as_str()==Some(id)){return Err("Note unavailable on this PC".into())}
     }
     if let Some(id)=record["parent_resource_id"].as_str(){
-        let folder=local_resources::read_resources(c)?.into_iter().find(|r|r.id==id&&r.kind=="folder").ok_or("Folder unavailable on this PC")?;
+        crate::local_resource_tree_moves::require_no_pending_tree(c,id)?;
+        let resources=local_resources::read_resources(c)?;
+        local_resources::validate_parent(&resources,&None,&None,&None,&Some(id.into()))?;
+        let folder=resources.iter().find(|r|r.id==id&&r.kind=="folder").ok_or("Folder unavailable on this PC")?;
         // A source-file grant is not a destination grant. Verify the folder
         // itself, including its complete inherited scope and current lease.
-        if role!="admin"{crate::local_resource_authority::require_edit(c,&folder)?;}
+        if role!="admin"{crate::local_resource_authority::require_folder_destination(c,folder)?;}
     }
     Ok(())
 }
 
-fn validate_relative_path(path:&str)->Result<(),String>{
+pub(crate) fn validate_relative_path(path:&str)->Result<(),String>{
     if path.is_empty()||path.len()>1024||path.chars().any(|c|c.is_control()||c==':'||c=='\\')||path.split('/').any(|p|p.is_empty()||p=="."||p==".."){
         return Err("Invalid folder file path".into());
     }Ok(())
@@ -82,11 +111,13 @@ pub fn begin_local_resource_upload(app:AppHandle,expected_account_id:String,expe
     metadata["id"]=json!(id);metadata["kind"]=json!("file");metadata["file_type"]=json!(kind);metadata["original_filename"]=json!(name);
     if metadata["name"].as_str().unwrap_or("").trim().is_empty(){metadata["name"]=json!(name)}
     metadata["mime_type"]=json!(mime);metadata["visibility"]=json!("lab");metadata["created_at"]=json!(now);metadata["updated_at"]=json!(now);
+    if metadata["category"].is_null(){metadata["category"]=json!("general")}
+    if metadata["description"].is_null(){metadata["description"]=json!("")}
     if !metadata["tags"].is_array(){metadata["tags"]=json!([])}
     let record:local_resources::LocalResource=serde_json::from_value(metadata).map_err(err)?;
     let path=file_path(&app,&expected_account_id,&change)?;
     fs::create_dir_all(path.parent().unwrap()).map_err(err)?;
-    OpenOptions::new().write(true).create_new(true).open(&path).map_err(err)?.sync_all().map_err(err)?;
+    crate::working_store::create_staging(&path,size as u64).map_err(err)?;
     tx.execute("INSERT INTO local_resource_uploads(account_id,change_id,resource_id,resource_json,size_bytes) VALUES(?1,?2,?3,?4,?5)",params![expected_account_id,change,id,serde_json::to_string(&record).map_err(err)?,size as i64]).map_err(err)?;
     tx.commit().map_err(err)?;Ok(json!({"change_id":change,"resource_id":id,"chunk_bytes":CHUNK}))
 }
@@ -94,6 +125,11 @@ pub fn begin_local_resource_upload(app:AppHandle,expected_account_id:String,expe
 fn readable_file(c:&Connection,resource_id:&str)->Result<(String,String,String,u64),String>{
     local_auth::require_local_permission(c,"resources.view")?;let account=local_db::active_account(c)?;
     let record=local_resources::read_resources(c)?.into_iter().find(|r|r.id==resource_id).ok_or("Resource unavailable")?;
+    readable_file_record(c,&account,&record)
+}
+fn readable_file_record(c:&Connection,account:&str,record:&local_resources::LocalResource)->Result<(String,String,String,u64),String>{
+    local_db::require_sync_account(c,account)?;local_auth::require_local_permission(c,"resources.view")?;
+    let resource_id=record.id.as_str();
     let (change,mime,size,revision):(String,String,i64,Option<String>)=c.query_row("SELECT change_id,COALESCE(json_extract(resource_json,'$.mime_type'),'application/octet-stream'),size_bytes,server_revision FROM local_resource_uploads WHERE account_id=?1 AND resource_id=?2 AND state='ready'",params![account,resource_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(err)?;
     let pending:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM active_sync_outbox WHERE change_id=?1 AND synced_at IS NULL)",[&change],|r|r.get(0)).map_err(err)?;
     if pending{
@@ -103,23 +139,24 @@ fn readable_file(c:&Connection,resource_id:&str)->Result<(String,String,String,u
             crate::resource_dependencies::require_editor_access(c,&source)?;
         }
     }
-    else if revision.as_deref()!=Some(record.updated_at.as_str()){return Err("Local file needs revision verification".into())}
+    else if !crate::local_resource_authority::content_revision_matches(c,&record,&change,revision.as_deref())?{return Err("Local file needs revision verification".into())}
     // A pending metadata edit must not bypass a known server visibility removal.
     if !pending {
         let denied:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM local_resource_poster_denials WHERE account_id=?1 AND resource_id=?2)",params![account,resource_id],|r|r.get(0)).unwrap_or(true);
         if denied{return Err("Resource access is no longer available".into())}
     }
-    Ok((account,change,mime,size as u64))
+    Ok((account.to_string(),change,mime,size as u64))
 }
 fn capability(c:&Connection,id:&str)->Result<String,String>{
     let token:String=c.query_row("SELECT session_token FROM local_session WHERE id=1",[],|r|r.get(0)).map_err(err)?;
     Ok(format!("{:x}",Sha256::digest(format!("labos-file:{token}:{id}").as_bytes())))
 }
 pub(crate) fn resolved_file(app:&AppHandle,c:&Connection,id:&str)->Result<(PathBuf,String,u64),String>{
+    crate::local_resource_tree_moves::require_pending_read(c,id)?;
     if let Ok(file)=crate::local_resource_edits::readable(app,c,id){return Ok(file)}
     if let Ok((account,change,mime,size))=readable_file(c,id){
         let path=file_path(app,&account,&change)?;
-        if fs::metadata(&path).map(|m|m.len()==size).unwrap_or(false){return Ok((path,mime,size))}
+        if crate::working_store::len(&path).map(|n|n==size).unwrap_or(false){return Ok((path,mime,size))}
     }
     crate::local_resource_replication::readable(app,c,id)
 }
@@ -142,7 +179,7 @@ pub fn read_local_resource_markdown(app:AppHandle,expected_account_id:String,exp
     if source.kind!="file"||source.file_type!="text"||!(name.ends_with(".md")||name.ends_with(".markdown")){return Err("Only Markdown files can be opened as source text".into())}
     let (path,_,size)=resolved_file(&app,&c,&resource_id).map_err(|_|"A verified file copy is not available on this PC yet")?;
     if size>4*1024*1024{return Err("Markdown editor supports files up to 4 MiB".into())}
-    let mut bytes=Vec::new();fs::File::open(&path).map_err(err)?.take(size+1).read_to_end(&mut bytes).map_err(err)?;
+    let mut bytes=Vec::new();crate::working_store::open(&path).map_err(err)?.take(size+1).read_to_end(&mut bytes).map_err(err)?;
     if bytes.len() as u64!=size{return Err("Local file changed while reading".into())}
     let current=editor_source(&c,&expected_account_id,&expected_session_token,&resource_id)?;
     if current.updated_at!=source.updated_at||resolved_file(&app,&c,&resource_id)?.0!=path{return Err("Resource changed while opening editor".into())}
@@ -163,6 +200,8 @@ pub fn create_local_pdf_edit_copy(app:AppHandle,expected_account_id:String,expec
     parent_guard(&tx,&serde_json::to_value(&source).map_err(err)?)?;
     let id=uuid::Uuid::new_v4().to_string();let change=uuid::Uuid::new_v4().to_string();
     let mut record=source.clone();
+    if record.category.is_none(){record.category=Some("general".into())}
+    if record.description.is_none(){record.description=Some(String::new())}
     record.id=id.clone();
     let stem=original.replace('\\',"/").rsplit('/').next().unwrap_or("Document.pdf").chars().collect::<Vec<_>>();
     let stem:String=stem[..stem.len().saturating_sub(4)].iter().take(80).collect();
@@ -177,42 +216,52 @@ pub fn create_local_pdf_edit_copy(app:AppHandle,expected_account_id:String,expec
     record.created_at=timestamp.clone();record.updated_at=timestamp;
     let target=file_path(&app,&expected_account_id,&change)?;
     fs::create_dir_all(target.parent().unwrap()).map_err(err)?;
-    let mut output=OpenOptions::new().write(true).create_new(true).open(&target).map_err(err)?;
-    let mut input=fs::File::open(&source_path).map_err(err)?.take(size+1);
-    if std::io::copy(&mut input,&mut output).map_err(err)?!=size{return Err("Source PDF changed while copying; nothing was queued".into())}
-    output.sync_all().map_err(err)?;drop(output);
+    crate::working_store::copy_new(&source_path,&target,size).map_err(err)?;
     let digest=hash_file(&target)?;
     guard(&tx,&expected_account_id,&expected_session_token)?;
     if resolved_file(&app,&tx,&resource_id)?.0!=source_path{return Err("Source resource changed while copying".into())}
-    let payload=json!({"resource":record,"copy":{"protocol":1,"source_id":source.id,"source_updated_at":source.updated_at,"previous_change_id":previous},"upload":{"protocol":1,"sha256":digest,"size_bytes":size}});
+    let mut payload=json!({"resource":record,"copy":{"protocol":1,"source_id":source.id,"source_updated_at":source.updated_at,"previous_change_id":previous},"upload":{"protocol":1,"sha256":digest,"size_bytes":size}});
+    let dependencies=crate::local_resource_destinations::dependencies(&tx,&serde_json::to_value(&record).map_err(err)?)?;if !dependencies.is_empty(){payload["destination_dependencies"]=json!(dependencies);}
     let device:String=tx.query_row("SELECT device_id FROM device_identity WHERE id=1",[],|r|r.get(0)).map_err(err)?;
     tx.execute("INSERT INTO local_resource_uploads(account_id,change_id,resource_id,resource_json,size_bytes,sha256,state) VALUES(?1,?2,?3,?4,?5,?6,'ready')",params![expected_account_id,change,id,serde_json::to_string(&record).map_err(err)?,size as i64,digest]).map_err(err)?;
     let mut resources=local_resources::read_resources(&tx)?;resources.push(record.clone());local_resources::write_resources(&tx,&resources)?;
     tx.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES(?1,?2,'resource',?3,'create_copy',?4)",params![change,device,id,payload.to_string()]).map_err(err)?;
+    crate::local_resource_attachments::record_native_proof(&tx,&change,"create_copy",&record,&record,&payload)?;
     tx.commit().map_err(err)?;Ok(record)
 }
 #[tauri::command]
-pub fn local_resource_file_access(app:AppHandle,expected_account_id:String)->Result<Value,String>{
-    let c=local_db::open_local_connection(&app)?;schema(&c)?;local_db::require_sync_account(&c,&expected_account_id)?;local_auth::require_local_permission(&c,"resources.view")?;
+pub async fn local_resource_file_access(app:AppHandle,expected_account_id:String)->Result<Value,String>{
+    crate::responsive_reads::run("local_resource_file_access", move || {
+    let mut connection=local_db::open_local_connection(&app)?;schema(&connection)?;
+    local_db::require_sync_account(&connection,&expected_account_id)?;local_auth::require_local_permission(&connection,"resources.view")?;
+    crate::local_resource_edits::schema(&connection)?;crate::local_resource_replication::schema(&connection)?;
+    let snapshot=connection.transaction().map_err(err)?;let c=&snapshot;
+    let candidates=candidate_file_sources(c,&expected_account_id)?;
     let mut files=serde_json::Map::new();
-    for record in local_resources::read_resources(&c)?{
-        if crate::local_resource_edits::readable(&app,&c,&record.id).is_ok(){
+    if !candidates.is_empty(){for record in local_resources::read_resources(&c)?{
+        // Presence is only a pruning index, never proof of readability. Keep
+        // every existing authority/session/revision/file check below.
+        let Some(source)=candidates.get(&record.id) else{continue};
+        if *source&2!=0&&crate::local_resource_edits::readable(&app,c,&record.id).is_ok(){
             let pending:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM active_sync_outbox WHERE entity_type='resource' AND entity_id=?1 AND operation='edit_content' AND synced_at IS NULL)",[&record.id],|r|r.get(0)).map_err(err)?;
               files.insert(record.id.clone(),json!({"path":format!("{}.{}",record.id,capability(&c,&record.id)?),"pending":pending}));
               continue;
         }
-        if crate::local_resource_replication::readable(&app,&c,&record.id).is_ok(){
+        if *source&4!=0&&crate::local_resource_replication::readable_record(&app,c,&expected_account_id,&record).is_ok(){
             files.insert(record.id.clone(),json!({"path":format!("{}.{}",record.id,capability(&c,&record.id)?),"pending":false}));
         }
-        if let Ok((account,change,_,size))=readable_file(&c,&record.id){
-            if fs::metadata(file_path(&app,&account,&change)?).map(|m|m.len()==size).unwrap_or(false){
+        if let Some((account,change,_,size))=if *source&1!=0{readable_file_record(c,&expected_account_id,&record).ok()}else{None}{
+            if crate::working_store::len(&file_path(&app,&account,&change)?).map(|n|n==size).unwrap_or(false){
                 let pending:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM active_sync_outbox WHERE change_id=?1 AND synced_at IS NULL)",[change],|r|r.get(0)).map_err(err)?;
                 // Tauri percent-encodes the whole path on Windows. A dot keeps
                 // this two-part capability intact without URL decoding paths.
                 files.insert(record.id.clone(),json!({"path":format!("{}.{}",record.id,capability(&c,&record.id)?),"pending":pending}));
             }
         }
-    }Ok(Value::Object(files))
+    }}snapshot.commit().map_err(err)?;
+    local_db::require_sync_account(&connection,&expected_account_id)?;local_auth::require_local_permission(&connection,"resources.view")?;Ok(Value::Object(files))
+
+    }).await
 }
 #[tauri::command]
 pub fn bind_local_resource_upload_receipts(app:AppHandle,expected_account_id:String,expected_session_token:String,results:Vec<Value>)->Result<(),String>{
@@ -242,7 +291,7 @@ pub fn serve_file(app:&AppHandle,request:&tauri::http::Request)->Result<tauri::h
             Err(crate::resource_file_response::ReadError::RequiresExport)=>return tauri::http::ResponseBuilder::new().status(413).header("Cache-Control","no-store").header("Accept-Ranges","bytes").header("Access-Control-Allow-Origin",origin).body(Vec::new()).map_err(err),
         };
         let start=plan.start;let length=plan.length;let end=start.saturating_add(length).saturating_sub(1);
-        let mut file=fs::File::open(&file_path).map_err(err)?;
+        let mut file=crate::working_store::open(&file_path).map_err(err)?;
         if file.metadata().map_err(err)?.len()!=size{return Err("Local file changed".into())}
         let mut bytes=if request.method().as_str()=="HEAD"{Vec::new()}else{vec![0;length as usize]};file.seek(SeekFrom::Start(start)).map_err(err)?;file.read_exact(&mut bytes).map_err(err)?;
         if resolved_file(app,&c,parts[0])?.0!=file_path{return Err("Local file revision changed".into())}if capability(&c,parts[0])?!=parts[1]{return Err("Session changed".into())}
@@ -262,12 +311,7 @@ pub fn write_local_resource_upload_chunk(app:AppHandle,expected_account_id:Strin
     let tx=c.transaction_with_behavior(TransactionBehavior::Immediate).map_err(err)?;guard(&tx,&expected_account_id,&expected_session_token)?;
     let (size,state):(i64,String)=tx.query_row("SELECT size_bytes,state FROM local_resource_uploads WHERE account_id=?1 AND change_id=?2",params![expected_account_id,change_id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(err)?;
     if state!="staging"||offset.checked_add(bytes.len() as u64).filter(|n|*n<=size as u64).is_none(){return Err("Upload is finalized or chunk exceeds file size".into())}
-    let mut f=OpenOptions::new().read(true).write(true).open(file_path(&app,&expected_account_id,&change_id)?).map_err(err)?;
-    let len=f.metadata().map_err(err)?.len();
-    if offset>len{return Err("Missing prior file chunk".into())}
-    f.seek(SeekFrom::Start(offset)).map_err(err)?;
-    if offset<len{let n=(len-offset).min(bytes.len() as u64) as usize;let mut existing=vec![0;n];f.read_exact(&mut existing).map_err(err)?;if existing!=bytes[..n]{return Err("Retried chunk differs from saved bytes".into())}f.seek(SeekFrom::Start(offset)).map_err(err)?;}
-    f.write_all(&bytes).map_err(err)?;f.sync_all().map_err(err)?;tx.commit().map_err(err)
+    crate::working_store::append(&file_path(&app,&expected_account_id,&change_id)?,size as u64,offset,&bytes).map_err(err)?;tx.commit().map_err(err)
 }
 
 #[tauri::command]
@@ -303,14 +347,14 @@ fn finish_uploads(app:&AppHandle,expected_account_id:&str,expected_session_token
     }
     if state=="ready"{results.push(record);continue}
     let path=file_path(&app,&expected_account_id,&change_id)?;
-    if fs::metadata(&path).map_err(err)?.len()!=size as u64{return Err("File copy is incomplete; nothing has been queued".into())}
+    if crate::working_store::len(&path).map_err(err)?!=size as u64{return Err("File copy is incomplete; nothing has been queued".into())}
     let digest=hash_file(&path)?;guard(&tx,&expected_account_id,&expected_session_token)?;
-    if let (Some(parent),Some(relative))=(&record.parent_resource_id,&record.relative_path){
-        if resources.iter().any(|r|r.parent_resource_id.as_ref()==Some(parent)&&r.relative_path.as_ref().map(|p|p.to_lowercase())==Some(relative.to_lowercase())){return Err("A file already exists at this folder path; use an explicit replacement".into())}
-    }
+    if record.parent_resource_id.is_some()&&record.relative_path.is_some(){local_resources::require_resource_path_available(&resources,&record)?;}
     resources.push(record.clone());
-    let payload=json!({"resource":record,"upload":{"protocol":1,"sha256":digest,"size_bytes":size}});
+    let mut payload=json!({"resource":record,"upload":{"protocol":1,"sha256":digest,"size_bytes":size}});
+    let dependencies=crate::local_resource_destinations::dependencies(&tx,&serde_json::to_value(&record).map_err(err)?)?;if !dependencies.is_empty(){payload["destination_dependencies"]=json!(dependencies);}
     tx.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES(?1,?2,'resource',?3,'create',?4)",params![change_id,device,record.id,payload.to_string()]).map_err(err)?;
+    crate::local_resource_attachments::record_native_proof(&tx,&change_id,"create",&record,&record,&payload)?;
     tx.execute("UPDATE local_resource_uploads SET state='ready',sha256=?1 WHERE account_id=?2 AND change_id=?3",params![digest,expected_account_id,change_id]).map_err(err)?;
     results.push(record);
     }
@@ -324,7 +368,7 @@ pub fn read_local_resource_upload_chunk(app:AppHandle,expected_account_id:String
     let c=local_db::open_local_connection(&app)?;schema(&c)?;guard(&c,&expected_account_id,&expected_session_token)?;
     let size:i64=c.query_row("SELECT u.size_bytes FROM local_resource_uploads u JOIN active_sync_outbox o ON o.change_id=u.change_id AND o.account_id=u.account_id WHERE u.account_id=?1 AND u.change_id=?2 AND u.state='ready' AND o.synced_at IS NULL",params![expected_account_id,change_id],|r|r.get(0)).map_err(err)?;
     if offset>size as u64{return Err("Invalid upload offset".into())}
-    let mut f=fs::File::open(file_path(&app,&expected_account_id,&change_id)?).map_err(err)?;
+    let mut f=crate::working_store::open(&file_path(&app,&expected_account_id,&change_id)?).map_err(err)?;
     if f.metadata().map_err(err)?.len()!=size as u64{return Err("Saved file size changed".into())}
     f.seek(SeekFrom::Start(offset)).map_err(err)?;let mut bytes=vec![0;CHUNK.min((size as u64-offset) as usize)];f.read_exact(&mut bytes).map_err(err)?;
     guard(&c,&expected_account_id,&expected_session_token)?;Ok(bytes)

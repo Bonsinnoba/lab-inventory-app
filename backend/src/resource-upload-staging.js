@@ -1,3 +1,4 @@
+import {requireResourceNamespace} from './resource-folder-namespace.js';
 import fs from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import path from 'node:path';
@@ -73,12 +74,8 @@ export async function prepareUploadedResource(client,change,user,record) {
   if(record.relative_path!=null){
     validateUploadRelativePath(record.relative_path);
     if(!record.parent_resource_id)throw binaryError(400,'UPLOAD_FOLDER_REQUIRED');
-    const parent=uuid(record.parent_resource_id);
-    // Serialize competing offline creates for the same logical folder path.
-    // Byte storage remains ID-based; relative paths are never filesystem targets.
-    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`resource-folder-path:${parent}:${record.relative_path.toLowerCase()}`]);
-    const duplicate=await client.query('SELECT id FROM resources WHERE parent_resource_id=$1 AND lower(relative_path)=lower($2) AND id<>$3 LIMIT 1',[parent,record.relative_path,record.id]);
-    if(duplicate.rowCount)throw binaryError(409,'UPLOAD_FOLDER_PATH_EXISTS');
+    uuid(record.parent_resource_id);
+    await requireResourceNamespace(client,record,record.id);
   }
   const upload=change.payload?.upload;
   if(upload?.protocol!==1)throw binaryError(400,'UPLOAD_PROTOCOL_REQUIRED');

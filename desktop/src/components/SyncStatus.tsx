@@ -1,3 +1,5 @@
+import ResourceRecoveryPanel from './ResourceRecoveryPanel';
+import { createCoalescedRefresh } from '../lib/coalescedRefresh';
 import { AlertTriangle, Check, Cloud, Loader2, WifiOff, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useToast } from '../contexts/ToastContext';
@@ -6,7 +8,7 @@ import { projectConflictGuidance } from '../api/project-conflict-guidance';
 import { getSyncRuntimeState, listSyncConflicts, resolveSyncConflict, subscribeSyncStatus, syncPendingChanges, type SyncRuntimeState } from '../api/sync';
 import { createAccountReadGate } from '../api/account-read-gate';
 import { readSyncQueueCounts } from '../api/sync-conflict-client';
-import { captureAccountSession, isAccountSessionCurrent } from '../api/auth';
+import { captureAccountSession, isAccountSessionCurrent, requestOnlineSignIn } from '../api/auth';
 
 type Conflict={change_id:string;entity_type:string;entity_id?:string|null;operation:string;error_code?:string;access_restricted?:boolean;error_message:string;created_at:string};
 
@@ -31,8 +33,9 @@ export default function SyncStatus(){
   const [busy,setBusy]=useState(false);
   const [readError,setReadError]=useState<string|null>(null);
   const readGate=useRef(createAccountReadGate());
+  const refreshQueue=useRef(createCoalescedRefresh());
   const [runtime,setRuntime]=useState<SyncRuntimeState>(getSyncRuntimeState());
-  const refresh=async()=>{
+  const refresh=()=>refreshQueue.current.run(async()=>{
     const current=readGate.current.begin();
     try{
       const [counts,rows]=await Promise.all([readSyncQueueCounts(),listSyncConflicts()]);
@@ -40,16 +43,16 @@ export default function SyncStatus(){
       setPending(counts.pending);setUnassigned(counts.unassigned);setUnassignedState(counts.unassignedState);
       setConflicts(rows as Conflict[]);setReadError(null);
     }catch(error){if(current()){setPending(null);setUnassigned(0);setUnassignedState(0);setConflicts([]);setReadError(error instanceof Error?error.message:String(error));}}
-  };
+  });
   useEffect(()=>{
-    const clear=()=>{readGate.current.invalidate();setPending(null);setUnassigned(0);setUnassignedState(0);setConflicts([]);setReadError(null);setBusy(false);setOpen(false);};
+    const clear=()=>{refreshQueue.current.clear();readGate.current.invalidate();setPending(null);setUnassigned(0);setUnassignedState(0);setConflicts([]);setReadError(null);setBusy(false);setOpen(false);};
     const changed=()=>{clear();if(captureAccountSession())void refresh()};
     void refresh();const unsubscribe=subscribeSyncStatus(setRuntime);
     const timer=window.setInterval(()=>{if(captureAccountSession())void refresh()},5000);
     const online=()=>void refresh();const offline=()=>setRuntime(getSyncRuntimeState());
     window.addEventListener('online',online);window.addEventListener('offline',offline);
     window.addEventListener('labos-user-updated',changed);window.addEventListener('labos:auth-expired',clear);
-    return()=>{readGate.current.invalidate();unsubscribe();window.clearInterval(timer);window.removeEventListener('online',online);window.removeEventListener('offline',offline);window.removeEventListener('labos-user-updated',changed);window.removeEventListener('labos:auth-expired',clear);};
+    return()=>{refreshQueue.current.clear();readGate.current.invalidate();unsubscribe();window.clearInterval(timer);window.removeEventListener('online',online);window.removeEventListener('offline',offline);window.removeEventListener('labos-user-updated',changed);window.removeEventListener('labos:auth-expired',clear);};
   },[]);
   const sync=async()=>{
     const session=captureAccountSession();setBusy(true);
@@ -63,7 +66,7 @@ export default function SyncStatus(){
     const guidance=conflict?projectConflictGuidance(conflict):null;
     if(resolution==='keep_local'&&guidance?.retryBlocked)return;
     if(resolution!=='keep_local'&&guidance&&!window.confirm(guidance.confirmation))return;
-    if(resolution!=='keep_local'&&conflict?.entity_type==='resource'&&['create','create_copy','edit_content','attach','edit_metadata'].includes(conflict.operation)&&!window.confirm('Stop syncing this resource change and all pending folder children, copies or edits that depend on it? Their saved local file versions and sync history will remain on this PC; those intentions will no longer be sent to the server.'))return;
+    if(resolution!=='keep_local'&&conflict?.entity_type==='resource'&&['create','create_copy','edit_content','attach','edit_metadata','move_tree'].includes(conflict.operation)&&!window.confirm('Stop syncing this resource change and all pending folder children, copies or edits that depend on it? Their saved local file versions and sync history will remain on this PC; those intentions will no longer be sent to the server.'))return;
     if(resolution!=='keep_local'&&['item','item_movement','maintenance_record','daily_preferences','supplier','storage_container','project_comment'].includes(conflicts.find(c=>c.change_id===id)?.entity_type??'')&&!window.confirm('Discard pending changes to this record and connected inventory items/shared batches, then restore server values?'))return;
     if(!isAccountSessionCurrent(session))return;
     setBusy(true);
@@ -73,18 +76,20 @@ export default function SyncStatus(){
   };
   const count=conflicts.length;
   const offline=typeof navigator!=='undefined'&&!navigator.onLine;
+  const session=captureAccountSession();
+  const needsOnlineSignIn=!offline&&!!session?.token.startsWith('local:');
   const effectiveStatus=offline?'offline':runtime.status;
-  const title=readError?'Local sync status unavailable':effectiveStatus==='offline'?'Offline — changes are saved locally':effectiveStatus==='syncing'?'Syncing changes…':effectiveStatus==='error'?`Sync needs attention: ${runtime.lastError||'retry required'}`:count?`${count} sync conflict${count===1?'':'s'}`:formatLastSync(runtime.lastSuccessAt);
+  const title=readError?'Local sync status unavailable':needsOnlineSignIn?'Sign in online to sync saved changes':effectiveStatus==='offline'?'Offline — changes are saved locally':effectiveStatus==='syncing'?'Syncing changes…':effectiveStatus==='error'?`Sync needs attention: ${runtime.lastError||'retry required'}`:count?`${count} sync conflict${count===1?'':'s'}`:formatLastSync(runtime.lastSuccessAt);
   return <div className="relative">
     <button type="button" onClick={()=>setOpen(v=>!v)} className="relative p-2 rounded-sm text-text-secondary hover:text-text-primary hover:bg-surface-raised transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70" aria-label={title} title={title}>
-      {readError?<AlertTriangle size={18}/>:effectiveStatus==='offline'?<WifiOff size={18}/>:effectiveStatus==='syncing'?<Loader2 size={18} className="animate-spin"/>:count||effectiveStatus==='error'?<AlertTriangle size={18}/>:<Cloud size={18}/>}
+      {readError?<AlertTriangle size={18}/>:needsOnlineSignIn?<Cloud size={18}/>:effectiveStatus==='offline'?<WifiOff size={18}/>:effectiveStatus==='syncing'?<Loader2 size={18} className="animate-spin"/>:count||effectiveStatus==='error'?<AlertTriangle size={18}/>:<Cloud size={18}/>}
       {count>0&&<span className="absolute right-0.5 top-0.5 min-w-4 h-4 px-1 rounded-full bg-amber-500 text-black text-[9px] font-bold flex items-center justify-center">{count>9?'9+':count}</span>}
       {!count&&effectiveStatus==='error'&&<span className="absolute right-0.5 top-0.5 w-2 h-2 rounded-full bg-amber-500"/>}
     </button>
     {open&&<div className="absolute right-0 top-11 z-50 w-[380px] max-w-[calc(100vw-2rem)] rounded-md border border-border bg-surface shadow-2xl overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border"><div><div className="text-sm font-semibold flex items-center gap-2">{effectiveStatus==='offline'?<WifiOff size={15}/>:effectiveStatus==='syncing'?<Loader2 size={15} className="animate-spin"/>:effectiveStatus==='error'?<AlertTriangle size={15}/>:<Cloud size={15}/>} {effectiveStatus==='offline'?'Offline':effectiveStatus==='syncing'?'Syncing…':effectiveStatus==='error'?'Sync needs attention':'Sync status'}</div><div className="text-xs text-text-secondary mt-0.5">{pending===null?'Queue count unavailable':`${pending} pending change${pending===1?'':'s'}${count?` · ${count} conflict${count===1?'':'s'}`:' · no conflicts'}`}</div></div><button type="button" onClick={()=>setOpen(false)} className="p-1.5 text-text-secondary hover:text-text-primary" aria-label="Close"><X size={15}/></button></div>
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border"><div><div className="text-sm font-semibold flex items-center gap-2">{effectiveStatus==='offline'?<WifiOff size={15}/>:effectiveStatus==='syncing'?<Loader2 size={15} className="animate-spin"/>:effectiveStatus==='error'?<AlertTriangle size={15}/>:<Cloud size={15}/>} {needsOnlineSignIn?'Sign in to sync':effectiveStatus==='offline'?'Offline':effectiveStatus==='syncing'?'Syncing…':effectiveStatus==='error'?'Sync needs attention':'Sync status'}</div><div className="text-xs text-text-secondary mt-0.5">{pending===null?'Queue count unavailable':`${pending} pending change${pending===1?'':'s'}${count?` · ${count} conflict${count===1?'':'s'}`:' · no conflicts'}`}</div></div><button type="button" onClick={()=>setOpen(false)} className="p-1.5 text-text-secondary hover:text-text-primary" aria-label="Close"><X size={15}/></button></div>
       <div className="px-4 py-3 border-b border-border space-y-2">
-        <div className="flex items-center gap-2 text-sm break-words"><span className={`w-2 h-2 rounded-full ${effectiveStatus==='offline'?'bg-slate-400':effectiveStatus==='syncing'?'bg-accent':'bg-emerald-400'}`}/>{effectiveStatus==='offline'?'Changes will sync when you are back online.':effectiveStatus==='syncing'?(runtime.step||'Uploading local changes and checking the server…'):formatLastSync(runtime.lastSuccessAt)}</div>
+        <div className="flex items-center gap-2 text-sm break-words"><span className={`w-2 h-2 rounded-full ${effectiveStatus==='offline'?'bg-slate-400':effectiveStatus==='syncing'?'bg-accent':'bg-emerald-400'}`}/>{needsOnlineSignIn?'Your offline session can keep working locally. Sign in online to synchronize saved changes.':effectiveStatus==='offline'?'Changes will sync when you are back online.':effectiveStatus==='syncing'?(runtime.step||'Uploading local changes and checking the server…'):formatLastSync(runtime.lastSuccessAt)}</div>
         {runtime.status==='error'&&!offline&&<div className="text-xs text-amber-300 break-words">{runtime.lastError||'Some changes could not be synchronized.'}</div>}
         {unassigned>0&&<div className="text-xs text-amber-300">{unassigned} older change{unassigned===1?'':'s'} cannot be attributed to an account and will not upload automatically. Local data has been preserved.</div>}
         {unassignedState>0&&<div className="text-xs text-amber-300">{unassignedState} older cache entr{unassignedState===1?'y is':'ies are'} preserved but hidden because their account owner is unknown. Account-specific data will be rebuilt by sync.</div>}
@@ -93,7 +98,8 @@ export default function SyncStatus(){
         <div className="text-sm font-medium">{c.entity_type.replace('_',' ')} {c.entity_id?`· ${c.entity_id.slice(0,8)}`:''}</div><div className="text-xs text-text-secondary mt-1">{c.error_message}</div>
         {projectConflictGuidance(c)?<div className="mt-3"><ProjectConflictActions conflict={c} busy={busy} onResolve={resolution=>void resolve(c.change_id,resolution)}/></div>:<div className="flex gap-2 mt-3"><button type="button" disabled={busy||offline||c.access_restricted} onClick={()=>void resolve(c.change_id,'keep_local')} className="px-2.5 py-1.5 rounded border border-accent text-accent text-xs hover:bg-accent/10 disabled:opacity-50">Keep local</button><button type="button" disabled={busy||offline} onClick={()=>void resolve(c.change_id,'accept_server')} className="px-2.5 py-1.5 rounded border border-border text-text-secondary text-xs hover:text-text-primary disabled:opacity-50">Accept server</button><button type="button" disabled={busy} onClick={()=>void resolve(c.change_id,'dismiss')} className="ml-auto p-1.5 text-text-secondary hover:text-text-primary disabled:opacity-50" title="Dismiss" aria-label="Dismiss"><X size={14}/></button></div>}
       </div>)}</div>}
-      <div className="px-4 py-2.5 border-t border-border flex items-center justify-between"><span className="text-[11px] text-text-secondary">{offline?'Offline queue is safe':runtime.status==='error'?'Retry to continue':formatLastSync(runtime.lastSuccessAt)}</span><button type="button" disabled={busy||offline} onClick={()=>void sync()} className="inline-flex items-center gap-1.5 text-xs text-accent hover:underline disabled:opacity-50"><Cloud size={13} className={busy?'animate-pulse':''}/> Retry sync</button></div>
+      <ResourceRecoveryPanel/>
+      <div className="px-4 py-2.5 border-t border-border flex items-center justify-between"><span className="text-[11px] text-text-secondary">{offline?'Offline queue is safe':runtime.status==='error'?'Retry to continue':formatLastSync(runtime.lastSuccessAt)}</span><button type="button" disabled={busy||offline} onClick={()=>{if(needsOnlineSignIn)requestOnlineSignIn(session);else void sync();}} className="inline-flex items-center gap-1.5 text-xs text-accent hover:underline disabled:opacity-50"><Cloud size={13} className={busy?'animate-pulse':''}/> {needsOnlineSignIn?'Sign in online':'Retry sync'}</button></div>
     </div>}
   </div>;
 }

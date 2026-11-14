@@ -47,16 +47,29 @@ fn validate_base(raw: &str) -> Result<String, AuthError> {
     Ok(raw.trim_end_matches('/').to_owned())
 }
 pub(crate) fn client() -> Result<reqwest::Client, AuthError> {
-    reqwest::Client::builder().timeout(std::time::Duration::from_secs(5))
+    client_with_deadline(std::time::Duration::from_secs(5))
+}
+pub(crate) fn bulk_client()->Result<reqwest::Client,AuthError>{
+    client_with_deadline(std::time::Duration::from_secs(20))
+}
+fn client_with_deadline(deadline:std::time::Duration)->Result<reqwest::Client,AuthError>{
+    reqwest::Client::builder().timeout(deadline).connect_timeout(std::time::Duration::from_secs(5))
         .redirect(reqwest::redirect::Policy::none()).no_proxy().build()
         .map_err(|_| AuthError::invalid("Unable to initialize native authentication"))
 }
-pub(crate) async fn response_json<T: serde::de::DeserializeOwned>(mut response: reqwest::Response) -> Result<T, AuthError> {
+pub(crate) async fn response_json<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> Result<T, AuthError> {
+    response_json_limit(response,65536).await
+}
+pub(crate) async fn response_json_limit<T: serde::de::DeserializeOwned>(mut response: reqwest::Response, limit:usize) -> Result<T, AuthError> {
+    if limit==0||limit>2*1024*1024{return Err(AuthError::invalid("Invalid bounded authorization response limit"));}
     let status = response.status();
+    // A throttle is neither rejected credentials nor outage permission to fall
+    // back to cached login. Callers may back off; no positive authority exists.
+    if status.as_u16()==429{return Err(AuthError{code:"AUTH_THROTTLED",message:"LabOS is limiting requests. Wait before retrying.".into()});}
     if status.is_server_error() { return Err(AuthError::unavailable()); }
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_| AuthError::invalid("Incomplete server authorization response"))? {
-        if bytes.len() + chunk.len() > 65536 { return Err(AuthError::invalid("Server authorization response is too large")); }
+        if bytes.len() + chunk.len() > limit { return Err(AuthError::invalid("Server authorization response is too large")); }
         bytes.extend_from_slice(&chunk);
     }
     if status.as_u16() == 401 {
@@ -128,6 +141,18 @@ mod tests {
     fn user()->serde_json::Value {serde_json::json!({"id":"ef326109-578b-4e04-b6e5-350c27cd73cb","username":"fixture","role":"member","is_active":true})}
 
     #[test]
+    fn larger_authority_reply_is_explicitly_bounded_without_relaxing_auth_defaults(){
+        for (limit,size,accepted) in [(65536,80000,false),(2*1024*1024,80000,true),(2*1024*1024,2*1024*1024+1,false)]{
+            let (base,server)=server(vec![(200,serde_json::json!({"padding":"a".repeat(size)}))]);
+            let outcome=tauri::async_runtime::block_on(async{
+                let response=client().unwrap().get(format!("{base}/authority")).send().await.unwrap();
+                response_json_limit::<serde_json::Value>(response,limit).await
+            });
+            server.join().unwrap();assert_eq!(outcome.is_ok(),accepted);
+        }
+    }
+
+    #[test]
     fn native_exchange_uses_only_server_identity_and_effective_permissions(){
         let (base,server)=server(vec![(200,serde_json::json!({"user":user(),"token":"server-token"})),
             (200,serde_json::json!({"user":user(),"permissions":[{"permission":"notes.view","effective":true},{"permission":"users.edit","effective":false}]}))]);
@@ -159,5 +184,31 @@ mod tests {
         }
         assert_eq!(validate_base("http://localhost:4000/api/").unwrap(), "http://localhost:4000/api");
         assert!(validate_base("https://lab.example/api").is_ok());
+    }
+
+    #[test]
+    fn throttling_never_becomes_credential_rejection_positive_authority_or_offline_login_fallback(){
+        let (base,server)=server(vec![(429,serde_json::json!({"error":{"code":"RATE_LIMITED"}}))]);
+        let error=tauri::async_runtime::block_on(login_at(&base,"fixture","fixture-password")).err().unwrap();server.join().unwrap();
+        assert_eq!(error.code,"AUTH_THROTTLED");assert_ne!(error.code,"AUTH_UNAVAILABLE");
+        let (base,server)=self::server(vec![(429,serde_json::json!({"error":{"code":"RATE_LIMITED"}}))]);
+        let error=tauri::async_runtime::block_on(permissions_with(&client().unwrap(),&base,"jwt",user()["id"].as_str().unwrap())).err().unwrap();server.join().unwrap();
+        assert_eq!(error.code,"AUTH_THROTTLED");
+        let (base,server)=self::server(vec![(200,serde_json::json!({"user":user(),"token":"jwt"})),(429,serde_json::json!({}))]);
+        assert_eq!(tauri::async_runtime::block_on(login_at(&base,"fixture","fixture-password")).err().unwrap().code,"AUTH_REJECTED");server.join().unwrap();
+    }
+
+    #[test]
+    fn bulk_transport_accepts_slow_bounded_responses_without_extending_login_deadlines(){
+        use std::{io::{Read,Write},net::TcpListener,time::Duration};
+        fn delayed()->(String,std::thread::JoinHandle<()>){
+            let listener=TcpListener::bind("127.0.0.1:0").unwrap();let base=format!("http://{}",listener.local_addr().unwrap());
+            let worker=std::thread::spawn(move||{let(mut stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();let mut bytes=[0;4096];let _=stream.read(&mut bytes);std::thread::sleep(Duration::from_secs(6));let _=stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");});(base,worker)
+        }
+        let(base,worker)=delayed();
+        assert!(tauri::async_runtime::block_on(async{client().unwrap().get(base).send().await}).unwrap_err().is_timeout());worker.join().unwrap();
+        let(base,worker)=delayed();
+        let response=tauri::async_runtime::block_on(async{bulk_client().unwrap().get(base).send().await}).unwrap();
+        assert_eq!(tauri::async_runtime::block_on(response_json::<serde_json::Value>(response)).unwrap(),serde_json::json!({}));worker.join().unwrap();
     }
 }

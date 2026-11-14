@@ -176,6 +176,7 @@ fn authorization_guard(c:&rusqlite::Connection,account:&str)->Result<Option<Stri
     c.query_row("SELECT s.session_token FROM local_session s JOIN local_users u ON u.id=s.user_id WHERE s.id=1 AND u.central_user_id=?1",
         params![account],|r|r.get(0)).optional().map_err(|e|format!("Unable to capture native session: {e}"))
 }
+pub(crate) fn local_session_guard(c:&rusqlite::Connection,account:&str)->Result<Option<String>,String>{authorization_guard(c,account)}
 
 #[tauri::command]
 pub fn local_authorization_guard(app:AppHandle,expected_account_id:String)->Result<Option<String>,String>{
@@ -190,6 +191,7 @@ pub(crate) fn invalidate_authorization(c:&mut rusqlite::Connection,account:&str,
     // password login may recreate access; permission refresh cannot unlock it.
     tx.execute("UPDATE local_users SET is_active=0,offline_expires_at=NULL,permissions_json='[]' WHERE central_user_id=?1",params![account])
         .map_err(|e|format!("Unable to lock cached authorization: {e}"))?;
+    crate::protected_credentials::clear(&tx)?;
     tx.execute("DELETE FROM local_session WHERE id=1 AND session_token=?1",params![expected_token]).map_err(|e|e.to_string())?;
     advance_generation(&tx)?;
     tx.commit().map_err(|e|format!("Unable to commit authorization lock: {e}"))?;
@@ -204,7 +206,8 @@ pub fn invalidate_local_authorization(app:AppHandle,expected_account_id:String,e
 
 #[tauri::command]
 pub fn local_auth_status(app:AppHandle)->Result<serde_json::Value,String>{
-    let c=open_local_connection(&app)?; ensure_auth_schema(&c)?;
+    let connection=open_local_connection(&app)?; ensure_auth_schema(&connection)?;
+    let c=connection.unchecked_transaction().map_err(|e|e.to_string())?;
     let count:i64=c.query_row(
         "SELECT COUNT(*) FROM local_users WHERE central_user_id IS NOT NULL AND is_active=1",
         [],|r|r.get(0)
@@ -218,7 +221,9 @@ pub fn local_auth_status(app:AppHandle)->Result<serde_json::Value,String>{
             .optional().map_err(|e|format!("Unable to restore local session: {e}"))?
             .map(|value|format!("local:{value}"))
     }else{None};
-    Ok(serde_json::json!({"bootstrapped":count>0,"authenticated":user.is_some(),"user":user,"token":token}))
+    let server_token=if let (Some(user),Some(local))=(&user,&token){if let Some(account)=&user.central_user_id{crate::protected_credentials::restore(&c,account,local.strip_prefix("local:").unwrap_or(local))?}else{None}}else{None};
+    let result=serde_json::json!({"bootstrapped":count>0,"authenticated":user.is_some(),"user":user,"token":token,"server_token":server_token});
+    c.commit().map_err(|e|e.to_string())?;Ok(result)
 }
 
 #[tauri::command]
@@ -248,7 +253,7 @@ fn finish_native_login(c:&mut rusqlite::Connection,verified:Result<crate::native
 
 fn publish_verified_login(connection:&mut rusqlite::Connection,verified:crate::native_authorization::VerifiedLogin,password:&str,generation:i64)->Result<serde_json::Value,String>{
     let crate::native_authorization::VerifiedLogin{user,token:server_token,permissions}=verified;
-    let crate::native_authorization::ServerUser{id:central_user_id,username,role,display_name,email,..}=user;
+    let crate::native_authorization::ServerUser{id:central_user_id,username,role,mut display_name,mut email,..}=user;
     if central_user_id.trim().is_empty(){return Err("Central user ID is required".into())}
     if username.trim().len()<3||username.trim().len()>64{return Err("Username must be between 3 and 64 characters".into())}
     if password.len()<8||password.len()>128{return Err("Password must be between 8 and 128 characters".into())}
@@ -259,6 +264,7 @@ fn publish_verified_login(connection:&mut rusqlite::Connection,verified:crate::n
     let c=connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e|format!("Unable to begin cached login: {e}"))?;
     check_generation(&c,generation)?;
+    crate::local_profiles::preserve_pending(&c,&central_user_id,&mut display_name,&mut email)?;
     c.execute("UPDATE local_auth_clock SET last_seen=CAST(strftime('%s','now') AS INTEGER) WHERE id=1",[]).map_err(|e|e.to_string())?;
     let lease=offline_lease_modifier(&role,&permissions);
     let permissions_json=serde_json::to_string(&permissions).map_err(|e|format!("Unable to encode permissions: {e}"))?;
@@ -305,6 +311,7 @@ fn publish_verified_login(connection:&mut rusqlite::Connection,verified:crate::n
          ON CONFLICT(id) DO UPDATE SET user_id=excluded.user_id,session_token=excluded.session_token",
         params![local_id,token]
     ).map_err(|e|format!("Unable to create local session: {e}"))?;
+    crate::protected_credentials::publish(&c,central_user_id.trim(),&token,&server_token)?;
     c.execute("DELETE FROM local_login_attempts WHERE user_id=?1",params![local_id]).map_err(|e|e.to_string())?;
     let response=serde_json::json!({"user":{
         "id":central_user_id.trim(),"central_user_id":central_user_id.trim(),"username":username.trim(),
@@ -325,6 +332,9 @@ fn login_cached(connection:&mut rusqlite::Connection,username:&str,password:&str
     login_cached_generation(connection,username,password,None)
 }
 fn login_cached_generation(connection:&mut rusqlite::Connection,username:&str,password:&str,expected_generation:Option<i64>)->Result<serde_json::Value,String>{
+    login_cached_timed(connection,username,password,expected_generation,|c|c.query_row("SELECT CAST(strftime('%s','now') AS INTEGER)",[],|r|r.get(0)).map_err(|e|e.to_string()))
+}
+fn login_cached_timed(connection:&mut rusqlite::Connection,username:&str,password:&str,expected_generation:Option<i64>,mut clock:impl FnMut(&rusqlite::Connection)->Result<i64,String>)->Result<serde_json::Value,String>{
     // Password verification and session publication must use the same cached
     // credential generation; online refresh/revocation cannot interleave.
     let c=connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -344,13 +354,15 @@ fn login_cached_generation(connection:&mut rusqlite::Connection,username:&str,pa
      .ok_or("This account is not available on this installation. Connect to LabOS to sign in first.")?;
 
     if row.7==0{return Err("Cached access is locked. Connect to LabOS and sign in again.".into())}
-    let now:i64=c.query_row("SELECT CAST(strftime('%s','now') AS INTEGER)",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+    let now=clock(&c)?;
     let (failures,retry_after):(i64,i64)=c.query_row("SELECT failures,retry_after FROM local_login_attempts WHERE user_id=?1",params![row.0],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(|e|e.to_string())?.unwrap_or((0,0));
     if now<retry_after{return Err(format!("Too many offline sign-in attempts. Try again in {} seconds or sign in online.",retry_after-now))}
     if !verify_password(&password,&row.3)?{
         let failures=(failures+1).min(20);
         let delay=if failures<5 {0} else {(15i64 * (1i64 << (failures-5).min(6))).min(900)};
-        c.execute("INSERT INTO local_login_attempts VALUES(?1,?2,?3) ON CONFLICT(user_id) DO UPDATE SET failures=excluded.failures,retry_after=excluded.retry_after",params![row.0,failures,now+delay]).map_err(|e|e.to_string())?;
+        // Slow password verification must not consume its own cooldown.
+        let failed_at=clock(&c)?.max(now);
+        c.execute("INSERT INTO local_login_attempts VALUES(?1,?2,?3) ON CONFLICT(user_id) DO UPDATE SET failures=excluded.failures,retry_after=excluded.retry_after",params![row.0,failures,failed_at.saturating_add(delay)]).map_err(|e|e.to_string())?;
         c.commit().map_err(|e|e.to_string())?;
         return Err("Invalid credentials".into());
     }
@@ -409,7 +421,7 @@ pub async fn cache_server_permissions(app:AppHandle,central_user_id:String,serve
     Ok(verified.permissions)
 }
 
-fn refresh_permissions(c:&rusqlite::Connection,central_user_id:&str,role:&str,permissions:&[String],expected_session_token:&str)->Result<(),String>{
+pub(crate) fn refresh_permissions(c:&rusqlite::Connection,central_user_id:&str,role:&str,permissions:&[String],expected_session_token:&str)->Result<(),String>{
     let permissions_json=serde_json::to_string(&permissions).map_err(|e|format!("Unable to encode permissions: {e}"))?;
     let updated=c.execute(
         "UPDATE local_users SET role=?1,permissions_json=?2 WHERE central_user_id=?3 AND is_active=1 AND offline_expires_at IS NOT NULL
@@ -439,6 +451,7 @@ pub fn local_logout(app:AppHandle)->Result<(),String>{
     let mut connection=open_local_connection(&app)?;ensure_auth_schema(&connection)?;
     let c=connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
     advance_generation(&c)?;
+    crate::protected_credentials::clear(&c)?;
     c.execute("DELETE FROM local_session WHERE id=1",[])
         .map_err(|e|format!("Unable to clear local session: {e}"))?;
     c.commit().map_err(|e|e.to_string())
@@ -495,18 +508,30 @@ mod tests {
         let path=std::env::temp_dir().join(format!("labos-throttle-{}.sqlite",uuid::Uuid::new_v4()));
         {
             let mut c=rusqlite::Connection::open(&path).unwrap();revoked_fixture(&c);
-            for _ in 0..5 {assert_eq!(login_cached(&mut c,"alice","wrong-password").unwrap_err(),"Invalid credentials");}
+            for _ in 0..5 {assert_eq!(login_cached_timed(&mut c,"alice","wrong-password",None,|_|Ok(1000)).unwrap_err(),"Invalid credentials");}
         }
         {
             let mut c=rusqlite::Connection::open(&path).unwrap();ensure_auth_schema(&c).unwrap();
-            assert!(login_cached(&mut c,"alice","fixture-password").unwrap_err().contains("Too many"));
-            assert!(login_cached(&mut c,"bob","fixture-password").is_ok());
+            assert!(login_cached_timed(&mut c,"alice","fixture-password",None,|_|Ok(1000)).unwrap_err().contains("Too many"));
+            assert!(login_cached_timed(&mut c,"bob","fixture-password",None,|_|Ok(1000)).is_ok());
             c.execute("UPDATE local_login_attempts SET retry_after=0 WHERE user_id='local-a'",[]).unwrap();
-            assert!(login_cached(&mut c,"alice","fixture-password").is_ok());
+            assert!(login_cached_timed(&mut c,"alice","fixture-password",None,|_|Ok(1000)).is_ok());
             assert_eq!(c.query_row("SELECT COUNT(*) FROM local_login_attempts",[],|r|r.get::<_,i64>(0)).unwrap(),0);
             assert_eq!(c.query_row("SELECT COUNT(*) FROM sync_outbox",[],|r|r.get::<_,i64>(0)).unwrap(),2);
         }
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn slow_password_verification_cannot_use_up_the_failure_cooldown(){
+        let mut c=rusqlite::Connection::open_in_memory().unwrap();revoked_fixture(&c);
+        c.execute("INSERT INTO local_login_attempts VALUES('local-a',4,0)",[]).unwrap();
+        let mut times=std::collections::VecDeque::from([1000,1300]);
+        assert_eq!(login_cached_timed(&mut c,"alice","wrong-password",None,|_|Ok(times.pop_front().unwrap())).unwrap_err(),"Invalid credentials");
+        assert!(times.is_empty());
+        assert_eq!(c.query_row("SELECT retry_after FROM local_login_attempts WHERE user_id='local-a'",[],|r|r.get::<_,i64>(0)).unwrap(),1315);
+        assert!(login_cached_timed(&mut c,"alice","fixture-password",None,|_|Ok(1301)).unwrap_err().contains("Too many"));
+        assert!(login_cached_timed(&mut c,"alice","fixture-password",None,|_|Ok(1315)).is_ok());
     }
 
     #[test]
@@ -551,7 +576,7 @@ mod tests {
             c.execute("INSERT INTO local_users(id,central_user_id,username,password_hash,role,permissions_json,last_server_auth_at,offline_expires_at) VALUES(?1,?2,?3,?4,'member','[\"notes.view\"]',CURRENT_TIMESTAMP,datetime('now','+7 days'))",params![id,account,name,hash]).unwrap();
         }
         c.execute("INSERT INTO local_session(id,user_id,session_token) VALUES(1,'local-a','guard-a')",[]).unwrap();
-        c.execute_batch("CREATE TABLE sync_outbox(change_id TEXT,account_id TEXT,payload TEXT); INSERT INTO sync_outbox VALUES('pending-a','account-a','authored pending work'),('pending-b','account-b','other author work');").unwrap();
+        c.execute_batch("CREATE TABLE sync_outbox(change_id TEXT,account_id TEXT,payload TEXT,entity_type TEXT,synced_at TEXT); INSERT INTO sync_outbox(change_id,account_id,payload) VALUES('pending-a','account-a','authored pending work'),('pending-b','account-b','other author work');").unwrap();
     }
 
     #[test]
@@ -605,7 +630,7 @@ mod tests {
     fn postgres_revocation_locks_disk_cache_and_preserves_pending_author(){
         assert_eq!(std::env::var("LABOS_AUTH_DESKTOP_PROBE").as_deref(),Ok("1"));
         fn fixture(action:&str,id:&str)->serde_json::Value{
-            let out=std::process::Command::new("docker").args(["exec","-e","LABOS_AUTH_DESKTOP_PROBE=1","labos-labos-api-1","node","src/phase2-auth-desktop-fixture.mjs",action,id]).output().unwrap();
+            let out=std::process::Command::new("docker").args(["exec","-e","LABOS_AUTH_DESKTOP_PROBE=1",std::env::var("LABOS_LIVE_API_CONTAINER").unwrap_or_else(|_|"labos-labos-api-1".into()).as_str(),"node","src/phase2-auth-desktop-fixture.mjs",action,id]).output().unwrap();
             assert!(out.status.success(),"{}",String::from_utf8_lossy(&out.stderr));
             serde_json::from_slice(&out.stdout).unwrap()
         }

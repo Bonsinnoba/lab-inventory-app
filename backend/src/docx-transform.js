@@ -1,11 +1,10 @@
-import HTMLtoDOCX from '@turbodocx/html-to-docx';
-import mammoth from 'mammoth';
 import { validateDocxHtml, DOCX_INPUT_LIMIT } from './docx-input.js';
 
 // Called only in a dedicated child process (API IPC or native framed stdio).
 export async function transformDocx(mode, input) {
   if (mode === 'render') {
     if (!Buffer.isBuffer(input) || input.length > 16 * 1024 * 1024) throw new Error('Invalid DOCX preview input');
+    const {default:mammoth}=await import('mammoth');
     const result = await mammoth.convertToHtml({ buffer: input }, {
       externalFileAccess: false,
       styleMap: ["p[style-name='Title'] => h1", "p[style-name='Heading 1'] => h2", "p[style-name='Heading 2'] => h3", "p[style-name='Heading 3'] => h4"],
@@ -17,7 +16,9 @@ export async function transformDocx(mode, input) {
     })) };
   }
   if (mode !== 'convert') throw new Error('Unsupported DOCX operation');
-  const buffer = Buffer.from(await HTMLtoDOCX(validateDocxHtml(input), null, {
+  const html=validateDocxHtml(input);
+  const {default:HTMLtoDOCX}=await import('@turbodocx/html-to-docx');
+  const buffer = Buffer.from(await HTMLtoDOCX(html, null, {
     table: { row: { cantSplit: true } }, preprocessing: { skipHTMLMinify: true },
     imageProcessing: { maxRetries: 0, maxImageSize: 2 * 1024 * 1024, maxCacheSize: 8 * 1024 * 1024, suppressSharpWarning: true },
   }));

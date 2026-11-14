@@ -8,6 +8,12 @@ use crate::local_auth;
 
 const STATE_KEY: &str = "resources_state";
 const SCHEMA_VERSION: &str = "008_local_resources";
+#[cfg(test)]
+std::thread_local! { static SNAPSHOT_READS:std::cell::Cell<usize>=const{std::cell::Cell::new(0)}; }
+#[cfg(test)]
+pub(crate) fn reset_snapshot_reads(){SNAPSHOT_READS.with(|count|count.set(0));}
+#[cfg(test)]
+pub(crate) fn snapshot_reads()->usize{SNAPSHOT_READS.with(|count|count.get())}
 
 fn deserialize_optional_i64<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
 where D: serde::Deserializer<'de> {
@@ -24,6 +30,8 @@ where D: serde::Deserializer<'de> {
 pub struct LocalResource {
     pub id: String,
     pub name: String,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub name_source:Option<String>,
     pub kind: String,
     pub file_type: String,
     pub original_filename: Option<String>,
@@ -69,6 +77,8 @@ fn ensure_schema(conn: &rusqlite::Connection) -> Result<(), String> {
 }
 
 pub(crate) fn read_resources(conn: &rusqlite::Connection) -> Result<Vec<LocalResource>, String> {
+    #[cfg(test)]
+    SNAPSHOT_READS.with(|count|count.set(count.get()+1));
     let raw: String = conn.query_row(
         "SELECT value FROM sync_state WHERE key=?1",
         [scoped_state_key(conn, STATE_KEY)?],
@@ -88,19 +98,25 @@ pub(crate) fn write_resources(conn: &rusqlite::Connection, resources: &[LocalRes
     Ok(())
 }
 
-fn save_with_change(conn: &mut rusqlite::Connection, resources: &[LocalResource], entity_id: &str, operation: &str, payload: &Value) -> Result<(), String> {
+fn save_with_change(conn: &rusqlite::Connection, resources: &[LocalResource], entity_id: &str, operation: &str, payload: &Value) -> Result<(), String> {
     let permission=match operation{"create"=>"resources.create","delete"=>"resources.delete",_=>"resources.edit"};
     local_auth::require_local_permission(conn,permission)?;
-    let tx = conn.transaction().map_err(|e| format!("Unable to begin local resource transaction: {e}"))?;
-    write_resources(&tx, resources)?;
+    if conn.is_autocommit(){return Err("Resource writes require the guarded native transaction".into())}
+    let tx=conn;
+    if operation=="create"{crate::local_resource_uploads::parent_guard(tx,payload.get("resource").unwrap_or(payload))?;}
+    if operation=="delete"{let original:LocalResource=serde_json::from_value(payload["resource"].clone()).map_err(|e|e.to_string())?;crate::local_resource_authority::require_delete(tx,&original)?;}
+    write_resources(tx, resources)?;
     let device_id: String = tx.query_row("SELECT device_id FROM device_identity WHERE id=1", [], |r| r.get(0))
         .map_err(|e| format!("Unable to read device identity: {e}"))?;
     let change_id = new_id(&tx)?;
+    let mut payload=payload.clone();if operation=="create"{payload["native_create_protocol"]=serde_json::json!(1);}
+    let mut payload=payload.clone();if operation=="create"{let record=payload.get("resource").unwrap_or(&payload);let dependencies=crate::local_resource_destinations::dependencies(&tx,record)?;if !dependencies.is_empty(){payload["destination_dependencies"]=serde_json::json!(dependencies);}}
     tx.execute(
         "INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES(?1,?2,'resource',?3,?4,?5)",
         params![change_id, device_id, entity_id, operation, payload.to_string()],
     ).map_err(|e| format!("Unable to queue local resource change: {e}"))?;
-    tx.commit().map_err(|e| format!("Unable to commit local resource change: {e}"))
+    if operation=="create"{let record:LocalResource=serde_json::from_value(payload["resource"].clone()).map_err(|e|e.to_string())?;crate::local_resource_attachments::record_native_proof(tx,&change_id,"create",&record,&record,&payload)?;}
+    Ok(())
 }
 
 fn now(conn: &rusqlite::Connection) -> Result<String, String> {
@@ -173,42 +189,60 @@ fn metadata(category: Option<String>, description: Option<String>, tags: Option<
     (category, description, normalize_tags(tags))
 }
 
-fn validate_parent(resources: &[LocalResource], item_id: &Option<String>, project_id: &Option<String>, note_id: &Option<String>, parent_resource_id: &Option<String>) -> Result<(), String> {
-    if [item_id, project_id, note_id].iter().filter(|v| v.is_some()).count() > 1 {
-        return Err("A resource can be attached to at most one of item_id, project_id, note_id".into());
+pub(crate) fn validate_parent(resources: &[LocalResource], item_id: &Option<String>, project_id: &Option<String>, note_id: &Option<String>, parent_resource_id: &Option<String>) -> Result<(), String> {
+    if [item_id, project_id, note_id,parent_resource_id].iter().filter(|v| v.is_some()).count() > 1 {
+        return Err("A resource can have at most one direct attachment destination".into());
     }
     if let Some(parent) = parent_resource_id {
         let exists = resources.iter().any(|r| r.id == *parent && r.kind == "folder");
         if !exists { return Err("Parent resource folder was not found".into()); }
+        let mut current=Some(parent.as_str());let mut seen=HashSet::new();
+        while let Some(id)=current{if seen.len()>=31||!seen.insert(id){return Err("Resource folder ancestry is cyclic or exceeds 31 levels".into())}let record=resources.iter().find(|r|r.id==id&&r.kind=="folder").ok_or("Folder ancestor is unavailable")?;current=record.parent_resource_id.as_deref();}
     }
     Ok(())
 }
 
 #[tauri::command]
-pub fn list_local_resources(app: AppHandle, item_id: Option<String>, project_id: Option<String>, note_id: Option<String>, parent_resource_id: Option<String>) -> Result<Vec<LocalResource>, String> {
+pub async fn list_local_resources(app: AppHandle, item_id: Option<String>, project_id: Option<String>, note_id: Option<String>, parent_resource_id: Option<String>, include_descendants: Option<bool>) -> Result<Vec<LocalResource>, String> {
+    crate::responsive_reads::run("list_local_resources", move || {
     let conn = open_local_connection(&app)?;
     crate::local_auth::require_local_permission(&conn,"resources.view")?;
     ensure_schema(&conn)?;
-    let mut resources = read_resources(&conn)?;
+    let account=crate::local_db::active_account(&conn)?;
+    let resources=resource_listing(read_resources(&conn)?,&item_id,&project_id,&note_id,&parent_resource_id,include_descendants.unwrap_or(false));
+    require_sync_account(&conn,&account)?;
+    crate::local_auth::require_local_permission(&conn,"resources.view")?;
+    Ok(resources)
+
+    }).await
+}
+
+// Collection consumers (folder manifests, filters, reports and download state)
+// need the whole authorized account snapshot. Ordinary listings remain shallow;
+// asking for descendants never overrides an explicit attachment/folder filter.
+fn resource_listing(mut resources:Vec<LocalResource>,item_id:&Option<String>,project_id:&Option<String>,note_id:&Option<String>,parent_resource_id:&Option<String>,include_descendants:bool)->Vec<LocalResource>{
     resources.retain(|r| {
-        match (&item_id,&project_id,&note_id,&parent_resource_id) {
+        match (item_id,project_id,note_id,parent_resource_id) {
             (Some(id),_,_,_) => r.item_id.as_deref() == Some(id.as_str()),
             (_,Some(id),_,_) => r.project_id.as_deref() == Some(id.as_str()),
             (_,_,Some(id),_) => r.note_id.as_deref() == Some(id.as_str()),
             (_,_,_,Some(id)) => r.parent_resource_id.as_deref() == Some(id.as_str()),
-            _ => r.parent_resource_id.is_none(),
+            _ => include_descendants || r.parent_resource_id.is_none(),
         }
     });
     resources.sort_by(|a,b| b.created_at.cmp(&a.created_at));
-    Ok(resources)
+    resources
 }
 
 #[tauri::command]
-pub fn get_local_resource(app: AppHandle, id: String) -> Result<LocalResource, String> {
+pub async fn get_local_resource(app: AppHandle, id: String) -> Result<LocalResource, String> {
+    crate::responsive_reads::run("get_local_resource", move || {
     let conn = open_local_connection(&app)?;
     crate::local_auth::require_local_permission(&conn,"resources.view")?;
     ensure_schema(&conn)?;
     read_resources(&conn)?.into_iter().find(|r| r.id == id).ok_or_else(|| "Resource not found".into())
+
+    }).await
 }
 
 #[tauri::command]
@@ -236,12 +270,18 @@ pub fn cache_local_resources(app: AppHandle, resources_json: String, expected_ac
 }
 
 #[tauri::command]
-pub fn create_local_resource_link(app: AppHandle, url: String, name: Option<String>, item_id: Option<String>, project_id: Option<String>, note_id: Option<String>, parent_resource_id: Option<String>, category: Option<String>, description: Option<String>, tags: Option<Vec<String>>) -> Result<LocalResource, String> {
+pub fn create_local_resource_link(app: AppHandle, expected_account_id:String, expected_session_token:String, url: String, name: Option<String>, item_id: Option<String>, project_id: Option<String>, note_id: Option<String>, parent_resource_id: Option<String>, category: Option<String>, description: Option<String>, tags: Option<Vec<String>>) -> Result<LocalResource, String> {
     if url.trim().is_empty() { return Err("url is required".into()); }
-    let mut conn = open_local_connection(&app)?;
+    let url=url.trim().to_owned();
+    let mut connection = open_local_connection(&app)?;
+    let conn=connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+    crate::local_resource_authority::guard(&conn,&expected_account_id,&expected_session_token)?;
+    local_auth::require_local_permission(&conn,"resources.view")?;
+    local_auth::require_local_permission(&conn,"resources.create")?;
     ensure_schema(&conn)?;
     let mut resources = read_resources(&conn)?;
     validate_parent(&resources,&item_id,&project_id,&note_id,&parent_resource_id)?;
+    crate::local_resource_uploads::parent_guard(&conn,&serde_json::json!({"item_id":item_id,"project_id":project_id,"note_id":note_id,"parent_resource_id":parent_resource_id}))?;
     let normalized_url = normalize_resource_url(&url);
     if let Some(existing) = resources.iter()
         .filter(|r| r.kind == "link" && normalize_resource_url(r.url.as_deref().unwrap_or("")) == normalized_url)
@@ -256,10 +296,10 @@ pub fn create_local_resource_link(app: AppHandle, url: String, name: Option<Stri
     let youtube=if url.contains("youtube.com")||url.contains("youtu.be"){youtube_id(&url)}else{None};
     let file_type=if youtube.is_some(){"youtube"}else{"other"};
     let thumbnail_url=youtube.as_ref().map(|id|format!("https://img.youtube.com/vi/{id}/hqdefault.jpg"));
-    let resource=LocalResource{id:id.clone(),name:name.filter(|n|!n.trim().is_empty()).unwrap_or_else(||url.clone()),kind:"link".into(),file_type:file_type.into(),original_filename:None,mime_type:None,size_bytes:None,url:Some(url),thumbnail_url,local_media_path:None,local_media_filename:None,local_media_mime_type:None,local_media_size_bytes:None,local_media_downloaded_at:None,parent_resource_id,relative_path:None,item_id,project_id,note_id,visibility:Some("lab".into()),item_name:None,project_name:None,note_title:None,category:Some(category),description:Some(description),tags,updated_at:timestamp.clone(),created_at:timestamp,derived_from_resource_id:None};
+    let resource=LocalResource{id:id.clone(),name_source:Some(if name.as_ref().is_some_and(|n|!n.trim().is_empty()){"user"}else{"url_fallback"}.into()),name:name.filter(|n|!n.trim().is_empty()).map(|name|name.trim().to_owned()).unwrap_or_else(||url.clone()),kind:"link".into(),file_type:file_type.into(),original_filename:None,mime_type:None,size_bytes:None,url:Some(url),thumbnail_url,local_media_path:None,local_media_filename:None,local_media_mime_type:None,local_media_size_bytes:None,local_media_downloaded_at:None,parent_resource_id,relative_path:None,item_id,project_id,note_id,visibility:Some("lab".into()),item_name:None,project_name:None,note_title:None,category:Some(category),description:Some(description),tags,updated_at:timestamp.clone(),created_at:timestamp,derived_from_resource_id:None};
     resources.push(resource.clone());
-    save_with_change(&mut conn, &resources, &id, "create", &serde_json::json!({"resource": resource}))?;
-    Ok(resource)
+    save_with_change(&conn, &resources, &id, "create", &serde_json::json!({"resource": resource}))?;
+    conn.commit().map_err(|e|e.to_string())?;Ok(resource)
 }
 
 
@@ -272,35 +312,63 @@ pub fn queue_local_resource_download(app: AppHandle, resource_id: String, qualit
 
 
 
-#[tauri::command]
-pub fn create_local_resource_folder(app: AppHandle, name: String, item_id: Option<String>, project_id: Option<String>, note_id: Option<String>, parent_resource_id: Option<String>, category: Option<String>, description: Option<String>, tags: Option<Vec<String>>) -> Result<LocalResource, String> {
-    if name.trim().is_empty() { return Err("name is required".into()); }
-    let mut conn=open_local_connection(&app)?; ensure_schema(&conn)?;
-    local_auth::require_local_permission(&conn,"resources.create")?;
-    crate::local_resource_uploads::parent_guard(&conn,&serde_json::json!({"item_id":item_id,"project_id":project_id,"note_id":note_id,"parent_resource_id":parent_resource_id}))?;
-    let mut resources=read_resources(&conn)?; validate_parent(&resources,&item_id,&project_id,&note_id,&parent_resource_id)?;
-    let (category,description,tags)=metadata(category,description,tags); let id=new_id(&conn)?; let timestamp=now(&conn)?;
-    let resource=LocalResource{id:id.clone(),name:name.trim().to_string(),kind:"folder".into(),file_type:"schematic_folder".into(),original_filename:None,mime_type:None,size_bytes:None,url:None,thumbnail_url:None,local_media_path:None,local_media_filename:None,local_media_mime_type:None,local_media_size_bytes:None,local_media_downloaded_at:None,parent_resource_id,relative_path:None,item_id,project_id,note_id,visibility:Some("lab".into()),item_name:None,project_name:None,note_title:None,category:Some(category),description:Some(description),tags,updated_at:timestamp.clone(),created_at:timestamp,derived_from_resource_id:None};
-    resources.push(resource.clone()); save_with_change(&mut conn, &resources, &id, "create", &serde_json::json!({"resource": resource}))?; Ok(resource)
+pub(crate) fn require_resource_path_available(resources:&[LocalResource],folder:&LocalResource)->Result<(),String>{
+    let target=folder.relative_path.as_deref().or(folder.original_filename.as_deref()).unwrap_or(&folder.name).to_lowercase();
+    if resources.iter().any(|r|{
+        if !["file","folder"].contains(&r.kind.as_str())||r.id==folder.id||r.item_id!=folder.item_id||r.project_id!=folder.project_id||r.note_id!=folder.note_id||r.parent_resource_id!=folder.parent_resource_id||folder.parent_resource_id.is_none()&&r.kind!="folder"{return false}
+        let path=r.relative_path.as_deref().or(r.original_filename.as_deref()).unwrap_or(&r.name).to_lowercase();
+        path==target||path.starts_with(&format!("{target}/"))||target.starts_with(&format!("{path}/"))
+    }){return Err("A resource already occupies that folder path or one of its parents. Refresh to review it; existing work is preserved".into())}Ok(())
+}
+
+pub(crate) fn folder_creation_path(name:&str,has_parent:bool,path:Option<String>)->Result<Option<String>,String>{
+    if name.trim().is_empty()||name.trim().chars().count()>200||[".",".."].contains(&name.trim())||name.chars().any(|c|c.is_control()||['/', '\\', ':'].contains(&c)){return Err("Folder name must be a single path component of 1 to 200 characters".into())}
+    if !has_parent{if path.is_some(){return Err("Folder path requires a parent folder".into())}return Ok(None)}
+    let path=path.unwrap_or_else(||name.trim().into());
+    if path.len()>1024||path.chars().any(|c|c.is_control()||c==':'||c=='\\')||path.split('/').any(|part|part.is_empty()||part=="."||part=="..")||path.rsplit('/').next()!=Some(name.trim()){return Err("Invalid empty folder path".into())}
+    Ok(Some(path))
 }
 
 #[tauri::command]
-pub fn update_local_resource_metadata(app: AppHandle, id: String, expected_account_id:String, expected_session_token:String, category: Option<String>, description: Option<String>, tags: Option<Vec<String>>) -> Result<LocalResource, String> {
+pub fn create_local_resource_folder(app: AppHandle, expected_account_id:String, expected_session_token:String, name: String, item_id: Option<String>, project_id: Option<String>, note_id: Option<String>, parent_resource_id: Option<String>, relative_path:Option<String>, category: Option<String>, description: Option<String>, tags: Option<Vec<String>>) -> Result<LocalResource, String> {
+    let mut connection=open_local_connection(&app)?;
+    create_folder_transaction(&mut connection,expected_account_id,expected_session_token,name,item_id,project_id,note_id,parent_resource_id,relative_path,category,description,tags)
+}
+
+pub(crate) fn create_folder_transaction(connection:&mut rusqlite::Connection, expected_account_id:String, expected_session_token:String, name: String, item_id: Option<String>, project_id: Option<String>, note_id: Option<String>, parent_resource_id: Option<String>, relative_path:Option<String>, category: Option<String>, description: Option<String>, tags: Option<Vec<String>>) -> Result<LocalResource, String> {
+    let relative_path=folder_creation_path(&name,parent_resource_id.is_some(),relative_path)?;
+    let conn=connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+    crate::local_resource_authority::guard(&conn,&expected_account_id,&expected_session_token)?;ensure_schema(&conn)?;
+    local_auth::require_local_permission(&conn,"resources.view")?;
+    local_auth::require_local_permission(&conn,"resources.create")?;
+    crate::local_resource_uploads::parent_guard(&conn,&serde_json::json!({"item_id":item_id,"project_id":project_id,"note_id":note_id,"parent_resource_id":parent_resource_id,"relative_path":relative_path}))?;
+    let mut resources=read_resources(&conn)?; validate_parent(&resources,&item_id,&project_id,&note_id,&parent_resource_id)?;
+    let (category,description,tags)=metadata(category,description,tags); let id=new_id(&conn)?; let timestamp=now(&conn)?;
+    let resource=LocalResource{id:id.clone(),name:name.trim().to_string(),name_source:Some("user".into()),kind:"folder".into(),file_type:"schematic_folder".into(),original_filename:None,mime_type:None,size_bytes:None,url:None,thumbnail_url:None,local_media_path:None,local_media_filename:None,local_media_mime_type:None,local_media_size_bytes:None,local_media_downloaded_at:None,parent_resource_id,relative_path,item_id,project_id,note_id,visibility:Some("lab".into()),item_name:None,project_name:None,note_title:None,category:Some(category),description:Some(description),tags,updated_at:timestamp.clone(),created_at:timestamp,derived_from_resource_id:None};
+    require_resource_path_available(&resources,&resource)?;
+    resources.push(resource.clone()); save_with_change(&conn, &resources, &id, "create", &serde_json::json!({"resource": resource}))?; conn.commit().map_err(|e|e.to_string())?;Ok(resource)
+}
+
+#[tauri::command]
+pub fn update_local_resource_metadata(app: AppHandle, id: String, expected_account_id:String, expected_session_token:String, category: Option<String>, description: Option<String>, tags: Option<Vec<String>>, reviewed_metadata:Option<Value>, name:Option<String>) -> Result<LocalResource, String> {
     let provided=(category.is_some(),description.is_some(),tags.is_some());
     let (category,description,tags)=metadata(category,description,tags);
     let mut fields=serde_json::Map::new();
+    if let Some(name)=name{fields.insert("name".into(),serde_json::json!(name.trim()));}
     if provided.0{fields.insert("category".into(),serde_json::json!(category));}
     if provided.1{fields.insert("description".into(),serde_json::json!(description));}
     if provided.2{fields.insert("tags".into(),serde_json::json!(tags));}
-    crate::local_resource_attachments::edit_metadata(app,expected_account_id,expected_session_token,id,Value::Object(fields))
+    crate::local_resource_attachments::edit_metadata(app,expected_account_id,expected_session_token,id,Value::Object(fields),reviewed_metadata)
 }
 
 #[tauri::command]
-pub fn delete_local_resource(app: AppHandle, id: String) -> Result<(), String> {
-    let mut conn=open_local_connection(&app)?; ensure_schema(&conn)?; let mut resources=read_resources(&conn)?;
+pub fn delete_local_resource(app: AppHandle, id: String, expected_account_id:String, expected_session_token:String) -> Result<(), String> {
+    let mut connection=open_local_connection(&app)?;
+    let conn=connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+    crate::local_resource_authority::guard(&conn,&expected_account_id,&expected_session_token)?;ensure_schema(&conn)?;let mut resources=read_resources(&conn)?;
     if !resources.iter().any(|r|r.id==id) { return Err("Resource not found".into()); }
     if resources.iter().any(|r|r.parent_resource_id.as_deref()==Some(id.as_str())) { return Err("Cannot delete a folder that still contains resources".into()); }
-    let deleted = resources.iter().find(|r| r.id==id).cloned().ok_or_else(||"Resource not found".to_string())?; resources.retain(|r| r.id!=id); save_with_change(&mut conn, &resources, &id, "delete", &serde_json::json!({"resource": deleted}))?; Ok(())
+    let deleted = resources.iter().find(|r| r.id==id).cloned().ok_or_else(||"Resource not found".to_string())?; resources.retain(|r| r.id!=id); save_with_change(&conn, &resources, &id, "delete", &serde_json::json!({"resource": deleted}))?;conn.commit().map_err(|e|e.to_string())?;Ok(())
 }
 
 #[tauri::command]
@@ -327,6 +395,7 @@ pub fn apply_server_resource_pull(app: AppHandle, resources_json: String, visibl
     let deleted: HashSet<String> = deleted_resource_ids.into_iter().collect();
     let visible: HashSet<String> = visible_resource_ids.into_iter().map(|id| canonical_resource_id(&id)).collect();
     crate::local_resource_posters::restrict_to_visible(&tx,&expected_account_id,&visible)?;
+    crate::local_resource_storage::observe_visibility(&tx,&expected_account_id,&visible,&deleted)?;
     current.retain(|r| {
         let id = canonical_resource_id(&r.id);
         pending.contains(&id) || (visible.contains(&id) && !deleted.iter().any(|deleted_id| canonical_resource_id(deleted_id) == id))
@@ -340,9 +409,12 @@ pub fn apply_server_resource_pull(app: AppHandle, resources_json: String, visibl
 }
 
 #[tauri::command]
-pub fn get_local_resource_tags(app: AppHandle) -> Result<Vec<String>, String> {
+pub async fn get_local_resource_tags(app: AppHandle) -> Result<Vec<String>, String> {
+    crate::responsive_reads::run("get_local_resource_tags", move || {
     let conn=open_local_connection(&app)?; crate::local_auth::require_local_permission(&conn,"resources.view")?; ensure_schema(&conn)?; let resources=read_resources(&conn)?;
     let mut tags=resources.into_iter().flat_map(|r|r.tags).collect::<Vec<_>>(); tags.sort(); tags.dedup(); Ok(tags)
+
+    }).await
 }
 
 #[allow(dead_code)]
@@ -358,7 +430,7 @@ mod tests {
 
     fn resource(id: &str, kind: &str, item_id: Option<&str>, parent_resource_id: Option<&str>) -> LocalResource {
         LocalResource {
-            id: id.into(), name: id.into(), kind: kind.into(), file_type: "other".into(),
+            id: id.into(), name: id.into(), name_source:None, kind: kind.into(), file_type: "other".into(),
             original_filename: None, mime_type: None, size_bytes: None, url: None,
             thumbnail_url: None, local_media_path: None, local_media_filename: None,
             local_media_mime_type: None, local_media_size_bytes: None,
@@ -369,6 +441,19 @@ mod tests {
             updated_at: "2026-09-20T00:00:00Z".into(), created_at: "2026-09-20T00:00:00Z".into(),
             derived_from_resource_id: None,
         }
+    }
+
+    #[test]
+    fn collection_listing_includes_nested_rows_only_when_explicit_and_never_overrides_scope() {
+        let mut rows=vec![resource("root","folder",None,None),resource("nested","folder",None,Some("root"))];
+        rows.extend((0..2000).map(|i|resource(&format!("file-{i}"),"file",None,Some("nested"))));
+        let shallow=resource_listing(rows.clone(),&None,&None,&None,&None,false);
+        assert_eq!(shallow.len(),1);assert_eq!(shallow[0].id,"root");
+        assert_eq!(resource_listing(rows.clone(),&None,&None,&None,&None,true).len(),2002);
+        let children=resource_listing(rows.clone(),&None,&None,&None,&Some("root".into()),true);
+        assert_eq!(children.len(),1);assert_eq!(children[0].id,"nested");
+        assert_eq!(resource_listing(rows.clone(),&None,&None,&None,&Some("nested".into()),true).len(),2000);
+        assert!(resource_listing(rows,&Some("unrelated-item".into()),&None,&None,&None,true).is_empty());
     }
 
     #[test]
@@ -410,6 +495,41 @@ mod tests {
     }
 
     #[test]
+    fn empty_folder_transaction_is_offline_atomic_owned_and_reopens_with_native_provenance(){
+        let path=std::env::temp_dir().join(format!("labos-empty-folders-{}.sqlite",uuid::Uuid::new_v4()));
+        let mut c=rusqlite::Connection::open(&path).unwrap();crate::local_db::ensure_schema(&c).unwrap();
+        c.execute_batch("CREATE TABLE local_users(id TEXT PRIMARY KEY,central_user_id TEXT,role TEXT,is_active INTEGER,offline_expires_at TEXT,permissions_json TEXT);CREATE TABLE local_session(id INTEGER PRIMARY KEY,user_id TEXT,session_token TEXT);INSERT INTO local_users VALUES('local','account','viewer',1,datetime('now','+1 hour'),'[\"resources.view\",\"resources.create\"]');INSERT INTO local_session VALUES(1,'local','native-session');").unwrap();
+        let root=create_folder_transaction(&mut c,"account".into(),"native-session".into(),"Designs".into(),None,None,None,None,None,None,None,None).unwrap();
+        let empty=create_folder_transaction(&mut c,"account".into(),"native-session".into(),"Empty".into(),None,None,None,Some(root.id.clone()),Some("virtual/Empty".into()),None,None,None).unwrap();
+        assert_eq!(empty.parent_resource_id,Some(root.id.clone()));assert_eq!(empty.relative_path.as_deref(),Some("virtual/Empty"));
+        let snapshot=serde_json::to_string(&read_resources(&c).unwrap()).unwrap();
+        assert!(create_folder_transaction(&mut c,"account".into(),"native-session".into(),"empty".into(),None,None,None,Some(root.id.clone()),Some("virtual/empty".into()),None,None,None).is_err());
+        assert!(create_folder_transaction(&mut c,"other".into(),"native-session".into(),"Foreign".into(),None,None,None,None,None,None,None,None).is_err());
+        assert!(create_folder_transaction(&mut c,"account".into(),"stale-session".into(),"Stale".into(),None,None,None,None,None,None,None,None).is_err());
+        assert_eq!(serde_json::to_string(&read_resources(&c).unwrap()).unwrap(),snapshot);
+        assert_eq!(c.query_row("SELECT count(*) FROM sync_outbox WHERE account_id='account' AND synced_at IS NULL",[],|r|r.get::<_,i64>(0)).unwrap(),2);
+        assert_eq!(c.query_row("SELECT count(*) FROM local_resource_mutations WHERE account_id='account'",[],|r|r.get::<_,i64>(0)).unwrap(),2);
+        drop(c);let mut c=rusqlite::Connection::open(&path).unwrap();
+        let nested=create_folder_transaction(&mut c,"account".into(),"native-session".into(),"Nested".into(),None,None,None,Some(empty.id.clone()),None,None,None,None).unwrap();
+        assert_eq!(nested.parent_resource_id,Some(empty.id));assert_eq!(nested.relative_path.as_deref(),Some("Nested"));
+        assert_eq!(c.query_row("SELECT count(*) FROM sync_outbox WHERE account_id='account'",[],|r|r.get::<_,i64>(0)).unwrap(),3);
+        drop(c);std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn empty_folder_paths_are_scoped_and_cannot_escape_or_alias_existing_files(){
+        assert_eq!(folder_creation_path("Empty",false,None).unwrap(),None);
+        assert_eq!(folder_creation_path("Empty",true,Some("virtual/Empty".into())).unwrap(),Some("virtual/Empty".into()));
+        for name in ["", ".", "..", "a/b", "a:b", "a\\b"]{assert!(folder_creation_path(name,true,None).is_err());}
+        for path in ["../Empty","/Empty","virtual//Empty","virtual/../Empty","virtual/Other"]{assert!(folder_creation_path("Empty",true,Some(path.into())).is_err());}
+        assert!(folder_creation_path("Empty",false,Some("Empty".into())).is_err());
+        let mut folder=resource("folder","folder",None,None);folder.name="Empty".into();folder.parent_resource_id=Some("parent".into());
+        let mut file=resource("file","file",None,None);file.original_filename=Some("empty".into());file.parent_resource_id=Some("parent".into());
+        assert!(require_resource_path_available(&[file.clone()],&folder).is_err());
+        file.parent_resource_id=Some("another-folder".into());assert!(require_resource_path_available(&[file],&folder).is_ok());
+    }
+
+    #[test]
     fn validate_parent_requires_existing_folder_for_nested_resource() {
         let resources = vec![resource("not-a-folder", "link", None, None)];
         let err = validate_parent(
@@ -441,5 +561,20 @@ mod tests {
 
         let many = normalize_tags(Some((0..40).map(|i| format!("tag-{i}")).collect()));
         assert_eq!(many.len(), 30);
+    }
+    #[test]
+    fn native_folder_creation_is_atomic_and_carries_private_offline_parent_authority(){
+        let path=std::env::temp_dir().join(format!("labos-native-folder-{}.sqlite",uuid::Uuid::new_v4()));let mut c=rusqlite::Connection::open(&path).unwrap();crate::local_db::ensure_schema(&c).unwrap();
+        c.execute_batch("CREATE TABLE local_users(id TEXT PRIMARY KEY,central_user_id TEXT,role TEXT,is_active INTEGER,offline_expires_at TEXT,permissions_json TEXT);CREATE TABLE local_session(id INTEGER PRIMARY KEY,user_id TEXT,session_token TEXT);INSERT INTO local_users VALUES('u','owner','researcher',1,datetime('now','+1 hour'),'[\"resources.view\",\"resources.create\",\"resources.edit\"]');INSERT INTO local_session VALUES(1,'u','session');").unwrap();ensure_schema(&c).unwrap();crate::local_resource_attachments::schema(&c).unwrap();
+        let folder=resource("11111111-1111-4111-8111-111111111111","folder",None,None);let payload=serde_json::json!({"resource":folder});
+        assert!(save_with_change(&c,&[folder.clone()],&folder.id,"create",&payload).is_err());
+        c.execute_batch("CREATE TRIGGER fail_native_folder_proof BEFORE INSERT ON local_resource_mutations BEGIN SELECT RAISE(ABORT,'proof failed'); END;").unwrap();
+        {let tx=c.transaction().unwrap();assert!(save_with_change(&tx,&[folder.clone()],&folder.id,"create",&payload).is_err());}
+        assert!(read_resources(&c).unwrap().is_empty());assert_eq!(c.query_row("SELECT count(*) FROM sync_outbox",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        c.execute_batch("DROP TRIGGER fail_native_folder_proof;").unwrap();{let tx=c.transaction().unwrap();crate::local_resource_authority::guard(&tx,"owner","session").unwrap();save_with_change(&tx,&[folder.clone()],&folder.id,"create",&payload).unwrap();tx.commit().unwrap();}drop(c);
+        let c=rusqlite::Connection::open(&path).unwrap();assert_eq!(read_resources(&c).unwrap().len(),1);assert_eq!(c.query_row("SELECT json_extract(payload_json,'$.native_create_protocol') FROM sync_outbox",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+        assert!(crate::local_resource_authority::require_own_pending_creation(&c,&folder).unwrap());crate::local_resource_uploads::parent_guard(&c,&serde_json::json!({"parent_resource_id":folder.id})).unwrap();
+        let mut altered=folder.clone();altered.name="Unproven cache edit".into();assert!(crate::local_resource_authority::require_own_pending_creation(&c,&altered).is_err());assert!(crate::local_resource_authority::guard(&c,"owner","old-session").is_err());
+        drop(c);std::fs::remove_file(path).unwrap();
     }
 }

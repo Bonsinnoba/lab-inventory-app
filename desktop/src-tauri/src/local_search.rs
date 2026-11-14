@@ -50,7 +50,8 @@ fn project_search_projection(project: &Value) -> Value {
 }
 
 #[tauri::command]
-pub fn global_local_search(app: AppHandle, query: String, types: Option<Vec<String>>) -> Result<Value, String> {
+pub async fn global_local_search(app: AppHandle, query: String, types: Option<Vec<String>>) -> Result<Value, String> {
+    crate::responsive_reads::run("global_local_search", move || {
     let q = query.trim().to_lowercase();
     if q.is_empty() { return Err("Search query is required".into()); }
     if q.len() > 200 { return Err("Search query is too long".into()); }
@@ -101,6 +102,8 @@ pub fn global_local_search(app: AppHandle, query: String, types: Option<Vec<Stri
         }
     }
     Ok(json!({"query":query.trim(),"counts":counts,"total":results.len(),"all":results}))
+
+    }).await
 }
 
 #[cfg(test)]

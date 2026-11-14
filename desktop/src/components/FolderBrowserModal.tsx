@@ -1,148 +1,60 @@
-import { useState, useEffect } from 'react';
-import { X, FileText, Image as ImageIcon, Video, Music, File as FileIcon, Folder } from 'lucide-react';
-import { getResourceManifest, getResource, ResourceManifest, Resource } from '../api/resources';
+import {useEffect,useRef,useState} from 'react';
+import {useQueryClient} from '@tanstack/react-query';
+import {X,Folder,Upload} from 'lucide-react';
+import {getResourceManifest,getResource,uploadFolderFiles,isLocalResourceRuntime,type ResourceManifest,type Resource} from '../api/resources';
+import {captureAccountSession,isAccountSessionCurrent,getCurrentPermissions} from '../api/auth';
+import {filesFromDrop,filesFromPicker,type SelectedUpload} from '../api/resource-upload-selection';
+import {invalidateResourceAttachments} from '../api/resource-attachment-presentation';
+import {folderLocation} from '../lib/folderNavigation';
+import FolderContents from './FolderContents';
+import CreateResourceFolderModal from './CreateResourceFolderModal';
+import {folderDestination} from '../lib/folderManifest';
 import ResourceViewerModal from './ResourceViewerModal';
 
-interface FolderBrowserModalProps {
-  folderResourceId: string;
-  onClose: () => void;
-  onOpenResource?: (resource:Resource) => void;
-}
-
-function iconForMime(mime: string) {
-  if (mime?.startsWith('image/')) return ImageIcon;
-  if (mime?.startsWith('video/')) return Video;
-  if (mime?.startsWith('audio/')) return Music;
-  if (mime === 'application/pdf') return FileText;
-  return FileIcon;
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-export default function FolderBrowserModal({ folderResourceId, onClose, onOpenResource }: FolderBrowserModalProps) {
-  const [manifest, setManifest] = useState<ResourceManifest | null>(null);
-  const [folderResource, setFolderResource] = useState<Resource | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [openingFile, setOpeningFile] = useState<Resource | null>(null);
-  const [openError, setOpenError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    Promise.all([getResourceManifest(folderResourceId), getResource(folderResourceId)])
-      .then(([folderManifest, folder]) => {
-        if (!active) return;
-        setManifest(folderManifest);
-        setFolderResource(folder);
-      })
-      .catch(() => {
-        if (active) setError('Could not load this folder.');
-      });
-    return () => { active = false; };
-  }, [folderResourceId]);
-
-  const openFile = async (fileId: string) => {
-    setOpenError(null);
-    try {
-      const resource = await getResource(fileId);
-      // Types with no in-app viewer (documents, generic "other") fall back
-      // to a plain message rather than pretending to open them — there's
-      // no built-in viewer for e.g. .docx here, and silently doing nothing
-      // would be its own kind of dead affordance.
-      if(onOpenResource)onOpenResource(resource);else setOpeningFile(resource);
-    } catch {
-      setOpenError('Could not open that file.');
-    }
-  };
-
-  // Group flat manifest entries by their subfolder (the part of
-  // relative_path before the filename), so nested structure is still
-  // visible rather than a flat dump of every file.
-  const grouped: Record<string, ResourceManifest['files']> = {};
-  if (manifest) {
-    for (const file of manifest.files) {
-      const parts = file.relative_path.split('/');
-      const dir = parts.length > 1 ? parts.slice(0, -1).join('/') : '';
-      if (!grouped[dir]) grouped[dir] = [];
-      grouped[dir].push(file);
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
-      <div
-        className="bg-surface border border-border rounded-md w-[560px] max-h-[75vh] flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-5 py-3 border-b border-border flex-shrink-0">
-          <h3 className="text-section-header font-ui font-semibold flex items-center gap-2">
-            <Folder size={18} className="text-text-secondary" />
-            {manifest?.folder || 'Folder'}
-          </h3>
-          <button onClick={onClose} className="text-text-secondary hover:text-text-primary">
-            <X size={18} />
-          </button>
-        </div>
-
-        <div className="flex-1 overflow-auto p-4">
-          {error && <div className="text-status-danger text-sm">{error}</div>}
-          {openError && (
-            <div className="mb-3 text-sm text-status-warn bg-status-warn/10 border border-status-warn/30 rounded-sm px-3 py-2">
-              {openError}
-            </div>
-          )}
-
-          {!manifest && !error && (
-            <div className="text-text-secondary text-sm py-8 text-center">Loading…</div>
-          )}
-
-          {manifest && manifest.files.length === 0 && (
-            <div className="text-text-secondary text-sm py-8 text-center">This folder is empty.</div>
-          )}
-
-          {Object.entries(grouped).map(([dir, files]) => (
-            <div key={dir} className="mb-4 last:mb-0">
-              {dir && (
-                <div className="text-xs text-text-secondary font-mono mb-1.5 flex items-center gap-1.5">
-                  <Folder size={12} />
-                  {dir}
-                </div>
-              )}
-              <div className="space-y-1">
-                {files.map((file) => {
-                  const Icon = iconForMime(file.mime_type);
-                  return (
-                    <button
-                      key={file.id}
-                      onClick={() => openFile(file.id)}
-                      className="w-full flex items-center gap-3 px-3 py-2 bg-surface-raised border border-border rounded-sm hover:border-accent transition-colors text-left"
-                    >
-                      <Icon size={16} className="text-text-secondary flex-shrink-0" />
-                      <span className="flex-1 min-w-0 text-sm text-text-primary truncate">
-                        {file.original_filename}
-                      </span>
-                      <span className="text-xs text-text-secondary font-mono flex-shrink-0">
-                        {formatSize(file.size_bytes)}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {openingFile && (
-        <ResourceViewerModal
-          resource={openingFile}
-          resources={folderResource ? [folderResource] : []}
-          onClose={() => setOpeningFile(null)}
-        />
-      )}
-    </div>
-  );
+export default function FolderBrowserModal({folderResourceId,onClose,onOpenResource}:{folderResourceId:string;onClose:()=>void;onOpenResource?:(resource:Resource)=>void}){
+ const [owner]=useState(captureAccountSession),qc=useQueryClient();
+ const [manifest,setManifest]=useState<ResourceManifest|null>(null),[folderResource,setFolderResource]=useState<Resource|null>(null),[error,setError]=useState<string|null>(null);
+ const [openingFile,setOpeningFile]=useState<Resource|null>(null),[opening,setOpening]=useState<string|null>(null),[directory,setDirectory]=useState(''),[subfolder,setSubfolder]=useState('');
+ const [canUpload,setCanUpload]=useState(false),[progress,setProgress]=useState<number|null>(null),[notice,setNotice]=useState('');
+ const [creatingFolder,setCreatingFolder]=useState(false);
+ const fileInput=useRef<HTMLInputElement>(null),folderInput=useRef<HTMLInputElement>(null),busy=useRef(false),mounted=useRef(true);
+ useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
+ useEffect(()=>{let active=true;setManifest(null);setError(null);setDirectory('');
+  Promise.all([getResourceManifest(folderResourceId),getResource(folderResourceId)]).then(([manifest,folder])=>{if(active){setManifest(manifest);setFolderResource(folder);}}).catch(()=>{if(active)setError('Could not load this folder.');});
+  getCurrentPermissions().then(permissions=>{if(active)setCanUpload(isLocalResourceRuntime()&&permissions.includes('resources.create'));}).catch(()=>{if(active)setCanUpload(false);});
+  return()=>{active=false;};
+ },[folderResourceId]);
+ const upload=async(entries:SelectedUpload[])=>{
+  if(busy.current||!canUpload||!entries.length)return;
+  const session=captureAccountSession();
+  if(!owner||!session||session.accountId!==owner.accountId){setError('Sign in to the account that opened this folder before adding files.');return;}
+  busy.current=true;setProgress(0);setError(null);setNotice('');
+  let committed=false;
+  try{
+   const suffix=folderLocation(subfolder.trim()),prefix=[directory,suffix].filter(Boolean).join('/');
+   const destination=folderDestination(folderResourceId,manifest?.files||[],prefix);
+   const paths=entries.map(entry=>[destination.relativeDirectory,entry.path].filter(Boolean).join('/'));
+   await uploadFolderFiles(destination.folderId,entries.map(entry=>entry.file),paths,n=>{if(mounted.current)setProgress(n);});
+   committed=true;if(!isAccountSessionCurrent(session))return;
+   if(mounted.current){setSubfolder('');setNotice(`${entries.length} files saved on this PC and queued for sync.`);}
+   await invalidateResourceAttachments(qc);
+   if(!isAccountSessionCurrent(session))return;
+   const refreshed=await getResourceManifest(folderResourceId);
+   if(mounted.current&&isAccountSessionCurrent(session))setManifest(refreshed);
+  }catch(e){if(mounted.current)setError(committed?'Files were saved, but the folder list could not refresh. Reopen the folder to view them.':e instanceof Error?e.message:'Could not add files to this folder.');}
+  finally{busy.current=false;if(mounted.current)setProgress(null);}
+ };
+ const pick=(files:FileList|null)=>{if(files)try{void upload(filesFromPicker(files));}catch(e){setError(e instanceof Error?e.message:'Could not select files.');}};
+ const open=async(id:string)=>{if(opening||busy.current)return;setOpening(id);setError(null);try{const resource=await getResource(id);if(mounted.current){if(onOpenResource)onOpenResource(resource);else setOpeningFile(resource);}}catch(e){if(mounted.current)setError(e instanceof Error?e.message:'Could not open that file.');}finally{if(mounted.current)setOpening(null);}};
+ return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onMouseDown={e=>{if(e.target===e.currentTarget&&!busy.current)onClose();}}>
+  <div role="dialog" aria-modal="true" aria-labelledby="folder-browser-title" className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-lg border border-border bg-surface">
+   <header className="flex items-center justify-between gap-3 border-b border-border px-5 py-3"><h3 id="folder-browser-title" className="flex min-w-0 items-center gap-2 font-semibold"><Folder size={18}/><span className="truncate">{manifest?.folder||'Folder'}</span></h3><button type="button" disabled={progress!==null} onClick={onClose} aria-label="Close folder" className="rounded p-1 hover:bg-surface-raised"><X size={18}/></button></header>
+   {canUpload&&<div className="space-y-2 border-b border-border p-4"><div className="flex flex-wrap gap-2"><button type="button" disabled={progress!==null} onClick={()=>setCreatingFolder(true)} className="rounded border border-border px-3 py-2 text-sm">New folder here</button><button type="button" disabled={progress!==null} onClick={()=>fileInput.current?.click()} className="flex items-center gap-2 rounded border border-border px-3 py-2 text-sm"><Upload size={15}/>Add files here</button><button type="button" disabled={progress!==null} onClick={()=>folderInput.current?.click()} className="rounded border border-border px-3 py-2 text-sm">Import subfolder</button></div><label className="block text-xs text-text-secondary">New subfolder path (optional)<input value={subfolder} disabled={progress!==null} onChange={e=>setSubfolder(e.target.value)} placeholder="e.g. references/circuits" className="mt-1 w-full rounded border border-border bg-surface-raised p-2 text-sm"/></label><p className="text-xs text-text-secondary">Adds files under the current folder path. Existing files are preserved; matching paths require an explicit replacement. Empty folders are not imported.</p><input hidden ref={fileInput} type="file" multiple onChange={e=>{pick(e.target.files);e.target.value='';}}/><input hidden ref={folderInput} type="file" multiple {...({webkitdirectory:'',directory:''} as any)} onChange={e=>{pick(e.target.files);e.target.value='';}}/></div>}
+   <div className="min-h-0 flex-1 overflow-auto p-4" onDragOver={e=>{if(canUpload){e.preventDefault();e.dataTransfer.dropEffect='copy';}}} onDrop={e=>{if(!canUpload)return;e.preventDefault();void filesFromDrop(e.dataTransfer).then(upload).catch(e=>setError(e instanceof Error?e.message:'Unable to read dropped files.'));}}>
+    {progress!==null&&<p role="status" className="mb-3 text-sm">Saving files on this PC: {Math.round(progress)}%</p>}{notice&&<p role="status" className="mb-3 text-sm text-status-success">{notice}</p>}{error&&<p role="alert" className="mb-3 text-sm text-status-danger">{error}</p>}
+    {!manifest&&!error&&<p className="py-6 text-center text-sm text-text-secondary">Loading folder…</p>}{manifest&&<FolderContents files={manifest.files} directory={directory} onNavigate={path=>{setDirectory(path);setNotice('');}} onOpen={id=>void open(id)} opening={opening} disabled={progress!==null}/>}
+   </div>
+  </div>
+{creatingFolder&&<CreateResourceFolderModal parentId={folderDestination(folderResourceId,manifest?.files||[],directory).folderId} directory={folderDestination(folderResourceId,manifest?.files||[],directory).relativeDirectory} onClose={()=>setCreatingFolder(false)} onCreated={async()=>{const session=captureAccountSession();await invalidateResourceAttachments(qc);if(!owner||!session||session.accountId!==owner.accountId||!isAccountSessionCurrent(session))return;const refreshed=await getResourceManifest(folderResourceId);if(mounted.current&&isAccountSessionCurrent(session)){setManifest(refreshed);setCreatingFolder(false);setNotice('Folder saved on this PC; pending sync.');}}}/>}  {openingFile&&<ResourceViewerModal resource={openingFile} resources={folderResource?[folderResource]:[]} onClose={()=>setOpeningFile(null)}/>}
+ </div>;
 }

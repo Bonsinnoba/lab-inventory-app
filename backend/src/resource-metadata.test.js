@@ -12,7 +12,7 @@ test('metadata is an explicit patch, preserving unspecified fields and accepting
   assert.deepEqual(metadataFields(intent({})),{});
 });
 test('metadata cannot change permissions, identity, file bytes or attachment scope',()=>{
-  for(const key of ['id','visibility','project_id','note_id','parent_resource_id','storage_path','size_bytes','updated_at','name']){
+  for(const key of ['id','visibility','project_id','note_id','parent_resource_id','storage_path','size_bytes','updated_at']){
     assert.throws(()=>metadataFields(intent({[key]:'injected'})),e=>e.code==='INVALID_RESOURCE_METADATA');
   }
   for(const fields of [null,[],{category:'invalid'},{description:null},{description:'x'.repeat(5001)},{tags:['']},{tags:[42]},{tags:['x'.repeat(257)]},{tags:Array(31).fill('tag')}])assert.throws(()=>metadataFields(intent(fields)),e=>e.status===400);
@@ -36,4 +36,21 @@ test('metadata uses exact owned move/metadata/file predecessors without changing
   await assert.rejects(()=>metadataExpectedRevision({query:async()=>({rows:[]})},request,change,user),e=>e.status===503);
   await assert.rejects(()=>metadataExpectedRevision({}, {...request,previous_change_id:change.change_id},change,user),e=>e.status===400);
   assert.equal(await metadataExpectedRevision({query:()=>assert.fail('unexpected receipt query')},intent({}),change,user),revision);
+});
+
+
+test('names are explicit display edits without changing filenames or provenance inputs',()=>{
+ assert.deepEqual(metadataFields(intent({name:'Reviewed title'})),{name:'Reviewed title'});
+ metadataFields(intent({name:'\u{1f52c}'.repeat(200)}));
+ for(const name of ['', ' ', ' untrimmed', 'x'.repeat(201), null])assert.throws(()=>metadataFields(intent({name})),e=>e.status===400);
+ for(const key of ['original_filename','name_source'])assert.throws(()=>metadataFields(intent({[key]:'injected'})),e=>e.status===400);
+});
+
+test('metadata after new offline link/folder creation requires its exact native receipt',async()=>{
+ for(const kind of ['link','folder']){
+  const request={...intent({name:'Reviewed title'}),previous_change_id:previous};
+  const receipt={change_id:previous,user_id:user.userId,device_id:'device',entity_type:'resource',entity_id:id,operation:'create',response_status:200,payload_json:{native_create_protocol:1,resource:{id,kind}},response_json:{id,kind,updated_at:revision}};
+  assert.equal(await metadataExpectedRevision({query:async()=>({rows:[receipt]})},request,change,user),revision);
+  for(const patch of [{user_id:'other'},{device_id:'other'},{response_status:403},{payload_json:{resource:{id,kind}}}])await assert.rejects(metadataExpectedRevision({query:async()=>({rows:[{...receipt,...patch}]})},request,change,user),e=>e.status===409);
+ }
 });

@@ -175,13 +175,13 @@ export default function ItemDetailPage() {
               )}
             </div>
             <div>
-              <label className="block text-text-secondary text-sm mb-1">Replacement / Salvage Value</label>
+              <label className="block text-text-secondary text-sm mb-1">Replacement Cost</label>
               {isEditing ? (
                 <input type="number" step="0.01" value={editForm.replacement_cost ?? item.replacement_cost ?? ''} onChange={e => setEditForm({ ...editForm, replacement_cost: e.target.value ? parseFloat(e.target.value) : undefined })} className="w-full bg-bg border border-border rounded-sm px-3 py-2 text-text-primary text-sm focus:outline-none focus:border-accent" />
               ) : (
                 <div>
                   <p className="text-text-primary font-mono">{item.replacement_cost != null ? `$${Number(item.replacement_cost).toFixed(2)}` : '—'}</p>
-                  <p className="text-[11px] text-text-secondary mt-0.5">Recorded recovery / replacement valuation · Not cash received</p>
+                  <p className="text-[11px] text-text-secondary mt-0.5">Estimated cost to replace · Salvage recovery is recorded separately</p>
                 </div>
               )}
             </div>
@@ -225,7 +225,7 @@ export default function ItemDetailPage() {
                         ? 'bg-status-ok/10 border-status-ok/30 text-status-ok' 
                         : 'bg-surface border-border text-text-secondary'
                     }`}>
-                      {tx.direction === 'income' ? 'Cash / Allocation Inflow' : 'Actual Cash Outflow'}
+                      {tx.direction === 'income' ? 'Income' : 'Expense'}
                     </span>
                   </div>
                   <span className={`font-mono text-sm font-semibold ${tx.direction === 'income' ? 'text-status-ok' : 'text-text-primary'}`}>

@@ -38,7 +38,7 @@ test('PDF signature checks are byte-exact, not extension/MIME or masked ASCII ch
 
 test('offline edits can follow their own pending file creation, copy or prior edit',()=>{
   const prior={user_id:'author',device_id:'device',entity_type:'resource',entity_id:'document',response_json:{id:'document',kind:'file',updated_at:edit.expected_updated_at}};
-  for(const operation of ['create','create_copy','edit_content'])assert.equal(predecessorRevision({...prior,operation},{__device_id:'device'},{userId:'author'},'document'),edit.expected_updated_at);
+  for(const operation of ['create','create_copy','edit_content','attach','edit_metadata'])assert.equal(predecessorRevision({...prior,operation},{__device_id:'device'},{userId:'author'},'document'),edit.expected_updated_at);
 });
 test('predecessors cannot cross account, device, entity or operation boundaries',()=>{
   const prior={user_id:'author',device_id:'device',entity_type:'resource',entity_id:'document',operation:'edit_content',response_json:{id:'document',kind:'file',updated_at:edit.expected_updated_at}};

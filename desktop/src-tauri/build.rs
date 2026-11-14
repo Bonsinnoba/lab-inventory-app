@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 mod build_support;
+mod security_policy;
 
 fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
     let mut table = [255u8; 256];
@@ -41,6 +42,16 @@ fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
 
 fn main() {
     println!("cargo:rerun-if-env-changed=LABOS_NATIVE_API_BASE");
+    let api=std::env::var("LABOS_NATIVE_API_BASE").unwrap_or_else(|_|"http://localhost:4000/api".into());
+    println!("cargo:rerun-if-env-changed=VITE_API_BASE_URL");
+    if let Ok(frontend)=std::env::var("VITE_API_BASE_URL"){
+        assert_eq!(security_policy::api_base(&frontend).expect("invalid frontend API base"),security_policy::api_base(&api).expect("invalid native API base"),"VITE_API_BASE_URL and LABOS_NATIVE_API_BASE must target the same complete API base");
+    }
+    let config=security_policy::merged_config(std::env::var("TAURI_CONFIG").ok().as_deref(),&api).expect("invalid trusted API/CSP build configuration");
+    // Both the build script and generate_context! must see the same profile
+    // and CSP. This preserves Preview/V1 identifiers supplied by the CLI.
+    std::env::set_var("TAURI_CONFIG",&config);
+    println!("cargo:rustc-env=TAURI_CONFIG={config}");
     println!("cargo:rerun-if-changed=icons/icon.ico.b64");
 
     let icon_source = include_str!("icons/icon.ico.b64");

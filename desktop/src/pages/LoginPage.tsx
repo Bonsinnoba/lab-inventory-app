@@ -1,13 +1,17 @@
 import { useEffect, useState } from 'react';
 import { getLocalAuthStatus, login } from '../api/auth';
 import { LogIn, Eye, EyeOff } from 'lucide-react';
+import StandaloneRecovery from '../components/StandaloneRecovery';
+import {getWorkspaceStartupStatus} from '../api/recovery';
+import {isTauriRuntime} from '../lib/runtime';
 
 interface LoginPageProps {
-  onLoginSuccess: (user: any, token: string) => void;
+  onLoginSuccess: (user: any, token: string) => void|Promise<void>;
   notice?: string | null;
+  lockedUsername?:string;
 }
 
-export default function LoginPage({ onLoginSuccess, notice }: LoginPageProps) {
+export default function LoginPage({ onLoginSuccess, notice,lockedUsername }: LoginPageProps) {
   const [authStatusReady, setAuthStatusReady] = useState(false);
   const [isTauriLocal, setIsTauriLocal] = useState(false);
   const [username, setUsername] = useState('');
@@ -15,9 +19,12 @@ export default function LoginPage({ onLoginSuccess, notice }: LoginPageProps) {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [recoveryBusy,setRecoveryBusy]=useState(false),[startupError,setStartupError]=useState('');
+  const[startupNotice,setStartupNotice]=useState('');
 
   useEffect(() => {
     let active = true;
+    if(isTauriRuntime()){setIsTauriLocal(true);void getWorkspaceStartupStatus().then(status=>{if(active){if(!status.ready)setStartupError(status.message||'Workspace recovery is required');else setStartupNotice(status.message||'');}}).catch(()=>{});}
     getLocalAuthStatus().then((status) => {
       if (!active) return;
       if (status) setIsTauriLocal(true);
@@ -30,11 +37,12 @@ export default function LoginPage({ onLoginSuccess, notice }: LoginPageProps) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if(recoveryBusy||startupError)return;
     setError('');
     setIsLoading(true);
     try {
-      const response = await login(username, password);
-      onLoginSuccess(response.user, response.token);
+      const response = await login(lockedUsername??username, password);
+      await onLoginSuccess(response.user, response.token);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Authentication failed');
     } finally {
@@ -58,6 +66,8 @@ export default function LoginPage({ onLoginSuccess, notice }: LoginPageProps) {
           </div>
 
           {notice && <div role="status" className="mb-6 rounded-sm border border-accent/40 bg-accent/10 p-4 text-sm text-text-primary">{notice}</div>}
+          {startupError&&<p role="alert" className="mb-4 rounded border border-status-warn p-3 text-sm text-text-secondary">{startupError}</p>}
+          {startupNotice&&<p role="status" className="mb-4 break-words rounded border border-border p-3 text-sm text-text-secondary">{startupNotice}</p>}
           {error && (
             <div className="mb-6 p-4 bg-status-danger/10 border border-status-danger rounded-sm text-status-danger text-sm">
               {error}
@@ -69,7 +79,8 @@ export default function LoginPage({ onLoginSuccess, notice }: LoginPageProps) {
               <label className="block text-text-secondary text-sm mb-2">Username</label>
               <input
                 type="text"
-                value={username}
+                value={lockedUsername??username}
+                readOnly={!!lockedUsername}
                 onChange={(e) => setUsername(e.target.value)}
                 className="w-full px-4 py-3 bg-bg border border-border rounded-sm text-text-primary placeholder:text-text-secondary focus:outline-none focus:border-accent"
                 placeholder="Enter your username"
@@ -103,12 +114,13 @@ export default function LoginPage({ onLoginSuccess, notice }: LoginPageProps) {
 
             <button
               type="submit"
-              disabled={isLoading}
+              disabled={isLoading||recoveryBusy||!!startupError}
               className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-accent text-bg rounded-sm hover:bg-accent-dim transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isLoading ? 'Signing in…' : <><LogIn size={18} /> Sign In</>}
             </button>
           </form>
+          {isTauriLocal&&!lockedUsername&&<StandaloneRecovery onBusyChange={setRecoveryBusy}/>}
 
           {isTauriLocal && (
             <p className="mt-6 text-center text-text-secondary text-xs">

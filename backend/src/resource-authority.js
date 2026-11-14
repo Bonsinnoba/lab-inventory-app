@@ -46,3 +46,15 @@ export function inheritedResourceAuthority(id,before,after,allowed,beforeRows,af
     return {resource_id:id,can_edit:false,revision:null,scope:null,bindings:null};
   return {...grant,bindings};
 }
+
+
+// Protocol 3 separates the global action permission from record-management
+// authority. A delete-only role must never receive edit authority as a shortcut.
+export function resourceActionAuthority(grant,permissions){
+ const readable=permissions.has('resources.view');
+ const can_edit=readable&&grant.can_edit&&permissions.has('resources.edit');
+ const can_delete=readable&&grant.can_edit&&permissions.has('resources.delete');
+ const can_create_child=readable&&grant.can_edit&&grant.bindings?.[0]?.kind==='folder'&&grant.bindings.length<32&&(permissions.has('resources.create')||permissions.has('resources.edit'));
+ if(!can_edit&&!can_delete&&!can_create_child)return {resource_id:grant.resource_id,can_edit:false,can_delete:false,can_create_child:false,revision:null,scope:null,bindings:null};
+ return {...grant,can_edit,can_delete,can_create_child};
+}

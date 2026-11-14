@@ -54,7 +54,7 @@ mod live {
     use super::*;
     fn http(method:&str,path:&str,body:Value,token:&str)->Value{
         let base=std::env::var("LABOS_LIVE_API_URL").expect("Local API URL required");
-        assert!(["http://127.0.0.1:4000/api","http://localhost:4000/api"].contains(&base.as_str()));
+        assert!(["http://127.0.0.1:4000/api","http://localhost:4000/api","http://127.0.0.1:4030/api"].contains(&base.as_str()));
         let output=std::process::Command::new("node").args(["-e",r#"(async()=>{const r=await fetch(process.env.LABOS_TEST_URL,{method:process.env.LABOS_TEST_METHOD,headers:{'Content-Type':'application/json','Idempotency-Key':require('crypto').randomUUID(),Authorization:'Bearer '+process.env.LABOS_TEST_TOKEN},...(process.env.LABOS_TEST_METHOD==='GET'?{}:{body:process.env.LABOS_TEST_BODY})});const text=await r.text();if(!r.ok)throw Error(r.status+': '+text);console.log(text||'{}')})().catch(e=>{console.error(e.message);process.exit(1)})"#])
             .env("LABOS_TEST_URL",format!("{base}{path}")).env("LABOS_TEST_METHOD",method).env("LABOS_TEST_TOKEN",token).env("LABOS_TEST_BODY",body.to_string()).output().unwrap();
         assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));serde_json::from_slice(&output.stdout).unwrap()

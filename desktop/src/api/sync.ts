@@ -12,7 +12,8 @@ import {confirmResourceChange,confirmResourceMutation} from './resource-confirma
 import type {Resource} from './resources';
 import { invoke } from '@tauri-apps/api/tauri';
 import { apiFetch, getApiErrorMessage } from './http';
-import { getStoredUser, getToken, captureServerRequest, isServerRequestCurrent, captureAccountSession, isAccountSessionCurrent, type AccountSession } from './auth';
+import {isSyncServerReachable} from './sync-health';
+import { refreshAccountProfile, getStoredUser, getToken, captureServerRequest, isServerRequestCurrent, captureAccountSession, isAccountSessionCurrent, type AccountSession } from './auth';
 import { createSyncRuntimeStore, type SyncRuntimeState } from './sync-runtime-state';
 import { readSyncQueueCounts, listSyncConflicts } from './sync-conflict-client';
 
@@ -25,7 +26,10 @@ type NotesPullResponse = { notes?:unknown[]; visible_note_ids?:string[]; deleted
 export type { SyncRuntimeState } from './sync-runtime-state';
 
 let activeSync:Promise<number>|null=null;
+let runSequence=0,transportLost=false;
+export function getSyncRunSequence(){return runSequence;}
 const runtime=createSyncRuntimeStore({storage:()=>typeof localStorage==='undefined'?undefined:localStorage,session:captureAccountSession,isCurrent:isAccountSessionCurrent});
+export function markSyncServerUnavailable(session:AccountSession){runtime.publish(session,{status:'offline',lastError:'Server unavailable; local changes are preserved.'});}
 function clearRetryState(){runtime.clearRetry(currentSyncSession);}
 function scheduleRetry(){runtime.scheduleRetry(currentSyncSession);}
 function publish(patch:Partial<SyncRuntimeState>){runtime.publish(currentSyncSession,patch);}
@@ -50,6 +54,7 @@ export async function syncPendingChanges(force=false):Promise<number>{
   if(!force&&!runtime.retryDue())return 0;
   currentSyncSession=captureAccountSession();
   const session=currentSyncSession;
+  runSequence++;transportLost=false;
   activeSync=runSync().catch(error=>{
     // The automatic caller deliberately catches rejected runs. Publish first,
     // otherwise an exception outside a per-step handler leaves a false spinner.
@@ -84,16 +89,21 @@ function assertSyncSession(session:SyncSession|null=currentSyncSession):void{
 function syncAccountId():string{assertSyncSession();return currentSyncSession!.accountId;}
 
 async function runPullStep(label:string, step:()=>Promise<boolean>):Promise<boolean>{
+  if(transportLost)return false;
   try{
     assertSyncSession();
     publish({step:label});
     const ok=await step();
     assertSyncSession();
-    if(!ok) publish({status:'error',lastError:`${label}: ${getSyncRuntimeState().lastError||'operation failed'}`});
+    if(!ok){
+      publish({status:'error',lastError:`${label}: ${getSyncRuntimeState().lastError||'operation failed'}`});
+      transportLost=!await isSyncServerReachable();assertSyncSession();
+    }
     return ok;
   }catch(error){
     const message=error instanceof Error?error.message:String(error);
     publish({status:'error',lastError:`${label}: ${message}`});
+    if(isAccountSessionCurrent(currentSyncSession)){transportLost=!await isSyncServerReachable();assertSyncSession();}
     return false;
   }
 }
@@ -101,7 +111,7 @@ async function runPullStep(label:string, step:()=>Promise<boolean>):Promise<bool
 async function runSync():Promise<number>{
   if(typeof navigator!=='undefined'&&!navigator.onLine){publish({status:'offline'});return 0;}
   const token=getToken();
-  if(!token||token.startsWith('local:')){publish({status:'offline',lastError:'Reconnect to LabOS to synchronize this installation'});return 0;}
+  if(!token||token.startsWith('local:')){publish({status:'offline',lastError:'Sign in online to synchronize this installation; saved changes remain on this PC'});return 0;}
   const accountId=getStoredUser()?.id;
   if(!accountId){publish({status:'error',lastError:'Sign in again before synchronizing local changes'});return 0;}
   let unassigned:number;
@@ -119,6 +129,10 @@ async function runSync():Promise<number>{
   try{changes=await invoke<PendingChange[]>('list_pending_sync_changes',{limit:100,expectedAccountId:accountId});assertSyncSession();}
   catch(error){const message=error instanceof Error?error.message:String(error);publish({status:'error',lastError:message});scheduleRetry();currentSyncSession=null;return 0;}
   let syncedCount=0;
+  if(!await isSyncServerReachable()){
+    assertSyncSession();publish({status:'offline',lastError:'Server unavailable; local changes are preserved.'});scheduleRetry();return 0;
+  }
+  assertSyncSession();
   let syncSucceeded=true;
   const blockedUploads=new Set<string>();
   for(const change of changes.filter(isResourceUpload)){
@@ -137,6 +151,10 @@ async function runSync():Promise<number>{
       assertSyncSession();
       await invoke('record_sync_failure',{changeId:change.change_id,errorMessage:message});
       publish({status:'error',lastError:`File transfer: ${message}`});scheduleRetry();
+      if(!await isSyncServerReachable()){
+        assertSyncSession();publish({status:'offline',lastError:'Server unavailable; local changes are preserved.'});return syncedCount;
+      }
+      assertSyncSession();
     }
   }
   // Withhold dependent edits/deletes for a file whose create is not ready;
@@ -161,7 +179,7 @@ async function runSync():Promise<number>{
           assertSession:assertSyncSession,
           acknowledge:async(change,result)=>{
             assertSyncSession();
-            if(change.entity_type==='resource'&&['attach','edit_metadata'].includes(change.operation)){
+            if(change.entity_type==='resource'&&(['attach','edit_metadata','move_tree'].includes(change.operation)||(change.operation==='create'&&(change.payload as {native_create_protocol?:number})?.native_create_protocol===1))){
               await confirmResourceMutation(change.change_id,token,assertSyncSession);
               return;
             }
@@ -213,7 +231,17 @@ async function runSync():Promise<number>{
       scheduleRetry();
     }
   }
+  if(!await isSyncServerReachable()){
+    assertSyncSession();publish({status:'offline',lastError:'Server unavailable; local changes are preserved.'});scheduleRetry();return syncedCount;
+  }
+  assertSyncSession();
   const inventoryPullSucceeded=await runPullStep('Inventory pull',pullServerInventory);
+  const profilePullSucceeded=await runPullStep('Contact profile pull',async()=>{await refreshAccountProfile();assertSyncSession();return true;});
+  const directoryPullSucceeded=await runPullStep('User directory pull',async()=>{
+    const permissions=await invoke<string[]>('local_current_permissions');assertSyncSession();
+    if(permissions.includes('users.view')){const context=await captureServerRequest(getToken()||'');assertSyncSession();if(!context.nativeSessionToken)throw Error('Native directory session unavailable');await invoke('refresh_native_managed_users',{expectedAccountId:syncAccountId(),expectedSessionToken:context.nativeSessionToken,serverToken:context.token});assertSyncSession();}
+    return true;
+  });
   const notificationPullSucceeded=await runPullStep('Notifications pull',pullServerNotifications);
   const activityPullSucceeded=await runPullStep('Activity pull',pullActivitySnapshot);
   const catalogPullSucceeded=await runPullStep('Catalog pull',pullServerCatalogs);
@@ -242,10 +270,10 @@ async function runSync():Promise<number>{
     await refreshResourceAuthority(currentSyncSession!.token,assertSyncSession);
     return true;
   });
-  const pullSucceeded=proposalPullSucceeded&&salvagePullSucceeded&&authorityPullSucceeded&&downloadsPullSucceeded&&activityPullSucceeded&&commentPullSucceeded&&notificationPullSucceeded&&catalogPullSucceeded&&inventoryPullSucceeded&&maintenancePullSucceeded&&preferencesPullSucceeded&&projectPullSucceeded&&resourcePullSucceeded&&financePullSucceeded&&locationPullSucceeded&&engineeringPullSucceeded&&knowledgePullSucceeded&&notesPullSucceeded;
-  if(!pullSucceeded){syncSucceeded=false;publish({status:'error',lastError:getSyncRuntimeState().lastError||'Unable to download the latest server changes'});scheduleRetry();}
+  const pullSucceeded=profilePullSucceeded&&directoryPullSucceeded&&proposalPullSucceeded&&salvagePullSucceeded&&authorityPullSucceeded&&downloadsPullSucceeded&&activityPullSucceeded&&commentPullSucceeded&&notificationPullSucceeded&&catalogPullSucceeded&&inventoryPullSucceeded&&maintenancePullSucceeded&&preferencesPullSucceeded&&projectPullSucceeded&&resourcePullSucceeded&&financePullSucceeded&&locationPullSucceeded&&engineeringPullSucceeded&&knowledgePullSucceeded&&notesPullSucceeded;
+  if(!pullSucceeded){syncSucceeded=false;publish({status:transportLost?'offline':'error',lastError:getSyncRuntimeState().lastError||'Unable to download the latest server changes'});scheduleRetry();}
   if(syncSucceeded&&pullSucceeded){clearRetryState();publish({status:'idle',lastSuccessAt:new Date().toISOString(),lastError:null});}
-  else if(getSyncRuntimeState().status!=='error')publish({status:'error',lastError:getSyncRuntimeState().lastError||'Some changes could not be synchronized'});
+  else if(!['error','offline'].includes(getSyncRuntimeState().status))publish({status:'error',lastError:getSyncRuntimeState().lastError||'Some changes could not be synchronized'});
   currentSyncSession=null;
   return syncedCount;
 }

@@ -101,6 +101,7 @@ function loadSync(f,invoke,overrides={}){
     if(name==='./auth')return auth;
     if(name==='./sync-runtime-state')return storeModule;
     if(name==='./sync-conflict-client')return client;
+    if(name==='./sync-health')return{isSyncServerReachable:async()=>true};
     if(name==='@tauri-apps/api/tauri')return{invoke};
     return {};
   }});
@@ -169,4 +170,34 @@ test('public count helpers propagate read failures rather than returning false z
   for(const name of ['getPendingSyncCount','getUnassignedSyncCount','getUnassignedStateCount','getSyncConflictCount']){
     await assert.rejects(api[name](),/native unavailable/);
   }
+});
+
+
+test('unavailable API preserves pending work and performs no transfer, push or ACK',async()=>{
+  const f=fixture(),commands=[];let checks=0;
+  const api=loadSync(f,async command=>{
+    commands.push(command);
+    if(command==='get_local_sync_queue_status')return{pending_sync_count:1,unassigned_pending_sync_count:0,unassigned_state_count:0};
+    if(command==='list_pending_sync_changes')return[{change_id:'saved-change',device_id:'device',entity_type:'note',operation:'create',payload:{}}];
+    throw Error(`Unexpected mutation ${command}`);
+  },{'./sync-health':{isSyncServerReachable:async()=>{checks++;return false;}}});
+  assert.equal(await api.syncPendingChanges(true),0);
+  assert.deepEqual(commands,['get_local_sync_queue_status','list_pending_sync_changes']);
+  assert.equal(checks,1);assert.equal(api.getSyncRuntimeState().status,'offline');
+  await api.syncPendingChanges();assert.equal(checks,1,'automatic backoff performs no extra run');
+});
+
+
+test('a mid-pull outage stops the cascade, preserves offline status and releases the run',async()=>{
+ const f=fixture(),commands=[],requests=[];let probes=0;
+ const api=loadSync(f,async command=>{commands.push(command);if(command==='get_local_sync_queue_status')return{pending_sync_count:0,unassigned_pending_sync_count:0,unassigned_state_count:0};if(command==='list_pending_sync_changes')return[];if(command==='get_inventory_sync_cursor')return null;throw Error('Unexpected command '+command);}, {
+  './sync-health':{isSyncServerReachable:async()=>++probes<=2},
+  './http':{apiFetch:async path=>{requests.push(path);throw Error('Connection interrupted');}},
+  './resource-uploads':{isResourceUpload:()=>false},
+  './resource-dependencies':{withoutBlockedResources:rows=>rows},
+ });
+ assert.equal(await api.syncPendingChanges(true),0);
+ assert.equal(requests.length,1,'later domains must not each retry the lost connection');
+ assert.equal(api.getSyncRuntimeState().status,'offline');
+ assert.deepEqual(commands,['get_local_sync_queue_status','list_pending_sync_changes','get_inventory_sync_cursor']);
 });

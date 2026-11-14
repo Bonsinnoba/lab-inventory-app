@@ -4,8 +4,10 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 
 function frame(mode,body){const header=Buffer.alloc(5);header[0]=mode;header.writeUInt32BE(body.length,1);return Buffer.concat([header,body]);}
-function run(input){return new Promise((resolve,reject)=>{
-  const child=spawn(process.execPath,['--max-old-space-size=128',fileURLToPath(new URL('./docx-native-worker.js',import.meta.url))],{windowsHide:true,stdio:['pipe','pipe','pipe'],env:{}});
+function run(input,blockedPackages=[]){return new Promise((resolve,reject)=>{
+  const loader=`export async function resolve(specifier,context,next){if(${JSON.stringify(blockedPackages)}.includes(specifier))throw Error('Unexpected converter engine: '+specifier);return next(specifier,context);}`;
+  const loaderArgs=blockedPackages.length?['--experimental-loader',`data:text/javascript;base64,${Buffer.from(loader).toString('base64')}`]:[];
+  const child=spawn(process.execPath,['--max-old-space-size=128',...loaderArgs,fileURLToPath(new URL('./docx-native-worker.js',import.meta.url))],{windowsHide:true,stdio:['pipe','pipe','pipe'],env:{}});
   const chunks=[];let size=0;const timer=setTimeout(()=>{child.kill();reject(Error('Worker timed out'));},20000);
   child.on('error',reject);child.stdin.on('error',()=>{});child.stderr.resume();
   child.stdout.on('data',data=>{size+=data.length;if(size>17*1024*1024){child.kill();reject(Error('Output limit'));}else chunks.push(data);});
@@ -25,4 +27,10 @@ test('native protocol rejects malformed, trailing, invalid UTF-8 and oversized m
 });
 test('native protocol reports invalid DOCX without passing raw paths to a parser',async()=>{
   const result=await run(frame(1,Buffer.from('C:\\private\\not-a-document')));assert.equal(result.kind,3);
+});
+test('one-shot workers load only the selected engine and reject unsafe markup before engine startup',async()=>{
+ const docx=await run(frame(2,Buffer.from('<p>Engine isolation</p>')),['mammoth']);assert.equal(docx.kind,2);
+ const preview=await run(frame(1,docx.body),['@turbodocx/html-to-docx']);assert.equal(preview.kind,1);assert.match(JSON.parse(preview.body).html,/Engine isolation/);
+ const invalid=await run(frame(2,Buffer.from('<img src="https://example.invalid/private.png">')),['mammoth','@turbodocx/html-to-docx']);assert.equal(invalid.kind,3);
+ assert.doesNotMatch(JSON.parse(invalid.body).error,/Unexpected converter engine/);
 });

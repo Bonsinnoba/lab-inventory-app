@@ -10,7 +10,8 @@ fn connection(app: &AppHandle) -> Result<Connection, String> {
 }
 
 #[tauri::command]
-pub fn get_local_inventory_snapshot(app: AppHandle) -> Result<Option<String>, String> {
+pub async fn get_local_inventory_snapshot(app: AppHandle) -> Result<Option<String>, String> {
+    crate::responsive_reads::run("get_local_inventory_snapshot", move || {
     let conn = connection(&app)?;
     crate::local_auth::require_local_permission(&conn,"inventory.view")?;
     conn.query_row(
@@ -20,6 +21,8 @@ pub fn get_local_inventory_snapshot(app: AppHandle) -> Result<Option<String>, St
     )
     .optional()
     .map_err(|err| format!("Unable to read local inventory snapshot: {err}"))
+
+    }).await
 }
 
 #[tauri::command]

@@ -16,12 +16,15 @@ export default function SettingsMenu({ onClose }: SettingsMenuProps) {
   const [passwordMessage, setPasswordMessage] = useState('');
   const [passwordError, setPasswordError] = useState('');
   const [savingPassword, setSavingPassword] = useState(false);
-  const storedUser = getStoredUser();
+  const [storedUser,setProfileUser] = useState(getStoredUser);
+  useEffect(()=>{const changed=()=>setProfileUser(getStoredUser());window.addEventListener('labos-user-updated',changed);return()=>window.removeEventListener('labos-user-updated',changed);},[]);
   const [displayName, setDisplayName] = useState(storedUser?.display_name || '');
   const [email, setEmail] = useState(storedUser?.email || '');
+  const [profileBase,setProfileBase]=useState({display_name:storedUser?.display_name??null,email:storedUser?.email??null});
   const [profileMessage, setProfileMessage] = useState('');
   const [profileError, setProfileError] = useState('');
   const [savingProfile, setSavingProfile] = useState(false);
+  const profileNeedsReview=profileBase.display_name!==(storedUser?.display_name??null)||profileBase.email!==(storedUser?.email??null);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); onClose(); } };
@@ -68,13 +71,14 @@ export default function SettingsMenu({ onClose }: SettingsMenuProps) {
 
   const saveProfile = async (event: React.FormEvent) => {
     event.preventDefault();
+    if(profileNeedsReview){setProfileError('Review the saved profile version before applying your entered values');return;}
     setProfileMessage('');
     setProfileError('');
     setSavingProfile(true);
     try {
-      const user = await updateProfile(displayName, email);
-      setStoredUser(user);
-      setProfileMessage('Profile updated successfully');
+      const user = await updateProfile(displayName,email,profileBase);
+      setStoredUser(user);setProfileBase({display_name:user.display_name??null,email:user.email??null});
+      setProfileMessage(user.profile_pending_sync?'Contact profile saved on this PC — pending sync':'Profile updated successfully');
     } catch (error) {
       setProfileError(error instanceof Error ? error.message : 'Failed to update profile');
     } finally {
@@ -155,7 +159,8 @@ export default function SettingsMenu({ onClose }: SettingsMenuProps) {
           <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="Email address" maxLength={254} className="w-full px-3 py-2 bg-bg border border-border rounded-sm text-sm text-text-primary focus:outline-none focus:border-accent" />
           {profileError && <p className="text-xs text-status-danger">{profileError}</p>}
           {profileMessage && <p className="text-xs text-status-ok">{profileMessage}</p>}
-          <button type="submit" disabled={savingProfile} className="px-3 py-2 bg-accent text-bg rounded-sm text-sm font-medium disabled:opacity-50">{savingProfile ? 'Saving…' : 'Save profile'}</button>
+          {profileNeedsReview&&<div className="rounded-sm border border-border p-3 text-sm" role="status"><p>The saved profile changed. Current display name: {storedUser?.display_name||'None'}. Current email: {storedUser?.email||'None'}. Your entered values are retained.</p><button type="button" className="mt-2 text-accent" onClick={()=>{setProfileBase({display_name:storedUser?.display_name??null,email:storedUser?.email??null});setProfileError('');}}>Use this version and keep my entered values</button></div>}
+          <button type="submit" disabled={savingProfile||profileNeedsReview} className="px-3 py-2 bg-accent text-bg rounded-sm text-sm font-medium disabled:opacity-50">{savingProfile ? 'Saving…' : 'Save profile'}</button>
         </form>
 
         <form onSubmit={savePassword} className="mb-6 border-t border-border pt-5 space-y-3">

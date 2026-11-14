@@ -128,11 +128,12 @@ test('failed native project writes never turn into HTTP writes',async()=>{
  assert.equal(c.requests(),0);
 });
 test('browser project writes keep the existing HTTP route',async()=>{
+ const project='11111111-1111-4111-8111-111111111111',task='22222222-2222-4222-8222-222222222222';
  let calls=0;const c=load(async()=>{throw Error('Unexpected IPC')},{desktop:false,http:async(url,options)=>{
-  calls++;assert.equal(url,'/projects/p/tasks');assert.equal(options.method,'POST');
-  assert.equal(JSON.parse(options.body).title,'Draft');assert.ok(options.headers['Idempotency-Key']);return{ok:true,status:201,json:async()=>({id:'t',project_id:'p'})};
+  calls++;assert.equal(url,`/projects/${project}/tasks`);assert.equal(options.method,'POST');
+  assert.equal(JSON.parse(options.body).title,'Draft');assert.ok(options.headers['Idempotency-Key']);return{ok:true,status:201,json:async()=>({id:task,project_id:project})};
  }});
- assert.equal((await c.api.createProjectTask('p',{title:'Draft'})).id,'t');assert.equal(calls,1);
+ assert.equal((await c.api.createProjectTask(project,{title:'Draft'})).id,task);assert.equal(calls,1);
 });
 
 test('browser review requires the displayed token and sends it unchanged',async()=>{

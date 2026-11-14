@@ -1,4 +1,5 @@
-import { requireResourceEditor, validateResourceParent } from './middleware/resource-access.js';
+import {requireLockedResourceEditor, requireLockedResourceDestination} from './resource-scope-lock.js';
+import {requireResourceNamespace} from './resource-folder-namespace.js';
 import { predecessorRevision } from './resource-content-edit.js';
 
 function fail(status, code, message) { throw Object.assign(new Error(message), { status, code }); }
@@ -40,6 +41,15 @@ export async function mutationExpectedRevision(client,move,change,user,kinds){
   const previous=attachmentPredecessor(move,change,user);
   if(!previous)return move.expected_updated_at;
   const prior=(await client.query('SELECT * FROM sync_idempotency WHERE change_id=$1',[previous])).rows[0];
+  if(move.protocol===2&&prior&&!['create','create_copy','edit_content'].includes(prior.operation))
+    fail(409,'RESOURCE_ATTACHMENT_CONFLICT','Protocol 2 requires a file predecessor');
+  if(move.protocol===3&&prior?.operation==='create'&&['link','folder'].includes(prior.response_json?.kind)){
+    if(prior.change_id!==previous||prior.user_id!==user.userId||prior.device_id!==change.__device_id||prior.entity_type!=='resource'||prior.entity_id!==change.entity_id||prior.response_status!==200||prior.response_json?.id!==change.entity_id||!kinds.includes(prior.response_json.kind)||prior.payload_json?.native_create_protocol!==1||prior.payload_json.resource?.id!==change.entity_id||prior.payload_json.resource.kind!==prior.response_json.kind)
+      fail(409,'RESOURCE_ATTACHMENT_CONFLICT','Native creation predecessor does not belong to this resource, author and device');
+    const revision=prior.response_json.updated_at;
+    if(typeof revision!=='string'||!Number.isFinite(Date.parse(revision)))fail(409,'RESOURCE_ATTACHMENT_CONFLICT','Earlier native creation confirmation is incomplete');
+    return revision;
+  }
   if(move.protocol===3&&['attach','edit_metadata'].includes(prior?.operation)){
     if(prior.change_id!==previous||prior.user_id!==user.userId||prior.device_id!==change.__device_id||prior.entity_type!=='resource'||prior.entity_id!==change.entity_id||prior.response_json?.id!==change.entity_id||!kinds.includes(prior.response_json?.kind))
       fail(409,'RESOURCE_ATTACHMENT_CONFLICT','Attachment predecessor does not belong to this resource, author and device');
@@ -58,12 +68,12 @@ export async function moveResourceAttachment(client, resourceId, user, destinati
   const destination = attachmentDestination(destinationValue);
   const resource = (await client.query('SELECT * FROM resources WHERE id=$1 FOR UPDATE', [resourceId])).rows[0];
   if (!resource) fail(409, 'RESOURCE_NOT_FOUND', 'Resource no longer exists');
-  const source = await requireResourceEditor(resourceId, user);
+  const source = await requireLockedResourceEditor(client, resourceId, user);
   if (!source.ok) fail(source.status, source.error.code, source.error.message);
   if (resource.parent_resource_id || resource.kind === 'folder')
     fail(409, 'RESOURCE_TREE_MOVE_REQUIRED', 'Folder trees and nested resources require folder management');
   if (requireRevision) checkAttachmentRevision(resource, expectedRevision);
-  const target = await validateResourceParent({ itemId: destination.item_id, projectId: destination.project_id, noteId: destination.note_id, user });
+  const target = await requireLockedResourceDestination(client, destination, user);
   if (!target.ok) fail(target.status, target.error.code, target.error.message);
   const projectId = target.context?.projectId || null;
   if (resource.visibility === 'project' && !projectId)
@@ -78,6 +88,7 @@ export async function moveResourceAttachment(client, resourceId, user, destinati
       fail(409, 'RESOURCE_PROJECT_MISMATCH', 'This resource is still referenced by another project. Review those references first.');
   }
   if (fields.every(k => (resource[k] || null) === destination[k])) return resource;
+  if (resource.kind === 'file') await requireResourceNamespace(client, {...resource, ...destination}, resource.id);
   return (await client.query(`UPDATE resources SET item_id=$1,project_id=$2,note_id=$3,updated_at=GREATEST(date_trunc('milliseconds',clock_timestamp()),date_trunc('milliseconds',updated_at)+interval '1 millisecond')
     WHERE id=$4 RETURNING *`, [destination.item_id, destination.project_id, destination.note_id, resourceId])).rows[0];
 }

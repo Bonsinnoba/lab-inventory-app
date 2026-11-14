@@ -13,6 +13,7 @@ function load(options={},store=new Map()){
   vm.runInNewContext(identityCode,{exports:identity,localStorage:storage,crypto:{randomUUID}});
   vm.runInNewContext(apiCode,{exports,require:p=>{
     if(p==='./download-enqueue-retry')return identity;
+    if(p==='./resource-uploads')return{localFileUrl:()=>null};
     if(p==='../lib/runtime')return{isTauriRuntime:()=>!!options.desktop};
     if(p==='./auth')return{captureAccountSession:()=>options.signedOut?null:{accountId:options.account??'a'},isAccountSessionCurrent:()=>!options.switched};
     if(p==='./downloads-local')return{enqueueLocalDownload:async(...args)=>{native.push(args);if(options.nativeError)throw Error('LOCAL_FAILURE');return{id:'local'};}};

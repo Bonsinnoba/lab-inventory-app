@@ -1,4 +1,4 @@
-// Mixed regression/characterization: KNOWN GAP checks still confirm unfixed defects.
+// Offline read regression: renderer requests never replace native repositories.
 // No database writes, real account data, server stop, or product changes.
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
@@ -23,6 +23,12 @@ function load(root,overrides={}){
     './comments':{},
     './activity':{listActivity:async()=>({items:[],state:'not_downloaded',next_before:null})},
     './downloads-local':{readDownloadSnapshot:async()=>({jobs:[],settings:null,snapshot_complete:true,last_synced_at:'2026-10-10T12:00:00Z'})},
+    './download-enqueue-retry':{browserEnqueueIdentity:()=>{throw Error('Unexpected browser enqueue');}},
+    './resource-uploads':{refreshLocalFileAccess:async()=>{},localFileUrl:()=>null,localFilePending:()=>false},
+    './resource-posters':{},
+    './resource-metadata-http':{},
+    './resource-tree-moves':{moveResourceTree:async()=>{throw Error('Unexpected mutation during an offline read');}},
+    '../lib/folderManifest':{},
     './auth':{getToken:()=>null,captureAccountSession:()=>({accountId:'fixture'}),isAccountSessionCurrent:()=>true},
     './local-backend':{localBackend:{isAvailable:()=>true}},
     '../lib/runtime':{isTauriRuntime:()=>true},
@@ -63,8 +69,9 @@ test('Resources: native read failure is surfaced without a server fallback',asyn
   const c=load('resources',{'@tauri-apps/api/tauri':{invoke:async()=>{throw Error('LOCAL_READ_FAILURE')}}});
   await assert.rejects(c.api.getAllResources(),/LOCAL_READ_FAILURE/);assert.deepEqual(c.requests,[]);
 });
-test('KNOWN GAP: media called local by the API is still a server URL',()=>{
-  const c=load('mediaDownloads');assert.match(c.api.getLocalMediaUrl('resource'),/^http:\/\/127\.0\.0\.1:4000\/api\//);
+test('desktop media without a native capability cannot become a server URL',()=>{
+  const c=load('mediaDownloads');assert.equal(c.api.getLocalMediaUrl('resource'),'');assert.deepEqual(c.requests,[]);
+  const ready=load('mediaDownloads',{'./resource-uploads':{localFileUrl:()=> 'labos-file://ready.capability'}});assert.equal(ready.api.getLocalMediaUrl('resource'),'labos-file://ready.capability');
 });
 for(const [module,fn] of [['operations','getOperationsOverview'],['phase4','getPhase4Intelligence'],['experience','getExperienceDashboard']]){
   test(`${module}: healthy desktop repositories serve the aggregate without HTTP`,async()=>{

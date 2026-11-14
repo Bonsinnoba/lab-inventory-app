@@ -38,19 +38,24 @@ const DailyUsePanel = lazy(() => import("./components/DailyUsePanel"));
 import MediaManager from "./components/MediaManager";
 import audioFocusCoordinator from "./lib/audioFocus";
 import LoginPage from "./pages/LoginPage";
+import ReauthenticationGate from './components/ReauthenticationGate';
+import {installQueryAvailability,lockQueryAvailability,unlockQueryAvailability} from './lib/queryAvailability';
 import CommandPalette from "./components/CommandPalette";
 const LabIntelligencePage = lazy(() => import("./pages/LabIntelligencePage"));
 const DownloadsPage = lazy(() => import("./pages/DownloadsPage"));
 import { getToken, setToken, removeToken, getStoredUser, setStoredUser, removeStoredUser, getCurrentUser, getCurrentPermissions, getLocalAuthStatus, logout, captureAccountSession, isAccountSessionCurrent, DESKTOP_REAUTH_REQUIRED } from "./api/auth";
 import type { User } from "./api/auth";
 import { getDailyUsePreferences } from './api/system';
-import { syncPendingChanges } from './api/sync';
+import { syncPendingChanges,getSyncRunSequence,markSyncServerUnavailable } from './api/sync';
+import {createAutomaticSync} from './api/automatic-sync';
+import {isSyncServerReachable} from './api/sync-health';
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { ToastProvider } from "./contexts/ToastContext";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchOnWindowFocus: false, retry: 1 } },
 });
+installQueryAvailability();
 
 function AppContent() {
   const location = useLocation();
@@ -60,6 +65,8 @@ function AppContent() {
   const [permissions, setPermissions] = useState<string[]>([]);
   useEffect(()=>{audioFocusCoordinator.reset();return()=>audioFocusCoordinator.reset();},[user?.id]);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [workspaceOwner,setWorkspaceOwner]=useState<User|null>(null);
+  const [reauthenticating,setReauthenticating]=useState(false);
   const [signInNotice, setSignInNotice] = useState<string | null>(null);
   const [rightPanelContent, setRightPanelContent] = useState<DockableContent>('assistant');
   const [musicDockOpen, setMusicDockOpen] = useState(false);
@@ -88,12 +95,12 @@ function AppContent() {
 
   useEffect(() => {
     const expired = () => {
-      setUser(null); setPermissions([]); setIsAuthenticated(false);
-      queryClient.clear();
+      if(workspaceOwner){lockQueryAvailability();void queryClient.cancelQueries();audioFocusCoordinator.reset();setReauthenticating(true);setIsAuthenticated(false);}
+      else {setUser(null);setPermissions([]);setIsAuthenticated(false);queryClient.clear();}
     };
     window.addEventListener('labos:auth-expired', expired);
     return () => window.removeEventListener('labos:auth-expired', expired);
-  }, [queryClient]);
+  }, [queryClient,workspaceOwner]);
 
   // An offline login can expire while the workspace is already open. Native
   // reads correctly deny access at the lease boundary, but without this check
@@ -111,7 +118,6 @@ function AppContent() {
         if (!active || getToken() !== token || !status || status.authenticated) return;
         setSignInNotice(DESKTOP_REAUTH_REQUIRED);
         removeToken();
-        removeStoredUser();
         window.dispatchEvent(new Event('labos:auth-expired'));
       } catch {
         // A transient SQLite read failure does not itself prove lease expiry.
@@ -152,32 +158,38 @@ function AppContent() {
 
   useEffect(() => {
     const onManualSyncComplete = () => { void queryClient.invalidateQueries(); };
+    const onResourceCopiesUpdated = () => { void queryClient.invalidateQueries({predicate:({queryKey})=>
+      ['resources','resource','resource-access-url'].includes(String(queryKey[0]))||
+      (queryKey[0]==='media-downloads'&&queryKey[1]==='pc-files')
+    }); };
     window.addEventListener('labos:manual-sync-complete', onManualSyncComplete);
-    return () => window.removeEventListener('labos:manual-sync-complete', onManualSyncComplete);
+    window.addEventListener('labos:resource-copies-updated', onResourceCopiesUpdated);
+    return () => {
+      window.removeEventListener('labos:manual-sync-complete', onManualSyncComplete);
+      window.removeEventListener('labos:resource-copies-updated', onResourceCopiesUpdated);
+    };
   }, [queryClient]);
 
   useEffect(() => {
     if (!isAuthenticated) return;
 
-    const syncAndRefresh = async (force = false) => {
-      try {
-        await syncPendingChanges(force);
-        window.dispatchEvent(new Event('labos:manual-sync-complete'));
-      } catch {
-        // Sync handles its own errors/status; keep the automatic loop alive.
-      }
-    };
-
-    void syncAndRefresh();
-    const timer = window.setInterval(() => { void syncAndRefresh(); }, 15000);
-    const recover = () => { void syncAndRefresh(true); };
+    const automatic=createAutomaticSync({
+      session:captureAccountSession,isCurrent:isAccountSessionCurrent,
+      reachable:isSyncServerReachable,unavailable:markSyncServerUnavailable,
+      sync:async force=>{const before=getSyncRunSequence();await syncPendingChanges(force);return getSyncRunSequence()!==before;},
+      completed:()=>window.dispatchEvent(new Event('labos:manual-sync-complete')),
+    });
+    void automatic.tick();
+    const timer = window.setInterval(() => { void automatic.tick(); }, 15000);
+    const recover = () => { void automatic.tick(true); };
     window.addEventListener('online', recover);
 
     return () => {
       window.clearInterval(timer);
+      automatic.stop();
       window.removeEventListener('online', recover);
     };
-  }, [isAuthenticated]);
+  }, [isAuthenticated,user?.id]);
 
   useEffect(() => {
     const m = () => {
@@ -206,6 +218,7 @@ function AppContent() {
         .then(({ user: cu }) => {
           if (!unchanged()) return;
           setUser(cu);
+          setWorkspaceOwner(cu);
           setStoredUser(cu);
           refreshPermissions();
           setIsAuthenticated(true);
@@ -224,6 +237,7 @@ function AppContent() {
         if (!token) throw new Error('Local session could not be restored');
         setToken(token);
         setUser(cu);
+        setWorkspaceOwner(cu);
         setStoredUser(cu);
         refreshPermissions();
         setIsAuthenticated(true);
@@ -234,16 +248,20 @@ function AppContent() {
     return () => { active = false; };
   }, []);
 
-  const handleLoginSuccess = (u: User, t: string) => {
+  const handleLoginSuccess = async (u: User, t: string) => {
+    if(reauthenticating&&workspaceOwner&&u.id!==workspaceOwner.id){await logout();removeToken();throw Error('Sign in to the original account to resume its open workspace');}
     setSignInNotice(null);
     setToken(t);
     setStoredUser(u);
     setUser(u);
-    refreshPermissions();
+    const session=captureAccountSession();const next=await getCurrentPermissions();if(!isAccountSessionCurrent(session))throw Error('Account changed during sign-in');
+    if(reauthenticating&&(workspaceOwner?.role!==u.role||JSON.stringify([...permissions].sort())!==JSON.stringify([...next].sort())))queryClient.clear();
+    setPermissions(next);setWorkspaceOwner(u);setReauthenticating(false);unlockQueryAvailability();
     setIsAuthenticated(true);
   };
 
   const handleLogout = () => {
+    setWorkspaceOwner(null);setReauthenticating(false);unlockQueryAvailability();queryClient.clear();
     void logout().catch(() => undefined);
     setUser(null);
     setPermissions([]);
@@ -273,7 +291,7 @@ function AppContent() {
     return 'Inventory';
   };
 
-  if (!isAuthenticated) return <LoginPage onLoginSuccess={handleLoginSuccess} notice={signInNotice} />;
+  if (!isAuthenticated&&!reauthenticating) return <LoginPage onLoginSuccess={handleLoginSuccess} notice={signInNotice} />;
 
   const rightPanelTitles: Record<Exclude<DockableContent, null>, string> = {
     assistant: 'Lab Assistant',
@@ -421,6 +439,7 @@ function AppContent() {
         </div>
       )}
             <CommandPalette open={commandPaletteOpen} onClose={() => setCommandPaletteOpen(false)} />
+      {reauthenticating&&workspaceOwner&&<ReauthenticationGate owner={workspaceOwner} onLogin={handleLoginSuccess} notice={signInNotice}/>}
       </>
     </Suspense>
   );

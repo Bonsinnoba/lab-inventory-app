@@ -10,6 +10,36 @@ fn fixture()->Connection{
 fn rows(new:&str)->Value{json!([{"operation":"create","record":{"id":new,"name":"new","type":"tool","initial_quantity":2,"current_quantity":2}},{"operation":"update","record":{"id":I,"name":"edited","type":"tool","initial_quantity":10,"current_quantity":8}}])}
 fn base(c:&Connection)->String{json!(inventory::read(c).unwrap().unwrap()).to_string()}
 #[test]
+fn workbook_exports_require_authority_and_distinguish_missing_from_empty(){
+    let mut c=fixture();assert!(export_snapshot(&mut c,"inventory",A).is_err());
+    c.execute("UPDATE local_users SET permissions_json='[\"reports.export\",\"inventory.view\",\"finance.view\"]'",[]).unwrap();
+    assert_eq!(export_snapshot(&mut c,"inventory",A).unwrap().len(),1);
+    assert!(export_snapshot(&mut c,"inventory","other").is_err());assert!(export_snapshot(&mut c,"finance",A).is_err());
+    c.execute("UPDATE local_users SET permissions_json='[\"reports.export\",\"finance.view\",\"finance.view_sensitive\"]'",[]).unwrap();
+    assert!(export_snapshot(&mut c,"finance",A).is_err());
+    c.execute("INSERT INTO sync_state(key,value) VALUES(?1,'[]')",[local_db::scoped_state_key(&c,"finance_transactions_state").unwrap()]).unwrap();
+    assert!(export_snapshot(&mut c,"finance",A).unwrap().is_empty());
+    c.execute("UPDATE sync_state SET value='broken' WHERE key=?1",[local_db::scoped_state_key(&c,"finance_transactions_state").unwrap()]).unwrap();
+    assert!(export_snapshot(&mut c,"finance",A).is_err());assert!(export_snapshot(&mut c,"unsupported",A).is_err());
+}
+#[test]
+fn finance_workbook_is_atomic_retryable_and_preserved_as_pending(){
+    let mut c=fixture();c.execute("UPDATE local_users SET permissions_json='[\"finance.import\",\"finance.view\",\"finance.view_sensitive\",\"finance.create_expense\"]'",[]).unwrap();
+    let key=local_db::scoped_state_key(&c,"finance_transactions_state").unwrap();c.execute("INSERT INTO sync_state(key,value) VALUES(?1,'[]')",[&key]).unwrap();
+    let id=local_db::new_uuid();let change=local_db::new_uuid();let rows=json!([{"operation":"create","record":{"id":id,"direction":"expense","type":"other","amount":12.5,"date":"2026-11-06","vendor":null,"notes":null,"item_id":null,"project_id":null,"funding_source_id":null,"budget_period_id":null}}]).to_string();
+    c.execute_batch("CREATE TRIGGER reject_finance_queue BEFORE INSERT ON sync_outbox BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+    assert!(finance_import(&mut c,&rows,"[]",A,&change).is_err());assert!(cached_rows(&c,"finance_transactions_state").unwrap().is_empty());
+    c.execute_batch("DROP TRIGGER reject_finance_queue;").unwrap();
+    assert!(finance_import(&mut c,&rows,"[]","other",&change).is_err());
+    assert_eq!(finance_import(&mut c,&rows,"[]",A,&change).unwrap()["created"],1);
+    assert_eq!(finance_import(&mut c,&rows,"[]",A,&change).unwrap()["created"],1);
+    assert_eq!(cached_rows(&c,"finance_transactions_state").unwrap().len(),1);
+    assert_eq!(c.query_row("SELECT COUNT(*) FROM sync_outbox",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+    assert!(crate::local_finance::pending_ids(&c,"transaction").unwrap().contains(&id));
+    let changed=rows.replace("12.5","13.5");assert!(finance_import(&mut c,&changed,"[]",A,&change).is_err());
+    assert!(finance_import(&mut c,&rows,"[]",A,&local_db::new_uuid()).is_err());
+}
+#[test]
 fn mixed_import_is_one_immutable_batch_and_native_retry_is_noop(){
     let mut c=fixture();let before=base(&c);let new=local_db::new_uuid();let change=local_db::new_uuid();let rows=rows(&new).to_string();
     assert_eq!(import_rows(&mut c,&rows,&before,A,&change).unwrap(),json!({"imported":2,"created":1,"updated":1}));

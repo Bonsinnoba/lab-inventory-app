@@ -3,7 +3,7 @@ use std::{path::PathBuf, process::Command};
 
 pub(crate) fn fixture(action: &str, id: &str) -> Value {
     let out = Command::new("docker").args([
-        "exec", "-e", "LABOS_PHASE2_PREFERENCES_PROBE=1", "labos-labos-api-1",
+        "exec", "-e", "LABOS_PHASE2_PREFERENCES_PROBE=1", std::env::var("LABOS_LIVE_API_CONTAINER").unwrap_or_else(|_|"labos-labos-api-1".into()).as_str(),
         "node", "src/phase2-preferences-client-fixture.mjs", action, id,
     ]).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -12,7 +12,7 @@ pub(crate) fn fixture(action: &str, id: &str) -> Value {
 
 pub(crate) fn http(method: &str, path: &str, body: Value, token: &str, key: &str) -> Value {
     let out = Command::new("node").args(["-e", r#"
-      (async()=>{const r=await fetch('http://127.0.0.1:4000/api'+process.env.PATH_SUFFIX,
+      (async()=>{const r=await fetch((process.env.LABOS_LIVE_API_URL||'http://127.0.0.1:4000/api')+process.env.PATH_SUFFIX,
         {method:process.env.METHOD,headers:{'Content-Type':'application/json',
           Authorization:'Bearer '+process.env.TOKEN,'Idempotency-Key':process.env.KEY},
           ...(process.env.METHOD==='GET'?{}:{body:process.env.BODY})});
@@ -61,11 +61,11 @@ fn merge(c: &mut Connection, account: &str, token: &str) {
 
 fn restart_api_if_opted_in() {
     if std::env::var("LABOS_LIVE_RESTART_API").as_deref() != Ok("1") { return; }
-    let out = Command::new("docker").args(["restart", "labos-labos-api-1"]).output().unwrap();
+    let out = Command::new("docker").args(["restart", std::env::var("LABOS_LIVE_API_CONTAINER").unwrap_or_else(|_|"labos-labos-api-1".into()).as_str()]).output().unwrap();
     assert!(out.status.success(), "API restart failed");
     let ready = Command::new("node").args(["-e", r#"
       (async()=>{for(let i=0;i<30;i++){
-        try{if((await fetch('http://127.0.0.1:4000/api/health',{signal:AbortSignal.timeout(1000)})).ok)return}catch{}
+        try{if((await fetch((process.env.LABOS_LIVE_API_URL||'http://127.0.0.1:4000/api')+'/health',{signal:AbortSignal.timeout(1000)})).ok)return}catch{}
         await new Promise(r=>setTimeout(r,500));
       }throw Error('API did not recover after restart')})().catch(e=>{console.error(e.message);process.exit(1)})
     "#]).output().unwrap();

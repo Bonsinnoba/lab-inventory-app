@@ -54,6 +54,15 @@ test('PATCH and link acknowledgements must match their record and endpoints',asy
  await assert.rejects(load(async()=>response()).write(`${path}/${randomUUID()}`,'PATCH',{title:'x'}),/another record/);
  await assert.rejects(load(async()=>response()).write(`${path}/${id}/experiments`,'POST',{experiment_id:randomUUID(),expected_relationship:null}),/endpoints/);
 });
+test('malformed confirmation UUIDs never acknowledge an uncertain work request',async()=>{
+ for(const badId of ['', 'not-a-uuid', id+'-', id.replace('-', '--')]){
+  const store=storage(),a=load(async()=>response({json:async()=>({id:badId,project_id:project})}),{store});
+  await assert.rejects(a.write(path,'POST',{title:'retain me'}),/confirmation identity/);
+  const b=load(async()=>response(),{store});await b.write(path,'POST',{title:'retain me'});
+  assert.equal(a.requests[0][1].headers['Idempotency-Key'],b.requests[0][1].headers['Idempotency-Key']);
+ }
+ await load(async()=>response({json:async()=>({id:id.replaceAll('-','').toUpperCase(),project_id:project.replaceAll('-','').toUpperCase()})})).write(path,'POST',{title:'normalized'});
+});
 test('unavailable retry storage fails before any request',async()=>{
  const c=load(async()=>response(),{store:{getItem(){throw Error('blocked');}}});await assert.rejects(c.write(path,'POST',{}),/storage/);assert.equal(c.requests.length,0);
 });
@@ -80,4 +89,25 @@ test('item-link confirmations must identify the requested inventory item',async(
  const item=randomUUID(),p=`/projects/${project}/items`,body={item_id:item,allocated_quantity:0,notes:'planning only',expected:null};
  await load(async()=>response({json:async()=>({id:item,item_id:item,project_id:project})})).write(p,'POST',body);
  await assert.rejects(load(async()=>response({json:async()=>({id,item_id:randomUUID(),project_id:project})})).write(p,'POST',body),/different inventory item/);
+});
+test('canvas connector confirmations preserve both endpoints and retry identity after invalid replies',async()=>{
+ const source=randomUUID(),target=randomUUID(),p=`/projects/${project}/connectors`,body={source_block_id:source,target_block_id:target,label:'depends on'};
+ const row={id,project_id:project,...body};
+ for(const bad of [{...row,source_block_id:target,target_block_id:source},{...row,target_block_id:randomUUID()},{id,project_id:project}]){
+  const store=storage(),a=load(async()=>response({json:async()=>bad}),{store});
+  await assert.rejects(a.write(p,'POST',body),/different endpoints/);
+  const b=load(async()=>response({json:async()=>row}),{store});await b.write(p,'POST',body);
+  assert.equal(a.requests[0][1].headers['Idempotency-Key'],b.requests[0][1].headers['Idempotency-Key']);
+  assert.equal(a.requests[0][1].body,b.requests[0][1].body);
+ }
+ await load(async()=>response({json:async()=>({...row,source_block_id:source.replaceAll('-','').toUpperCase()})})).write(p,'POST',body);
+});
+test('canvas creation cannot confirm a different block type or resource',async()=>{
+ const resource=randomUUID(),p=`/projects/${project}/blocks`,body={block_type:'pdf',resource_id:resource},row={id,project_id:project,...body};
+ for(const bad of [{...row,block_type:'text'},{...row,resource_id:randomUUID()},{...row,resource_id:null}]){
+  const store=storage(),a=load(async()=>response({json:async()=>bad}),{store});await assert.rejects(a.write(p,'POST',body),/Canvas confirmation/);
+  const b=load(async()=>response({json:async()=>row}),{store});await b.write(p,'POST',body);
+  assert.equal(a.requests[0][1].headers['Idempotency-Key'],b.requests[0][1].headers['Idempotency-Key']);
+ }
+ await load(async()=>response({json:async()=>({id,project_id:project,block_type:'text',text_content:'Saved'})})).write(p,'POST',{block_type:'text',text_content:'Saved'});
 });

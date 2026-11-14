@@ -33,6 +33,7 @@ test('server filename cannot establish PC availability; no HTTP dependency',asyn
   const c=load(),state=await c.api.readDownloadDeviceState();
   assert.match(c.api.downloadDeviceLabel(state,'r'),/not verified/);
   assert.deepEqual(c.calls.map(x=>x.command),['list_local_resources','local_resource_copy_status']);
+  assert.equal(c.calls[0].args.includeDescendants,true,'download history must resolve resources inside folders too');
   assert.equal(c.calls[1].args.expectedAccountId,'a');
 });
 test('only native ready status claims local availability',async()=>{

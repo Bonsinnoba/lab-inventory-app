@@ -55,10 +55,10 @@ export function visibilityReadSql({ alias, entityType, userIdParameter, rolePara
   return entityType === 'project' ? recordPredicate : `(${recordPredicate} AND ${linkedProjectReadSql(projectId,userIdParameter,roleParameter)})`;
 }
 
-async function hasProjectMembership(projectId, user) {
+async function hasProjectMembership(projectId, user, client = pool) {
   if (!projectId || !user?.userId) return false;
   if (user.role === 'admin') return true;
-  const result = await pool.query(
+  const result = await client.query(
     `SELECT 1
      FROM projects p
      LEFT JOIN project_members pm
@@ -69,9 +69,9 @@ async function hasProjectMembership(projectId, user) {
   return result.rowCount > 0;
 }
 
-async function grantFor(entityType, entityId, userId) {
+async function grantFor(entityType, entityId, userId, client = pool) {
   if (!entityType || !entityId || !userId) return null;
-  const result = await pool.query(
+  const result = await client.query(
     `SELECT access_level
      FROM record_access_grants
      WHERE entity_type = $1 AND entity_id = $2 AND user_id = $3`,
@@ -85,39 +85,39 @@ async function grantFor(entityType, entityId, userId) {
  * responsible for verifying the domain-specific permission before calling
  * this helper; visibility never grants a domain capability by itself.
  */
-export async function canReadEntity({ entityType, entityId, visibility, projectId = null, user }) {
+export async function canReadEntity({ entityType, entityId, visibility, projectId = null, user, client = pool }) {
   if (!user?.userId) return false;
   if (user.role === 'admin') return true;
 
   if (entityType !== 'project' && projectId) {
-    const project=await pool.query('SELECT id,visibility FROM projects WHERE id=$1',[projectId]);
-    if (!project.rowCount || !await canReadEntity({entityType:'project',entityId:projectId,visibility:project.rows[0].visibility,projectId,user})) return false;
+    const project=await client.query('SELECT id,visibility FROM projects WHERE id=$1',[projectId]);
+    if (!project.rowCount || !await canReadEntity({entityType:'project',entityId:projectId,visibility:project.rows[0].visibility,projectId,user,client})) return false;
   }
 
   switch (normalizeVisibility(visibility)) {
     case 'lab':
       return true;
     case 'project':
-      return hasProjectMembership(projectId, user);
+      return hasProjectMembership(projectId, user, client);
     case 'restricted':
-      return Boolean(await grantFor(entityType, entityId, user.userId));
+      return Boolean(await grantFor(entityType, entityId, user.userId, client));
     default:
       return false;
   }
 }
 
-export async function canEditRestrictedEntity({ entityType, entityId, user }) {
+export async function canEditRestrictedEntity({ entityType, entityId, user, client = pool }) {
   if (!user?.userId) return false;
   if (user.role === 'admin') return true;
-  return (await grantFor(entityType, entityId, user.userId)) === 'edit';
+  return (await grantFor(entityType, entityId, user.userId, client)) === 'edit';
 }
 
 /** Project owners and leads may manage grants for project-owned records. */
-export async function canManageEntityGrants({ projectId = null, user }) {
+export async function canManageEntityGrants({ projectId = null, user, client = pool }) {
   if (!user?.userId) return false;
   if (user.role === 'admin') return true;
   if (!projectId) return false;
-  const result = await pool.query(
+  const result = await client.query(
     `SELECT 1
      FROM projects p
      LEFT JOIN project_members pm

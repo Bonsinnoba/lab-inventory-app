@@ -2,6 +2,7 @@ import {catalogUuid} from './catalog-sync.js';
 import {getUserPermissions} from './middleware/permissions.js';
 import {writeAuditLog} from './middleware/audit.js';
 import {applyInventoryRaw} from './inventory-apply.js';
+import {applyPurchaseWorkbook} from './purchase-workbook.js';
 const fail=(status,code,message)=>{throw Object.assign(new Error(message),{status,code});};
 function targets(change){
   const p=change.payload;
@@ -17,6 +18,7 @@ function targets(change){
 // Applies inside the broker transaction. Versions cover every SQL writer via trigger.
 // Legacy outbox payloads are immutable and retain their previous semantics.
 export async function applyInventoryMutation(client,change,user,apply=()=>applyInventoryRaw(client,change,user.userId)){
+  if(change.entity_type==='item'&&change.operation==='purchase_import')return applyPurchaseWorkbook(client,change,user,applyInventoryMutation);
   if(change.entity_type==='item'&&change.operation==='import')return applyInventoryImport(client,change,user);
   const p=change.payload,versioned=p?.inventory_protocol===2;
   if(p?.inventory_protocol!==undefined&&!versioned)fail(400,'INVALID_INVENTORY_PROTOCOL','Unsupported inventory protocol');

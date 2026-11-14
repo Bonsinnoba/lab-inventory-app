@@ -4,7 +4,7 @@ use tauri::AppHandle;
 use crate::{local_db,local_auth,local_resources,local_resource_uploads};
 use sha2::{Digest,Sha256};
 fn err(e:impl std::fmt::Display)->String{e.to_string()}
-fn filename(value:&str)->String{
+pub(crate) fn filename(value:&str)->String{
  let value:String=value.chars().map(|c|if c.is_control()||"<>:\"/\\|?*".contains(c){'_'}else{c}).take(180).collect();
  let value=value.trim().trim_end_matches(['.',' ']);
  if value.is_empty(){return "resource".into()}
@@ -13,19 +13,19 @@ fn filename(value:&str)->String{
 }
 struct PartialFile{path:Option<PathBuf>,file:Option<File>}
 impl Drop for PartialFile{fn drop(&mut self){drop(self.file.take());if let Some(path)=&self.path{let _=fs::remove_file(path);}}}
-#[cfg(windows)]fn replace(source:&Path,target:&Path)->Result<(),String>{
+#[cfg(windows)]pub(crate) fn replace(source:&Path,target:&Path)->Result<(),String>{
  use std::os::windows::ffi::OsStrExt;
  use windows_sys::Win32::Storage::FileSystem::{MoveFileExW,MOVEFILE_REPLACE_EXISTING,MOVEFILE_WRITE_THROUGH};
  let source:Vec<u16>=source.as_os_str().encode_wide().chain(Some(0)).collect();let target:Vec<u16>=target.as_os_str().encode_wide().chain(Some(0)).collect();
  if unsafe{MoveFileExW(source.as_ptr(),target.as_ptr(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)}==0{return Err(err(std::io::Error::last_os_error()))}Ok(())
 }
-#[cfg(not(windows))]fn replace(source:&Path,target:&Path)->Result<(),String>{fs::rename(source,target).map_err(err)}
+#[cfg(not(windows))]pub(crate) fn replace(source:&Path,target:&Path)->Result<(),String>{fs::rename(source,target).map_err(err)}
 fn same_path(a:&Path,b:&Path)->bool{
  #[cfg(windows)]{a.as_os_str().to_string_lossy().to_lowercase()==b.as_os_str().to_string_lossy().to_lowercase()}
  #[cfg(not(windows))]{a==b}
 }
-fn within(path:&Path,root:&Path)->bool{let mut parent=Some(path);while let Some(p)=parent{if same_path(p,root){return true}parent=p.parent();}false}
-fn copy_atomic(source:&Path,target:&Path,size:u64,expected_digest:&str,mut verify:impl FnMut()->Result<(),String>)->Result<(),String>{
+pub(crate) fn within(path:&Path,root:&Path)->bool{let mut parent=Some(path);while let Some(p)=parent{if same_path(p,root){return true}parent=p.parent();}false}
+pub(crate) fn copy_atomic(source:&Path,target:&Path,size:u64,expected_digest:&str,mut verify:impl FnMut()->Result<(),String>)->Result<(),String>{
  verify()?;
  if expected_digest.len()!=64||!expected_digest.bytes().all(|b|b.is_ascii_hexdigit()){return Err("File integrity proof unavailable; destination unchanged".into())}
  let parent=target.parent().ok_or("Choose a destination folder")?.canonicalize().map_err(err)?;
@@ -34,7 +34,7 @@ fn copy_atomic(source:&Path,target:&Path,size:u64,expected_digest:&str,mut verif
  let path=parent.join(format!(".labos-export-{}.partial",uuid::Uuid::new_v4()));
  let output=OpenOptions::new().write(true).create_new(true).open(&path).map_err(err)?;
  let mut partial=PartialFile{path:Some(path.clone()),file:Some(output)};
- let mut input=File::open(source).map_err(err)?;let before=input.metadata().map_err(err)?;
+ let mut input=crate::working_store::open(source).map_err(err)?;let before=input.metadata().map_err(err)?;
  if before.len()!=size{return Err("Local source changed before export".into())}
  let mut remaining=size;let mut buffer=vec![0;1024*1024];let mut hash=Sha256::new();
  while remaining>0{verify()?;let wanted=remaining.min(buffer.len() as u64)as usize;let count=input.read(&mut buffer[..wanted]).map_err(err)?;if count==0{return Err("Local source became incomplete; destination unchanged".into())}hash.update(&buffer[..count]);partial.file.as_mut().unwrap().write_all(&buffer[..count]).map_err(err)?;remaining-=count as u64;}
@@ -67,8 +67,8 @@ pub async fn export_local_resource_file(app:AppHandle,expected_account_id:String
   let name=filename(record.original_filename.as_deref().unwrap_or(&record.name));
   // The destination comes exclusively from this native dialog, never an IPC path.
   let Some(target)=tauri::api::dialog::blocking::FileDialogBuilder::new().set_file_name(&name).save_file()else{return Ok(false)};
-  let managed=tauri::api::path::app_data_dir(&app.config()).ok_or("Missing app data directory")?.canonicalize().map_err(err)?;
-  if within(&target.parent().ok_or("Choose a destination folder")?.canonicalize().map_err(err)?,&managed){return Err("Export outside LabOS managed storage".into())}
+  let managed=tauri::api::path::app_data_dir(&app.config()).ok_or("Missing app data directory")?;
+  if crate::working_store::is_managed_directory(&managed,target.parent().ok_or("Choose a destination folder")?)?{return Err("Export outside LabOS managed storage".into())}
   copy_atomic(&pinned.0,&target,pinned.1,&pinned.2,||{if source(&app,&c,&expected_account_id,&expected_session_token,&id)?!=pinned{return Err("Resource revision changed; export stopped".into())}Ok(())})?;Ok(true)
  }).await.map_err(err)?
 }

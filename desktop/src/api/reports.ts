@@ -4,7 +4,7 @@ import { localBackend } from './local-backend';
 import { captureAccountSession } from './auth';
 import { getProjects, getProjectWorkspace } from './projects';
 import { getLocalInventorySnapshot } from './local-inventory';
-import { getAllResources } from './resources';
+import { getAllResourceMetadata } from './resources';
 import { assertReadAccount, readLocalSections, readWithDeadline, type ReadAvailability } from './read-availability';
 
 export interface ReportCount { status?:string; kind?:string; action?:string; count:number; }
@@ -37,7 +37,7 @@ async function getLocalReportsOverview():Promise<ReportsOverview> {
   assertReadAccount(session);
   await requireReportAccess();
   const {values,availability}=await readLocalSections({
-    projects:getProjects,inventory:getLocalInventorySnapshot,resources:getAllResources,
+    projects:getProjects,inventory:getLocalInventorySnapshot,resources:getAllResourceMetadata,
   },session);
   const tasks:any[]=[],experiments:any[]=[];
   let taskSources=0,experimentSources=0;

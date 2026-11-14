@@ -17,7 +17,7 @@ export async function readDownloadDeviceState():Promise<DownloadDeviceState>{
   const session=captureAccountSession();
   if(!session)throw new Error('Sign in to read PC file status');
   const check=()=>{if(!isAccountSessionCurrent(session))throw new Error('Account changed while reading PC file status');};
-  const rows=await localBackend.invoke<Resource[]>('list_local_resources');check();
+  const rows=await localBackend.invoke<Resource[]>('list_local_resources',{includeDescendants:true});check();
   if(!Array.isArray(rows))throw new Error('Local resource metadata unavailable');
   let copies:DownloadDeviceState['copies']={},copiesChecked=false;
   try{

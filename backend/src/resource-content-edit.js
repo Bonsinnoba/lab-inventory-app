@@ -1,5 +1,5 @@
 import fs from 'node:fs/promises';
-import { requireResourceEditor } from './middleware/resource-access.js';
+import {requireLockedResourceEditor} from './resource-scope-lock.js';
 import { prepareUploadedResource } from './resource-upload-staging.js';
 import { resolveStoragePath } from './storage.js';
 import { writeAuditLog } from './middleware/audit.js';
@@ -27,7 +27,7 @@ export function assertEditRevision(current,expected){
 }
 export function predecessorRevision(prior,change,user,resourceId){
   if(!prior)fail(503,'RESOURCE_EDIT_DEPENDENCY_PENDING','An earlier saved version must synchronize first');
-  if(prior.user_id!==user.userId||prior.device_id!==change.__device_id||prior.entity_type!=='resource'||prior.entity_id!==resourceId||!['edit_content','create','create_copy'].includes(prior.operation)||prior.response_json?.kind!=='file'||prior.response_json?.id!==resourceId)
+  if(prior.user_id!==user.userId||prior.device_id!==change.__device_id||prior.entity_type!=='resource'||prior.entity_id!==resourceId||!['edit_content','create','create_copy','attach','edit_metadata'].includes(prior.operation)||prior.response_json?.kind!=='file'||prior.response_json?.id!==resourceId)
     fail(409,'RESOURCE_EDIT_CONFLICT','Editor predecessor does not belong to this document and device');
   const revision=prior.response_json.updated_at;
   if(!revision||!Number.isFinite(Date.parse(revision)))fail(409,'RESOURCE_EDIT_CONFLICT','Earlier editor confirmation is incomplete');
@@ -38,7 +38,7 @@ export async function applyResourceContentEdit(client,change,user){
   if(record?.id!==change.entity_id)fail(400,'INVALID_RESOURCE_EDIT','Editor resource identity mismatch');
   const resource=(await client.query('SELECT * FROM resources WHERE id=$1 FOR UPDATE',[change.entity_id])).rows[0];
   if(!resource)fail(409,'RESOURCE_EDIT_CONFLICT','Resource no longer exists. Your saved local versions are preserved.');
-  const access=await requireResourceEditor(resource.id,user);
+  const access=await requireLockedResourceEditor(client,resource.id,user);
   if(!access.ok)fail(access.status,access.error.code,access.error.message);
   const format=validateContentEdit(resource,record,edit);
   let expected=edit.expected_updated_at;

@@ -5,8 +5,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    fs::{self, OpenOptions},
-    io::{Read, Seek, SeekFrom, Write},
+    fs::{self},
+    io::{Read},
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -23,15 +23,19 @@ impl Drop for CopyGuard {
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
-fn schema(c: &Connection) -> Result<(), String> {
+pub(crate) fn schema(c: &Connection) -> Result<(), String> {
     c.execute_batch("CREATE TABLE IF NOT EXISTS local_resource_copies(account_id TEXT NOT NULL,resource_id TEXT NOT NULL,origin TEXT NOT NULL,revision TEXT NOT NULL,sha256 TEXT NOT NULL,size_bytes INTEGER NOT NULL,mime_type TEXT NOT NULL,verified_bytes INTEGER NOT NULL DEFAULT 0,state TEXT NOT NULL DEFAULT 'copying',last_error TEXT,PRIMARY KEY(account_id,resource_id)); CREATE TABLE IF NOT EXISTS local_resource_copy_errors(account_id TEXT NOT NULL,resource_id TEXT NOT NULL,message TEXT NOT NULL,PRIMARY KEY(account_id,resource_id));").map_err(err)
 }
-fn authorize(
-    c: &Connection,
-    account: &str,
-    id: &str,
-    session: Option<&str>,
-) -> Result<String, String> {
+fn authorize(c:&Connection,account:&str,id:&str,session:Option<&str>)->Result<String,String>{
+    local_db::require_sync_account(c,account)?;local_auth::require_local_permission(c,"resources.view")?;
+    let record=local_resources::read_resources(c)?.into_iter().find(|r|r.id==id).ok_or("Resource unavailable on this PC")?;
+    authorize_record(c,account,&record,session)
+}
+// Bulk status reads provide a record from the SAME SQLite read transaction.
+// Keep every permission/denial/pending-work check without reparsing the entire
+// JSON collection for each resource.
+fn authorize_record(c:&Connection,account:&str,record:&local_resources::LocalResource,session:Option<&str>)->Result<String,String>{
+    let id=record.id.as_str();
     local_db::require_sync_account(c, account)?;
     local_auth::require_local_permission(c, "resources.view")?;
     if let Some(expected) = session {
@@ -50,10 +54,8 @@ fn authorize(
     if denied {
         return Err("Resource access revoked".into());
     }
-    let record = local_resources::read_resources(c)?
-        .into_iter()
-        .find(|r| r.id == id)
-        .ok_or("Resource unavailable on this PC")?;
+    let moving=crate::local_resource_tree_moves::require_pending_read(c,id)?;
+    if moving&&session.is_some(){return Err("File replication waits for the reviewed move confirmation; verified bytes remain readable".into())}
     let pending:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM sync_outbox WHERE account_id=?1 AND entity_type='resource' AND entity_id=?2 AND synced_at IS NULL)",params![account,id],|r|r.get(0)).map_err(err)?;
     // A locally authorized attachment-only intent does not change file bytes.
     // Keep already verified content readable, but defer network replication
@@ -70,10 +72,10 @@ fn authorize(
         }
         only_attachments
     } else { false };
-    if pending && !attachment_read {
+    if pending && !attachment_read && !moving {
         return Err("Resource has pending authored changes; copy deferred".into());
     }
-    Ok(record.updated_at)
+    Ok(record.updated_at.clone())
 }
 #[derive(Deserialize)]
 struct Manifest {
@@ -104,7 +106,7 @@ fn digest_valid(s: &str) -> bool {
         && s.bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
-fn paths(
+pub(crate) fn paths(
     app: &AppHandle,
     account: &str,
     id: &str,
@@ -115,8 +117,8 @@ fn paths(
     if !digest_valid(hash) {
         return Err("Invalid file digest".into());
     }
-    let root = tauri::api::path::app_data_dir(&app.config())
-        .ok_or("Missing data directory")?
+    let directory=tauri::api::path::app_data_dir(&app.config()).ok_or("Missing data directory")?;
+    let root = crate::working_store::canonical_key_root(&directory)?
         .join("resource-copies")
         .join(account)
         .join(id);
@@ -125,8 +127,8 @@ fn paths(
         root.join(format!("{hash}.content")),
     ))
 }
-fn hash_file(path: &Path) -> Result<String, String> {
-    let mut f = fs::File::open(path).map_err(err)?;
+pub(crate) fn hash_file(path: &Path) -> Result<String, String> {
+    let mut f = crate::working_store::open(path).map_err(err)?;
     let mut h = Sha256::new();
     let mut b = vec![0; 1024 * 1024];
     loop {
@@ -187,8 +189,13 @@ fn deny(app: &AppHandle, account: &str, id: &str, session: &str) -> Result<(), S
 
 // One bounded chunk per invocation; the coordinator rotates through resources.
 // All URLs and the server identity check are native-controlled, not manifest URLs.
+// Network waits and synchronous reconciliation/hash work share one bounded copy
+// owner on a blocking worker, leaving the async executor available to UI reads.
 #[tauri::command]
-pub async fn replicate_local_resource(
+pub async fn replicate_local_resource(app:AppHandle,expected_account_id:String,expected_session_token:String,resource_id:String,server_token:String)->Result<Value,String>{
+    tauri::async_runtime::spawn_blocking(move || tauri::async_runtime::block_on(replicate_owned(app,expected_account_id,expected_session_token,resource_id,server_token))).await.map_err(err)?
+}
+async fn replicate_owned(
     app: AppHandle,
     expected_account_id: String,
     expected_session_token: String,
@@ -202,6 +209,7 @@ pub async fn replicate_local_resource(
         return Err("File copy worker busy".into());
     }
     let _busy = CopyGuard;
+    {let mut c=local_db::open_local_connection(&app)?;crate::local_resource_storage::reconcile(&app,&mut c,&expected_account_id,&expected_session_token,false)?;}
     uuid::Uuid::parse_str(&resource_id).map_err(err)?;
     let outcome = copy_chunk(
         &app,
@@ -284,11 +292,12 @@ async fn copy_chunk(
         if authorize(&tx, account, id, Some(session))? != revision {
             return Err("Resource changed while copying".into());
         }
+        crate::local_resource_storage::reserve(&tx,account,id,&origin,&m.sha256,m.size_bytes)?;
         tx.execute("INSERT INTO local_resource_copies(account_id,resource_id,origin,revision,sha256,size_bytes,mime_type) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(account_id,resource_id) DO UPDATE SET origin=excluded.origin,revision=excluded.revision,sha256=excluded.sha256,size_bytes=excluded.size_bytes,mime_type=excluded.mime_type,verified_bytes=CASE WHEN origin=excluded.origin AND sha256=excluded.sha256 AND size_bytes=excluded.size_bytes THEN verified_bytes ELSE 0 END,state=CASE WHEN origin=excluded.origin AND sha256=excluded.sha256 AND size_bytes=excluded.size_bytes THEN state ELSE 'copying' END,last_error=NULL",params![account,id,origin,revision,m.sha256,m.size_bytes as i64,m.mime_type]).map_err(err)?;
         let (offset,state):(i64,String)=tx.query_row("SELECT verified_bytes,state FROM local_resource_copies WHERE account_id=?1 AND resource_id=?2",params![account,id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(err)?;
         if state == "ready"
-            && fs::metadata(&complete)
-                .map(|s| s.len() == m.size_bytes)
+            && crate::working_store::len(&complete)
+                .map(|size| size == m.size_bytes)
                 .unwrap_or(false)
         {
             tx.commit().map_err(err)?;
@@ -297,7 +306,7 @@ async fn copy_chunk(
         fs::create_dir_all(partial.parent().unwrap()).map_err(err)?;
         // Recover an interrupted rename/DB commit by verifying the published file.
         if complete.exists()
-            && fs::metadata(&complete).map_err(err)?.len() == m.size_bytes
+            && crate::working_store::len(&complete).map_err(err)? == m.size_bytes
             && hash_file(&complete)? == m.sha256
         {
             tx.execute("UPDATE local_resource_copies SET state='ready',verified_bytes=size_bytes WHERE account_id=?1 AND resource_id=?2",params![account,id]).map_err(err)?;
@@ -306,18 +315,12 @@ async fn copy_chunk(
         }
         let mut offset = offset.max(0) as u64;
         if !partial.exists()
-            || fs::metadata(&partial).map_err(err)?.len() < offset
+            || crate::working_store::staged_len(&partial).map_err(err)? < offset
             || offset > m.size_bytes
         {
             offset = 0;
         }
-        let f = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .open(&partial)
-            .map_err(err)?;
-        f.set_len(offset).map_err(err)?;
-        f.sync_all().map_err(err)?;
+        crate::working_store::reset_copy_staging(&partial,m.size_bytes,offset).map_err(err)?;
         tx.execute("UPDATE local_resource_copies SET state='copying',verified_bytes=?3 WHERE account_id=?1 AND resource_id=?2",params![account,id,offset as i64]).map_err(err)?;
         tx.commit().map_err(err)?;
         offset
@@ -371,14 +374,10 @@ async fn copy_chunk(
     if authorize(&tx, account, id, Some(session))? != revision {
         return Err("Resource changed while copying".into());
     }
-    let mut file = OpenOptions::new().write(true).open(&partial).map_err(err)?;
-    file.seek(SeekFrom::Start(offset)).map_err(err)?;
-    file.write_all(&bytes).map_err(err)?;
-    file.sync_all().map_err(err)?;
-    drop(file);
+    crate::working_store::append(&partial,m.size_bytes,offset,&bytes).map_err(err)?;
     let next = offset + bytes.len() as u64;
     if next == m.size_bytes {
-        if hash_file(&partial)? != m.sha256 {
+        if hash_file(&partial).map(|hash|hash != m.sha256).unwrap_or(true) {
             tx.execute("UPDATE local_resource_copies SET verified_bytes=0,last_error='Whole-file checksum mismatch' WHERE account_id=?1 AND resource_id=?2",params![account,id]).map_err(err)?;
             tx.commit().map_err(err)?;
             return Err("Whole-file checksum mismatch; restarting copy".into());
@@ -394,42 +393,59 @@ async fn copy_chunk(
     status(app, account, id)
 }
 
-pub(crate) fn readable(
-    app: &AppHandle,
-    c: &Connection,
-    id: &str,
-) -> Result<(PathBuf, String, u64), String> {
-    schema(c)?;
-    let account = local_db::active_account(c)?;
-    let revision = authorize(c, &account, id, None)?;
-    let origin = native_authorization::trusted_base().map_err(|e| e.message)?;
-    let (hash,mime,size):(String,String,i64)=c.query_row("SELECT sha256,mime_type,size_bytes FROM local_resource_copies WHERE account_id=?1 AND resource_id=?2 AND revision=?3 AND origin=?4 AND state='ready'",params![account,id,revision,origin],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(err)?;
-    let (_, path) = paths(app, &account, id, &hash)?;
-    if fs::metadata(&path).map_err(err)?.len() != size as u64 {
-        return Err("Device file is incomplete".into());
-    }
-    Ok((path, mime, size as u64))
+pub(crate) fn readable(app:&AppHandle,c:&Connection,id:&str)->Result<(PathBuf,String,u64),String>{
+    schema(c)?;let account=local_db::active_account(c)?;readable_impl(app,c,&account,id,None)
 }
+pub(crate) fn readable_record(app:&AppHandle,c:&Connection,account:&str,record:&local_resources::LocalResource)->Result<(PathBuf,String,u64),String>{
+    readable_impl(app,c,account,&record.id,Some(record))
+}
+fn readable_impl(app:&AppHandle,c:&Connection,account:&str,id:&str,snapshot:Option<&local_resources::LocalResource>)->Result<(PathBuf,String,u64),String>{
+    let revision=match snapshot{Some(record)=>authorize_record(c,account,record,None)?,None=>authorize(c,account,id,None)?};
+    let origin=native_authorization::trusted_base().map_err(|e|e.message)?;
+    let (hash,mime,size,copy_revision):(String,String,i64,String)=c.query_row("SELECT sha256,mime_type,size_bytes,revision FROM local_resource_copies WHERE account_id=?1 AND resource_id=?2 AND origin=?3 AND state='ready'",params![account,id,origin],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(err)?;
+    let record=match snapshot{Some(record)=>record.clone(),None=>local_resources::read_resources(c)?.into_iter().find(|r|r.id==id).ok_or("Resource unavailable")?};
+    if record.updated_at!=revision||!crate::local_resource_authority::verified_copy_revision(c,&record,&copy_revision)?{return Err("Device copy revision is not verified".into())}
+    let (_,path)=paths(app,account,id,&hash)?;
+    if crate::working_store::len(&path).map_err(err)?!=size as u64{return Err("Device file is incomplete".into())}
+    Ok((path,mime,size as u64))
+}
+
 #[tauri::command]
-pub fn local_resource_copy_status(
+pub async fn local_resource_copy_status(
     app: AppHandle,
     expected_account_id: String,
 ) -> Result<Value, String> {
-    let c = local_db::open_local_connection(&app)?;
-    schema(&c)?;
-    local_db::require_sync_account(&c, &expected_account_id)?;
-    local_auth::require_local_permission(&c, "resources.view")?;
-    let origin = native_authorization::trusted_base().map_err(|e| e.message)?;
+    crate::responsive_reads::run("local_resource_copy_status", move || {
+    let mut connection=local_db::open_local_connection(&app)?;schema(&connection)?;
+    local_db::require_sync_account(&connection,&expected_account_id)?;local_auth::require_local_permission(&connection,"resources.view")?;
+    let origin=native_authorization::trusted_base().map_err(|e|e.message)?;
+    let snapshot=connection.transaction().map_err(err)?;
+    let result=copy_status_snapshot(&snapshot,&expected_account_id,&origin,|record|readable_record(&app,&snapshot,&expected_account_id,record).is_ok())?;
+    snapshot.commit().map_err(err)?;
+    // Leave the snapshot before the final account/lease check.
+    local_db::require_sync_account(&connection,&expected_account_id)?;local_auth::require_local_permission(&connection,"resources.view")?;
+    Ok(result)
+    }).await
+}
+fn copy_status_snapshot(c:&Connection,expected_account_id:&str,origin:&str,mut available:impl FnMut(&local_resources::LocalResource)->bool)->Result<Value,String>{
+    local_db::require_sync_account(c,expected_account_id)?;
+    local_auth::require_local_permission(c,"resources.view")?;
+    let candidates={
+        let mut statement=c.prepare("SELECT resource_id FROM local_resource_copies WHERE account_id=?1 UNION SELECT resource_id FROM local_resource_copy_errors WHERE account_id=?1").map_err(err)?;
+        let rows=statement.query_map([&expected_account_id],|row|row.get::<_,String>(0)).map_err(err)?;
+        rows.collect::<Result<std::collections::HashSet<_>,_>>().map_err(err)?
+    };
     let mut result = serde_json::Map::new();
-    for r in local_resources::read_resources(&c)? {
-        if authorize(&c, &expected_account_id, &r.id, None).is_err() {
+    if !candidates.is_empty(){for r in local_resources::read_resources(c)? {
+        if !candidates.contains(&r.id){continue;}
+        if authorize_record(c,expected_account_id,&r,None).is_err() {
             continue;
         }
         let row:Option<(String,i64,i64,Option<String>,String,String)>=c.query_row("SELECT state,verified_bytes,size_bytes,last_error,revision,origin FROM local_resource_copies WHERE account_id=?1 AND resource_id=?2",params![expected_account_id,r.id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(err)?;
         let last_error:Option<String>=c.query_row("SELECT message FROM local_resource_copy_errors WHERE account_id=?1 AND resource_id=?2",params![expected_account_id,r.id],|r|r.get(0)).optional().map_err(err)?;
         if let Some((state, bytes, size, error, revision, copy_origin)) = row {
-            let identity_current = revision == r.updated_at && copy_origin == origin;
-            let available = identity_current && state == "ready" && readable(&app, &c, &r.id).is_ok();
+            let identity_current = copy_origin == origin && crate::local_resource_authority::verified_copy_revision(c,&r,&revision)?;
+            let available = identity_current && state == "ready" && available(&r);
             result.insert(r.id,json!({"state":copy_display_state(&state,identity_current,available),"verified_bytes":if identity_current{bytes}else{0},"size_bytes":if identity_current{Some(size)}else{None},"error":last_error.or(error)}));
         } else if let Some(message) = last_error {
             result.insert(
@@ -437,8 +453,10 @@ pub fn local_resource_copy_status(
                 json!({"state":"incomplete","verified_bytes":0,"size_bytes":null,"error":message}),
             );
         }
-    }
+    }}
+    local_db::require_sync_account(c,expected_account_id)?;
     Ok(Value::Object(result))
+
 }
 
 fn copy_display_state(state: &str, identity_current: bool, available: bool) -> &str {
@@ -450,6 +468,25 @@ fn copy_display_state(state: &str, identity_current: bool, available: bool) -> &
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn large_error_status_snapshot_reads_metadata_once_and_keeps_authority_checks(){
+        let mut c=Connection::open_in_memory().unwrap();local_db::ensure_schema(&c).unwrap();schema(&c).unwrap();crate::local_resource_posters::schema(&c).unwrap();
+        c.execute_batch("CREATE TABLE local_users(id TEXT PRIMARY KEY,central_user_id TEXT,role TEXT,is_active INTEGER,offline_expires_at TEXT,permissions_json TEXT);CREATE TABLE local_session(id INTEGER PRIMARY KEY,user_id TEXT,session_token TEXT);INSERT INTO local_users VALUES('local','owner','admin',1,datetime('now','+1 hour'),'[\"resources.view\"]');INSERT INTO local_session VALUES(1,'local','session');").unwrap();
+        let resources:Vec<local_resources::LocalResource>=(0..2000).map(|i|serde_json::from_value(json!({"id":uuid::Uuid::new_v4().to_string(),"name":format!("Synthetic {i}"),"kind":"file","file_type":"text","tags":[],"created_at":"2026-11-13T00:00:00Z","updated_at":"2026-11-13T00:00:00Z"})).unwrap()).collect();
+        local_resources::write_resources(&c,&resources).unwrap();
+        {let tx=c.transaction().unwrap();for resource in &resources{tx.execute("INSERT INTO local_resource_copy_errors VALUES('owner',?1,'Owned copy failure')",[&resource.id]).unwrap();tx.execute("INSERT INTO local_resource_copy_errors VALUES('foreign',?1,'Foreign private failure')",[&resource.id]).unwrap();}tx.commit().unwrap();}
+        c.execute("INSERT INTO local_resource_poster_denials VALUES('owner',?1)",[&resources[0].id]).unwrap();
+        let device:String=c.query_row("SELECT device_id FROM device_identity",[],|r|r.get(0)).unwrap();
+        c.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES(?1,?2,'resource',?3,'edit_metadata','{}')",params![uuid::Uuid::new_v4().to_string(),device,resources[1].id]).unwrap();
+        local_resources::reset_snapshot_reads();let started=std::time::Instant::now();
+        let tx=c.transaction().unwrap();let result=copy_status_snapshot(&tx,"owner","http://fixture/api",|_|panic!("Error-only rows must not inspect or expose file bytes")).unwrap();tx.commit().unwrap();
+        let scan_ms=started.elapsed().as_millis();
+        assert_eq!(local_resources::snapshot_reads(),1,"One collection read must serve the entire batch");
+        assert_eq!(result.as_object().unwrap().len(),1998);assert!(result.get(&resources[0].id).is_none());assert!(result.get(&resources[1].id).is_none());
+        assert!(result.as_object().unwrap().values().all(|row|row["state"]=="incomplete"&&row["verified_bytes"]==0&&row["size_bytes"].is_null()&&row["error"]=="Owned copy failure"));
+        assert!(!result.to_string().contains("Foreign private"));assert!(copy_status_snapshot(&c,"foreign","http://fixture/api",|_|false).is_err());
+        println!("2000 error-row status scan: {scan_ms} ms; one metadata parse; denied/pending/foreign rows protected");
+    }
     #[test]
     fn copy_presentation_requires_current_identity_and_readable_file() {
         assert_eq!(copy_display_state("ready", true, true), "ready");

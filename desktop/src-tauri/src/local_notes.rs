@@ -48,6 +48,7 @@ fn save_checked(conn: &mut Connection, notes: &[Value], changes: Vec<(String,Str
         tx.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES (?1,?2,?3,?4,?5,?6)",
             params![change_id,device,entity_type,entity_id,operation,payload.to_string()])
             .map_err(|e|format!("Unable to queue local note change: {e}"))?;
+        if entity_type=="note"&&operation=="create"{crate::local_resource_destinations::record_creation(&tx,"note",&entity_id,&change_id,&payload)?;}
     }
     tx.commit().map_err(|e|format!("Unable to commit local note change: {e}"))
 }
@@ -57,7 +58,8 @@ fn now(conn:&Connection)->Result<String,String>{conn.query_row("SELECT strftime(
 fn valid_visibility(value:&str)->bool{matches!(value,"lab"|"project"|"restricted")}
 
 #[tauri::command]
-pub fn list_local_notes(app:AppHandle,filters:Option<Value>)->Result<Vec<Value>,String>{
+pub async fn list_local_notes(app:AppHandle,filters:Option<Value>)->Result<Vec<Value>,String>{
+    crate::responsive_reads::run("list_local_notes", move || {
     let c=conn(&app)?; local_auth::require_local_permission(&c,"notes.view")?; let notes=load(&c)?;
     let f=filters.unwrap_or_else(||json!({}));
     let search=f.get("search").and_then(Value::as_str).map(|s|s.to_lowercase());
@@ -75,23 +77,32 @@ pub fn list_local_notes(app:AppHandle,filters:Option<Value>)->Result<Vec<Value>,
         }
         true
     }).collect())
+
+    }).await
 }
 
 #[tauri::command]
-pub fn get_local_note_tags(app:AppHandle)->Result<Vec<String>,String>{
+pub async fn get_local_note_tags(app:AppHandle)->Result<Vec<String>,String>{
+    crate::responsive_reads::run("get_local_note_tags", move || {
     let c=conn(&app)?; local_auth::require_local_permission(&c,"notes.view")?; let notes=load(&c)?; let mut tags:Vec<String>=Vec::new();
     for n in notes { if let Some(a)=n.get("tags").and_then(Value::as_array){for t in a{if let Some(s)=t.as_str(){if !tags.iter().any(|x|x==s){tags.push(s.to_string());}}}}}
     tags.sort(); Ok(tags)
+
+    }).await
 }
 
 #[tauri::command]
-pub fn get_local_note(app:AppHandle,note_id:String)->Result<Option<Value>,String>{let c=conn(&app)?;local_auth::require_local_permission(&c,"notes.view")?;Ok(load(&c)?.into_iter().find(|n|n.get("id").and_then(Value::as_str)==Some(note_id.as_str())))}
+pub async fn get_local_note(app:AppHandle,note_id:String)->Result<Option<Value>,String>{
+    crate::responsive_reads::run("get_local_note", move || {let c=conn(&app)?;local_auth::require_local_permission(&c,"notes.view")?;Ok(load(&c)?.into_iter().find(|n|n.get("id").and_then(Value::as_str)==Some(note_id.as_str())))
+    }).await
+}
 
 #[tauri::command]
 pub fn create_local_note(app:AppHandle,note:Value)->Result<Value,String>{
     create_note(&mut conn(&app)?,note)
 }
 fn create_note(c:&mut Connection,mut note:Value)->Result<Value,String>{
+    let account=local_db::active_account(c)?;
     let mut notes=load(c)?;
     if note.get("title").and_then(Value::as_str).map(|s|s.trim().is_empty()).unwrap_or(true){return Err("title is required".into());}
     let visibility=note.get("visibility").and_then(Value::as_str).unwrap_or("lab").to_string();
@@ -100,9 +111,10 @@ fn create_note(c:&mut Connection,mut note:Value)->Result<Value,String>{
     let nid=id();let ts=now(&c)?;note["id"]=json!(&nid);note["title"]=json!(note.get("title").and_then(Value::as_str).unwrap_or("").trim());
     note["body"]=note.get("body").cloned().unwrap_or(json!(""));note["tags"]=note.get("tags").cloned().unwrap_or(json!([]));
     note["visibility"]=json!(visibility);
+    note["author_id"]=json!(&account);
     note["created_at"]=json!(&ts);note["updated_at"]=json!(&ts);note["revisions"]=json!([]);
     notes.push(note.clone());
-    save(c,&notes,vec![(id(),"note".into(),nid,"create".into(),note.clone())])?;Ok(note)
+    save_checked(c,&notes,vec![(id(),"note".into(),nid,"create".into(),note.clone())],Some(&account))?;Ok(note)
 }
 
 #[tauri::command]
@@ -126,7 +138,10 @@ pub fn delete_local_note(app:AppHandle,note_id:String)->Result<(),String>{
 }
 
 #[tauri::command]
-pub fn get_local_note_revisions(app:AppHandle,note_id:String)->Result<Vec<Value>,String>{let c=conn(&app)?;local_auth::require_local_permission(&c,"notes.view")?;let n=load(&c)?.into_iter().find(|n|n.get("id").and_then(Value::as_str)==Some(note_id.as_str())).ok_or("Note not found")?;Ok(n.get("revisions").and_then(Value::as_array).cloned().unwrap_or_default())}
+pub async fn get_local_note_revisions(app:AppHandle,note_id:String)->Result<Vec<Value>,String>{
+    crate::responsive_reads::run("get_local_note_revisions", move || {let c=conn(&app)?;local_auth::require_local_permission(&c,"notes.view")?;let n=load(&c)?.into_iter().find(|n|n.get("id").and_then(Value::as_str)==Some(note_id.as_str())).ok_or("Note not found")?;Ok(n.get("revisions").and_then(Value::as_array).cloned().unwrap_or_default())
+    }).await
+}
 
 #[tauri::command]
 pub fn restore_local_note_revision(app:AppHandle,note_id:String,revision_id:String)->Result<Value,String>{

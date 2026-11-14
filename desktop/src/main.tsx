@@ -1,9 +1,11 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import {startPerformanceProbe} from './lib/performance-probe';
 import "./styles/tokens.css";
 import "./styles/ui2.css";
 import "./styles/sidebar-profile.css";
+void startPerformanceProbe().catch(()=>{});
 
 if (typeof window !== "undefined" && (window.location.protocol === "http:" || window.location.protocol === "https:")) {
   window.addEventListener("load", () => {

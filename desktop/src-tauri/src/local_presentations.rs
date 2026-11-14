@@ -35,7 +35,7 @@ pub fn open_local_presentation(app: AppHandle, expected_account_id: String,
     fs::create_dir(&folder).map_err(|e| e.to_string())?;
     let target = folder.join(format!("Presentation.{ext}"));
     let result = (|| -> Result<(), String> {
-        let mut input = fs::File::open(&source).map_err(|e| e.to_string())?.take(size + 1);
+        let mut input = crate::working_store::open(&source).map_err(|e| e.to_string())?.take(size + 1);
         let mut output = fs::OpenOptions::new().write(true).create_new(true).open(&target).map_err(|e| e.to_string())?;
         if std::io::copy(&mut input, &mut output).map_err(|e| e.to_string())? != size {
             return Err("Presentation changed while copying; please retry".into());

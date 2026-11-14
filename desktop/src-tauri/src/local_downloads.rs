@@ -139,10 +139,17 @@ mod tests{
         let tx=c.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
         let account=local_db::active_account(&tx).unwrap();
         let snapshot=view(&tx,&account).unwrap();
-        let resource=local_resources::read_resources(&tx).unwrap().into_iter().find(|r|
+        let original_resources=local_resources::read_resources(&tx).unwrap();
+        let candidate=original_resources.iter().find(|r|
             r.kind=="link"&&r.url.is_some()&&r.local_media_filename.is_none()&&
             !snapshot["jobs"].as_array().unwrap().iter().any(|j|j["resource_id"]==r.id)
-        ).expect("Probe requires an existing undownloaded link with no job");
+        ).cloned();
+        let resource=candidate.unwrap_or_else(||{
+            assert_eq!(std::env::var("LABOS_DOWNLOAD_PROBE_SEED").as_deref(),Ok("1"),"Probe requires an existing undownloaded link with no job or explicit rollback-only fixture opt-in");
+            let resource:local_resources::LocalResource=serde_json::from_value(json!({"id":uuid::Uuid::new_v4().to_string(),"name":"Rollback-only download fixture","kind":"link","file_type":"video","url":"https://www.youtube.com/watch?v=rollback-fixture","tags":[],"created_at":"2026-11-06T00:00:00.000Z","updated_at":"2026-11-06T00:00:00.000Z"})).unwrap();
+            let mut resources=original_resources.clone();resources.push(resource.clone());
+            local_resources::write_resources(&tx,&resources).unwrap();resource
+        });
         let before=pending(&tx).unwrap().len();
         assert!(queue_in_transaction(&tx,"different-account",&resource.id,None,None).is_err());
         let schedule=Some("2099-12-10T12:00:00.000Z".to_string());
@@ -156,6 +163,7 @@ mod tests{
         assert_eq!(view(&tx,&account).unwrap()["jobs"].as_array().unwrap().iter().filter(|j|j["id"]==first["id"]).count(),1);
         let job_id=first["id"].as_str().unwrap().to_owned();
         tx.rollback().unwrap();
+        assert_eq!(serde_json::to_value(local_resources::read_resources(&c).unwrap()).unwrap(),serde_json::to_value(original_resources).unwrap(),"Probe fixture must roll back with the request");
         let count:i64=c.query_row("SELECT COUNT(*) FROM sync_outbox WHERE entity_type='resource_download_job' AND entity_id=?1",[job_id],|r|r.get(0)).unwrap();
         assert_eq!(count,0,"Probe must not leave a download request behind");
     }

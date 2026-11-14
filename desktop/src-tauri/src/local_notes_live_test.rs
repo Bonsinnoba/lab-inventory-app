@@ -6,7 +6,7 @@ use std::{process::Command,path::PathBuf};
 
 fn http(method:&str,path:&str,body:Value,token:&str)->Value {
     let base=std::env::var("LABOS_LIVE_API_URL").expect("LABOS_LIVE_API_URL required");
-    assert!(base=="http://127.0.0.1:4000/api"||base=="http://localhost:4000/api","Only local LabOS is allowed");
+    assert!(["http://127.0.0.1:4000/api","http://localhost:4000/api","http://127.0.0.1:4030/api"].contains(&base.as_str()),"Only local LabOS is allowed");
     let output=Command::new("node").args(["-e",r#"(async()=>{const r=await fetch(process.env.LABOS_TEST_URL,{method:process.env.LABOS_TEST_METHOD,headers:{'Content-Type':'application/json',Authorization:'Bearer '+process.env.LABOS_TEST_TOKEN},...(process.env.LABOS_TEST_METHOD==='GET'?{}:{body:process.env.LABOS_TEST_BODY})});const text=await r.text();if(!r.ok)throw new Error(r.status+': '+text);console.log(text||'{}')})().catch(e=>{console.error(e.message);process.exit(1)})"#])
         .env("LABOS_TEST_URL",format!("{base}{path}")).env("LABOS_TEST_METHOD",method).env("LABOS_TEST_BODY",body.to_string()).env("LABOS_TEST_TOKEN",token).output().unwrap();
     assert!(output.status.success(),"HTTP {method} {path}: {}",String::from_utf8_lossy(&output.stderr));

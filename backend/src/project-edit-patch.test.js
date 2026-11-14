@@ -16,3 +16,8 @@ test('conflicting authored fields reject; matching values and independent edits 
 test('legacy events without before retain their existing behavior',()=>{
  assert.deepEqual(projectEditPatch({description:'legacy'},null,{}),{description:'legacy'});
 });
+test('stale unchanged status is not a reopening instruction; authored reopening remains explicit',()=>{
+ const current={status:'cancelled',lifecycle_revision:4};
+ assert.deepEqual(projectEditPatch({status:'planning'},{status:'planning',lifecycle_revision:3},current),{});
+ assert.deepEqual(projectEditPatch({status:'planning'},{status:'cancelled',lifecycle_revision:3},current),{status:'planning'});
+});

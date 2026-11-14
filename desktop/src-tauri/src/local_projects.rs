@@ -232,6 +232,7 @@ fn save_checked(conn: &mut Connection, projects: &[Value], changes: Vec<(String,
             "INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES (?1,?2,?3,?4,?5,?6)",
             params![change_id, device, entity_type, entity_id, operation, payload.to_string()],
         ).map_err(|e| format!("Unable to queue local project change: {e}"))?;
+        if entity_type=="project"&&operation=="create"{crate::local_resource_destinations::record_creation(&tx,"project",&entity_id,&change_id,&payload)?;}
     }
     for id in refreshed_reservations {
         tx.execute("DELETE FROM sync_state WHERE key=?1",[local_db::scoped_state_key(&tx,&format!("reservation_reconcile_{id}"))?]).map_err(|e|e.to_string())?;
@@ -297,7 +298,7 @@ pub fn create_local_project(app: AppHandle, mut project: Value) -> Result<Value,
     project["requirements"] = json!([]);
     project["lifecycle_revision"] = json!(1);
     projects.push(project.clone());
-    save(&mut c, &projects, vec![(id(), "project".into(), project_id, "create".into(), project.clone())])?;
+    save_checked(&mut c, &projects, vec![(id(), "project".into(), project_id, "create".into(), project.clone())],Some(&user_id),&[])?;
     Ok(project)
 }
 

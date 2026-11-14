@@ -1,8 +1,17 @@
 {
-  "package": { "productName": "LabOS V1" },
+  "package": {
+    "productName": "LabOS V1"
+  },
   "tauri": {
-    "bundle": { "identifier": "com.lab-inventory.app.v1" },
-    "allowlist": { "http": { "scope": ["http://localhost:4010/*"] } },
-    "windows": [{ "title": "LabOS V1 — Personal Lab", "fileDropEnabled": false }]
+    "bundle": {
+      "identifier": "com.lab-inventory.app.v1"
+    },
+    "allowlist": {},
+    "windows": [
+      {
+        "title": "LabOS V1 — Personal Lab",
+        "fileDropEnabled": false
+      }
+    ]
   }
 }

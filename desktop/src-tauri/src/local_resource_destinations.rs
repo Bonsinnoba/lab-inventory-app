@@ -20,7 +20,36 @@ struct Grant {kind:String,id:String,can_attach:bool,scope:Option<Scope>}
 struct Snapshot {protocol:u32,account_id:String,grants:Vec<Grant>}
 fn err(e:impl std::fmt::Display)->String{e.to_string()}
 fn schema(c:&Connection)->Result<(),String>{
-    c.execute_batch("CREATE TABLE IF NOT EXISTS local_resource_destinations(account_id TEXT NOT NULL,kind TEXT NOT NULL,entity_id TEXT NOT NULL,origin TEXT NOT NULL,scope_json TEXT,can_attach INTEGER NOT NULL,expires_at TEXT NOT NULL,PRIMARY KEY(account_id,kind,entity_id));").map_err(err)
+    c.execute_batch("CREATE TABLE IF NOT EXISTS local_resource_destinations(account_id TEXT NOT NULL,kind TEXT NOT NULL,entity_id TEXT NOT NULL,origin TEXT NOT NULL,scope_json TEXT,can_attach INTEGER NOT NULL,expires_at TEXT NOT NULL,PRIMARY KEY(account_id,kind,entity_id));
+    CREATE TABLE IF NOT EXISTS local_native_destinations(account_id TEXT NOT NULL,kind TEXT NOT NULL,entity_id TEXT NOT NULL,change_id TEXT NOT NULL,device_id TEXT NOT NULL,payload_json TEXT NOT NULL,scope_json TEXT NOT NULL,PRIMARY KEY(account_id,kind,entity_id));").map_err(err)
+}
+
+// Populated only by native project/note creation, in its projection/outbox
+// transaction. Cache pulls and renderer-supplied grant snapshots cannot write it.
+pub(crate) fn record_creation(c:&Connection,kind:&str,id:&str,change:&str,payload:&Value)->Result<(),String>{
+    if c.is_autocommit()||!["project","note"].contains(&kind){return Err("Native destination provenance requires its creation transaction".into())}schema(c)?;
+    if payload["id"].as_str()!=Some(id){return Err("Native destination identity mismatch".into())}
+    let account=local_db::active_account(c)?;let device:String=c.query_row("SELECT device_id FROM device_identity WHERE id=1",[],|r|r.get(0)).map_err(err)?;
+    c.execute("INSERT INTO local_native_destinations(account_id,kind,entity_id,change_id,device_id,payload_json,scope_json) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![account,kind,id,change,device,payload.to_string(),serde_json::to_string(&scope(kind,payload)).map_err(err)?]).map_err(err)?;Ok(())
+}
+
+fn own_pending(c:&Connection,kind:&str,id:&str)->Result<Option<String>,String>{
+    schema(c)?;let account=local_db::active_account(c)?;
+    let proof:Option<(String,String)>=c.query_row("SELECT n.change_id,n.scope_json FROM local_native_destinations n JOIN sync_outbox o ON o.account_id=n.account_id AND o.change_id=n.change_id AND o.entity_type=n.kind AND o.entity_id=n.entity_id AND o.operation='create' AND o.device_id=n.device_id AND o.payload_json=n.payload_json WHERE n.account_id=?1 AND n.kind=?2 AND n.entity_id=?3 AND n.device_id=(SELECT device_id FROM device_identity WHERE id=1) AND o.synced_at IS NULL",params![account,kind,id],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(err)?;
+    let Some((change,raw))=proof else{return Ok(None)};
+    let blocked:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM sync_outbox o WHERE o.account_id=?1 AND o.entity_type=?2 AND o.entity_id=?3 AND o.synced_at IS NULL AND (o.operation='delete' OR EXISTS(SELECT 1 FROM sync_conflicts f WHERE f.change_id=o.change_id AND f.resolved_at IS NULL)))",params![account,kind,id],|r|r.get(0)).map_err(err)?;
+    if blocked{return Err("Review the destination's pending deletion or sync conflict before attaching".into())}
+    for suffix in ["view","edit","create"]{local_auth::require_local_permission(c,&format!("{}.{suffix}",if kind=="project"{"projects"}else{"notes"}))?;}
+    let records=rows(c,kind)?;let mut found=records.iter().filter(|r|r["id"].as_str()==Some(id));let current=found.next().ok_or("Native destination no longer exists locally")?;
+    let original:Scope=serde_json::from_str(&raw).map_err(err)?;
+    if found.next().is_some()||scope(kind,current)!=original{return Err("Native destination scope changed; synchronize and review before attaching".into())}
+    if kind=="project"{if current["owner_id"].as_str()!=Some(account.as_str()){return Err("Native project ownership changed".into())}crate::local_projects::require_cached_project_access(c,id,true)?;}
+    else if let Some(project)=&original.project_id{require_destination(c,"project",project)?;}
+    Ok(Some(change))
+}
+
+pub(crate) fn dependencies(c:&Connection,record:&Value)->Result<Vec<Value>,String>{
+    let mut dependencies=Vec::new();for (field,kind) in [("project_id","project"),("note_id","note")]{if let Some(id)=record[field].as_str(){if let Some(change)=own_pending(c,kind,id)?{dependencies.push(serde_json::json!({"change_id":change,"entity_type":kind,"entity_id":id}));}}}Ok(dependencies)
 }
 fn rows(c:&Connection,kind:&str)->Result<Vec<Value>,String>{
     match kind{"note"=>crate::local_notes::load(c),"project"=>crate::local_projects::load_all(c),_=>Err("Invalid resource destination kind".into())}
@@ -88,6 +117,7 @@ pub(crate) async fn refresh(app:&AppHandle,account:&str,session:&str,token:&str,
 }
 
 pub(crate) fn require_destination(c:&Connection,kind:&str,id:&str)->Result<(),String>{
+    if own_pending(c,kind,id)?.is_some(){return Ok(())}
     schema(c)?;let account=local_db::active_account(c)?;
     let origin=native_authorization::trusted_base().map_err(|e|e.message)?;
     let grant:Option<(bool,Option<String>)>=c.query_row("SELECT can_attach,scope_json FROM local_resource_destinations WHERE account_id=?1 AND kind=?2 AND entity_id=?3 AND origin=?4 AND datetime('now')<datetime(expires_at) AND expires_at=(SELECT u.offline_expires_at FROM local_users u JOIN local_session s ON s.user_id=u.id WHERE s.id=1)",params![account,kind,id,origin],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(err)?;
@@ -104,6 +134,23 @@ pub(crate) fn require_destination(c:&Connection,kind:&str,id:&str)->Result<(),St
 mod tests{
     use super::*;
     const ID:&str="11111111-1111-4111-8111-111111111111";
+    #[test]
+    fn own_unsynced_destination_needs_native_provenance_current_scope_rights_and_no_conflict(){
+        let path=std::env::temp_dir().join(format!("labos-native-destination-{}.sqlite",uuid::Uuid::new_v4()));let account="10000000-0000-4000-8000-000000000001";let change="22222222-2222-4222-8222-222222222222";
+        let mut c=Connection::open(&path).unwrap();local_db::ensure_schema(&c).unwrap();schema(&c).unwrap();
+        c.execute_batch("CREATE TABLE local_users(id TEXT PRIMARY KEY,central_user_id TEXT,role TEXT,is_active INTEGER,offline_expires_at TEXT,permissions_json TEXT);CREATE TABLE local_session(id INTEGER PRIMARY KEY,user_id TEXT);INSERT INTO local_users VALUES('a','10000000-0000-4000-8000-000000000001','researcher',1,datetime('now','+1 hour'),'[\"notes.view\",\"notes.edit\",\"notes.create\"]');INSERT INTO local_users VALUES('b','10000000-0000-4000-8000-000000000002','researcher',1,datetime('now','+1 hour'),'[\"notes.view\",\"notes.edit\",\"notes.create\"]');INSERT INTO local_session VALUES(1,'a');").unwrap();
+        let note=serde_json::json!({"id":ID,"title":"New offline note","visibility":"restricted","project_id":null,"author_id":account});let device:String=c.query_row("SELECT device_id FROM device_identity WHERE id=1",[],|r|r.get(0)).unwrap();let key=local_db::scoped_state_key(&c,"notes_state").unwrap();
+        c.execute("INSERT INTO sync_state(key,value) VALUES(?1,?2)",params![key,serde_json::json!([note]).to_string()]).unwrap();c.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json) VALUES(?1,?2,'note',?3,'create',?4)",params![change,device,ID,note.to_string()]).unwrap();
+        assert!(own_pending(&c,"note",ID).unwrap().is_none());assert!(record_creation(&c,"note",ID,change,&note).is_err());
+        {let tx=c.transaction().unwrap();record_creation(&tx,"note",ID,change,&note).unwrap();tx.commit().unwrap();}drop(c);
+        let c=Connection::open(&path).unwrap();assert_eq!(own_pending(&c,"note",ID).unwrap().as_deref(),Some(change));require_destination(&c,"note",ID).unwrap();
+        assert_eq!(dependencies(&c,&serde_json::json!({"note_id":ID})).unwrap(),vec![serde_json::json!({"change_id":change,"entity_type":"note","entity_id":ID})]);
+        let mut altered=note.clone();altered["visibility"]=serde_json::json!("lab");c.execute("UPDATE sync_state SET value=?2 WHERE key=?1",params![key,serde_json::json!([altered]).to_string()]).unwrap();assert!(own_pending(&c,"note",ID).is_err());c.execute("UPDATE sync_state SET value=?2 WHERE key=?1",params![key,serde_json::json!([note]).to_string()]).unwrap();
+        c.execute("UPDATE local_users SET permissions_json='[]' WHERE id='a'",[]).unwrap();assert!(own_pending(&c,"note",ID).is_err());c.execute("UPDATE local_users SET permissions_json='[\"notes.view\",\"notes.edit\",\"notes.create\"]' WHERE id='a'",[]).unwrap();
+        c.execute("UPDATE local_session SET user_id='b'",[]).unwrap();assert!(own_pending(&c,"note",ID).unwrap().is_none());c.execute("UPDATE local_session SET user_id='a'",[]).unwrap();
+        c.execute("INSERT INTO sync_conflicts(change_id,entity_type,entity_id,operation,payload_json,error_code,error_message) VALUES(?1,'note',?2,'create',?3,'DENIED','fixture')",params![change,ID,note.to_string()]).unwrap();assert!(own_pending(&c,"note",ID).is_err());
+        drop(c);std::fs::remove_file(path).unwrap();
+    }
     fn request()->Vec<Destination>{vec![Destination{kind:"note".into(),id:ID.into()}]}
     fn snapshot()->Snapshot{Snapshot{protocol:1,account_id:"account".into(),grants:vec![Grant{kind:"note".into(),id:ID.into(),can_attach:true,scope:Some(Scope{project_id:None,visibility:"restricted".into()})}]}}
     #[test]

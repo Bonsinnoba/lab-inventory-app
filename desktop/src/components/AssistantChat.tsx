@@ -59,6 +59,7 @@ export default function AssistantChat({ fullPage = false, onClose }: Props) {
   useEffect(()=>{ apiFetch('/assistant/capabilities').then(async r=>r.ok&&setCapabilities(await r.json())).catch(()=>null); apiFetch('/assistant/preferences').then(async r=>{if(r.ok){const p=await r.json();setContext({scope:p.context_scope||'none',projectId:p.context_project_id||null,customTools:Array.isArray(p.context_tools)?p.context_tools:[]});}}).catch(()=>null); loadConversations(); },[]);
   useEffect(()=>{if(!showAssistantMenu)return;const onPointerDown=(event:PointerEvent)=>{if(!assistantMenuRef.current?.contains(event.target as Node))setShowAssistantMenu(false);};const onKeyDown=(event:KeyboardEvent)=>{if(event.key==='Escape'){event.preventDefault();setShowAssistantMenu(false);}};document.addEventListener('pointerdown',onPointerDown);window.addEventListener('keydown',onKeyDown);return()=>{document.removeEventListener('pointerdown',onPointerDown);window.removeEventListener('keydown',onKeyDown);};},[showAssistantMenu]);
   useEffect(()=>{if(!showJumpMenu)return;const onPointerDown=(event:PointerEvent)=>{if(!jumpMenuRef.current?.contains(event.target as Node))setShowJumpMenu(false);};const onKeyDown=(event:KeyboardEvent)=>{if(event.key==='Escape'){event.preventDefault();setShowJumpMenu(false);jumpButtonRef.current?.focus();}};document.addEventListener('pointerdown',onPointerDown);window.addEventListener('keydown',onKeyDown);return()=>{document.removeEventListener('pointerdown',onPointerDown);window.removeEventListener('keydown',onKeyDown);};},[showJumpMenu]);
+  useEffect(()=>{if(!showJumpMenu)return;const frame=requestAnimationFrame(()=>jumpMenuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus());return()=>cancelAnimationFrame(frame);},[showJumpMenu]);
   useEffect(()=>{if(!showContext&&!showHistory)return;const onKeyDown=(event:KeyboardEvent)=>{if(event.key==='Escape'){event.preventDefault();setShowContext(false);setShowHistory(false);}};window.addEventListener('keydown',onKeyDown);return()=>window.removeEventListener('keydown',onKeyDown);},[showContext,showHistory]);
   useEffect(()=>{const on=()=>setIsOnline(true),off=()=>setIsOnline(false);window.addEventListener('online',on);window.addEventListener('offline',off);return()=>{window.removeEventListener('online',on);window.removeEventListener('offline',off)}},[]);
 
@@ -98,7 +99,8 @@ export default function AssistantChat({ fullPage = false, onClose }: Props) {
       return [prompt];
     });
   },[messages]);
-  const jumpToResponse=(index:number)=>{setShowJumpMenu(false);scrollRef.current?.querySelector(`[data-response-index="${index}"]`)?.scrollIntoView({behavior:'smooth',block:'start'});jumpButtonRef.current?.focus();};
+  const jumpToResponse=(index:number)=>{setShowJumpMenu(false);const reduceMotion=window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;scrollRef.current?.querySelector(`[data-response-index="${index}"]`)?.scrollIntoView({behavior:reduceMotion?'auto':'smooth',block:'start'});jumpButtonRef.current?.focus();};
+  const handleJumpMenuKeyDown=(event:React.KeyboardEvent<HTMLDivElement>)=>{const items=Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));if(!items.length)return;const current=items.indexOf(document.activeElement as HTMLButtonElement);let next:number|undefined;if(event.key==='ArrowDown')next=(current+1)%items.length;else if(event.key==='ArrowUp')next=current<=0?items.length-1:current-1;else if(event.key==='Home')next=0;else if(event.key==='End')next=items.length-1;if(next!==undefined){event.preventDefault();items[next].focus();}};
   const toggleCustom=(name:string)=>saveContext({...context,customTools:context.customTools.includes(name)?context.customTools.filter(x=>x!==name):[...context.customTools,name]});
   const shellClass=fullPage?'flex flex-col h-full min-h-0 bg-surface border border-border rounded-md':'flex flex-col h-full';
 
@@ -189,7 +191,7 @@ export default function AssistantChat({ fullPage = false, onClose }: Props) {
                   <span className="font-mono text-[11px]">{responsePrompts.length}</span>
                 </button>
                 {showJumpMenu&&(
-                  <div role="menu" aria-label="Conversation jump menu" className="assistant-jump-menu absolute bottom-full right-0 mb-2 z-50 w-64 max-h-56 overflow-y-auto rounded-lg border border-border bg-surface p-1.5 shadow-2xl space-y-0.5">
+                  <div role="menu" aria-label="Conversation jump menu" onKeyDown={handleJumpMenuKeyDown} className="assistant-jump-menu absolute bottom-full right-0 mb-2 z-50 w-64 max-h-56 overflow-y-auto rounded-lg border border-border bg-surface p-1.5 shadow-2xl space-y-0.5">
                     <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-text-tertiary border-b border-border mb-1">Responses ({responsePrompts.length})</div>
                     {responsePrompts.map(({index,question},qIdx)=>(
                       <button

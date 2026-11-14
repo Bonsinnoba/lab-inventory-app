@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 const access = readFileSync(new URL('./resource-access.js', import.meta.url), 'utf8');
 const sync = readFileSync(new URL('../routes/sync.js', import.meta.url), 'utf8');
 const routes = readFileSync(new URL('../routes/resources.js', import.meta.url), 'utf8');
+const sharing = readFileSync(new URL('../resource-sharing.js', import.meta.url), 'utf8');
 const localResources = readFileSync(new URL('../../../desktop/src-tauri/src/local_resources.rs', import.meta.url), 'utf8');
 
 test('resource access evaluates every ancestor and attached Note scope', () => {
@@ -31,7 +32,8 @@ test('restricted resources have server-side scope and grant administration route
   assert.match(routes, /router\.put\('\/:id\/access-grants\/:userId'/);
   assert.match(routes, /canManageEntityGrants/);
   assert.match(routes, /record_access_grants/);
-  assert.match(routes, /resource_access_grant/);
+  assert.match(routes, /resourceSharingTransaction/);
+  assert.match(sharing, /resource_access_grant/);
 });
 
 test('resource metadata facets use the same effective access as resource reads', () => {

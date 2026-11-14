@@ -14,7 +14,7 @@ function load(){
    if(p==='./local-inventory')return{getLocalInventorySnapshot:async()=>null};
    if(p==='../lib/runtime')return{isTauriRuntime:()=>true};
    if(p==='@tauri-apps/api/tauri')return{invoke:async()=>{throw Error('unexpected IPC')}};
-   if(p==='./items')return{};throw Error(p);
+   if(p==='./items'||p==='./local-workbooks')return{};throw Error(p);
  }});return{api:exports,requests:()=>requests};
 }
 test('import plans classify new UUID rows explicitly and freeze preview versions',()=>{

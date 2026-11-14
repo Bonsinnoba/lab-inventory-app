@@ -10,10 +10,11 @@ function load(options={}){
   const code=ts.transpileModule(readFileSync(new URL('./mediaDownloads.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
   vm.runInNewContext(code,{exports,require:p=>{
     if(p==='../lib/runtime')return{isTauriRuntime:()=>!options.browser};
-    if(p==='./auth')return{};
+    if(p==='./auth')return{getToken:()=> 'test-token'};
+    if(p==='./resource-uploads')return{localFileUrl:()=>options.localUrl??null};
     if(p==='./download-enqueue-retry')return{};
     if(p==='./downloads-local')return{readDownloadSnapshot:async()=>{calls.push('local');if(options.error)throw Error(options.error);return{tools_status:options.missing?null:report};}};
-    if(p==='./http')return{apiFetch:async path=>{calls.push(path);return{ok:true,json:async()=>report};}};
+    if(p==='./http')return{apiUrl:path=>'https://lab.test/api'+path,apiFetch:async path=>{calls.push(path);return{ok:true,json:async()=>report};}};
     throw Error(p);
   }});return{api:exports,calls};
 }
@@ -32,4 +33,13 @@ test('native permission/session errors cannot fall through to server reads',asyn
 });
 test('browser retains the server diagnostic endpoint',async()=>{
   const c=load({browser:true});assert.equal(await c.api.getMediaToolsStatus(),report);assert.deepEqual(c.calls,['/media-downloads/tools/status']);
+});
+test('desktop playback helpers require native capability and never serialize a server bearer',()=>{
+ for(const localUrl of [null,'labos-file://verified.capability']){
+  const c=load({localUrl});assert.equal(c.api.getLocalMediaUrl('resource'),localUrl||'');assert.deepEqual(c.calls,[]);
+ }
+ const browser=load({browser:true});assert.match(browser.api.getLocalMediaUrl('resource'),/^https:\/\/lab[.]test\/api\/media-downloads\/resource\/media\?access_token=test-token$/);
+});
+test('desktop legacy thumbnail mutation cannot bypass the poster replication worker',async()=>{
+ const c=load();await assert.rejects(c.api.downloadYouTubeThumbnail('resource'),/poster worker/);assert.deepEqual(c.calls,[]);
 });

@@ -1,0 +1,4 @@
+import {readFileSync} from 'node:fs';
+import vm from 'node:vm';import ts from 'typescript';import test from 'node:test';import assert from 'node:assert/strict';
+const exports={};vm.runInNewContext(ts.transpileModule(readFileSync(new URL('./resourceTreeTargets.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{exports});
+test('folder picker excludes moving roots and every descendant without inventing authorization',()=>{const rows=[{id:'root',kind:'folder'},{id:'child',kind:'folder',parent_resource_id:'root'},{id:'grandchild',kind:'folder',parent_resource_id:'child'},{id:'file',kind:'file'},{id:'target',kind:'folder'}];assert.deepEqual(Array.from(exports.resourceTreeTargets(rows,['root']),r=>r.id),['target']);assert.deepEqual(Array.from(exports.resourceTreeTargets(rows,['root','target']),r=>r.id),[]);});

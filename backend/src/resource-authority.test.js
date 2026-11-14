@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {authorityIds,resourceScope,resourceAuthority,resourceBindings,inheritedResourceAuthority} from './resource-authority.js';
+import {authorityIds,resourceScope,resourceAuthority,resourceBindings,inheritedResourceAuthority,resourceActionAuthority} from './resource-authority.js';
 const id='aaffbbcc-0011-4233-8455-66778899aabb';
 const row={id,updated_at:'2026-10-14T00:00:00.000Z',visibility:'restricted',project_id:null,item_id:null,note_id:null,parent_resource_id:null};
 test('authority request UUIDs are canonical, unique and bounded',()=>{
@@ -52,4 +52,26 @@ test('chain depth is bounded without accepting a truncated root',()=>{
   assert.equal(resourceBindings(rows).length,32);
   rows[31].parent_resource_id='node-32';assert.equal(resourceBindings(rows),null);
   rows.push({...row,id:'node-32',kind:'folder',depth:32});assert.equal(resourceBindings(rows),null);
+});
+
+
+test('action grants separate delete-only and edit-only permissions without broadening record authority',()=>{
+ const rows=chain(),grant=inheritedResourceAuthority(id,rows[0],rows[0],true,rows,rows);
+ const deleted=resourceActionAuthority(grant,new Set(['resources.view','resources.delete']));
+ assert.equal(deleted.can_delete,true);assert.equal(deleted.can_edit,false);assert.deepEqual(deleted.bindings,grant.bindings);
+ const edited=resourceActionAuthority(grant,new Set(['resources.view','resources.edit']));
+ assert.equal(edited.can_delete,false);assert.equal(edited.can_edit,true);
+ for(const permissions of [new Set(['resources.delete']),new Set(['resources.view'])]){
+  const denial=resourceActionAuthority(grant,permissions);assert.equal(denial.can_delete,false);assert.equal(denial.can_edit,false);assert.equal(denial.scope,null);assert.equal(denial.bindings,null);
+ }
+ const denied=inheritedResourceAuthority(id,rows[0],rows[0],false,rows,rows);
+ assert.equal(resourceActionAuthority(denied,new Set(['resources.view','resources.delete'])).can_delete,false);
+});
+
+
+test('create-only folder grants permit children, never metadata edit or deletion',()=>{
+ const rows=chain(),folderRows=[{...rows[1],depth:0,parent_resource_id:null}],folderGrant=inheritedResourceAuthority(folder,folderRows[0],folderRows[0],true,folderRows,folderRows);
+ const allowed=resourceActionAuthority(folderGrant,new Set(['resources.view','resources.create']));assert.equal(allowed.can_create_child,true);assert.equal(allowed.can_edit,false);assert.equal(allowed.can_delete,false);
+ const fileGrant=inheritedResourceAuthority(id,rows[0],rows[0],true,rows,rows);
+ const denied=resourceActionAuthority(fileGrant,new Set(['resources.view','resources.create']));assert.equal(denied.can_create_child,false);assert.equal(denied.scope,null);
 });

@@ -6,10 +6,31 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { BINARY_CHUNK_BYTES, binaryError, binarySource, createResourceBinaryStore, parseBinaryRange } from './resource-binaries.js';
 import { createBinaryHandlers } from './routes/resource-binaries.js';
+import express from 'express';
+import {once} from 'node:events';
 
 const id = '94f02f5c-16e6-4d45-8973-f2d72c4895a1';
 const base = { id, kind: 'file', storage_path: 'clip.bin', original_filename: 'clip.bin', mime_type: 'application/octet-stream' };
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+
+test('real HTTP chunk transfer preserves bytes and fences replacement and late revocation',async t=>{
+ const {root,store}=await fixture(t);const bytes=Buffer.alloc(BINARY_CHUNK_BYTES+17,43);
+ await fs.writeFile(path.join(root,'clip.bin'),bytes);
+ let denied=false,revokeAfterRead=false;
+ const handlers=createBinaryHandlers({authorizeResource:async()=>{if(denied)throw binaryError(403,'PERMISSION_DENIED');return base;},binaryStore:{manifest:row=>store.manifest(row),chunk:async(...args)=>{const result=await store.chunk(...args);if(revokeAfterRead)denied=true;return result;}}});
+ const app=express();app.get('/resources/:id/manifest',handlers.manifest);app.get('/resources/:id/binary',handlers.chunk);
+ const server=app.listen(0,'127.0.0.1');await once(server,'listening');
+ t.after(()=>new Promise(resolve=>{server.closeAllConnections();server.close(resolve);}));
+ const url=`http://127.0.0.1:${server.address().port}/resources/${id}`;
+ const manifestResponse=await fetch(url+'/manifest');assert.equal(manifestResponse.status,200);const manifest=await manifestResponse.json();
+ const transfer=async(range)=>{const response=await fetch(url+'/binary',{headers:{'If-Match':manifest.etag,Range:range}});return {response,body:Buffer.from(await response.arrayBuffer())};};
+ const first=await transfer(`bytes=0-${BINARY_CHUNK_BYTES-1}`),last=await transfer(`bytes=${BINARY_CHUNK_BYTES}-${bytes.length-1}`);
+ for(const part of [first,last]){assert.equal(part.response.status,206);assert.equal(part.response.headers.get('x-chunk-sha256'),sha(part.body));assert.equal(part.response.headers.get('cache-control'),'private, no-store');}
+ assert.deepEqual(Buffer.concat([first.body,last.body]),bytes);
+ await fs.writeFile(path.join(root,'clip.bin'),'replacement');assert.equal((await transfer('bytes=0-2')).response.status,412);
+ await fs.writeFile(path.join(root,'clip.bin'),bytes);revokeAfterRead=true;
+ const revoked=await transfer('bytes=0-2');assert.equal(revoked.response.status,403);assert.notDeepEqual(revoked.body,bytes.subarray(0,3));
+});
 
 async function fixture(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'labos-binary-test-'));

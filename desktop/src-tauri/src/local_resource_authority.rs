@@ -29,7 +29,7 @@ struct Binding {resource_id:String,kind:String,scope:Scope,note:Option<NoteBindi
 struct CachedBindings {revision:String,expires_at:String,bindings:Vec<Binding>}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Grant {resource_id:String,can_edit:bool,revision:Option<String>,scope:Option<Scope>,bindings:Option<Vec<Binding>>}
+struct Grant {resource_id:String,can_edit:bool,#[serde(default)]can_delete:bool,#[serde(default)]can_create_child:bool,revision:Option<String>,scope:Option<Scope>,bindings:Option<Vec<Binding>>}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Snapshot {protocol:u32,account_id:String,grants:Vec<Grant>}
@@ -38,7 +38,12 @@ fn schema(c:&Connection)->Result<(),String>{
     c.execute_batch("CREATE TABLE IF NOT EXISTS local_resource_authority(account_id TEXT NOT NULL,resource_id TEXT NOT NULL,origin TEXT NOT NULL,revision TEXT,scope_json TEXT,can_edit INTEGER NOT NULL,expires_at TEXT NOT NULL,PRIMARY KEY(account_id,resource_id));
     CREATE TABLE IF NOT EXISTS local_resource_authority_bindings(account_id TEXT NOT NULL,resource_id TEXT NOT NULL,bindings_json TEXT NOT NULL,PRIMARY KEY(account_id,resource_id));
     CREATE TABLE IF NOT EXISTS local_resource_confirmations(account_id TEXT NOT NULL,change_id TEXT NOT NULL,resource_id TEXT NOT NULL,device_id TEXT NOT NULL,revision TEXT NOT NULL,PRIMARY KEY(account_id,change_id));
-    CREATE TABLE IF NOT EXISTS local_resource_mutation_receipts(account_id TEXT NOT NULL,change_id TEXT NOT NULL,resource_id TEXT NOT NULL,device_id TEXT NOT NULL,origin TEXT NOT NULL,revision TEXT NOT NULL,payload_json TEXT NOT NULL,PRIMARY KEY(account_id,change_id));").map_err(err)
+    CREATE TABLE IF NOT EXISTS local_resource_mutation_receipts(account_id TEXT NOT NULL,change_id TEXT NOT NULL,resource_id TEXT NOT NULL,device_id TEXT NOT NULL,origin TEXT NOT NULL,revision TEXT NOT NULL,payload_json TEXT NOT NULL,PRIMARY KEY(account_id,change_id));").map_err(err)?;
+    let present={let mut stmt=c.prepare("PRAGMA table_info(local_resource_authority)").map_err(err)?;let names=stmt.query_map([],|r|r.get::<_,String>(1)).map_err(err)?.collect::<Result<Vec<_>,_>>().map_err(err)?;names.iter().any(|name|name=="can_delete")};
+    if !present{c.execute_batch("ALTER TABLE local_resource_authority ADD COLUMN can_delete INTEGER NOT NULL DEFAULT 0").map_err(err)?;}
+    let present={let mut stmt=c.prepare("PRAGMA table_info(local_resource_authority)").map_err(err)?;let names=stmt.query_map([],|r|r.get::<_,String>(1)).map_err(err)?.collect::<Result<Vec<_>,_>>().map_err(err)?;names.iter().any(|name|name=="can_create_child")};
+    if !present{c.execute_batch("ALTER TABLE local_resource_authority ADD COLUMN can_create_child INTEGER NOT NULL DEFAULT 0").map_err(err)?;}
+    Ok(())
 }
 pub(crate) fn guard(c:&Connection,account:&str,session:&str)->Result<String,String>{
     local_db::require_sync_account(c,account)?;
@@ -47,11 +52,13 @@ pub(crate) fn guard(c:&Connection,account:&str,session:&str)->Result<String,Stri
     Ok(lease)
 }
 fn validate(snapshot:&Snapshot,account:&str,ids:&[String])->Result<(),String>{
-    if snapshot.protocol!=2||snapshot.account_id!=account||snapshot.grants.len()!=ids.len(){return Err("Resource authority identity or completeness mismatch".into())}
+    if ![2,3,4].contains(&snapshot.protocol)||snapshot.account_id!=account||snapshot.grants.len()!=ids.len(){return Err("Resource authority identity or completeness mismatch".into())}
     let expected:HashSet<&str>=ids.iter().map(String::as_str).collect();let mut seen=HashSet::new();
     for grant in &snapshot.grants {
         if !expected.contains(grant.resource_id.as_str())||!seen.insert(&grant.resource_id){return Err("Unexpected or duplicate resource authority".into())}
-        if grant.can_edit {
+        if snapshot.protocol==2&&(grant.can_delete||grant.can_create_child){return Err("Legacy authority cannot grant deletion".into())}
+        if grant.can_edit||grant.can_delete||grant.can_create_child {
+            if grant.can_create_child&&grant.bindings.as_ref().and_then(|rows|rows.first()).is_none_or(|leaf|leaf.kind!="folder"){return Err("Child authority requires a verified folder".into())}
             let scope=grant.scope.as_ref().ok_or("Resource authority scope missing")?;
             if grant.revision.as_deref().unwrap_or("").is_empty()||!["lab","project","restricted"].contains(&scope.visibility.as_str()){return Err("Invalid resource authority revision or scope".into())}
             for id in [&scope.item_id,&scope.project_id,&scope.note_id,&scope.parent_resource_id].into_iter().flatten(){uuid::Uuid::parse_str(id).map_err(err)?;}
@@ -78,14 +85,15 @@ pub async fn refresh_local_resource_authority(app:AppHandle,expected_account_id:
         (ids,lease)
     };
     let origin=native_authorization::trusted_base().map_err(|e|e.message)?;
-    let client=native_authorization::client().map_err(|e|e.message)?;
+    let client=native_authorization::bulk_client().map_err(|e|e.message)?;
     let mut count=0;
-    // Small complete-chain batches retain the native 64 KiB response limit.
-    for batch in ids.chunks(4){
+    // Protocol 4 preserves complete chains with 100 IDs and a bounded 2 MiB response.
+    // Avoid hundreds of requests exhausting the shared API quota on larger labs.
+    for batch in ids.chunks(100){
         {let c=local_db::open_local_connection(&app)?;guard(&c,&expected_account_id,&expected_session_token)?;}
         let response=client.post(format!("{origin}/sync/resources/authority")).bearer_auth(&server_token)
-            .json(&serde_json::json!({"protocol":2,"resource_ids":batch})).send().await.map_err(|_|"Resource authority server is unavailable; existing lease-bounded grants are unchanged")?;
-        let snapshot:Snapshot=match native_authorization::response_json(response).await {
+            .json(&serde_json::json!({"protocol":4,"resource_ids":batch})).send().await.map_err(|_|"Resource authority server is unavailable; existing lease-bounded grants are unchanged")?;
+        let snapshot:Snapshot=match native_authorization::response_json_limit(response,2*1024*1024).await {
             Ok(value)=>value,
             Err(error)=>{
                 if error.code=="AUTH_REVOKED"{let mut c=local_db::open_local_connection(&app)?;local_auth::invalidate_authorization(&mut c,&expected_account_id,&expected_session_token)?;}
@@ -112,7 +120,7 @@ fn cache_snapshot(tx:&Connection,expected_account_id:&str,origin:&str,lease:&str
                 tx.execute("INSERT INTO local_resource_authority_bindings(account_id,resource_id,bindings_json) VALUES(?1,?2,?3)",params![expected_account_id,grant.resource_id,serde_json::to_string(&cached).map_err(err)?]).map_err(err)?;
             }
             let scope=grant.scope.map(|s|serde_json::to_string(&s)).transpose().map_err(err)?;
-            tx.execute("INSERT INTO local_resource_authority(account_id,resource_id,origin,revision,scope_json,can_edit,expires_at) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(account_id,resource_id) DO UPDATE SET origin=excluded.origin,revision=excluded.revision,scope_json=excluded.scope_json,can_edit=excluded.can_edit,expires_at=excluded.expires_at",params![expected_account_id,grant.resource_id,origin,grant.revision,scope,grant.can_edit,lease]).map_err(err)?;
+            tx.execute("INSERT INTO local_resource_authority(account_id,resource_id,origin,revision,scope_json,can_edit,expires_at,can_delete,can_create_child) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(account_id,resource_id) DO UPDATE SET origin=excluded.origin,revision=excluded.revision,scope_json=excluded.scope_json,can_edit=excluded.can_edit,expires_at=excluded.expires_at,can_delete=excluded.can_delete,can_create_child=excluded.can_create_child",params![expected_account_id,grant.resource_id,origin,grant.revision,scope,grant.can_edit,lease,grant.can_delete,grant.can_create_child]).map_err(err)?;
     }
     Ok(count)
 }
@@ -153,6 +161,13 @@ fn validate_confirmation(reply:&Confirmation,account:&str,resource:&str,pending:
 
 #[tauri::command]
 pub async fn confirm_local_resource_changes(app:AppHandle,expected_account_id:String,expected_session_token:String,server_token:String,change_id:String)->Result<(),String>{
+    let proven={
+        let c=local_db::open_local_connection(&app)?;crate::local_resource_attachments::schema(&c)?;
+        guard(&c,&expected_account_id,&expected_session_token)?;
+        let proven:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM local_resource_mutations WHERE account_id=?1 AND change_id=?2)",params![expected_account_id,change_id],|r|r.get(0)).map_err(err)?;
+        proven
+    };
+    if proven{return confirm_local_resource_mutation(app,expected_account_id,expected_session_token,server_token,change_id).await}
     if REFRESHING.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){return Err("Resource authority verification is already in progress".into())}
     let _refresh=RefreshGuard;
     let change_id=uuid::Uuid::parse_str(&change_id).map_err(err)?.to_string();
@@ -218,7 +233,7 @@ pub(crate) fn is_confirmed_file_change(c:&Connection,change:&str)->Result<bool,S
 
 pub(crate) fn require_verified_file_confirmation(c:&Connection,change:&str)->Result<(),String>{
     let account=local_db::active_account(c)?;
-    let mutation:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM sync_outbox WHERE account_id=?1 AND change_id=?2 AND entity_type='resource' AND operation IN ('attach','edit_metadata'))",params![account,change],|r|r.get(0)).map_err(err)?;
+    let mutation:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM sync_outbox WHERE account_id=?1 AND change_id=?2 AND entity_type='resource' AND (operation IN ('attach','edit_metadata','move_tree') OR (operation='create' AND json_extract(payload_json,'$.native_create_protocol')=1)))",params![account,change],|r|r.get(0)).map_err(err)?;
     if mutation {
         if mutation_receipt_revision(c,change)?.is_none(){return Err("Native server verification is required before acknowledging this resource mutation; saved work remains pending".into())}
         return Ok(())
@@ -235,22 +250,70 @@ pub(crate) fn mutation_receipt_revision(c:&Connection,change:&str)->Result<Optio
     schema(c)?;crate::local_resource_attachments::schema(c)?;
     let account=local_db::active_account(c)?;
     let origin=native_authorization::trusted_base().map_err(|e|e.message)?;
-    c.query_row("SELECT f.revision FROM local_resource_mutation_receipts f JOIN sync_outbox o ON o.account_id=f.account_id AND o.change_id=f.change_id AND o.entity_id=f.resource_id AND o.device_id=f.device_id AND o.payload_json=f.payload_json JOIN local_resource_mutations m ON m.account_id=o.account_id AND m.change_id=o.change_id AND m.resource_id=o.entity_id AND m.device_id=o.device_id AND m.operation=o.operation AND m.payload_json=o.payload_json WHERE f.account_id=?1 AND f.change_id=?2 AND f.origin=?3 AND f.device_id=(SELECT device_id FROM device_identity WHERE id=1) AND o.entity_type='resource' AND o.operation IN ('attach','edit_metadata')",params![account,change,origin],|r|r.get(0)).optional().map_err(err)
+    c.query_row("SELECT f.revision FROM local_resource_mutation_receipts f JOIN sync_outbox o ON o.account_id=f.account_id AND o.change_id=f.change_id AND o.entity_id=f.resource_id AND o.device_id=f.device_id AND o.payload_json=f.payload_json JOIN local_resource_mutations m ON m.account_id=o.account_id AND m.change_id=o.change_id AND m.resource_id=o.entity_id AND m.device_id=o.device_id AND m.operation=o.operation AND m.payload_json=o.payload_json WHERE f.account_id=?1 AND f.change_id=?2 AND f.origin=?3 AND f.device_id=(SELECT device_id FROM device_identity WHERE id=1) AND o.entity_type='resource' AND o.operation IN ('attach','edit_metadata','create','create_copy','edit_content','move_tree')",params![account,change,origin],|r|r.get(0)).optional().map_err(err)
+}
+
+// A confirmed metadata/move suffix may change the resource revision without
+// changing its bytes. Follow only exact native receipts back to this file event;
+// matching file size alone is never evidence that a local copy is current.
+pub(crate) fn content_revision_matches(c:&Connection,current:&local_resources::LocalResource,file_change:&str,file_revision:Option<&str>)->Result<bool,String>{
+    if file_revision==Some(current.updated_at.as_str()){return Ok(true)}
+    schema(c)?;crate::local_resource_attachments::schema(c)?;
+    let account=local_db::active_account(c)?;let origin=native_authorization::trusted_base().map_err(|e|e.message)?;
+    let candidate:Option<String>=c.query_row("SELECT change_id FROM local_resource_mutation_receipts WHERE account_id=?1 AND resource_id=?2 AND origin=?3 AND revision=?4 ORDER BY rowid DESC LIMIT 1",params![account,current.id,origin,current.updated_at],|r|r.get(0)).optional().map_err(err)?;
+    let Some(mut change)=candidate else{return Ok(false)};let mut seen=HashSet::new();
+    let identity=|record:&local_resources::LocalResource|serde_json::json!({"id":record.id,"kind":record.kind,"file_type":record.file_type,"original_filename":record.original_filename,"mime_type":record.mime_type,"size_bytes":record.size_bytes,"derived_from_resource_id":record.derived_from_resource_id});
+    loop{
+        if seen.len()>=128||!seen.insert(change.clone()){return Ok(false)}
+        let Some(revision)=mutation_receipt_revision(c,&change)? else{return Ok(false)};
+        let proof=mutation_proof(c,&account,&change)?;let after:local_resources::LocalResource=serde_json::from_str(&proof.after).map_err(err)?;
+        // A display rename may preserve byte identity only through its exact
+        // native confirmed suffix. A renderer/cache-only rename is not proof.
+        if seen.len()==1&&(after.name!=current.name||after.name_source!=current.name_source){return Ok(false)}
+        if identity(&after)!=identity(current){return Ok(false)}
+        if change==file_change{return Ok(file_revision==Some(revision.as_str()))}
+        if !["attach","edit_metadata","move_tree"].contains(&proof.operation.as_str()){return Ok(false)}
+        let before:local_resources::LocalResource=serde_json::from_str(&proof.before).map_err(err)?;
+        if identity(&before)!=identity(&after){return Ok(false)}
+        let payload:serde_json::Value=serde_json::from_str(&proof.payload).map_err(err)?;
+        let key=if proof.operation=="attach"{"attachment"}else{"metadata"};
+        let Some(previous)=payload[key]["previous_change_id"].as_str() else{
+            let confirmed:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM local_resource_confirmations f JOIN sync_outbox o ON o.account_id=f.account_id AND o.change_id=f.change_id AND o.entity_id=f.resource_id AND o.device_id=f.device_id WHERE f.account_id=?1 AND f.resource_id=?2 AND f.change_id=?3 AND f.revision=?4 AND o.synced_at IS NOT NULL AND f.device_id=(SELECT device_id FROM device_identity WHERE id=1))",params![account,current.id,file_change,file_revision],|r|r.get(0)).map_err(err)?;
+            return Ok(confirmed&&file_revision==Some(before.updated_at.as_str()))
+        };change=previous.into();
+    }
+}
+
+// A previously verified replicated hash remains the same bytes across exact,
+// confirmed metadata/topology-only native receipts, even before another fetch.
+pub(crate) fn verified_copy_revision(c:&Connection,current:&local_resources::LocalResource,prior:&str)->Result<bool,String>{
+ if current.updated_at==prior{return Ok(true)}schema(c)?;let account=local_db::active_account(c)?;let origin=native_authorization::trusted_base().map_err(|e|e.message)?;
+ let bytes=|r:&local_resources::LocalResource|serde_json::json!([r.id,r.kind,r.file_type,r.original_filename,r.mime_type,r.size_bytes,r.derived_from_resource_id,r.local_media_path,r.local_media_filename,r.local_media_mime_type,r.local_media_size_bytes,r.local_media_downloaded_at]);
+ let mut cursor=current.clone();let mut seen=HashSet::new();
+ loop{
+  if seen.len()>=128||!seen.insert(cursor.updated_at.clone()){return Ok(false)}
+  let change:Option<String>=c.query_row("SELECT change_id FROM local_resource_mutation_receipts WHERE account_id=?1 AND resource_id=?2 AND origin=?3 AND revision=?4 ORDER BY rowid DESC LIMIT 1",params![account,current.id,origin,cursor.updated_at],|r|r.get(0)).optional().map_err(err)?;
+  let Some(change)=change else{return Ok(false)};if mutation_receipt_revision(c,&change)?.as_deref()!=Some(cursor.updated_at.as_str()){return Ok(false)}
+  let proof=mutation_proof(c,&account,&change)?;if !["attach","edit_metadata","move_tree"].contains(&proof.operation.as_str()){return Ok(false)}
+  let mut after:local_resources::LocalResource=serde_json::from_str(&proof.after).map_err(err)?;let before:local_resources::LocalResource=serde_json::from_str(&proof.before).map_err(err)?;after.updated_at=cursor.updated_at.clone();
+  if crate::local_resource_attachments::record_identity(&after)?!=crate::local_resource_attachments::record_identity(&cursor)?||bytes(&before)!=bytes(&after)||bytes(&after)!=bytes(current){return Ok(false)}
+  if before.updated_at==prior{return Ok(true)}cursor=before;
+ }
 }
 
 #[derive(Debug,PartialEq)]
 struct MutationProof {resource:String,device:String,operation:String,payload:String,before:String,after:String}
 fn mutation_proof(c:&Connection,account:&str,change:&str)->Result<MutationProof,String>{
     crate::local_resource_attachments::schema(c)?;
-    c.query_row("SELECT o.entity_id,o.device_id,o.operation,o.payload_json,m.before_json,m.after_json FROM sync_outbox o JOIN local_resource_mutations m ON m.account_id=o.account_id AND m.change_id=o.change_id AND m.resource_id=o.entity_id AND m.operation=o.operation AND m.device_id=o.device_id AND m.payload_json=o.payload_json WHERE o.account_id=?1 AND o.change_id=?2 AND o.entity_type='resource' AND o.operation IN ('attach','edit_metadata') AND o.device_id=(SELECT device_id FROM device_identity WHERE id=1)",params![account,change],|r|Ok(MutationProof{resource:r.get(0)?,device:r.get(1)?,operation:r.get(2)?,payload:r.get(3)?,before:r.get(4)?,after:r.get(5)?})).map_err(|_|"Native mutation provenance is unavailable; saved work is preserved".into())
+    c.query_row("SELECT o.entity_id,o.device_id,o.operation,o.payload_json,m.before_json,m.after_json FROM sync_outbox o JOIN local_resource_mutations m ON m.account_id=o.account_id AND m.change_id=o.change_id AND m.resource_id=o.entity_id AND m.operation=o.operation AND m.device_id=o.device_id AND m.payload_json=o.payload_json WHERE o.account_id=?1 AND o.change_id=?2 AND o.entity_type='resource' AND o.operation IN ('attach','edit_metadata','create','create_copy','edit_content','move_tree') AND o.device_id=(SELECT device_id FROM device_identity WHERE id=1)",params![account,change],|r|Ok(MutationProof{resource:r.get(0)?,device:r.get(1)?,operation:r.get(2)?,payload:r.get(3)?,before:r.get(4)?,after:r.get(5)?})).map_err(|_|"Native mutation provenance is unavailable; saved work is preserved".into())
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct MutationReceipt {change_id:String,confirmed:bool,resource_id:Option<String>,operation:Option<String>,revision:Option<String>,mutation_sha256:Option<String>,payload_sha256:Option<String>}
+struct MutationReceipt {change_id:String,confirmed:bool,resource_id:Option<String>,operation:Option<String>,revision:Option<String>,mutation_sha256:Option<String>,payload_sha256:Option<String>,size_bytes:Option<i64>}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MutationConfirmation {protocol:u32,account_id:String,receipts:Vec<MutationReceipt>,authority:Snapshot}
-fn confirmation_digest(value:&serde_json::Value)->String{
+pub(crate) fn confirmation_digest(value:&serde_json::Value)->String{
     fn canonical(value:&serde_json::Value)->String{
         match value{
             serde_json::Value::Array(values)=>format!("[{}]",values.iter().map(canonical).collect::<Vec<_>>().join(",")),
@@ -263,18 +326,59 @@ fn confirmation_digest(value:&serde_json::Value)->String{
     }
     format!("{:x}",Sha256::digest(canonical(value).as_bytes()))
 }
+#[cfg(test)]
 fn validate_mutation_confirmation(reply:&MutationConfirmation,account:&str,change:&str,proof:&MutationProof)->Result<(),String>{
-    if reply.protocol!=1||reply.account_id!=account||reply.receipts.len()!=1{return Err("Mutation confirmation identity or completeness mismatch".into())}
+    if ![1,3,4,5].contains(&reply.protocol)||reply.account_id!=account||reply.receipts.len()!=1{return Err("Mutation confirmation identity or completeness mismatch".into())}
     validate(&reply.authority,account,&[proof.resource.clone()])?;
     let receipt=&reply.receipts[0];
+    validate_mutation_receipt(reply.protocol,receipt,change,proof)
+}
+fn validate_mutation_receipt(protocol:u32,receipt:&MutationReceipt,change:&str,proof:&MutationProof)->Result<(),String>{
     if receipt.change_id!=change{return Err("Unexpected mutation confirmation".into())}
     if !receipt.confirmed{
-        if receipt.resource_id.is_some()||receipt.operation.is_some()||receipt.revision.is_some()||receipt.mutation_sha256.is_some()||receipt.payload_sha256.is_some(){return Err("Unconfirmed mutation must not disclose a receipt".into())}
+        if receipt.resource_id.is_some()||receipt.operation.is_some()||receipt.revision.is_some()||receipt.mutation_sha256.is_some()||receipt.payload_sha256.is_some()||receipt.size_bytes.is_some(){return Err("Unconfirmed mutation must not disclose a receipt".into())}
         return Ok(())
     }
     let after:local_resources::LocalResource=serde_json::from_str(&proof.after).map_err(err)?;
     let payload:serde_json::Value=serde_json::from_str(&proof.payload).map_err(err)?;
-    if after.id!=proof.resource||receipt.resource_id.as_deref()!=Some(proof.resource.as_str())||receipt.operation.as_deref()!=Some(proof.operation.as_str())||receipt.payload_sha256.as_deref()!=Some(confirmation_digest(&payload).as_str())||receipt.mutation_sha256.as_deref()!=Some(confirmation_digest(&crate::local_resource_attachments::mutation_projection(&after)).as_str())||receipt.revision.as_deref().is_none_or(|r|r.is_empty()||r.len()>64){return Err("Server mutation receipt differs from the native authored intent".into())}
+    if ["create","create_copy","edit_content"].contains(&proof.operation.as_str())&&after.kind=="file"{
+        if ![3,4,5].contains(&protocol)||receipt.size_bytes!=after.size_bytes||payload["upload"]["protocol"]!=1||payload["upload"]["size_bytes"].as_i64()!=after.size_bytes||!payload["upload"]["sha256"].as_str().is_some_and(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))){return Err("File receipt differs from native bytes".into())}
+    }else if receipt.size_bytes.is_some(){return Err("Metadata receipt cannot publish file bytes".into())}
+    if proof.operation=="create"&&after.kind!="file"&&(!["link","folder"].contains(&after.kind.as_str())||payload["native_create_protocol"]!=1||payload["resource"]!=serde_json::to_value(&after).map_err(err)?){return Err("Non-file creation receipt lacks its native origin".into())}
+    if payload["metadata"]["fields"].get("name").is_some()&&![4,5].contains(&protocol){return Err("Named metadata requires a protocol-4 exact-name receipt".into())}
+    let mut projection=if [4,5].contains(&protocol){crate::local_resource_attachments::named_mutation_projection(&after)}else{crate::local_resource_attachments::mutation_projection(&after)};
+    if proof.operation=="move_tree"&&(protocol!=5||!["folder","file","link"].contains(&after.kind.as_str())||payload["tree_move"]["protocol"]!=1){return Err("Tree move requires its exact protocol-5 native receipt".into())}
+    if protocol==5{projection["relative_path"]=serde_json::json!(after.relative_path);}
+    if after.id!=proof.resource||receipt.resource_id.as_deref()!=Some(proof.resource.as_str())||receipt.operation.as_deref()!=Some(proof.operation.as_str())||receipt.payload_sha256.as_deref()!=Some(confirmation_digest(&payload).as_str())||receipt.mutation_sha256.as_deref()!=Some(confirmation_digest(&projection).as_str())||receipt.revision.as_deref().is_none_or(|r|r.is_empty()||r.len()>64){return Err("Server mutation receipt differs from the native authored intent".into())}
+    Ok(())
+}
+
+fn pending_proven_prefix(c:&Connection,account:&str,resource:&str)->Result<Vec<(String,MutationProof)>,String>{
+    let mut stmt=c.prepare("SELECT change_id FROM sync_outbox WHERE account_id=?1 AND entity_type='resource' AND entity_id=?2 AND synced_at IS NULL ORDER BY rowid LIMIT 100").map_err(err)?;
+    let ids=stmt.query_map(params![account,resource],|r|r.get::<_,String>(0)).map_err(err)?.collect::<Result<Vec<_>,_>>().map_err(err)?;
+    let mut proofs=Vec::new();for id in ids{match mutation_proof(c,account,&id){Ok(proof)=>proofs.push((id,proof)),Err(_)=>break}}
+    Ok(proofs)
+}
+
+fn validate_mixed_confirmation(reply:&MutationConfirmation,account:&str,proofs:&[(String,MutationProof)])->Result<(),String>{
+    let proof=&proofs.first().ok_or("Empty resource confirmation")?.1;
+    if ![3,4,5].contains(&reply.protocol)||reply.account_id!=account||reply.receipts.len()!=proofs.len(){return Err("Mixed confirmation identity or completeness mismatch".into())}
+    validate(&reply.authority,account,&[proof.resource.clone()])?;
+    let mut seen=HashSet::new();let mut prefix_complete=true;
+    for (id,p) in proofs{let receipt=reply.receipts.iter().find(|r|&r.change_id==id).ok_or("Missing mixed resource receipt")?;
+        if !seen.insert(&receipt.change_id){return Err("Duplicate mixed resource receipt".into())}validate_mutation_receipt(reply.protocol,receipt,id,p)?;
+        if !receipt.confirmed{prefix_complete=false}else if !prefix_complete{return Err("Server receipt skipped an unconfirmed resource predecessor".into())}
+    }Ok(())
+}
+
+fn publish_file_receipt(c:&Connection,account:&str,change:&str,proof:&MutationProof,revision:&str)->Result<(),String>{
+    if c.is_autocommit(){return Err("File confirmation requires the native transaction".into())}
+    let after:local_resources::LocalResource=serde_json::from_str(&proof.after).map_err(err)?;
+    if after.kind=="file"&&["create","create_copy","edit_content"].contains(&proof.operation.as_str()){
+            let table=if proof.operation=="edit_content"{"local_resource_edits"}else{"local_resource_uploads"};
+            if c.execute(&format!("UPDATE {table} SET server_revision=?1 WHERE account_id=?2 AND change_id=?3 AND resource_id=?4"),params![revision,account,change,proof.resource]).map_err(err)?!=1{return Err("Native file provenance disappeared during confirmation".into())}
+            c.execute("INSERT INTO local_resource_confirmations(account_id,change_id,resource_id,device_id,revision) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(account_id,change_id) DO UPDATE SET revision=excluded.revision",params![account,change,proof.resource,proof.device,revision]).map_err(err)?;
+        }
     Ok(())
 }
 
@@ -284,21 +388,32 @@ pub async fn confirm_local_resource_mutation(app:AppHandle,expected_account_id:S
     let _refresh=RefreshGuard;
     let change=uuid::Uuid::parse_str(&change_id).map_err(err)?.to_string();
     if server_token.is_empty()||server_token.starts_with("local:"){return Err("Reconnect to verify resource mutation receipts".into())}
-    let (proof,lease)={let c=local_db::open_local_connection(&app)?;schema(&c)?;let lease=guard(&c,&expected_account_id,&expected_session_token)?;(mutation_proof(&c,&expected_account_id,&change)?,lease)};
+    let (proofs,lease)={let c=local_db::open_local_connection(&app)?;schema(&c)?;let lease=guard(&c,&expected_account_id,&expected_session_token)?;let proof=mutation_proof(&c,&expected_account_id,&change)?;
+        if mutation_receipt_revision(&c,&change)?.is_some(){return Ok(())}
+        let proofs=pending_proven_prefix(&c,&expected_account_id,&proof.resource)?;
+        if !proofs.iter().any(|(id,_)|id==&change){return Err("Confirm the preceding native resource events first".into())}(proofs,lease)};
+    let proof=&proofs[0].1;
+    let protocol=if proofs.iter().any(|(_,p)|p.operation=="move_tree"){5}else if proofs.iter().any(|(_,p)|serde_json::from_str::<serde_json::Value>(&p.payload).ok().is_some_and(|payload|payload["metadata"]["fields"].get("name").is_some())){4}else{3};
     let origin=native_authorization::trusted_base().map_err(|e|e.message)?;
     let response=native_authorization::client().map_err(|e|e.message)?.post(format!("{origin}/sync/resources/confirm")).bearer_auth(server_token)
-        .json(&serde_json::json!({"resource_id":proof.resource,"device_id":proof.device,"change_ids":[change]})).send().await.map_err(|_|"Mutation confirmation unavailable; original intent remains pending")?;
+        .json(&serde_json::json!({"protocol":protocol,"resource_id":proof.resource,"device_id":proof.device,"change_ids":proofs.iter().map(|(id,_)|id).collect::<Vec<_>>()})).send().await.map_err(|_|"Mutation confirmation unavailable; original intent remains pending")?;
     let reply:MutationConfirmation=match native_authorization::response_json(response).await{
         Ok(value)=>value,
         Err(error)=>{if error.code=="AUTH_REVOKED"{let mut c=local_db::open_local_connection(&app)?;local_auth::invalidate_authorization(&mut c,&expected_account_id,&expected_session_token)?;}return Err(format!("{}: {}",error.code,error.message));}
     };
-    validate_mutation_confirmation(&reply,&expected_account_id,&change,&proof)?;
+    validate_mixed_confirmation(&reply,&expected_account_id,&proofs)?;
     let mut c=local_db::open_local_connection(&app)?;
     let tx=c.transaction_with_behavior(TransactionBehavior::Immediate).map_err(err)?;
-    if guard(&tx,&expected_account_id,&expected_session_token)?!=lease||mutation_proof(&tx,&expected_account_id,&change)?!=proof||native_authorization::trusted_base().map_err(|e|e.message)?!=origin{return Err("Resource work, server or login lease changed during confirmation".into())}
-    let receipt=&reply.receipts[0];
+    if guard(&tx,&expected_account_id,&expected_session_token)?!=lease||pending_proven_prefix(&tx,&expected_account_id,&proof.resource)?!=proofs||native_authorization::trusted_base().map_err(|e|e.message)?!=origin{return Err("Resource work, server or login lease changed during confirmation".into())}
+    let confirmed=reply.receipts.iter().any(|r|r.change_id==change&&r.confirmed);
+    for (change,proof) in &proofs{let receipt=reply.receipts.iter().find(|r|&r.change_id==change).ok_or("Missing resource receipt")?;
     if receipt.confirmed{
+        // Confirm only an acknowledged prefix. A later server receipt must not
+        // strand an earlier local scope/content transition after a partial ACK.
+        let earlier:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM sync_outbox WHERE account_id=?1 AND entity_type='resource' AND entity_id=?2 AND synced_at IS NULL AND rowid<(SELECT rowid FROM sync_outbox WHERE account_id=?1 AND change_id=?3))",params![expected_account_id,proof.resource,change],|r|r.get(0)).map_err(err)?;
+        if earlier{return Err("Verify the preceding resource change before acknowledging this version".into())}
         let revision=receipt.revision.as_deref().ok_or("Confirmed mutation revision missing")?;
+        publish_file_receipt(&tx,&expected_account_id,change,proof,revision)?;
         tx.execute("INSERT INTO local_resource_mutation_receipts(account_id,change_id,resource_id,device_id,origin,revision,payload_json) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(account_id,change_id) DO UPDATE SET origin=excluded.origin,revision=excluded.revision,payload_json=excluded.payload_json",params![expected_account_id,change,proof.resource,proof.device,origin,revision,proof.payload]).map_err(err)?;
         tx.execute("UPDATE sync_outbox SET synced_at=CURRENT_TIMESTAMP,last_error=NULL WHERE account_id=?1 AND change_id=?2",params![expected_account_id,change]).map_err(err)?;
         tx.execute("UPDATE sync_conflicts SET resolved_at=CURRENT_TIMESTAMP,resolution='server_confirmed' WHERE change_id=?1 AND resolved_at IS NULL",[&change]).map_err(err)?;
@@ -314,7 +429,7 @@ pub async fn confirm_local_resource_mutation(app:AppHandle,expected_account_id:S
             }
         }
     }
-    let confirmed=receipt.confirmed;
+    }
     cache_snapshot(&tx,&expected_account_id,&origin,&lease,reply.authority)?;
     tx.commit().map_err(err)?;
     if !confirmed{return Err("Server has not confirmed this mutation; retry the original identity".into())}Ok(())
@@ -324,27 +439,87 @@ pub(crate) fn require_edit(c:&Connection,resource:&local_resources::LocalResourc
     require_edit_snapshot(c,resource,false)
 }
 
-// The origin is reconstructed from native-only, immutable move provenance, not
-// supplied by IPC. This path authorizes only attachment/metadata mutations, not
-// content edits or copies under the old scope. Intermediate destinations are checked.
+// Reconstruct the origin from native-only full mutation provenance. Current
+// rights at the origin, every pending destination and copy ancestry are checked;
+// a receipt proves history and cannot grant authority by itself.
 pub(crate) fn require_pending_mutation_editor(c:&Connection,current:&local_resources::LocalResource)->Result<Option<String>,String>{
     let Some((origin,previous))=crate::local_resource_attachments::pending_mutation_origin(c,current)? else{return Ok(None)};
     local_auth::require_local_permission(c,"resources.view")?;
     local_auth::require_local_permission(c,"resources.edit")?;
     let role:String=c.query_row("SELECT u.role FROM local_users u JOIN local_session s ON s.user_id=u.id WHERE s.id=1",[],|r|r.get(0)).map_err(err)?;
-    if role!="admin"{require_edit_snapshot(c,&origin,true)?;}
+    if !require_pending_creation_origin(c,&origin)?&&role!="admin"{require_edit_snapshot(c,&origin,true)?;}
     Ok(Some(previous))
 }
 
+fn require_pending_nonfile_creation(c:&Connection,current:&local_resources::LocalResource)->Result<bool,String>{
+    if !["folder","link"].contains(&current.kind.as_str()){return Ok(false)}
+    crate::local_resource_attachments::schema(c)?;let account=local_db::active_account(c)?;
+    let proof:Option<(String,String,String,bool)>=c.query_row("SELECT m.before_json,m.after_json,m.payload_json,EXISTS(SELECT 1 FROM sync_conflicts f WHERE f.change_id=o.change_id AND f.resolved_at IS NULL) FROM sync_outbox o JOIN local_resource_mutations m ON m.account_id=o.account_id AND m.change_id=o.change_id AND m.resource_id=o.entity_id AND m.device_id=o.device_id AND m.operation=o.operation AND m.payload_json=o.payload_json WHERE o.account_id=?1 AND o.entity_id=?2 AND o.entity_type='resource' AND o.operation='create' AND o.synced_at IS NULL AND o.device_id=(SELECT device_id FROM device_identity WHERE id=1) AND json_extract(o.payload_json,'$.native_create_protocol')=1",params![account,current.id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(err)?;
+    let Some((before,after,payload,conflict))=proof else{return Ok(false)};
+    let original:local_resources::LocalResource=serde_json::from_str(&after).map_err(err)?;
+    let before:local_resources::LocalResource=serde_json::from_str(&before).map_err(err)?;
+    let payload:serde_json::Value=serde_json::from_str(&payload).map_err(err)?;
+    if conflict||payload["native_create_protocol"]!=1||payload["resource"]!=serde_json::to_value(&original).map_err(err)?||crate::local_resource_attachments::record_identity(&before)?!=crate::local_resource_attachments::record_identity(&original)?||crate::local_resource_attachments::record_identity(&original)?!=crate::local_resource_attachments::record_identity(current)?{return Err("Native folder/link creation changed or is conflicted; authored work is preserved".into())}
+    local_auth::require_local_permission(c,"resources.create")?;crate::local_resource_uploads::parent_guard(c,&serde_json::to_value(&original).map_err(err)?)?;Ok(true)
+}
+
+fn require_pending_creation_origin(c:&Connection,origin:&local_resources::LocalResource)->Result<bool,String>{
+    if origin.kind!="file"{return require_pending_nonfile_creation(c,origin)}
+    crate::local_resource_uploads::schema(c)?;
+    let account=local_db::active_account(c)?;
+    let row:Option<(String,String,String)>=c.query_row("SELECT u.resource_json,o.operation,o.payload_json FROM local_resource_uploads u JOIN sync_outbox o ON o.account_id=u.account_id AND o.change_id=u.change_id WHERE u.account_id=?1 AND u.resource_id=?2 AND u.state='ready' AND u.server_revision IS NULL AND o.synced_at IS NULL AND o.device_id=(SELECT device_id FROM device_identity WHERE id=1)",params![account,origin.id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(err)?;
+    let Some((raw,operation,payload))=row else{return Ok(false)};
+    let original:local_resources::LocalResource=serde_json::from_str(&raw).map_err(err)?;let payload=serde_json::from_str(&payload).map_err(err)?;
+    if !valid_creation_proof(&original,origin,&operation,&payload)||crate::local_resource_attachments::record_identity(&original)?!=crate::local_resource_attachments::record_identity(origin)?{return Err("Native creation origin changed; saved work is preserved".into())}
+    local_auth::require_local_permission(c,"resources.create")?;crate::local_resource_uploads::parent_guard(c,&serde_json::to_value(&original).map_err(err)?)?;
+    if let Some(source)=&original.derived_from_resource_id{let record=local_resources::read_resources(c)?.into_iter().find(|r|&r.id==source).ok_or("Copy source unavailable; authored bytes are preserved")?;crate::resource_dependencies::require_editor_access(c,&record)?;}
+    Ok(true)
+}
+
 fn require_edit_snapshot(c:&Connection,resource:&local_resources::LocalResource,pending_move_origin:bool)->Result<(),String>{
+    require_action_snapshot(c,resource,pending_move_origin,ResourceAction::Edit)
+}
+
+pub(crate) fn require_delete(c:&Connection,resource:&local_resources::LocalResource)->Result<(),String>{
+    crate::local_resource_tree_moves::require_no_pending_tree(c,&resource.id)?;
+    local_auth::require_local_permission(c,"resources.view")?;
+    local_auth::require_local_permission(c,"resources.delete")?;
+    crate::local_resource_posters::schema(c)?;
+    let account=local_db::active_account(c)?;
+    let own=if let Some((origin,_))=crate::local_resource_attachments::pending_mutation_origin(c,resource)?{
+        if require_pending_creation_origin(c,&origin)?{true}else{require_action_snapshot(c,&origin,true,ResourceAction::Delete)?;false}
+    }else if require_pending_creation_origin(c,resource)?{true}else{require_action_snapshot(c,resource,false,ResourceAction::Delete)?;false};
+    let denied:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM local_resource_poster_denials WHERE account_id=?1 AND resource_id=?2)",params![account,resource.id],|r|r.get(0)).map_err(err)?;
+    if denied&&!own{return Err("Resource access revoked; saved work is preserved".into())}
+    Ok(())
+}
+
+enum ResourceAction{Edit,Delete,CreateChild}
+
+pub(crate) fn require_folder_destination(c:&Connection,folder:&local_resources::LocalResource)->Result<(),String>{
+    crate::local_resource_tree_moves::require_no_pending_tree(c,&folder.id)?;
+    if folder.kind!="folder"{return Err("Resource destination is not a folder".into())}
+    local_auth::require_local_permission(c,"resources.view")?;
+    if local_auth::require_local_permission(c,"resources.create").is_err(){local_auth::require_local_permission(c,"resources.edit")?;}
+    let pending=crate::local_resource_attachments::pending_mutation_origin(c,folder)?;
+    let (origin,projected)=pending.as_ref().map(|(origin,_)|(origin,true)).unwrap_or((folder,false));
+    if require_pending_creation_origin(c,origin)?{return Ok(())}
+    crate::local_resource_posters::schema(c)?;
+    let account=local_db::active_account(c)?;
+    let denied:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM local_resource_poster_denials WHERE account_id=?1 AND resource_id=?2)",params![account,folder.id],|r|r.get(0)).map_err(err)?;
+    if denied{return Err("Folder access revoked; saved work is preserved".into())}
+    require_action_snapshot(c,origin,projected,ResourceAction::CreateChild)
+}
+
+fn require_action_snapshot(c:&Connection,resource:&local_resources::LocalResource,pending_move_origin:bool,action:ResourceAction)->Result<(),String>{
     schema(c)?;let account=local_db::active_account(c)?;
     let origin=native_authorization::trusted_base().map_err(|e|e.message)?;
-    let grant:Option<(Option<String>,Option<String>,bool)>=c.query_row("SELECT revision,scope_json,can_edit FROM local_resource_authority WHERE account_id=?1 AND resource_id=?2 AND origin=?3 AND datetime('now')<datetime(expires_at) AND expires_at=(SELECT u.offline_expires_at FROM local_users u JOIN local_session s ON s.user_id=u.id WHERE s.id=1)",params![account,resource.id,origin],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(err)?;
-    let (revision,scope,allowed)=grant.ok_or("Record edit authority is not cached or has expired. Connect once to refresh it; your local work is preserved.")?;
+    let grant:Option<(Option<String>,Option<String>,bool)>=c.query_row(&format!("SELECT revision,scope_json,{} FROM local_resource_authority WHERE account_id=?1 AND resource_id=?2 AND origin=?3 AND datetime('now')<datetime(expires_at) AND expires_at=(SELECT u.offline_expires_at FROM local_users u JOIN local_session s ON s.user_id=u.id WHERE s.id=1)",match action{ResourceAction::Edit=>"can_edit",ResourceAction::Delete=>"can_delete",ResourceAction::CreateChild=>"can_create_child"}),params![account,resource.id,origin],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(err)?;
+    let (revision,scope,allowed)=grant.ok_or("Record action authority is not cached or has expired. Connect once to refresh it; your local work is preserved.")?;
     let scope:Option<Scope>=scope.map(|raw|serde_json::from_str(&raw)).transpose().map_err(err)?;
     // Owner-approved content-only lease continuity: never a blanket revision
     // bypass. A mismatched revision needs a native-published content chain.
-    if !allowed||scope.as_ref()!=Some(&Scope::from_resource(resource)){return Err("Cached edit authority does not cover this resource attachment and visibility".into())}
+    if !allowed||scope.as_ref()!=Some(&Scope::from_resource(resource)){return Err("Cached action authority does not cover this resource attachment and visibility".into())}
     let raw:Option<String>=c.query_row("SELECT bindings_json FROM local_resource_authority_bindings WHERE account_id=?1 AND resource_id=?2",params![account,resource.id],|r|r.get(0)).optional().map_err(err)?;
     let cached:CachedBindings=serde_json::from_str(&raw.ok_or("Connect once to verify this resource's complete ancestor authority; saved work is preserved")?).map_err(err)?;
     let lease:String=c.query_row("SELECT u.offline_expires_at FROM local_users u JOIN local_session s ON s.user_id=u.id WHERE s.id=1",[],|r|r.get(0)).map_err(err)?;
@@ -447,6 +622,7 @@ fn native_content_chain(c:&Connection,account:&str,resource:&local_resources::Lo
 // A new native file has no server grant yet. Its own unpublished creation is
 // evidence of authorship, not permission to edit a downloaded/confirmed file.
 pub(crate) fn require_own_pending_creation(c:&Connection,current:&local_resources::LocalResource)->Result<bool,String>{
+    if current.kind!="file"{return require_pending_nonfile_creation(c,current)}
     crate::local_resource_edits::schema(c)?;
     local_auth::require_local_permission(c,"resources.view")?;
     local_auth::require_local_permission(c,"resources.edit")?;
@@ -486,11 +662,39 @@ mod tests {
         assert_eq!(confirmation_digest(&serde_json::json!({"z":["é","😀","\n"],"a":{"protocol":1,"empty":null}})),"9cb97ba7feb7f5caab3d881124865586e18261b9dd323263dd531ed5a7beb544");
         assert_ne!(confirmation_digest(&serde_json::json!(["first","second"])),confirmation_digest(&serde_json::json!(["second","first"])));
     }
+    #[test]
+    fn named_receipts_require_exact_display_name_provenance_and_protocol(){
+        let (mut reply,mut proof)=mutation_confirmation();let mut after:local_resources::LocalResource=serde_json::from_str(&proof.after).unwrap();after.name="Reviewed name".into();after.name_source=Some("user".into());proof.after=serde_json::to_string(&after).unwrap();
+        let mut payload:serde_json::Value=serde_json::from_str(&proof.payload).unwrap();payload["metadata"]["fields"]["name"]=serde_json::json!(after.name);proof.payload=payload.to_string();reply.receipts[0].payload_sha256=Some(confirmation_digest(&payload));
+        reply.receipts[0].mutation_sha256=Some(confirmation_digest(&crate::local_resource_attachments::named_mutation_projection(&after)));reply.protocol=4;
+        validate_mutation_confirmation(&reply,"account","change",&proof).unwrap();reply.protocol=3;assert!(validate_mutation_confirmation(&reply,"account","change",&proof).is_err());reply.protocol=4;
+        after.name="Different".into();proof.after=serde_json::to_string(&after).unwrap();assert!(validate_mutation_confirmation(&reply,"account","change",&proof).is_err());
+    }
+    #[test]
+    fn tree_receipt_requires_protocol_five_exact_path_payload_and_native_root(){
+        let (mut reply,mut proof)=mutation_confirmation();
+        let mut after:local_resources::LocalResource=serde_json::from_str(&proof.after).unwrap();after.kind="folder".into();after.file_type="other".into();after.size_bytes=None;after.relative_path=Some("Folder".into());
+        let payload=serde_json::json!({"id":proof.resource,"tree_move":{"protocol":1,"members":[{"id":proof.resource}],"destination":{"parent_resource_id":after.parent_resource_id}}});
+        proof.operation="move_tree".into();proof.after=serde_json::to_string(&after).unwrap();proof.payload=payload.to_string();reply.protocol=5;
+        let receipt=&mut reply.receipts[0];receipt.operation=Some("move_tree".into());receipt.size_bytes=None;receipt.payload_sha256=Some(confirmation_digest(&payload));let mut projection=crate::local_resource_attachments::named_mutation_projection(&after);projection["relative_path"]=serde_json::json!(after.relative_path);receipt.mutation_sha256=Some(confirmation_digest(&projection));
+        validate_mutation_receipt(5,&reply.receipts[0],&reply.receipts[0].change_id,&proof).unwrap();
+        assert!(validate_mutation_receipt(4,&reply.receipts[0],&reply.receipts[0].change_id,&proof).is_err());
+        reply.receipts[0].mutation_sha256=Some("0".repeat(64));assert!(validate_mutation_receipt(5,&reply.receipts[0],&reply.receipts[0].change_id,&proof).is_err());
+    }
+
+    #[test]
+    fn nonfile_creation_confirmation_never_requires_or_manufactures_upload_provenance(){
+        for kind in ["link","folder"]{
+            let (_,mut proof)=mutation_confirmation();let mut after:local_resources::LocalResource=serde_json::from_str(&proof.after).unwrap();after.kind=kind.into();proof.operation="create".into();proof.after=serde_json::to_string(&after).unwrap();
+            let mut c=Connection::open_in_memory().unwrap();let tx=c.transaction().unwrap();publish_file_receipt(&tx,"account","change",&proof,"revision").unwrap();
+            assert_eq!(tx.query_row("SELECT count(*) FROM sqlite_master WHERE name IN ('local_resource_uploads','local_resource_confirmations')",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        }
+    }
     fn mutation_confirmation()->(MutationConfirmation,MutationProof){
         let after:local_resources::LocalResource=serde_json::from_value(serde_json::json!({"id":ID,"name":"sample","kind":"file","file_type":"text","tags":["lab"],"description":"saved","visibility":"restricted","updated_at":"2026-10-13T12:00:00.000Z","created_at":"2026-10-13T12:00:00.000Z"})).unwrap();
         let payload=serde_json::json!({"id":ID,"metadata":{"protocol":1,"fields":{"description":"saved"},"previous_change_id":null,"expected_updated_at":after.updated_at}});
         let proof=MutationProof{resource:ID.into(),device:"device".into(),operation:"edit_metadata".into(),payload:payload.to_string(),before:serde_json::to_string(&after).unwrap(),after:serde_json::to_string(&after).unwrap()};
-        let receipt=MutationReceipt{change_id:"change".into(),confirmed:true,resource_id:Some(ID.into()),operation:Some("edit_metadata".into()),revision:Some("2026-10-13T12:00:00.000Z".into()),mutation_sha256:Some(confirmation_digest(&crate::local_resource_attachments::mutation_projection(&after))),payload_sha256:Some(confirmation_digest(&payload))};
+        let receipt=MutationReceipt{change_id:"change".into(),confirmed:true,resource_id:Some(ID.into()),operation:Some("edit_metadata".into()),revision:Some("2026-10-13T12:00:00.000Z".into()),mutation_sha256:Some(confirmation_digest(&crate::local_resource_attachments::mutation_projection(&after))),payload_sha256:Some(confirmation_digest(&payload)),size_bytes:None};
         (MutationConfirmation{protocol:1,account_id:"account".into(),receipts:vec![receipt],authority:snapshot()},proof)
     }
     #[test]
@@ -513,12 +717,99 @@ mod tests {
     #[test]
     fn historical_mutation_confirmation_does_not_grant_current_authority(){
         let (mut reply,proof)=mutation_confirmation();
-        reply.authority.grants[0]=Grant{resource_id:ID.into(),can_edit:false,revision:None,scope:None,bindings:None};
+        reply.authority.grants[0]=Grant{resource_id:ID.into(),can_edit:false,can_delete:false,can_create_child:false,revision:None,scope:None,bindings:None};
         validate_mutation_confirmation(&reply,"account","change",&proof).unwrap();
         reply.receipts[0].confirmed=false;
         assert!(validate_mutation_confirmation(&reply,"account","change",&proof).is_err());
-        reply.receipts[0]=MutationReceipt{change_id:"change".into(),confirmed:false,resource_id:None,operation:None,revision:None,mutation_sha256:None,payload_sha256:None};
+        reply.receipts[0]=MutationReceipt{change_id:"change".into(),confirmed:false,resource_id:None,operation:None,revision:None,mutation_sha256:None,payload_sha256:None,size_bytes:None};
         validate_mutation_confirmation(&reply,"account","change",&proof).unwrap();
+    }
+    #[test]
+    fn mixed_confirmation_requires_exact_complete_prefix_but_accepts_a_missing_suffix(){
+        let (mut reply,proof)=mutation_confirmation();reply.protocol=3;
+        let (_,other)=mutation_confirmation();let proofs=vec![("change".into(),proof),("later".into(),other)];
+        reply.receipts.push(MutationReceipt{change_id:"later".into(),confirmed:false,resource_id:None,operation:None,revision:None,mutation_sha256:None,payload_sha256:None,size_bytes:None});
+        validate_mixed_confirmation(&reply,"account",&proofs).unwrap();
+        assert!(validate_mixed_confirmation(&reply,"other",&proofs).is_err());
+        let (confirmed,_)=mutation_confirmation();reply.receipts[1]=confirmed.receipts.into_iter().next().unwrap();reply.receipts[1].change_id="later".into();
+        reply.receipts[0]=MutationReceipt{change_id:"change".into(),confirmed:false,resource_id:None,operation:None,revision:None,mutation_sha256:None,payload_sha256:None,size_bytes:None};
+        assert!(validate_mixed_confirmation(&reply,"account",&proofs).is_err());
+        reply.receipts[1].change_id="change".into();assert!(validate_mixed_confirmation(&reply,"account",&proofs).is_err());
+        reply.receipts.pop();assert!(validate_mixed_confirmation(&reply,"account",&proofs).is_err());
+    }
+    #[test]
+    fn mixed_file_receipts_bind_bytes_and_metadata_and_do_not_accept_old_protocols(){
+        let (mut reply,mut proof)=mutation_confirmation();reply.protocol=3;proof.operation="edit_content".into();
+        let mut after:local_resources::LocalResource=serde_json::from_str(&proof.after).unwrap();after.size_bytes=Some(12);proof.after=serde_json::to_string(&after).unwrap();
+        let payload=serde_json::json!({"resource":{"id":ID,"kind":"file","size_bytes":12},"upload":{"protocol":1,"sha256":"a".repeat(64),"size_bytes":12}});proof.payload=payload.to_string();
+        let receipt=&mut reply.receipts[0];receipt.operation=Some("edit_content".into());receipt.size_bytes=Some(12);receipt.payload_sha256=Some(confirmation_digest(&payload));receipt.mutation_sha256=Some(confirmation_digest(&crate::local_resource_attachments::mutation_projection(&after)));
+        validate_mutation_confirmation(&reply,"account","change",&proof).unwrap();
+        reply.protocol=1;assert!(validate_mutation_confirmation(&reply,"account","change",&proof).is_err());reply.protocol=3;
+        reply.receipts[0].size_bytes=Some(13);assert!(validate_mutation_confirmation(&reply,"account","change",&proof).is_err());reply.receipts[0].size_bytes=Some(12);
+        reply.receipts[0].mutation_sha256=Some("0".repeat(64));assert!(validate_mutation_confirmation(&reply,"account","change",&proof).is_err());
+    }
+    #[test]
+    fn confirmed_metadata_retains_exact_file_readiness_after_sqlite_restart_without_size_guessing(){
+        let path=std::env::temp_dir().join(format!("labos-mixed-readiness-{}.sqlite",uuid::Uuid::new_v4()));
+        let mut c=Connection::open(&path).unwrap();local_db::ensure_schema(&c).unwrap();schema(&c).unwrap();
+        c.execute_batch("CREATE TABLE local_users(id TEXT PRIMARY KEY,central_user_id TEXT,role TEXT,is_active INTEGER,offline_expires_at TEXT,permissions_json TEXT);CREATE TABLE local_session(id INTEGER PRIMARY KEY,user_id TEXT);INSERT INTO local_users VALUES('a','account','admin',1,datetime('now','+1 hour'),'[]');INSERT INTO local_session VALUES(1,'a');").unwrap();
+        let device:String=c.query_row("SELECT device_id FROM device_identity WHERE id=1",[],|r|r.get(0)).unwrap();let origin=native_authorization::trusted_base().unwrap();
+        let (original,_)=creation();let mut after=original.clone();after.description=Some("reviewed".into());after.name="Reviewed title".into();after.name_source=Some("user".into());let mut current=after.clone();current.updated_at="2026-10-16T12:00:00.000Z".into();
+        let create="22222222-2222-4222-8222-222222222222";let metadata="33333333-3333-4333-8333-333333333333";let file_revision="2026-10-15T12:00:00.000Z";
+        let create_payload=serde_json::json!({"resource":original,"upload":{"protocol":1,"size_bytes":original.size_bytes,"sha256":"a".repeat(64)}});
+        let metadata_payload=serde_json::json!({"id":original.id,"metadata":{"protocol":1,"previous_change_id":create,"expected_updated_at":original.updated_at,"fields":{"description":"reviewed","name":"Reviewed title"}}});
+        {let tx=c.transaction().unwrap();for (id,operation,before,after,payload,revision) in [(create,"create",&original,&original,&create_payload,file_revision),(metadata,"edit_metadata",&original,&after,&metadata_payload,current.updated_at.as_str())]{
+            tx.execute("INSERT INTO sync_outbox(change_id,device_id,entity_type,entity_id,operation,payload_json,synced_at) VALUES(?1,?2,'resource',?3,?4,?5,CURRENT_TIMESTAMP)",params![id,device,original.id,operation,payload.to_string()]).unwrap();
+            crate::local_resource_attachments::record_native_proof(&tx,id,operation,before,after,payload).unwrap();
+            tx.execute("INSERT INTO local_resource_mutation_receipts(account_id,change_id,resource_id,device_id,origin,revision,payload_json) VALUES('account',?1,?2,?3,?4,?5,?6)",params![id,original.id,device,origin,revision,payload.to_string()]).unwrap();
+        }tx.commit().unwrap();}drop(c);
+        let c=Connection::open(&path).unwrap();assert!(content_revision_matches(&c,&current,create,Some(file_revision)).unwrap());
+        assert!(!content_revision_matches(&c,&current,create,Some("different-revision")).unwrap());
+        let mut changed=current.clone();changed.name="different.md".into();assert!(!content_revision_matches(&c,&changed,create,Some(file_revision)).unwrap());
+        changed=current.clone();changed.updated_at="2026-10-17T12:00:00.000Z".into();assert!(!content_revision_matches(&c,&changed,create,Some(file_revision)).unwrap());
+        c.execute("UPDATE sync_outbox SET payload_json='{}' WHERE change_id=?1",[metadata]).unwrap();assert!(!content_revision_matches(&c,&current,create,Some(file_revision)).unwrap());
+        drop(c);std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn action_snapshot_separates_delete_permission_and_rejects_legacy_escalation(){
+        let mut grant=snapshot();grant.protocol=3;grant.grants[0].can_edit=false;grant.grants[0].can_delete=true;
+        validate(&grant,"account",&[ID.into()]).unwrap();
+        grant.protocol=2;assert!(validate(&grant,"account",&[ID.into()]).is_err());
+        grant.protocol=3;grant.grants[0].bindings=None;assert!(validate(&grant,"account",&[ID.into()]).is_err());
+    }
+    #[test]
+    fn delete_only_authority_survives_restart_and_never_grants_edit_or_crosses_identity(){
+        let path=std::env::temp_dir().join(format!("labos-delete-authority-{}.sqlite",uuid::Uuid::new_v4()));
+        let c=Connection::open(&path).unwrap();local_db::ensure_schema(&c).unwrap();schema(&c).unwrap();
+        c.execute_batch("CREATE TABLE local_users(id TEXT PRIMARY KEY,central_user_id TEXT,role TEXT,is_active INTEGER,offline_expires_at TEXT,permissions_json TEXT);CREATE TABLE local_session(id INTEGER PRIMARY KEY,user_id TEXT);INSERT INTO local_users VALUES('a','account','viewer',1,datetime('now','+1 hour'),'[\"resources.view\",\"resources.delete\"]');INSERT INTO local_session VALUES(1,'a');").unwrap();
+        let lease:String=c.query_row("SELECT offline_expires_at FROM local_users",[],|r|r.get(0)).unwrap();
+        let origin=native_authorization::trusted_base().unwrap();
+        let mut grant=snapshot();grant.protocol=3;grant.grants[0].can_edit=false;grant.grants[0].can_delete=true;
+        let mut record=local_rows(grant.grants[0].bindings.as_ref().unwrap()).remove(0);record.updated_at=grant.grants[0].revision.clone().unwrap();
+        local_resources::write_resources(&c,&[record.clone()]).unwrap();cache_snapshot(&c,"account",&origin,&lease,grant).unwrap();drop(c);
+        let c=Connection::open(&path).unwrap();require_delete(&c,&record).unwrap();assert!(require_edit(&c,&record).is_err());
+        c.execute("UPDATE local_resource_authority SET origin='https://other.example/api'",[]).unwrap();assert!(require_delete(&c,&record).is_err());
+        c.execute("UPDATE local_resource_authority SET origin=?1",[&origin]).unwrap();
+        let mut changed=record.clone();changed.visibility=Some("lab".into());assert!(require_delete(&c,&changed).is_err());
+        c.execute("INSERT INTO local_resource_poster_denials(account_id,resource_id) VALUES('account',?1)",[ID]).unwrap();assert!(require_delete(&c,&record).is_err());
+        c.execute("DELETE FROM local_resource_poster_denials",[]).unwrap();require_delete(&c,&record).unwrap();
+        c.execute("UPDATE local_resource_authority SET can_delete=0",[]).unwrap();assert!(require_delete(&c,&record).is_err());
+        c.execute("UPDATE local_resource_authority SET can_delete=1",[]).unwrap();
+        c.execute("UPDATE local_users SET offline_expires_at=datetime('now','-1 second')",[]).unwrap();assert!(require_delete(&c,&record).is_err());
+        drop(c);std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn folder_destination_does_not_require_or_grant_metadata_edit(){
+        let c=Connection::open_in_memory().unwrap();local_db::ensure_schema(&c).unwrap();schema(&c).unwrap();
+        c.execute_batch("CREATE TABLE local_users(id TEXT PRIMARY KEY,central_user_id TEXT,role TEXT,is_active INTEGER,offline_expires_at TEXT,permissions_json TEXT);CREATE TABLE local_session(id INTEGER PRIMARY KEY,user_id TEXT);INSERT INTO local_users VALUES('a','account','viewer',1,datetime('now','+1 hour'),'[\"resources.view\",\"resources.create\"]');INSERT INTO local_session VALUES(1,'a');").unwrap();
+        let lease:String=c.query_row("SELECT offline_expires_at FROM local_users",[],|r|r.get(0)).unwrap();let origin=native_authorization::trusted_base().unwrap();
+        let mut grant=snapshot();grant.protocol=3;grant.grants[0].can_edit=false;grant.grants[0].can_create_child=true;
+        assert!(validate(&grant,"account",&[ID.into()]).is_err());
+        grant.grants[0].bindings.as_mut().unwrap()[0].kind="folder".into();validate(&grant,"account",&[ID.into()]).unwrap();
+        let mut folder=local_rows(grant.grants[0].bindings.as_ref().unwrap()).remove(0);folder.updated_at=grant.grants[0].revision.clone().unwrap();
+        local_resources::write_resources(&c,&[folder.clone()]).unwrap();cache_snapshot(&c,"account",&origin,&lease,grant).unwrap();
+        require_folder_destination(&c,&folder).unwrap();assert!(require_edit(&c,&folder).is_err());assert!(require_delete(&c,&folder).is_err());
+        c.execute("INSERT INTO local_resource_poster_denials(account_id,resource_id) VALUES('account',?1)",[ID]).unwrap();assert!(require_folder_destination(&c,&folder).is_err());
     }
     fn snapshot()->Snapshot{
         let scope=serde_json::json!({"visibility":"restricted","item_id":null,"project_id":null,"note_id":null,"parent_resource_id":null});

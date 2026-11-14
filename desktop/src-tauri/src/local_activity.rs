@@ -94,8 +94,11 @@ fn apply(c: &mut Connection, account: &str, guard: &str, snapshot: Option<Value>
 }
 
 #[tauri::command]
-pub fn list_local_activity(app: AppHandle, expected_account_id: String, limit: usize) -> Result<Value, String> {
+pub async fn list_local_activity(app: AppHandle, expected_account_id: String, limit: usize) -> Result<Value, String> {
+    crate::responsive_reads::run("list_local_activity", move || {
     read(&local_db::open_local_connection(&app)?, &expected_account_id, limit)
+
+    }).await
 }
 
 #[tauri::command]

@@ -2,7 +2,7 @@ use crate::{local_auth,local_db,local_resources,local_resource_uploads};
 use rusqlite::{params,Connection,OptionalExtension,TransactionBehavior};
 use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
-use std::{fs::{self,OpenOptions},io::{Read,Write},path::{Path,PathBuf},process::{Command,Stdio},sync::atomic::{AtomicUsize,Ordering},time::{Duration,Instant}};
+use std::{fs::{self},io::{Read,Write},path::{Path,PathBuf},process::{Command,Stdio},sync::atomic::{AtomicUsize,Ordering},time::{Duration,Instant}};
 use tauri::AppHandle;
 #[cfg(not(debug_assertions))]
 use tauri::Manager;
@@ -14,6 +14,10 @@ mod process_job{
     pub struct Job(HANDLE);
     impl Drop for Job{fn drop(&mut self){unsafe{CloseHandle(self.0);}}}
     impl Job{
+        pub fn peak_bytes(&self)->Option<usize>{unsafe{
+            let mut limits:JOBOBJECT_EXTENDED_LIMIT_INFORMATION=mem::zeroed();
+            if QueryInformationJobObject(self.0,JobObjectExtendedLimitInformation,&mut limits as *mut _ as *mut _,mem::size_of_val(&limits) as u32,std::ptr::null_mut())==0{None}else{Some(limits.PeakProcessMemoryUsed)}
+        }}
         pub fn attach(child:&Child)->Result<Self,String>{unsafe{
             let handle=CreateJobObjectW(std::ptr::null(),std::ptr::null());
             if handle==0{return Err("Could not isolate DOCX process".into())}
@@ -36,7 +40,7 @@ struct Slot;
 impl Drop for Slot{fn drop(&mut self){ACTIVE.fetch_sub(1,Ordering::SeqCst);}}
 fn slot()->Result<Slot,String>{ACTIVE.fetch_update(Ordering::SeqCst,Ordering::SeqCst,|n|if n<2{Some(n+1)}else{None}).map(|_|Slot).map_err(|_|"DOCX conversion is busy. Retry shortly.".into())}
 fn err(e:impl std::fmt::Display)->String{e.to_string()}
-fn bounded(path:&Path,max:usize)->Result<Vec<u8>,String>{let mut bytes=Vec::new();fs::File::open(path).map_err(err)?.take(max as u64+1).read_to_end(&mut bytes).map_err(err)?;if bytes.len()>max{return Err("DOCX data exceeds its size limit".into())}Ok(bytes)}
+fn bounded(path:&Path,max:usize)->Result<Vec<u8>,String>{let mut bytes=Vec::new();crate::working_store::open(path).map_err(err)?.take(max as u64+1).read_to_end(&mut bytes).map_err(err)?;if bytes.len()>max{return Err("DOCX data exceeds its size limit".into())}Ok(bytes)}
 
 fn runtime(app:&AppHandle)->Result<PathBuf,String>{
     let pin:Value=serde_json::from_str(include_str!("../docx-runtime-pin.json")).map_err(err)?;
@@ -72,7 +76,11 @@ fn convert(app:&AppHandle,mode:u8,input:Vec<u8>)->Result<Vec<u8>,String>{
 fn convert_with_runtime(root:&Path,mode:u8,input:Vec<u8>)->Result<Vec<u8>,String>{
     if ![1,2].contains(&mode)||input.len()>if mode==1{FILE_LIMIT}else{HTML_LIMIT}{return Err("Invalid DOCX conversion input".into())}
     let mut command=Command::new(root.join(if cfg!(windows){"node.exe"}else{"node"}));
-    command.arg("--max-old-space-size=128").arg(root.join("src/docx-native-worker.js")).current_dir(&root).env_clear().stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+    // Separate verified engine startup from bounded conversion. Cold Windows
+    // module loading is not conversion time; neither phase is unbounded.
+    let engine=if mode==1{"mammoth"}else{"@turbodocx/html-to-docx"};
+    let bootstrap=format!("await import('{}');process.stdout.write(Buffer.from([4,0,0,0,0]));await import('./src/docx-native-worker.js');",engine);
+    command.arg("--max-old-space-size=128").args(["--input-type=module","--eval"]).arg(bootstrap).current_dir(&root).env_clear().stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
     for key in ["SystemRoot","WINDIR","TEMP","TMP","TMPDIR"]{if let Some(value)=std::env::var_os(key){command.env(key,value);}}
     #[cfg(windows)]{use std::os::windows::process::CommandExt;command.creation_flags(0x08000000);}
     let mut child=command.spawn().map_err(|_|"Could not start packaged DOCX converter")?;
@@ -81,14 +89,22 @@ fn convert_with_runtime(root:&Path,mode:u8,input:Vec<u8>)->Result<Vec<u8>,String
     let mut stdin=child.stdin.take().ok_or("Missing converter input")?;
     let stdout=child.stdout.take().ok_or("Missing converter output")?;
     let writer=std::thread::spawn(move||->Result<(),String>{stdin.write_all(&[mode]).map_err(err)?;stdin.write_all(&(input.len() as u32).to_be_bytes()).map_err(err)?;stdin.write_all(&input).map_err(err)});
-    let reader=std::thread::spawn(move||->Result<Vec<u8>,String>{let mut out=Vec::new();stdout.take(FILE_LIMIT as u64+6).read_to_end(&mut out).map_err(err)?;Ok(out)});
-    let deadline=Instant::now()+Duration::from_secs(20);
-    let status=loop{match child.try_wait(){Ok(Some(status))=>break Ok(status),Ok(None)if Instant::now()<deadline=>std::thread::sleep(Duration::from_millis(20)),Ok(None)=>break Err("DOCX conversion timed out".to_string()),Err(_)=>break Err("DOCX converter failed".to_string())}};
+    let ready=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));let signal=ready.clone();
+    let reader=std::thread::spawn(move||->Result<Vec<u8>,String>{let mut stdout=stdout;let mut header=[0u8;5];stdout.read_exact(&mut header).map_err(err)?;if header!=[4,0,0,0,0]{return Err("Invalid DOCX engine startup handshake".into())}signal.store(true,Ordering::Release);let mut out=Vec::new();stdout.take(FILE_LIMIT as u64+6).read_to_end(&mut out).map_err(err)?;Ok(out)});
+    let started=Instant::now();let mut startup_ms=None;
+    let mut deadline=Instant::now()+Duration::from_secs(45);let mut initialized=false;
+    let status=loop{if !initialized&&ready.load(Ordering::Acquire){initialized=true;startup_ms=Some(started.elapsed().as_millis());deadline=Instant::now()+Duration::from_secs(20);}match child.try_wait(){Ok(Some(status))=>break Ok(status),Ok(None)if Instant::now()<deadline=>std::thread::sleep(Duration::from_millis(20)),Ok(None)=>break Err(if initialized{"DOCX conversion timed out"}else{"DOCX engine startup timed out"}.to_string()),Err(_)=>break Err("DOCX converter failed".to_string())}};
     if status.is_err(){let _=child.kill();let _=child.wait();}
-    let written=writer.join().map_err(|_|"DOCX input worker failed")?;
-    let output=reader.join().map_err(|_|"DOCX output worker failed")??;
-    let status=status?;written?;
-    if !status.success()||output.len()<5||output.len()>FILE_LIMIT+5{return Err("DOCX converter stopped or returned invalid output".into())}
+    let written=writer.join().map_err(|_|"DOCX input worker failed".to_string()).and_then(|result|result);
+    let output=reader.join().map_err(|_|"DOCX output worker failed".to_string()).and_then(|result|result);
+    if std::env::var_os("LABOS_DOCX_TIMINGS").is_some(){
+        #[cfg(windows)] let peak_bytes=_job.peak_bytes();
+        #[cfg(not(windows))] let peak_bytes:Option<usize>=None;
+        eprintln!("DOCX mode={mode} startup_ms={startup_ms:?} total_ms={} peak_bytes={peak_bytes:?} exit={:?}",started.elapsed().as_millis(),status.as_ref().ok().and_then(|value|value.code()));
+    }
+    let status=status.and_then(|value|if value.success(){Ok(())}else{Err(format!("DOCX converter exited without completing its response (code {:?})",value.code()))});
+    let output=checked_process_output(status,written,output)?;
+    if output.len()<5||output.len()>FILE_LIMIT+5{return Err("DOCX converter stopped or returned invalid output".into())}
     let length=u32::from_be_bytes(output[1..5].try_into().unwrap()) as usize;
     if length!=output.len()-5{return Err("Incomplete DOCX conversion result".into())}
     if output[0]==3{let error:Value=serde_json::from_slice(&output[5..]).map_err(err)?;return Err(error["error"].as_str().unwrap_or("DOCX conversion failed").chars().take(1000).collect())}
@@ -96,9 +112,19 @@ fn convert_with_runtime(root:&Path,mode:u8,input:Vec<u8>)->Result<Vec<u8>,String
     Ok(output[5..].to_vec())
 }
 
+// Killing a timed-out child closes its pipes. Preserve the real failure instead
+// of replacing it with the resulting EOF/BrokenPipe from a joined I/O thread.
+fn checked_process_output(status:Result<(),String>,written:Result<(),String>,output:Result<Vec<u8>,String>)->Result<Vec<u8>,String>{status?;written?;output}
+
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn process_failure_precedes_secondary_pipe_errors(){
+        assert_eq!(checked_process_output(Err("DOCX engine startup timed out".into()),Err("broken pipe".into()),Err("EOF".into())).unwrap_err(),"DOCX engine startup timed out");
+        assert!(checked_process_output(Err("exit 7".into()),Ok(()),Ok(vec![1])).unwrap_err().contains("exit 7"));
+        assert_eq!(checked_process_output(Ok(()),Ok(()),Err("bad output".into())).unwrap_err(),"bad output");
+    }
     #[test]
     fn bundled_native_process_round_trip(){
         let pin:Value=serde_json::from_str(include_str!("../docx-runtime-pin.json")).unwrap();
@@ -179,7 +205,7 @@ pub async fn save_local_docx_copy(app:AppHandle,expected_account_id:String,expec
         record.thumbnail_url=None;record.local_media_path=None;record.local_media_filename=None;record.local_media_mime_type=None;record.local_media_size_bytes=None;record.local_media_downloaded_at=None;
         let now:String=tx.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')",[],|r|r.get(0)).map_err(err)?;record.created_at=now.clone();record.updated_at=now;
         let target=local_resource_uploads::file_path(&app,&expected_account_id,&change)?;fs::create_dir_all(target.parent().unwrap()).map_err(err)?;
-        let mut file=OpenOptions::new().write(true).create_new(true).open(target).map_err(err)?;file.write_all(&bytes).map_err(err)?;file.sync_all().map_err(err)?;
+        crate::working_store::write_new(&target,&bytes).map_err(err)?;
         let file_digest=format!("{:x}",Sha256::digest(&bytes));
         let payload=json!({"resource":record,"copy":{"protocol":1,"format":"docx","source_id":source.id,"source_updated_at":source.updated_at,"previous_change_id":previous},"upload":{"protocol":1,"sha256":file_digest,"size_bytes":bytes.len()}});
         let device:String=tx.query_row("SELECT device_id FROM device_identity WHERE id=1",[],|r|r.get(0)).map_err(err)?;

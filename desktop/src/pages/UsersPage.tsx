@@ -1,9 +1,10 @@
 import {useManualRefresh} from '../hooks/useManualRefresh';
-import { useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
+import CenteredDialog from '../components/CenteredDialog';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, KeyRound, Plus, RefreshCw, Search, Shield, User, X } from 'lucide-react';
-import { getManagedUsers, createManagedUser, updateManagedUser, resetManagedUserPassword, type AccountRole, type ManagedUser } from '../api/users';
-import { getCurrentUserPermissions, getUserPermissions, updateUserPermissions } from '../api/permissions';
+import { getManagedUsers, refreshManagedUsers, createManagedUser, updateManagedUser, resetManagedUserPassword, type AccountRole, type ManagedUser } from '../api/users';
+import { getCurrentUserPermissions, getUserPermissions, refreshUserPermissions, updateUserPermissions } from '../api/permissions';
 import type { PermissionEffect, PermissionEntry } from '../api/permissions';
 import { getStoredUser } from '../api/auth';
 import { useToast } from '../contexts/ToastContext';
@@ -15,18 +16,6 @@ const secondaryButton = 'inline-flex items-center justify-center gap-2 rounded-m
 
 function readable(value: string) {
   return value.replace(/[._]/g, ' ').replace(/\b\w/g, letter => letter.toUpperCase());
-}
-
-function Modal({ title, close, children, wide = false }: { title: string; close: () => void; children: ReactNode; wide?: boolean }) {
-  return <div className="fixed inset-0 flex items-center justify-center bg-black/65 p-3 sm:p-5 backdrop-blur-sm" style={{ zIndex: 200 }} onMouseDown={event => { if (event.target === event.currentTarget) close(); }}>
-    <section role="dialog" aria-modal="true" aria-labelledby="user-dialog-title" onKeyDown={event => { if (event.key === 'Escape') close(); }} className={`flex w-full flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-2xl ${wide ? 'max-h-[88vh] max-w-4xl' : 'max-h-[88vh] max-w-md'}`}>
-      <header className="flex shrink-0 items-center justify-between gap-4 border-b border-border px-5 py-3.5">
-        <div className="min-w-0"><div className="text-[10px] font-semibold uppercase tracking-[.16em] text-accent">User management</div><h2 id="user-dialog-title" className="mt-0.5 truncate text-base sm:text-lg font-semibold">{title}</h2></div>
-        <button type="button" onClick={close} aria-label="Close dialog" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-secondary hover:bg-surface-raised hover:text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/40"><X size={17}/></button>
-      </header>
-      <div className={`min-h-0 p-4 sm:p-5 ${wide ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'}`} style={wide ? { flex: '1 1 0%', minHeight: 0 } : undefined}>{children}</div>
-    </section>
-  </div>;
 }
 
 export default function UsersPage() {
@@ -42,13 +31,21 @@ export default function UsersPage() {
   const [password, setPassword] = useState('');
   const [role, setRole] = useState<AccountRole>('member');
   const [changes, setChanges] = useState<Record<string, PermissionEffect>>({});
+  const [permissionReviewEtag,setPermissionReviewEtag]=useState<string|undefined>();
   const [newPassword, setNewPassword] = useState('');
 
   const mine = useQuery({ queryKey: ['current-user-permissions'], queryFn: getCurrentUserPermissions, enabled: !!me });
   const effectivePermissions = new Set((mine.data?.permissions ?? []).filter(permission => permission.effective).map(permission => permission.permission));
   const can = (permission: string) => me?.role === 'admin' || effectivePermissions.has(permission);
   const users = useQuery({ queryKey: ['managed-users'], queryFn: getManagedUsers, enabled: !!me && !mine.isLoading && can('users.view') });
+  const refreshUsers=async()=>{try{await refreshManagedUsers();const result=await users.refetch();setSelected(current=>current?result.data?.find(row=>row.id===current.id)??current:current);}catch(error){showToast(error instanceof Error?error.message:'Unable to refresh users','error');}};
   const profile = useQuery({ queryKey: ['user-permissions', selected?.id], queryFn: () => getUserPermissions(selected!.id), enabled: !!selected && can('users.manage_permissions') });
+  const refreshProfile=async()=>{if(!selected)return;try{await refreshUserPermissions(selected.id);await profile.refetch();}catch(error){showToast(error instanceof Error?error.message:'Unable to refresh permissions','error');}};
+  useEffect(()=>{
+    if(!selected?.id)return;
+    const id=selected.id;
+    void refreshUserPermissions(id).then(()=>queryClient.invalidateQueries({queryKey:['user-permissions',id]})).catch(()=>undefined);
+  },[selected?.id,queryClient]);
 
   const create = useMutation({
     mutationFn: createManagedUser,
@@ -59,16 +56,18 @@ export default function UsersPage() {
       setRole('member');
       queryClient.invalidateQueries({ queryKey: ['managed-users'] });
       showToast('User created');
+      void refreshUsers();
     },
     onError: error => showToast(error.message, 'error'),
   });
   const update = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: { role?: AccountRole; is_active?: boolean } }) => updateManagedUser(id, data),
+    mutationFn: ({ id, data }: { id: string; data: { role?: AccountRole; is_active?: boolean } }) => updateManagedUser(id, data,selected?.management_etag),
     onSuccess: updated => {
       setSelected(current => current?.id === updated.id ? { ...current, ...updated } : current);
       queryClient.invalidateQueries({ queryKey: ['managed-users'] });
       queryClient.invalidateQueries({ queryKey: ['user-permissions', updated.id] });
       showToast('Account updated');
+      void refreshUsers();void refreshProfile();
     },
     onError: error => showToast(error.message, 'error'),
   });
@@ -76,18 +75,21 @@ export default function UsersPage() {
     mutationFn: () => updateUserPermissions(selected!.id, (profile.data?.permissions ?? []).flatMap(permission => {
       const effect = changes[permission.permission] ?? permission.effect;
       return effect === 'grant' || effect === 'deny' ? [{ permission: permission.permission, effect }] : [];
-    })),
+    }),permissionReviewEtag??profile.data?.user.management_etag),
     onSuccess: () => {
       setChanges({});
+      setPermissionReviewEtag(undefined);
       queryClient.invalidateQueries({ queryKey: ['user-permissions', selected?.id] });
       showToast('Permissions saved');
+      void refreshProfile();void refreshUsers();
     },
     onError: error => showToast(error.message, 'error'),
   });
   const resetPassword = useMutation({
-    mutationFn: () => resetManagedUserPassword(selected!.id, newPassword),
+    mutationFn: () => resetManagedUserPassword(selected!.id, newPassword,selected?.management_etag),
     onSuccess: () => {
       setNewPassword('');
+      void refreshUsers();void refreshProfile();
       showToast('Password reset');
     },
     onError: error => showToast(error.message, 'error'),
@@ -110,17 +112,18 @@ export default function UsersPage() {
   const hasPermissionChanges = Object.entries(changes).some(([permission, effect]) =>
     profile.data?.permissions.find(entry => entry.permission === permission)?.effect !== effect
   );
+  const permissionReviewChanged=hasPermissionChanges&&!!permissionReviewEtag&&permissionReviewEtag!==profile.data?.user.management_etag;
 
   const submitNewUser = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     create.mutate({ username: username.trim(), password, role });
   };
 
-  return <main className="mx-auto max-w-6xl space-y-5 p-5 md:p-6">
+  return <main className="user-directory mx-auto max-w-6xl space-y-5 p-4 md:p-6">
     <header className="flex flex-wrap items-end justify-between gap-4">
       <div><div className="text-[10px] font-semibold uppercase tracking-[.16em] text-accent">Administration / Directory</div><h1 className="mt-1 text-page-title font-semibold">Users</h1><p className="mt-1 text-sm text-text-secondary">Manage laboratory accounts and access levels.</p></div>
       <div className="flex gap-2">
-        <button type="button" className={secondaryButton} onClick={()=>manualRefresh.refresh(()=>users.refetch())} disabled={manualRefresh.refreshing}><RefreshCw size={15} className={manualRefresh.refreshing ? 'animate-spin' : ''}/>Refresh</button>
+        <button type="button" className={secondaryButton} onClick={()=>manualRefresh.refresh(refreshUsers)} disabled={manualRefresh.refreshing}><RefreshCw size={15} className={manualRefresh.refreshing ? 'animate-spin' : ''}/>Refresh</button>
         {can('users.create') && <button type="button" className={primaryButton} onClick={() => setCreating(true)}><Plus size={16}/>Add user</button>}
       </div>
     </header>
@@ -132,17 +135,17 @@ export default function UsersPage() {
         <span className="text-xs text-text-secondary">{filteredUsers.length} of {allUsers.length} users</span>
       </div>
       {users.isLoading ? <div className="space-y-3 p-5" aria-busy="true">{[1, 2, 3].map(row => <div key={row} className="h-12 animate-pulse rounded-md bg-surface-raised"/>)}</div> :
-        users.error ? <div role="alert" className="m-4 rounded-md border border-status-danger/30 bg-status-danger/5 p-4 text-sm"><p className="font-medium text-status-danger">Unable to load users</p><p className="mt-1 text-text-secondary">{users.error.message}</p><button type="button" onClick={()=>manualRefresh.refresh(()=>users.refetch())} className="mt-3 text-accent hover:underline">Try again</button></div> :
+        users.error ? <div role="alert" className="m-4 rounded-md border border-status-danger/30 bg-status-danger/5 p-4 text-sm"><p className="font-medium text-status-danger">Unable to load users</p><p className="mt-1 text-text-secondary">{users.error.message}</p><button type="button" onClick={()=>manualRefresh.refresh(refreshUsers)} className="mt-3 text-accent hover:underline">Try again</button></div> :
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[560px] text-left text-sm">
-              <thead className="bg-surface-raised/50 text-xs text-text-secondary border-b border-border"><tr><th scope="col" className="px-4 py-2.5 font-medium">User</th><th scope="col" className="px-3 py-2.5 font-medium">Role</th><th scope="col" className="px-3 py-2.5 font-medium">Last activity</th><th scope="col" className="px-3 py-2.5 font-medium">Status</th><th scope="col" className="px-4 py-2.5 text-right font-medium"> </th></tr></thead>
+            <table className="w-full min-w-[420px] text-left text-sm">
+              <thead className="bg-surface-raised/50 text-xs text-text-secondary border-b border-border"><tr><th scope="col" className="px-4 py-2.5 font-medium">User</th><th scope="col" className="px-3 py-2.5 font-medium">Role</th><th scope="col" className="user-secondary-column px-3 py-2.5 font-medium">Last activity</th><th scope="col" className="px-3 py-2.5 font-medium">Status</th><th scope="col" className="px-4 py-2.5 text-right font-medium"> </th></tr></thead>
               <tbody className="divide-y divide-border">
                 {filteredUsers.map(user => <tr key={user.id} className="transition-colors hover:bg-surface-raised/40">
                   <td className="px-4 py-2.5"><div className="flex items-center gap-2.5"><span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent/10 text-xs font-semibold uppercase text-accent">{user.username.slice(0, 1)}</span><span className="font-medium text-text-primary truncate max-w-[200px]">{user.username}{user.id === me.id && <span className="ml-1.5 rounded-full bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">You</span>}</span></div></td>
                   <td className="px-3 py-2.5 text-xs capitalize text-text-secondary">{readable(user.role)}</td>
-                  <td className="px-3 py-2.5 text-xs text-text-secondary">{user.last_login_at ? <time dateTime={user.last_login_at} title={new Date(user.last_login_at).toLocaleString()}>{new Date(user.last_login_at).toLocaleDateString()}</time> : 'Never'}</td>
+                  <td className="user-secondary-column px-3 py-2.5 text-xs text-text-secondary">{user.last_login_at ? <time dateTime={user.last_login_at} title={new Date(user.last_login_at).toLocaleString()}>{new Date(user.last_login_at).toLocaleDateString()}</time> : 'Never'}</td>
                   <td className="px-3 py-2.5"><span className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] ${user.is_active ? 'border-status-ok/30 bg-status-ok/5 text-status-ok' : 'border-status-danger/30 bg-status-danger/5 text-status-danger'}`}><span className="h-1.5 w-1.5 rounded-full bg-current"/>{user.is_active ? 'Active' : 'Disabled'}</span></td>
-                  <td className="px-4 py-2.5 text-right"><button type="button" onClick={() => { setSelected(user); setChanges({}); setNewPassword(''); }} aria-label={`Manage ${user.username}`} className="rounded-md px-2.5 py-1 text-xs font-medium text-accent hover:bg-accent/10 focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors">Manage</button></td>
+                  <td className="px-4 py-2.5 text-right"><button type="button" onClick={() => { setSelected(user); setPermissionReviewEtag(undefined); setChanges({}); setNewPassword(''); }} aria-label={`Manage ${user.username}`} className="rounded-md px-2.5 py-1 text-xs font-medium text-accent hover:bg-accent/10 focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors">Manage</button></td>
                 </tr>)}
                 {!filteredUsers.length && <tr><td colSpan={5} className="px-5 py-12 text-center"><User size={24} className="mx-auto text-text-tertiary"/><p className="mt-2 text-sm font-medium">{allUsers.length ? 'No users match these filters' : 'No users found'}</p><p className="mt-1 text-xs text-text-secondary">{allUsers.length ? 'Try another username or role.' : 'Create an account to get started.'}</p></td></tr>}
               </tbody>
@@ -150,18 +153,18 @@ export default function UsersPage() {
           </div>}
     </section>
 
-    {creating && <Modal title="Add user" close={() => setCreating(false)}>
+    {creating && <CenteredDialog eyebrow="User management" title="Add user" onClose={() => setCreating(false)}>
       <form className="space-y-4" onSubmit={submitNewUser}>
         <label className="block text-xs font-medium text-text-secondary">Username<input autoFocus className={`${input} mt-1.5`} placeholder="Enter a username" value={username} onChange={event => setUsername(event.target.value)} required autoComplete="off"/></label>
         <label className="block text-xs font-medium text-text-secondary">Temporary password<input className={`${input} mt-1.5`} type="password" placeholder="Set an initial password" value={password} onChange={event => setPassword(event.target.value)} required autoComplete="new-password"/></label>
         <label className="block text-xs font-medium text-text-secondary">Role<select className={`${input} mt-1.5 capitalize`} value={role} onChange={event => setRole(event.target.value as AccountRole)}>{roles.map(userRole => <option key={userRole} value={userRole}>{readable(userRole)}</option>)}</select></label>
         <div className="flex justify-end gap-2 border-t border-border pt-4"><button type="button" className={secondaryButton} onClick={() => setCreating(false)}>Cancel</button><button type="submit" className={primaryButton} disabled={create.isPending}>{create.isPending ? 'Creating…' : <><Plus size={15}/>Create user</>}</button></div>
       </form>
-    </Modal>}
+    </CenteredDialog>}
 
-    {selected && <Modal title={selected.username} close={() => setSelected(null)} wide>
-      <div className="grid gap-5 md:grid-cols-3" style={{ flex: '1 1 0%', minHeight: 0, gridTemplateRows: 'minmax(0, 1fr)', overflow: 'hidden' }}>
-        <div className="space-y-4 md:col-span-1 md:self-start">
+    {selected && <CenteredDialog eyebrow="User management" title={selected.username} onClose={() => setSelected(null)} wide>
+      <div className="grid min-h-0 gap-4 md:flex-1 md:grid-cols-[minmax(0,16rem)_minmax(0,1fr)] md:grid-rows-[minmax(0,1fr)]">
+        <div className="space-y-4 md:min-h-0 md:overflow-y-auto">
           <section className="rounded-lg border border-border bg-bg/40 p-4">
             <div className="mb-4 flex items-center gap-2"><User size={16} className="text-accent"/><h3 className="text-sm font-semibold">Account</h3></div>
             <label className="block text-xs font-medium text-text-secondary">Role<select className={`${input} mt-1.5 capitalize`} value={selected.role} onChange={event => update.mutate({ id: selected.id, data: { role: event.target.value as AccountRole } })} disabled={update.isPending}>{roles.map(userRole => <option key={userRole} value={userRole}>{readable(userRole)}</option>)}</select></label>
@@ -176,21 +179,22 @@ export default function UsersPage() {
           </section>
         </div>
 
-        <section className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-bg/40 p-4 md:col-span-2">
+        <section className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-bg/40 p-4">
           <div className="mb-3 flex items-start justify-between gap-3"><div className="flex items-center gap-2"><Shield size={16} className="text-accent"/><h3 className="text-sm font-semibold">Permission overrides</h3></div>{profile.data && selected.role !== 'admin' && <span className="text-[10px] text-text-tertiary">Changes take effect on save</span>}</div>
           {selected.role === 'admin' ? <div className="flex items-start gap-2 rounded-md border border-accent/30 bg-accent/5 p-3 text-xs text-accent"><Shield size={15} className="mt-0.5 shrink-0"/>Administrator access is managed by role and cannot be overridden here.</div> :
             !can('users.manage_permissions') ? <p className="rounded-md border border-border p-4 text-xs text-text-secondary">You don’t have permission to manage this user’s access overrides.</p> :
               profile.isLoading ? <div className="space-y-2 py-2" aria-busy="true">{[1, 2, 3, 4].map(row => <div key={row} className="h-10 animate-pulse rounded bg-surface-raised"/>)}</div> :
-                profile.error ? <div role="alert" className="rounded-md border border-status-danger/30 bg-status-danger/5 p-3 text-xs"><p className="font-medium text-status-danger">Couldn’t load permissions</p><button type="button" onClick={() => profile.refetch()} className="mt-2 text-accent hover:underline">Try again</button></div> :
+                profile.error ? <div role="alert" className="rounded-md border border-status-danger/30 bg-status-danger/5 p-3 text-xs"><p className="font-medium text-status-danger">Couldn’t load permissions</p><button type="button" onClick={() => void refreshProfile()} className="mt-2 text-accent hover:underline">Try again</button></div> :
                   <>{Object.entries(permissionGroups).length ? <div className="min-h-0 space-y-4 overflow-y-auto pr-1" style={{ flex: '1 1 0%', maxHeight: '55vh' }}>{Object.entries(permissionGroups).map(([group, permissions]) => <div key={group}><h4 className="mb-1.5 text-[10px] font-semibold uppercase tracking-[.12em] text-text-tertiary">{readable(group)}</h4><div className="grid gap-1.5 sm:grid-cols-2">{permissions?.map(permission => {
                     const effect = changes[permission.permission] ?? permission.effect;
                     const statusBorder = effect === 'grant' ? 'border-status-ok/40 bg-status-ok/5' : effect === 'deny' ? 'border-status-danger/40 bg-status-danger/5' : 'border-border bg-surface';
-                    return <label key={permission.permission} className={`flex min-w-0 items-center justify-between gap-2 rounded-md border px-2.5 py-1.5 transition-colors ${statusBorder}`}><span className="truncate text-xs font-medium" title={permission.permission.split('.').slice(1).join('.')}>{readable(permission.permission.split('.').slice(1).join('.'))}</span><select aria-label={`${readable(permission.permission)} permission`} className="shrink-0 rounded border border-border bg-bg px-2 py-0.5 text-[11px] focus:outline-none focus:ring-1 focus:ring-accent/40" value={effect} onChange={event => setChanges(current => ({ ...current, [permission.permission]: event.target.value as PermissionEffect }))}><option value="inherited">Inherited</option><option value="grant">Grant</option><option value="deny">Deny</option></select></label>;
+                    return <label key={permission.permission} className={`flex min-w-0 items-center justify-between gap-2 rounded-md border px-2.5 py-1.5 transition-colors ${statusBorder}`}><span className="truncate text-xs font-medium" title={permission.permission.split('.').slice(1).join('.')}>{readable(permission.permission.split('.').slice(1).join('.'))}</span><select aria-label={`${readable(permission.permission)} permission`} className="shrink-0 rounded border border-border bg-bg px-2 py-0.5 text-[11px] focus:outline-none focus:ring-1 focus:ring-accent/40" value={effect} onChange={event => {if(!Object.keys(changes).length)setPermissionReviewEtag(profile.data?.user.management_etag);setChanges(current => ({ ...current, [permission.permission]: event.target.value as PermissionEffect }));}}><option value="inherited">Inherited</option><option value="grant">Grant</option><option value="deny">Deny</option></select></label>;
                   })}</div></div>)}</div> : <p className="py-6 text-center text-xs text-text-secondary">No permission overrides are available.</p>}
-                    <div className="mt-4 flex shrink-0 justify-end border-t border-border pt-3"><button type="button" className={primaryButton} onClick={() => save.mutate()} disabled={!hasPermissionChanges || save.isPending}>{save.isPending ? 'Saving…' : <><Check size={15}/>Save changes</>}</button></div>
+                    {permissionReviewChanged&&<div role="alert" className="mt-3 rounded border border-status-warning/30 p-3 text-xs"><p>This account changed while you were editing. Your choices are preserved. Review them against the current permissions before saving.</p><button type="button" className="mt-2 text-accent" onClick={()=>setPermissionReviewEtag(profile.data?.user.management_etag)}>Use reviewed version</button></div>}
+                    <div className="mt-4 flex shrink-0 justify-end border-t border-border pt-3"><button type="button" className={primaryButton} onClick={() => save.mutate()} disabled={!hasPermissionChanges || save.isPending || permissionReviewChanged || !profile.data?.user.management_etag}>{save.isPending ? 'Saving…' : <><Check size={15}/>Save changes</>}</button></div>
                   </>}
         </section>
       </div>
-    </Modal>}
+    </CenteredDialog>}
   </main>;
 }

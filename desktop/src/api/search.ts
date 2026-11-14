@@ -1,5 +1,6 @@
 import { apiFetch } from './http';
 import { invoke } from '@tauri-apps/api/tauri';
+import {captureAccountSession,isAccountSessionCurrent} from './auth';
 
 const LOCAL_SEARCH_TYPES: SearchType[] = ['items','projects','notes','resources','tasks','experiments','findings','transactions'];
 function isTauriRuntime() { return typeof window !== 'undefined' && Boolean((window as any).__TAURI_IPC__); }
@@ -33,10 +34,14 @@ export interface SearchResults {
 }
 
 export async function globalSearch(query: string, types?: SearchType[]): Promise<SearchResults> {
+  const desktop=isTauriRuntime(),session=desktop?captureAccountSession():null;
+  const assertCurrent=()=>{if(desktop&&!isAccountSessionCurrent(session))throw new Error('Account changed while searching. Search again under the current account.');};
+  if(desktop&&!session)throw new Error('Sign in to search local data.');
   const requested = types && types.length > 0 ? types : (['items','notes','transactions','resources','projects','users','tasks','experiments','findings','blocks'] as SearchType[]);
   let local: SearchResults | null = null;
-  if (isTauriRuntime()) {
-    try { local = await invoke<SearchResults>('global_local_search', { query: query.trim(), types: requested.filter(type => LOCAL_SEARCH_TYPES.includes(type)) }); } catch {}
+  if (desktop) {
+    local = await invoke<SearchResults>('global_local_search', { query: query.trim(), types: requested.filter(type => LOCAL_SEARCH_TYPES.includes(type)) });
+    assertCurrent();
     const needsCentral = requested.some(type => !LOCAL_SEARCH_TYPES.includes(type));
     if (!needsCentral && local) return local;
   }
@@ -45,13 +50,16 @@ export async function globalSearch(query: string, types?: SearchType[]): Promise
   if (types && types.length > 0) params.append('type', types.join(','));
   try {
     const response = await apiFetch(`/search?${params}`);
+    assertCurrent();
     if (!response.ok) {
       const body = await response.json().catch(() => null);
+      assertCurrent();
       const message = typeof body?.error === 'string' ? body.error : body?.error?.message;
       if (local) return local;
       throw new Error(message || 'Search failed');
     }
     const central = await response.json() as SearchResults;
+    assertCurrent();
     if (!local) return central;
     const localAll = Array.isArray(local.all) ? local.all : [];
     const centralAll = Array.isArray(central.all) ? central.all : [];
@@ -59,6 +67,7 @@ export async function globalSearch(query: string, types?: SearchType[]): Promise
     const merged = [...centralAll, ...localAll.filter(result => !seen.has(`${result.type}:${result.id}`))];
     return { ...central, all: merged, total: merged.length };
   } catch (error) {
+    assertCurrent();
     if (local) return local;
     throw error;
   }

@@ -1,3 +1,5 @@
+import {titleFromDownloader,publishResourceTitle} from './resource-titles.js';
+import {reclaimFinishedAttempt,afterConfirmedFinish} from './download-retention.js';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
@@ -149,9 +151,10 @@ async function executeDownloadAttempt(client,candidate){
     if(!await getStopState(job)){
       const args=[...ytDlpRuntimeArgs(),'--no-playlist','--newline','--progress','--progress-template',
         'download:%(progress._percent_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.speed)s|%(progress.eta)s',
+        '--print','after_move:LABOS_TITLE:%(title)j','--no-simulate',
         '--restrict-filenames','-f',qualityFormat(job.quality),'--merge-output-format','mp4','--ffmpeg-location',FFMPEG,
         '-o',path.join(dir,base+'.%(ext)s'),resource.url];
-      await run(YTDLP,args,{jobId:job.id,onProgress:async p=>{
+      const processOutput=await run(YTDLP,args,{jobId:job.id,onProgress:async p=>{
         try{
           if(await getStopState(job)){terminateAttempt(job);return;}
           await pool.query(`UPDATE resource_download_jobs SET progress=$1,bytes_downloaded=$2,total_bytes=$3,
@@ -164,14 +167,14 @@ async function executeDownloadAttempt(client,candidate){
       if(!name)throw new Error('Download produced no supported media file');
       const stat=await fs.stat(path.join(dir,name));
       if(!stat.isFile()||stat.size<=0)throw new Error('Download produced an empty media file');
-      media={name,size:stat.size,thumbnail,mime:name.endsWith('.mp4')?'video/mp4':name.endsWith('.webm')?'video/webm':'video/x-matroska'};
+      media={name,title:titleFromDownloader(processOutput.stdout),size:stat.size,thumbnail,mime:name.endsWith('.mp4')?'video/mp4':name.endsWith('.webm')?'video/webm':'video/x-matroska'};
     }
   }catch(error){
-    await finishDownloadJob(client,job,resource,null,error);
+    await afterConfirmedFinish(()=>finishDownloadJob(client,job,resource,null,error),()=>reclaimFinishedAttempt(client,job,resource).catch(error=>console.warn("Download artifact retention deferred:",error.code||"storage verification failed")));
     return;
   }
   // Database failure/uncertain COMMIT must not clean up potentially published media.
-  await finishDownloadJob(client,job,resource,media,stopping?new Error('Download worker stopping; retry after restart'):null);
+  await afterConfirmedFinish(()=>finishDownloadJob(client,job,resource,media,stopping?new Error('Download worker stopping; retry after restart'):null),()=>reclaimFinishedAttempt(client,job,resource).catch(error=>console.warn('Download artifact retention deferred:',error.code||'storage verification failed')));
 }
 
 async function finishDownloadJob(client,job,resource,media,error){
@@ -179,7 +182,7 @@ async function finishDownloadJob(client,job,resource,media,error){
     await client.query('BEGIN');
     const existing=(await client.query('SELECT * FROM resources WHERE id=$1 FOR UPDATE',[resource.id])).rows[0];
     const current=(await client.query('SELECT * FROM resource_download_jobs WHERE id=$1 FOR UPDATE',[job.id])).rows[0];
-    if(!ownsDownloadAttempt(current,job)){await client.query('ROLLBACK');return;}
+    if(!ownsDownloadAttempt(current,job)){await client.query('ROLLBACK');return false;}
     const denial=await downloadRequesterDenial(current);
     const decision=publicationDecision({current,attempt:job,resource:existing,source:resource,denial,error,media});
     if(decision.action==='stop'){
@@ -200,11 +203,12 @@ async function finishDownloadJob(client,job,resource,media,error){
         local_media_size_bytes=$4,local_media_downloaded_at=CURRENT_TIMESTAMP,updated_at=GREATEST(clock_timestamp(),updated_at+interval '1 millisecond'),
         thumbnail_url=COALESCE($6,thumbnail_url) WHERE id=$5`,
         [resource.id+'/'+media.name,media.name,media.mime,media.size,resource.id,thumbnailUrl]);
+      if(media.title)await publishResourceTitle(client,resource.id,media.title,job.requested_by);
       await client.query(`UPDATE resource_download_jobs SET status='completed',progress=100,total_bytes=$1,bytes_downloaded=$1,
         completed_at=CURRENT_TIMESTAMP,last_progress_at=CURRENT_TIMESTAMP,cancel_requested=FALSE,
         stop_requested_status=NULL,updated_at=GREATEST(clock_timestamp(),updated_at+interval '1 millisecond') WHERE id=$2`,[media.size,job.id]);
     }
-    await client.query('COMMIT');
+    await client.query('COMMIT');return true;
   }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}
 }
 

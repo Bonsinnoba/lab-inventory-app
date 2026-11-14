@@ -13,6 +13,7 @@ export type User = {
   email?: string | null;
   is_active?: boolean;
   created_at: string;
+  profile_pending_sync?:boolean;
 };
 
 export type AuthResponse = {
@@ -25,6 +26,7 @@ export type LocalAuthStatus = {
   authenticated: boolean;
   user: User | null;
   token?: string | null;
+  server_token?: string | null;
 };
 
 function localUser(user: User): User {
@@ -50,6 +52,17 @@ export function isServerRequestCurrent(context: ServerRequestContext): boolean {
 
 async function endServerSession(context: ServerRequestContext, revokeOffline: boolean): Promise<void> {
   if (!isServerRequestCurrent(context)) return;
+  if (!revokeOffline && context.nativeSessionToken && context.accountId) {
+    try{
+      const status=await localInvoke<{protected_credentials_protocol?:number}>('local_database_status');
+      if(status?.protected_credentials_protocol===1)await localInvoke<boolean>('forget_local_server_credential',{expectedAccountId:context.accountId,expectedSessionToken:context.nativeSessionToken});
+    }catch{
+      // Expire the UI session even if storage cleanup cannot be confirmed.
+      // The invalid JWT cannot authenticate server operations on a retry.
+      console.warn('Protected server credential cleanup could not be confirmed; sign in again to replace it.');
+    }
+    if(!isServerRequestCurrent(context))return;
+  }
   if (revokeOffline && context.nativeSessionToken && context.accountId) {
     const locked = await localInvoke<boolean>('invalidate_local_authorization', {
       expectedAccountId: context.accountId, expectedSessionToken: context.nativeSessionToken,
@@ -58,7 +71,10 @@ async function endServerSession(context: ServerRequestContext, revokeOffline: bo
     if (locked !== true) return;
   }
   if (!isServerRequestCurrent(context)) return;
-  removeToken(); removeStoredUser();
+  // Identity metadata is not authority. Keep it while the mounted workspace is
+  // locked so same-account reauthentication can retain its unsaved form state.
+  // The missing token and native lease/revocation checks continue to deny I/O.
+  removeToken();
   window.dispatchEvent(new Event('labos:auth-expired'));
 }
 
@@ -203,8 +219,9 @@ export async function getCurrentUser(token: string): Promise<{ user: User; token
   }
   const local = await getLocalAuthStatus();
   if (local?.authenticated && local.user && local.token?.startsWith('local:')) {
-    return { user: local.user, token: local.token };
+    return { user: local.user, token: local.server_token || local.token };
   }
+  if (!isTauriRuntime() || local?.bootstrapped === false) throw new Error('Sign in online to authorize this installation.');
   throw new Error(DESKTOP_REAUTH_REQUIRED);
 }
 
@@ -225,21 +242,32 @@ export async function changePassword(current_password: string, new_password: str
   await endServerSession(context, true);
 }
 
-export async function updateProfile(display_name: string, email: string): Promise<User> {
-  const token = getToken();
-  if (!token || token.startsWith('local:')) throw new Error('Reconnect to LabOS before updating your profile.');
-  const response = await authFetch(`${API_BASE}/auth/me/profile`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ display_name, email }),
-  });
-  if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    const message = typeof body?.error === 'string' ? body.error : body?.error?.message;
-    throw new Error(message || 'Failed to update profile');
-  }
-  const result = await response.json();
-  return result.user;
+const profileRetries=new Map<string,{id:string;device:string}>();let profileOwner='';
+export async function updateProfile(display_name:string,email:string,expected?:{display_name:string|null;email:string|null}):Promise<User>{
+ const session=captureAccountSession(),user=getStoredUser();if(!session||!user)throw Error('Sign in before changing your contact profile');if(!expected)throw Error('Reopen your profile to review its current values before saving');
+ const profile={display_name:display_name.trim()||null,email:email.trim().toLowerCase()||null};
+ if(isTauriRuntime()){
+  const nativeSession=await localInvoke<string>('local_authorization_guard',{expectedAccountId:session.accountId});if(!nativeSession||!isAccountSessionCurrent(session))throw Error('Native profile session changed');
+  const saved=await localInvoke<{profile:typeof profile;pending_sync:boolean}>('update_local_account_profile',{expectedAccountId:session.accountId,expectedSessionToken:nativeSession,profile,expectedBefore:expected});
+  if(!isAccountSessionCurrent(session))throw Error('Account changed while saving your contact profile');if(!saved||saved.profile?.display_name!==profile.display_name||saved.profile?.email!==profile.email)throw Error('Local contact-profile save was not confirmed; no server fallback attempted');
+  return{...user,display_name:saved.profile.display_name,email:saved.profile.email,profile_pending_sync:saved.pending_sync};
+ }
+ if(session.token.startsWith('local:'))throw Error('Reconnect to save your contact profile');
+ if(profileOwner!==session.accountId){profileRetries.clear();profileOwner=session.accountId;}
+ const payload={profile,expected_before:expected,previous_change_id:null};const signature=JSON.stringify([session.accountId,payload]);let retry=profileRetries.get(signature);
+ if(!retry){if(profileRetries.size>=50)throw Error('Resolve earlier contact-profile requests before saving another version');retry={id:crypto.randomUUID(),device:crypto.randomUUID()};profileRetries.set(signature,retry);}
+ const response=await authFetch(`${API_BASE}/sync/push`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${session.token}`},body:JSON.stringify({device_id:retry.device,changes:[{change_id:retry.id,entity_type:'account_profile',entity_id:session.accountId,operation:'update',payload}]})});
+ if(!isAccountSessionCurrent(session))throw Error('Account changed while saving your contact profile');const body=await response.json();if(!response.ok)throw Error(body?.error?.message||'Contact-profile save unavailable');
+ const result=Array.isArray(body?.results)&&body.results.length===1&&body.results[0]?.change_id===retry.id?body.results[0]:null;if(result?.status!=='synced')throw Error(result?.error?.message||'Contact-profile save not confirmed; retry the reviewed values');
+ profileRetries.delete(signature);return{...user,...profile,profile_pending_sync:false};
+}
+export async function refreshAccountProfile():Promise<void>{
+ if(!isTauriRuntime())return;const token=getToken();if(!token||token.startsWith('local:'))throw Error('Online contact-profile refresh unavailable');const context=await captureServerRequest(token);
+ if(!context.accountId||!context.nativeSessionToken||!isServerRequestCurrent(context))throw Error('Native contact-profile session changed');
+ let reply:{profile:{display_name:string|null;email:string|null};pending_sync:boolean}|null;
+ try{reply=await localInvoke('refresh_native_account_profile',{expectedAccountId:context.accountId,expectedSessionToken:context.nativeSessionToken,serverToken:token});}catch(error){await observeNativeAuthFailure(error,context);throw error;}
+ if(!isServerRequestCurrent(context))throw Error('Account changed during contact-profile refresh');if(!reply?.profile)throw Error('Contact-profile refresh was not confirmed');
+ const current=getStoredUser();if(current&&(current.display_name!==reply.profile.display_name||current.email!==reply.profile.email||current.profile_pending_sync!==reply.pending_sync))setStoredUser({...current,display_name:reply.profile.display_name,email:reply.profile.email,profile_pending_sync:reply.pending_sync});
 }
 
 export async function logout(): Promise<void> {
@@ -248,12 +276,15 @@ export async function logout(): Promise<void> {
 }
 
 let sessionGeneration = 0;
+let desktopToken:string|null=null;
 export function setToken(token: string): void {
   if (getToken() !== token) sessionGeneration++;
-  localStorage.setItem('auth_token', token);
+  if(isTauriRuntime()){desktopToken=token;localStorage.removeItem('auth_token');}
+  else localStorage.setItem('auth_token', token);
 }
 
 export function getToken(): string | null {
+  if(isTauriRuntime()){localStorage.removeItem('auth_token');return desktopToken;}
   return localStorage.getItem('auth_token');
 }
 
@@ -269,7 +300,17 @@ export function isAccountSessionCurrent(session: AccountSession | null): session
 
 export function removeToken(): void {
   sessionGeneration++;
+  desktopToken=null;
   localStorage.removeItem('auth_token');
+}
+
+// Explicit user action: retain native offline authority and mounted drafts,
+// while the existing same-account gate obtains a fresh server credential.
+export function requestOnlineSignIn(session:AccountSession|null):boolean {
+  if(!isAccountSessionCurrent(session)||!session.token.startsWith('local:'))return false;
+  removeToken();
+  window.dispatchEvent(new Event('labos:auth-expired'));
+  return true;
 }
 
 export function setStoredUser(user: User): void {

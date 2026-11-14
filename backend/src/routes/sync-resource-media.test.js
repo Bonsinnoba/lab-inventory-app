@@ -61,3 +61,21 @@ test('record visibility and invalid inheritance still filter completed media',as
   assert.deepEqual(body.resources.map(row=>row.id),['visible']);
   assert.deepEqual(body.visible_resource_ids,['visible']);
 });
+
+test('large pulls bound concurrent authorization to four and preserve input order',async()=>{
+  let active=0,peak=0;const seen=[];
+  const rows=Array.from({length:17},(_,index)=>({id:String(index),...media}));
+  const {body}=await pull(rows,{access:async id=>{
+    active++;peak=Math.max(peak,active);seen.push(id);
+    await new Promise(resolve=>setTimeout(resolve,Number(id)%3));active--;
+    return {access:id==='5'?'none':'view'};
+  }});
+  assert.equal(peak,4);assert.equal(active,0);assert.equal(seen.length,17);
+  assert.deepEqual(body.visible_resource_ids,rows.filter(row=>row.id!=='5').map(row=>row.id));
+});
+
+test('failed authorization rejects the entire snapshot instead of returning partial visibility',async()=>{
+  await assert.rejects(pull(Array.from({length:9},(_,index)=>({id:String(index)})),{access:async id=>{
+    if(id==='5')throw Error('fixture authority unavailable');return {access:'view'};
+  }}),/fixture authority unavailable/);
+});

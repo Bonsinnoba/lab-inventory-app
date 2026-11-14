@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
-use tauri::{api::path::app_data_dir, AppHandle};
+use tauri::{api::path::app_data_dir, AppHandle, Manager};
 
 const DB_FILE: &str = "labos-local.db";
 const LOCAL_SCHEMA_VERSION: &str = "004_account_scoped_state";
@@ -100,11 +100,15 @@ fn canonicalize_legacy_ids(connection: &Connection) -> Result<(), String> {
 }
 
 #[derive(Debug, Serialize)]
-pub struct LocalDatabaseStatus { pub path: String, pub device_id: String, pub schema_version: String, pub pending_sync_count: i64, pub sync_conflict_count: i64, pub unassigned_pending_sync_count: i64, pub unassigned_state_count: i64, pub resource_authority_protocol:u32, pub resource_confirmation_protocol:u32, pub resource_mutation_protocol:u32, pub resource_mutation_confirmation_protocol:u32 }
+pub struct LocalDatabaseStatus { pub path: String, pub device_id: String, pub schema_version: String, pub pending_sync_count: i64, pub sync_conflict_count: i64, pub unassigned_pending_sync_count: i64, pub unassigned_state_count: i64, pub resource_authority_protocol:u32, pub resource_confirmation_protocol:u32, pub resource_mutation_protocol:u32, pub resource_authoring_protocol:u32, pub resource_folder_path_protocol:u32, pub resource_tree_move_protocol:u32, pub resource_metadata_review_protocol:u32, pub resource_metadata_name_protocol:u32, pub recovery_backup_protocol:u32, pub recovery_cancel_protocol:u32, pub recovery_retention_protocol:u32, pub protected_credentials_protocol:u32, pub resource_mutation_confirmation_protocol:u32 }
 #[derive(Debug, Deserialize)]
 pub struct LocalSyncWriteInput { pub snapshot_json: String, pub expected_snapshot_json: String, pub expected_account_id: String, pub change_id: String, pub entity_type: String, pub entity_id: Option<String>, pub operation: String, pub payload_json: String, pub state_key: Option<String>, pub state_json: Option<String> }
 fn database_path(app: &AppHandle) -> Result<PathBuf, String> { let dir=app_data_dir(&app.config()).ok_or_else(|| "Unable to resolve LabOS app-data directory".to_string())?; fs::create_dir_all(&dir).map_err(|e| format!("Unable to create local data directory: {e}"))?; Ok(dir.join(DB_FILE)) }
-pub fn open_local_connection(app: &AppHandle) -> Result<Connection, String> { let path=database_path(app)?; let connection=Connection::open(&path).map_err(|e| format!("Unable to open local SQLite database: {e}"))?; connection.pragma_update(None,"foreign_keys",true).map_err(|e| format!("Unable to enable SQLite foreign keys: {e}"))?; connection.pragma_update(None,"journal_mode","WAL").map_err(|e| format!("Unable to enable SQLite WAL mode: {e}"))?; connection.pragma_update(None,"synchronous","NORMAL").map_err(|e| format!("Unable to configure SQLite synchronous mode: {e}"))?; crate::local_auth::enforce_offline_lease_bounds(&connection)?; Ok(connection) }
+fn open_working_database(path:&std::path::Path)->Result<Connection,String>{
+ #[cfg(feature="working-encryption")]{let root=path.parent().ok_or("Missing native workspace root")?;let key=crate::working_store::ensure_key(root)?;crate::encrypted_database::open(path,&**key,false)}
+ #[cfg(not(feature="working-encryption"))]{if path.parent().map(|root|root.join(".workspace-encryption.json").exists()).unwrap_or(false){return Err("Encrypted workspace requires the matching LabOS build; no plaintext fallback".into())}Connection::open(path).map_err(|e|format!("Unable to open local SQLite database: {e}"))}
+}
+pub fn open_local_connection(app: &AppHandle) -> Result<Connection, String> { if let Some(status)=app.try_state::<crate::startup::StartupStatus>(){if !status.ready{return Err(status.message.clone().unwrap_or_else(||"Workspace initialization requires recovery".into()))}} let path=database_path(app)?; let connection=open_working_database(&path)?; connection.pragma_update(None,"foreign_keys",true).map_err(|e| format!("Unable to enable SQLite foreign keys: {e}"))?; connection.pragma_update(None,"journal_mode","WAL").map_err(|e| format!("Unable to enable SQLite WAL mode: {e}"))?; connection.pragma_update(None,"synchronous","NORMAL").map_err(|e| format!("Unable to configure SQLite synchronous mode: {e}"))?; crate::local_auth::enforce_offline_lease_bounds(&connection)?; Ok(connection) }
 fn open_connection(app:&AppHandle)->Result<(Connection,PathBuf),String>{let path=database_path(app)?;Ok((open_local_connection(app)?,path))}
 pub(crate) fn ensure_schema(connection:&Connection)->Result<(),String>{connection.execute_batch(r#"
 CREATE TABLE IF NOT EXISTS local_schema_migrations(version TEXT PRIMARY KEY,applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
@@ -154,9 +158,12 @@ END;
     Ok(())}
 pub fn initialize(app:&AppHandle)->Result<(),String>{let(connection,_)=open_connection(app)?;ensure_schema(&connection)?;canonicalize_legacy_ids(&connection)}
 #[tauri::command]
-pub fn get_local_sync_queue_status(app:AppHandle,expected_account_id:String)->Result<Value,String>{
+pub async fn get_local_sync_queue_status(app:AppHandle,expected_account_id:String)->Result<Value,String>{
+    crate::responsive_reads::run("get_local_sync_queue_status", move || {
     let conn=open_local_connection(&app)?;ensure_schema(&conn)?;
     sync_queue_status(&conn,&expected_account_id)
+
+    }).await
 }
 fn sync_queue_status(conn:&Connection,expected_account_id:&str)->Result<Value,String>{
     require_sync_account(conn,expected_account_id)?;
@@ -174,7 +181,8 @@ fn sync_queue_status(conn:&Connection,expected_account_id:&str)->Result<Value,St
     Ok(serde_json::json!({"pending_sync_count":pending,"sync_conflict_count":conflicts,"unassigned_pending_sync_count":unassigned,"unassigned_state_count":legacy}))
 }
 #[tauri::command]
-pub fn local_database_status(app:AppHandle)->Result<LocalDatabaseStatus,String>{
+pub async fn local_database_status(app:AppHandle)->Result<LocalDatabaseStatus,String>{
+    crate::responsive_reads::run("local_database_status", move || {
     let(connection,path)=open_connection(&app)?;
     ensure_schema(&connection)?;
     let device_id:String=connection.query_row("SELECT device_id FROM device_identity WHERE id=1",[],|r|r.get(0)).map_err(|e|format!("Unable to read device identity: {e}"))?;
@@ -183,14 +191,17 @@ pub fn local_database_status(app:AppHandle)->Result<LocalDatabaseStatus,String>{
     let conflicts:i64=connection.query_row("SELECT COUNT(*) FROM sync_conflicts c JOIN sync_outbox o ON o.change_id=c.change_id WHERE c.resolved_at IS NULL AND o.account_id=?1",params![account],|r|r.get(0)).map_err(|e|format!("Unable to read sync conflict state: {e}"))?;
     let unassigned:i64=connection.query_row("SELECT COUNT(*) FROM sync_outbox WHERE synced_at IS NULL AND account_id IS NULL",[],|r|r.get(0)).map_err(|e|format!("Unable to inspect legacy sync changes: {e}"))?;
     let unassigned_state_count:i64=connection.query_row("SELECT COUNT(*) FROM sync_state WHERE key NOT LIKE 'account:%' AND value NOT IN ('[]','{}')",[],|r|r.get(0)).map_err(|e|format!("Unable to inspect legacy local state: {e}"))?;
-    Ok(LocalDatabaseStatus{path:path.to_string_lossy().into_owned(),device_id,schema_version:LOCAL_SCHEMA_VERSION.to_string(),pending_sync_count:pending,sync_conflict_count:conflicts,unassigned_pending_sync_count:unassigned,unassigned_state_count,resource_authority_protocol:1,resource_confirmation_protocol:1,resource_mutation_protocol:1,resource_mutation_confirmation_protocol:1})
+    Ok(LocalDatabaseStatus{path:path.to_string_lossy().into_owned(),device_id,schema_version:LOCAL_SCHEMA_VERSION.to_string(),pending_sync_count:pending,sync_conflict_count:conflicts,unassigned_pending_sync_count:unassigned,unassigned_state_count,resource_authority_protocol:1,resource_confirmation_protocol:1,resource_mutation_protocol:1,resource_authoring_protocol:1,resource_folder_path_protocol:1,resource_tree_move_protocol:2,resource_metadata_review_protocol:1,resource_metadata_name_protocol:1,recovery_backup_protocol:1,recovery_cancel_protocol:1,recovery_retention_protocol:1,protected_credentials_protocol:1,resource_mutation_confirmation_protocol:1})
+
+    }).await
 }
 #[tauri::command]
 pub fn get_inventory_sync_cursor(app:AppHandle,expected_account_id:String)->Result<Option<String>,String>{let(conn,_)=open_connection(&app)?;ensure_schema(&conn)?;require_sync_account(&conn,&expected_account_id)?;let key=scoped_state_key(&conn,"inventory_sync_cursor")?;conn.query_row("SELECT value FROM sync_state WHERE key=?1",[key],|r|r.get(0)).optional().map_err(|e|format!("Unable to read inventory sync cursor: {e}"))}
 #[tauri::command]
 pub fn save_local_snapshot_with_sync(app:AppHandle,input:LocalSyncWriteInput)->Result<(),String>{let mut conn=open_local_connection(&app)?;ensure_schema(&conn)?;crate::inventory_sync_state::save(&mut conn,input)}
 #[tauri::command]
-pub fn list_pending_sync_changes(app:AppHandle,limit:Option<i64>,expected_account_id:String)->Result<Vec<serde_json::Value>,String>{
+pub async fn list_pending_sync_changes(app:AppHandle,limit:Option<i64>,expected_account_id:String)->Result<Vec<serde_json::Value>,String>{
+    crate::responsive_reads::run("list_pending_sync_changes", move || {
     let(conn,_)=open_connection(&app)?;
     ensure_schema(&conn)?;
     let account=active_account(&conn)?;
@@ -201,9 +212,12 @@ pub fn list_pending_sync_changes(app:AppHandle,limit:Option<i64>,expected_accoun
     let mut stmt=conn.prepare("SELECT o.change_id,o.device_id,o.entity_type,o.entity_id,o.operation,o.payload_json,o.created_at,o.attempt_count,o.last_error FROM sync_outbox o LEFT JOIN sync_conflicts c ON c.change_id=o.change_id AND c.resolved_at IS NULL WHERE o.synced_at IS NULL AND o.account_id=?1 AND c.change_id IS NULL AND o.change_id NOT IN(SELECT value FROM json_each(?3)) ORDER BY o.rowid ASC LIMIT ?2").map_err(|e|format!("Unable to prepare sync queue query: {e}"))?;
     let rows=stmt.query_map(params![account,limit,blocked],|r|{let payload:String=r.get(5)?;let payload_json=serde_json::from_str::<serde_json::Value>(&payload).unwrap_or(serde_json::Value::Null);Ok(serde_json::json!({"change_id":r.get::<_,String>(0)?,"device_id":r.get::<_,String>(1)?,"entity_type":r.get::<_,String>(2)?,"entity_id":r.get::<_,Option<String>>(3)?,"operation":r.get::<_,String>(4)?,"payload":payload_json,"created_at":r.get::<_,String>(6)?,"attempt_count":r.get::<_,i64>(7)?,"last_error":r.get::<_,Option<String>>(8)?}))}).map_err(|e|format!("Unable to read sync queue: {e}"))?;
     rows.map(|r|r.map_err(|e|format!("Unable to decode sync queue row: {e}"))).collect()
+
+    }).await
 }
 #[tauri::command]
-pub fn list_sync_conflicts(app:AppHandle,expected_account_id:String)->Result<Vec<Value>,String>{
+pub async fn list_sync_conflicts(app:AppHandle,expected_account_id:String)->Result<Vec<Value>,String>{
+    crate::responsive_reads::run("list_sync_conflicts", move || {
     let conn=open_local_connection(&app)?; ensure_schema(&conn)?;
     require_sync_account(&conn,&expected_account_id)?;
     let account=active_account(&conn)?;
@@ -217,9 +231,20 @@ pub fn list_sync_conflicts(app:AppHandle,expected_account_id:String)->Result<Vec
     }).collect::<Result<Vec<Value>,String>>()?;
     require_sync_account(&conn,&expected_account_id)?;
     Ok(result)
+
+    }).await
 }
 
 fn require_conflict_permission(conn:&Connection,entity:&str,operation:&str,payload:&Value,write:bool)->Result<(),String>{
+    if entity=="account_profile"{active_account(conn)?;return Ok(())}
+    if entity=="item"&&operation=="purchase_import"{
+        for p in ["inventory.view","finance.view"]{crate::local_auth::require_local_permission(conn,p)?;}
+        for batch in payload["batches"].as_array().ok_or("Purchase recovery batches missing")?{if let Some(project)=batch["project_id"].as_str(){crate::local_projects::require_cached_project_access(conn,project,write)?;}}
+        if write{
+            for p in ["inventory.import","finance.create_expense"]{crate::local_auth::require_local_permission(conn,p)?;}
+            for row in payload["rows"].as_array().ok_or("Purchase recovery rows missing")?{if row["operation"]=="create"{crate::local_auth::require_local_permission(conn,"inventory.create")?;}else{for p in ["inventory.edit","inventory.adjust_stock"]{crate::local_auth::require_local_permission(conn,p)?;}}}
+        }return Ok(())
+    }
     if entity=="salvage_recovery" {
         crate::local_auth::require_local_permission(conn,"inventory.view")?;
         if let Some(project)=payload.pointer("/record/project_id").and_then(Value::as_str){crate::local_projects::require_cached_project_access(conn,project,write)?;}
@@ -332,6 +357,8 @@ fn resolve_conflict_for_account(conn:&mut Connection,change_id:&str,resolution:&
         }
         let mut value:Value=serde_json::from_str(&payload).map_err(|e|e.to_string())?;
         require_conflict_permission(&tx,&entity,&operation,&value,true)?;
+        if entity=="account_profile"&&["PROFILE_REVIEW_STALE","SYNC_DEPENDENCY_PENDING"].contains(&code.as_str()){return Err("Preserve these contact-profile edits for recovery, reconnect to refresh the current server profile, then review and save a new version. Automatic overwrite is not allowed.".into())}
+        if entity=="resource"&&operation=="move_tree" {return Err("Review the current server tree and preserve this intention before authoring a new move. Automatic tree rebasing is not allowed.".into());}
         if entity=="resource"&&operation=="edit_content"&&code=="RESOURCE_EDIT_CONFLICT" {
             return Err("Review the server version and your saved editor versions before reapplying. Automatic overwrite is not allowed.".into());
         }
@@ -355,12 +382,13 @@ fn resolve_conflict_for_account(conn:&mut Connection,change_id:&str,resolution:&
             tx.execute("UPDATE sync_outbox SET attempt_count=0,last_error=NULL,synced_at=NULL WHERE change_id=?1",[change_id]).map_err(|e|e.to_string())?;
         }
     } else {
+        if entity=="account_profile"{crate::local_profiles::retire(&tx,change_id)?;}
         if entity=="assistant_proposal"&&operation=="accept" {let saved:Value=serde_json::from_str(&payload).map_err(|e|e.to_string())?;crate::local_proposals::discard_projection(&tx,&saved,&entity_id.clone().unwrap_or_default())?;}
         if entity=="project"&&operation=="delete" {
             preserve_project_delete_recovery(&tx,change_id,&payload,resolution)?;
         }
         if entity=="project_reservation" {crate::local_reservations::retire(&tx,change_id)?;}
-        if entity=="resource"&&["edit_content","create","create_copy","attach","edit_metadata"].contains(&operation.as_str()) {
+        if entity=="resource"&&["edit_content","create","create_copy","attach","edit_metadata","move_tree"].contains(&operation.as_str()) {
             crate::resource_dependencies::discard_descendants(&tx,change_id,resolution)?;
         }
         if ["item","item_movement"].contains(&entity.as_str()){

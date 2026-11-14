@@ -15,7 +15,7 @@ mod live{
     use super::*;
     fn http(method:&str,path:&str,body:Value,token:&str)->Value{
         let out=std::process::Command::new("node").args(["-e",r#"
-          (async()=>{const r=await fetch('http://127.0.0.1:4000/api'+process.env.TEST_PATH,
+          (async()=>{const r=await fetch((process.env.LABOS_LIVE_API_URL||'http://127.0.0.1:4000/api')+process.env.TEST_PATH,
             {method:process.env.TEST_METHOD,headers:{'Content-Type':'application/json',
               Authorization:'Bearer '+process.env.TEST_TOKEN,'Idempotency-Key':require('crypto').randomUUID()},
               ...(process.env.TEST_METHOD==='GET'?{}:{body:process.env.TEST_BODY})});

@@ -31,7 +31,7 @@ test('mutation confirmation sends only identity and session to native verifier',
   assert.equal(c.calls[1].command,'confirm_local_resource_mutation');
   assert.deepEqual(JSON.parse(JSON.stringify(c.calls[1].args)),{expectedAccountId:'account',expectedSessionToken:'native-session',serverToken:'token',changeId:'change'});
   const source=readFileSync(new URL('./sync.ts',import.meta.url),'utf8');
-  assert.match(source,/\['attach','edit_metadata'\].includes\(change.operation\)[\s\S]*?await confirmResourceMutation[\s\S]*?return;/);
+  assert.match(source,/\['attach','edit_metadata','move_tree'\].includes\(change.operation\)[\s\S]*?await confirmResourceMutation[\s\S]*?return;/);
 });
 test('old mutation verifier, failed server checks and account switches retain intent without generic ACK',async()=>{
   for(const options of [{mutationProtocol:0},{fail:true},{current:false}]){

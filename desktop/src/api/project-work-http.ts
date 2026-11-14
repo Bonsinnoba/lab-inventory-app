@@ -32,12 +32,19 @@ export async function writeProjectWorkHttp<T>(path:string,method:string,body:Rec
  if(!response.ok){if(response.status>=400&&response.status<500&&![408,429].includes(response.status))forget();throw Error(await getApiErrorMessage(response,'Project work update failed'));}
  const result=response.status===204?undefined:await response.json();
  if(method==='DELETE'?response.status!==204:!result||typeof result.id!=='string')throw Error('Invalid work confirmation; retry to reconcile');
- const sameId=(a:unknown,b:unknown)=>typeof a==='string'&&typeof b==='string'&&a.replaceAll('-','').toLowerCase()===b.replaceAll('-','').toLowerCase();
+ const normalizedId=(value:unknown)=>typeof value==='string'&&/^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.test(value)?value.replaceAll('-','').toLowerCase():null;
+ const sameId=(a:unknown,b:unknown)=>normalizedId(a)!==null&&normalizedId(a)===normalizedId(b);
  if(method!=='DELETE'){
+  if(!normalizedId(result.id))throw Error('Invalid work confirmation identity; retry to reconcile');
   const parts=path.split('/');
   if(!sameId(result.project_id,path.startsWith('/projects/')?parts[2]:intent.body.project_id))throw Error('Work confirmation belongs to another project; retry to reconcile');
   if((path.includes('/measurements')||path.includes('/observations'))&&!sameId(result.experiment_id,parts[4]))throw Error('Work confirmation belongs to another experiment; retry to reconcile');
   if(path.endsWith('/items')&&!sameId(result.item_id,intent.body.item_id))throw Error('Item-link confirmation has a different inventory item; retry to reconcile');
+  if(method==='POST'&&path.endsWith('/connectors')&&(!sameId(result.source_block_id,intent.body.source_block_id)||!sameId(result.target_block_id,intent.body.target_block_id)))throw Error('Connector confirmation has different endpoints; retry to reconcile');
+  if(method==='POST'&&path.endsWith('/blocks')){
+   if(result.block_type!==intent.body.block_type)throw Error('Canvas confirmation has a different block type; retry to reconcile');
+   if(intent.body.resource_id!=null&&!sameId(result.resource_id,intent.body.resource_id))throw Error('Canvas confirmation has a different resource; retry to reconcile');
+  }
   if(['PATCH','PUT'].includes(method)&&!sameId(result.id,parts.at(-1)))throw Error('Work confirmation belongs to another record; retry to reconcile');
   if(path.includes('/tasks/')&&path.endsWith('/experiments')&&(!sameId(result.task_id,parts[4])||!sameId(result.experiment_id,intent.body.experiment_id)))throw Error('Link confirmation has different endpoints; retry to reconcile');
   if(path.endsWith('/attachments')&&(!sameId(result.resource_id,intent.body.resource_id)||!sameId(result[path.includes('/tasks/')?'task_id':'experiment_id'],parts[4])||result[path.includes('/tasks/')?'experiment_id':'task_id']!=null))throw Error('Attachment confirmation has different endpoints; retry to reconcile');

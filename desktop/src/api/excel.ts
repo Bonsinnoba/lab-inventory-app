@@ -5,6 +5,7 @@ import { captureAccountSession, isAccountSessionCurrent } from './auth';
 import { writeInventoryHttp } from './inventory-http';
 import { invoke } from '@tauri-apps/api/tauri';
 import { isTauriRuntime } from '../lib/runtime';
+import {localWorkbookTemplate,localWorkbookExport} from './local-workbooks';
 
 export type InventoryImportPreview = {
   plan_id?: string;
@@ -31,12 +32,14 @@ const INVENTORY_HEADERS = [
 type WorkbookRow = Array<string | number | boolean | null>;
 
 export async function downloadInventoryTemplate(): Promise<Blob> {
+  if(isTauriRuntime())return localWorkbookTemplate('inventory.import','Inventory',INVENTORY_HEADERS,[['Workflow','Fill Inventory, review the preview, then import. Leave LabOS ID blank for new items.'],['Dates','Use YYYY-MM-DD.'],['Stock','Changing current quantity requires stock adjustment permission.']]);
   const response = await apiFetch('/excel/templates/inventory');
   if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Unable to download the Excel template'));
   return response.blob();
 }
 
 export async function downloadInventoryExcel(): Promise<Blob> {
+  if(isTauriRuntime())return localWorkbookExport('inventory','Inventory',INVENTORY_HEADERS,['id','name','type','category','sku','initial_quantity','current_quantity','unit','dimensions','status','condition_notes','unit_cost','replacement_cost','storage_location','supplier','part_number','manufacturer','model_number','serial_number','asset_tag','next_maintenance_date','maintenance_interval_days','calibration_interval_days','next_calibration_date']);
   const response = await apiFetch('/excel/inventory/export');
   if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Unable to export inventory to Excel'));
   return response.blob();
@@ -94,14 +97,14 @@ export async function importInventoryExcel(file:File,preview?:InventoryImportPre
   importPlans.delete(file);return result;
 }
 
-async function parseInventoryWorkbook(file: File): Promise<WorkbookRow[]> {
+export async function parseWorkbookSheet(file: File,sheetName:string): Promise<WorkbookRow[]> {
   if (!file.name.toLowerCase().endsWith('.xlsx')) throw new Error('Only .xlsx Excel workbooks are supported');
   if(file.size>10*1024*1024)throw new Error('Workbook exceeds 10 MiB');
   const bytes = new Uint8Array(await file.arrayBuffer());
   const zip = await readZip(bytes);
   const workbook = decodeText(await readZipEntry(zip, 'xl/workbook.xml'));
   const rels = decodeText(await readZipEntry(zip, 'xl/_rels/workbook.xml.rels'));
-  const inventoryTarget = findInventorySheetTarget(workbook, rels);
+  const inventoryTarget = findInventorySheetTarget(workbook, rels,sheetName);
   const sheetPath = inventoryTarget.startsWith('xl/') ? inventoryTarget : `xl/${inventoryTarget}`;
   const sheetXml = decodeText(await readZipEntry(zip, normalizeZipPath(sheetPath)));
   const sharedStrings = zip.has('xl/sharedStrings.xml')
@@ -109,6 +112,7 @@ async function parseInventoryWorkbook(file: File): Promise<WorkbookRow[]> {
     : [];
   return parseSheetRows(sheetXml, sharedStrings);
 }
+async function parseInventoryWorkbook(file:File):Promise<WorkbookRow[]>{return parseWorkbookSheet(file,'Inventory');}
 
 export function validateLocalInventoryRows(rows: WorkbookRow[], filename: string, local: Item[]): InventoryImportPreview {
   const data = normalizeRows(rows);
@@ -236,7 +240,7 @@ function asDate(value: unknown, field: string, errors: string[]): string | null 
   return text;
 }
 
-type ZipEntry = { method: number; compressed: Uint8Array };
+type ZipEntry = { method: number; compressed: Uint8Array; size:number };
 
 async function readZip(bytes: Uint8Array): Promise<Map<string, ZipEntry>> {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -247,21 +251,29 @@ async function readZip(bytes: Uint8Array): Promise<Map<string, ZipEntry>> {
   if (eocd < 0) throw new Error('Invalid .xlsx workbook: ZIP directory not found');
   const count = view.getUint16(eocd + 10, true);
   const directoryOffset = view.getUint32(eocd + 16, true);
+  const directorySize=view.getUint32(eocd+12,true);
+  if(view.getUint16(eocd+4,true)!==0||view.getUint16(eocd+6,true)!==0||count>256||directoryOffset+directorySize>eocd)throw new Error('Unsupported or excessive XLSX archive');
   const entries = new Map<string, ZipEntry>();
-  let cursor = directoryOffset;
+  let cursor = directoryOffset,totalSize=0;
   for (let i = 0; i < count; i += 1) {
+    if(cursor+46>directoryOffset+directorySize)throw new Error('Truncated XLSX directory');
     if (view.getUint32(cursor, true) !== 0x02014b50) throw new Error('Invalid .xlsx workbook: corrupt ZIP directory');
+    const flags=view.getUint16(cursor+8,true),size=view.getUint32(cursor+24,true);
+    totalSize+=size;if(flags&1||size>20*1024*1024||totalSize>64*1024*1024)throw new Error('Encrypted or excessive XLSX content');
     const method = view.getUint16(cursor + 10, true);
     const compressedSize = view.getUint32(cursor + 20, true);
     const nameLength = view.getUint16(cursor + 28, true);
     const extraLength = view.getUint16(cursor + 30, true);
     const commentLength = view.getUint16(cursor + 32, true);
     const localOffset = view.getUint32(cursor + 42, true);
+    if(cursor+46+nameLength+extraLength+commentLength>directoryOffset+directorySize||localOffset+30>directoryOffset||view.getUint32(localOffset,true)!==0x04034b50)throw new Error('Invalid XLSX entry bounds');
     const name = decodeText(bytes.slice(cursor + 46, cursor + 46 + nameLength));
+    if(entries.has(name)||name.startsWith('/')||name.split('/').includes('..')||name.includes('\\'))throw new Error('Ambiguous XLSX entry path');
     const localNameLength = view.getUint16(localOffset + 26, true);
     const localExtraLength = view.getUint16(localOffset + 28, true);
     const dataStart = localOffset + 30 + localNameLength + localExtraLength;
-    entries.set(name, { method, compressed: bytes.slice(dataStart, dataStart + compressedSize) });
+    if(dataStart+compressedSize>directoryOffset||dataStart<localOffset+30)throw new Error('Invalid XLSX data bounds');
+    entries.set(name, { method, compressed: bytes.slice(dataStart, dataStart + compressedSize),size });
     cursor += 46 + nameLength + extraLength + commentLength;
   }
   return entries;
@@ -270,30 +282,31 @@ async function readZip(bytes: Uint8Array): Promise<Map<string, ZipEntry>> {
 async function readZipEntry(zip: Map<string, ZipEntry>, name: string): Promise<Uint8Array> {
   const entry = zip.get(name);
   if (!entry) throw new Error(`Excel workbook is missing ${name}`);
-  if (entry.method === 0) return entry.compressed;
+  if (entry.method === 0) {if(entry.compressed.length!==entry.size)throw new Error('Invalid XLSX stored size');return entry.compressed;}
   if (entry.method !== 8) throw new Error('This .xlsx workbook uses an unsupported ZIP compression method');
   const DecompressionStreamCtor = (globalThis as any).DecompressionStream;
   if (!DecompressionStreamCtor) throw new Error('This desktop runtime cannot decompress this Excel workbook');
   const stream = new DecompressionStreamCtor('deflate-raw');
   const compressedBuffer = new ArrayBuffer(entry.compressed.byteLength);
   new Uint8Array(compressedBuffer).set(entry.compressed);
-  const response = new Response(new Blob([compressedBuffer]).stream().pipeThrough(stream));
-  return new Uint8Array(await response.arrayBuffer());
+  const reader=new Blob([compressedBuffer]).stream().pipeThrough<Uint8Array>(stream).getReader(),chunks:Uint8Array[]=[];let length=0;
+  try {while(true){const {done,value}=await reader.read();if(done)break;length+=value.length;if(length>entry.size||length>20*1024*1024){await reader.cancel();throw new Error('XLSX decompressed content exceeds its declared size');}chunks.push(value);}}finally{reader.releaseLock();}
+  if(length!==entry.size)throw new Error('Invalid XLSX decompressed size');const result=new Uint8Array(length);let offset=0;for(const chunk of chunks){result.set(chunk,offset);offset+=chunk.length;}return result;
 }
 
 function decodeText(bytes: Uint8Array): string {
   return new TextDecoder('utf-8').decode(bytes);
 }
 
-function findInventorySheetTarget(workbookXml: string, relsXml: string): string {
+function findInventorySheetTarget(workbookXml: string, relsXml: string,sheetName='Inventory'): string {
   const workbook = new DOMParser().parseFromString(workbookXml, 'application/xml');
   const rels = new DOMParser().parseFromString(relsXml, 'application/xml');
-  const sheet = Array.from(workbook.getElementsByTagNameNS('*', 'sheet')).find((node) => node.getAttribute('name')?.toLowerCase() === 'inventory');
-  if (!sheet) throw new Error('Inventory worksheet not found. Download the current LabOS Inventory template and use its Inventory sheet.');
+  const sheet = Array.from(workbook.getElementsByTagNameNS('*', 'sheet')).find((node) => node.getAttribute('name')?.toLowerCase() === sheetName.toLowerCase());
+  if (!sheet) throw new Error(`${sheetName} worksheet not found. Use the current LabOS template.`);
   const rid = sheet.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id') || sheet.getAttribute('r:id');
   const relationship = Array.from(rels.getElementsByTagNameNS('*', 'Relationship')).find((node) => node.getAttribute('Id') === rid);
   const target = relationship?.getAttribute('Target');
-  if (!target) throw new Error('Excel workbook has no readable Inventory worksheet relationship');
+  if (!target||relationship?.getAttribute('TargetMode')==='External'||/^[a-z]+:/i.test(target)||target.includes('\\')) throw new Error('Excel workbook has no readable internal worksheet relationship');
   return target.replace(/^\//, '');
 }
 
@@ -308,10 +321,12 @@ function parseSheetRows(xml: string, sharedStrings: string[]): WorkbookRow[] {
   const doc = new DOMParser().parseFromString(xml, 'application/xml');
   const rows: WorkbookRow[] = [];
   for (const rowNode of Array.from(doc.getElementsByTagNameNS('*', 'row'))) {
+    if(rows.length>=502)throw new Error('Review at most 500 workbook rows at a time');
     const cells: WorkbookRow = [];
     for (const cell of Array.from(rowNode.getElementsByTagNameNS('*', 'c'))) {
       const ref = cell.getAttribute('r') || '';
       const column = columnNumber(ref);
+      if(column>=256)throw new Error('Workbook column exceeds the supported limit');
       if (column < 0) continue;
       while (cells.length <= column) cells.push(null);
       const type = cell.getAttribute('t');

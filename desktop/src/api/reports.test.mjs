@@ -22,7 +22,7 @@ function load(options={}) {
       reads++;if(options.inventoryError)throw Error('not permitted');
       return options.inventory===undefined?[{id:'i',type:'component',status:'available',unit:'pcs',current_quantity:5}]:options.inventory;
     }},
-    './resources':{getAllResources:async()=>{reads++;return[{id:'r',kind:'file'}]}},
+    './resources':{getAllResources:async()=>{throw Error('Reports must not wait for file status');},getAllResourceMetadata:async()=>{reads++;return[{id:'r',kind:'file'}]}},
     './http':{apiFetch:async()=>{requests++;return{ok:true,json:async()=>({fromServer:true})}}},
   };
   function module(name) {

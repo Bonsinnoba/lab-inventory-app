@@ -427,3 +427,16 @@ button:active:not(:disabled), a:active { transform:translateY(1px); }
   .page-title { font-size:20px; }
   .page-actions .ui-button { width:100%; }
 }
+
+/* Portal overlay stays above dock/workspace transforms, below reauthentication. */
+.centered-dialog-overlay { position:fixed; inset:0; z-index:200; display:flex; align-items:center; justify-content:center; padding:1rem; background:#000a; backdrop-filter:blur(5px); }
+.centered-dialog { margin:auto; padding:0; width:min(28rem,calc(100vw - 2rem)); max-width:none; max-height:calc(100dvh - 2rem); overflow:hidden; border:1px solid var(--color-border); border-radius:1rem; background:var(--color-surface); color:var(--color-text-primary); box-shadow:0 24px 80px #0007; }
+.centered-dialog-wide { width:min(58rem,calc(100vw - 2rem)); height:min(44rem,calc(100dvh - 2rem)); }
+.centered-dialog-wide > div { height:100%; }
+.centered-dialog { animation:labos-dialog-enter 140ms ease-out; }
+body:has(.centered-dialog) { overflow:hidden; }
+@keyframes labos-dialog-enter { from { opacity:0; transform:translateY(6px) scale(.99); } to { opacity:1; transform:translateY(0) scale(1); } }
+.user-directory { container: user-directory / inline-size; }
+@container user-directory (max-width:42rem) { .user-secondary-column { display:none; } }
+.resource-image-frame { width:100%; margin-inline:auto; overflow:hidden; border:1px solid #334155; border-radius:.375rem; background:#000; }
+@media (prefers-reduced-motion:reduce) { .centered-dialog { animation:none; } }

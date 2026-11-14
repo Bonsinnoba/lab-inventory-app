@@ -65,35 +65,35 @@ export async function getResourceContext(resourceId, client = pool) {
   };
 }
 
-async function canReadResourceContext(context, user) {
+async function canReadResourceContext(context, user, client = pool) {
   if (!user?.userId) return false;
   for (const row of context.resources) {
-    if (!(await canReadEntity({ entityType: 'resource', entityId: row.id, visibility: row.visibility, projectId: context.projectId, user }))) return false;
-    if (row.note_id && !(await canReadEntity({ entityType: 'note', entityId: row.note_id, visibility: row.note_visibility, projectId: row.note_project_id, user }))) return false;
+    if (!(await canReadEntity({ entityType: 'resource', entityId: row.id, visibility: row.visibility, projectId: context.projectId, user, client }))) return false;
+    if (row.note_id && !(await canReadEntity({ entityType: 'note', entityId: row.note_id, visibility: row.note_visibility, projectId: row.note_project_id, user, client }))) return false;
   }
   return true;
 }
 
-async function hasRestrictedEditAccess(context, user) {
+async function hasRestrictedEditAccess(context, user, client = pool) {
   if (user?.role === 'admin') return true;
   for (const row of context.resources) {
-    if (normalizeVisibility(row.visibility) === 'restricted' && !(await canEditRestrictedEntity({ entityType: 'resource', entityId: row.id, user }))) return false;
-    if (row.note_id && normalizeVisibility(row.note_visibility) === 'restricted' && !(await canEditRestrictedEntity({ entityType: 'note', entityId: row.note_id, user }))) return false;
+    if (normalizeVisibility(row.visibility) === 'restricted' && !(await canEditRestrictedEntity({ entityType: 'resource', entityId: row.id, user, client }))) return false;
+    if (row.note_id && normalizeVisibility(row.note_visibility) === 'restricted' && !(await canEditRestrictedEntity({ entityType: 'note', entityId: row.note_id, user, client }))) return false;
   }
   return true;
 }
 
-export async function getResourceAccess(resourceId, user) {
-  const context = await getResourceContext(resourceId);
+export async function getResourceAccess(resourceId, user, client = pool) {
+  const context = await getResourceContext(resourceId, client);
   if (!context) return { access: 'none', context: null };
   if (context.invalid) return { access: 'none', context };
 
   // Every ancestor is authoritative. A lab-visible child never weakens a
   // restricted folder or Note that contains it.
-  if (!(await canReadResourceContext(context, user))) return { access: 'none', memberRole: null, context };
+  if (!(await canReadResourceContext(context, user, client))) return { access: 'none', memberRole: null, context };
 
   if (context.projectId) {
-    const projectAccess = await getProjectAccess(context.projectId, user);
+    const projectAccess = await getProjectAccess(context.projectId, user, client);
     return { access: projectAccess.access, memberRole: projectAccess.memberRole, context };
   }
 
@@ -103,8 +103,8 @@ export async function getResourceAccess(resourceId, user) {
   return { access: 'none', memberRole: null, context };
 }
 
-export async function requireResourceRead(resourceId, user) {
-  const result = await getResourceAccess(resourceId, user);
+export async function requireResourceRead(resourceId, user, client = pool) {
+  const result = await getResourceAccess(resourceId, user, client);
   if (result.context?.invalid) {
     return { ok: false, status: 409, error: { code: 'RESOURCE_CONTEXT_INVALID', message: 'Resource has conflicting project ownership' }, ...result };
   }
@@ -114,12 +114,12 @@ export async function requireResourceRead(resourceId, user) {
   return { ok: true, ...result };
 }
 
-export async function requireResourceEditor(resourceId, user) {
-  const result = await getResourceAccess(resourceId, user);
+export async function requireResourceEditor(resourceId, user, client = pool) {
+  const result = await getResourceAccess(resourceId, user, client);
   if (result.context?.invalid) {
     return { ok: false, status: 409, error: { code: 'RESOURCE_CONTEXT_INVALID', message: 'Resource has conflicting project ownership' }, ...result };
   }
-  if ((result.access === 'edit' || result.access === 'admin') && await hasRestrictedEditAccess(result.context, user)) {
+  if ((result.access === 'edit' || result.access === 'admin') && await hasRestrictedEditAccess(result.context, user, client)) {
     return { ok: true, ...result };
   }
   if (result.access === 'shared') {
@@ -127,7 +127,7 @@ export async function requireResourceEditor(resourceId, user) {
     // by every authenticated account. Admins and the original uploader may
     // manage an unattached/shared resource.
     const ownerId = result.context?.resource?.uploaded_by;
-    if ((user?.role === 'admin' || (ownerId && ownerId === user?.userId)) && await hasRestrictedEditAccess(result.context, user)) {
+    if ((user?.role === 'admin' || (ownerId && ownerId === user?.userId)) && await hasRestrictedEditAccess(result.context, user, client)) {
       return { ok: true, ...result };
     }
     return { ok: false, status: 403, error: { code: 'RESOURCE_EDIT_REQUIRED', message: 'You do not have permission to modify this shared resource' }, ...result };
@@ -155,27 +155,27 @@ export async function validateCanvasResource(resourceId, projectId, user) {
 }
 
 /** Validate a resource parent supplied by a create operation. */
-export async function validateResourceParent({ itemId, projectId, noteId, parentResourceId, user, requireEdit = true }) {
+export async function validateResourceParent({ itemId, projectId, noteId, parentResourceId, user, requireEdit = true, client = pool }) {
   const supplied = [itemId, projectId, noteId, parentResourceId].filter(Boolean);
   if (supplied.length > 1) {
     return { ok: false, status: 400, error: { code: 'RESOURCE_PARENT_CONFLICT', message: 'A resource can have at most one parent/context' } };
   }
 
   if (projectId) {
-    const access = await getProjectAccess(projectId, user);
+    const access = await getProjectAccess(projectId, user, client);
     if (access.access === 'none') return { ok: false, status: 403, error: { code: 'PROJECT_ACCESS_REQUIRED', message: 'You do not have access to this project' } };
     if (requireEdit && access.access === 'view') return { ok: false, status: 403, error: { code: 'PROJECT_READ_ONLY', message: 'You have read-only access to this project' } };
     return { ok: true, context: { projectId } };
   }
 
   if (noteId) {
-    const note = await pool.query('SELECT id, project_id, visibility FROM notes WHERE id = $1', [noteId]);
+    const note = await client.query('SELECT id, project_id, visibility FROM notes WHERE id = $1', [noteId]);
     if (!note.rowCount) return { ok: false, status: 404, error: { code: 'NOTE_NOT_FOUND', message: 'Note not found' } };
     const noteRow = note.rows[0];
-    if (!(await canReadEntity({ entityType: 'note', entityId: noteRow.id, visibility: noteRow.visibility, projectId: noteRow.project_id, user }))) return { ok: false, status: 404, error: { code: 'NOTE_NOT_FOUND', message: 'Note not found' } };
-    if (requireEdit && normalizeVisibility(noteRow.visibility) === 'restricted' && !(await canEditRestrictedEntity({ entityType: 'note', entityId: noteRow.id, user }))) return { ok: false, status: 403, error: { code: 'RESTRICTED_RECORD_EDIT_REQUIRED', message: 'You do not have edit access to this restricted note' } };
+    if (!(await canReadEntity({ entityType: 'note', entityId: noteRow.id, visibility: noteRow.visibility, projectId: noteRow.project_id, user, client }))) return { ok: false, status: 404, error: { code: 'NOTE_NOT_FOUND', message: 'Note not found' } };
+    if (requireEdit && normalizeVisibility(noteRow.visibility) === 'restricted' && !(await canEditRestrictedEntity({ entityType: 'note', entityId: noteRow.id, user, client }))) return { ok: false, status: 403, error: { code: 'RESTRICTED_RECORD_EDIT_REQUIRED', message: 'You do not have edit access to this restricted note' } };
     if (noteRow.project_id) {
-      const access = await getProjectAccess(noteRow.project_id, user);
+      const access = await getProjectAccess(noteRow.project_id, user, client);
       if (access.access === 'none') return { ok: false, status: 403, error: { code: 'PROJECT_ACCESS_REQUIRED', message: 'You do not have access to the note project' } };
       if (requireEdit && access.access === 'view') return { ok: false, status: 403, error: { code: 'PROJECT_READ_ONLY', message: 'You have read-only access to the note project' } };
       return { ok: true, context: { projectId: noteRow.project_id } };
@@ -185,18 +185,19 @@ export async function validateResourceParent({ itemId, projectId, noteId, parent
   }
 
   if (itemId) {
-    const item = await pool.query('SELECT id FROM items WHERE id = $1', [itemId]);
+    const item = await client.query('SELECT id FROM items WHERE id = $1', [itemId]);
     if (!item.rowCount) return { ok: false, status: 404, error: { code: 'ITEM_NOT_FOUND', message: 'Item not found' } };
     if (user?.userId) return { ok: true, context: { projectId: null } };
     return { ok: false, status: 403, error: { code: 'RESOURCE_ACCESS_REQUIRED', message: 'Authentication required' } };
   }
 
   if (parentResourceId) {
-    const parent = await getResourceAccess(parentResourceId, user);
+    const parent = await getResourceAccess(parentResourceId, user, client);
     if (!parent.context) return { ok: false, status: 404, error: { code: 'RESOURCE_PARENT_NOT_FOUND', message: 'Parent resource not found' } };
     if (parent.context.invalid) return { ok: false, status: 409, error: { code: 'RESOURCE_CONTEXT_INVALID', message: 'Parent resource has conflicting project ownership' } };
+    if(requireEdit&&parent.context.resources.length>=32)return {ok:false,status:409,error:{code:'RESOURCE_DEPTH_EXCEEDED',message:'This folder has reached the supported nesting depth'}};
     if (parent.context.resource.kind !== 'folder') return { ok: false, status: 400, error: { code: 'RESOURCE_PARENT_NOT_FOLDER', message: 'Parent resource must be a folder' } };
-    const edit = requireEdit ? await requireResourceEditor(parentResourceId, user) : await requireResourceRead(parentResourceId, user);
+    const edit = requireEdit ? await requireResourceEditor(parentResourceId, user, client) : await requireResourceRead(parentResourceId, user, client);
     if (!edit.ok) return edit;
     return { ok: true, context: { projectId: parent.context.projectId } };
   }

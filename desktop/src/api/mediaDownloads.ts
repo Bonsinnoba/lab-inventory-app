@@ -4,6 +4,7 @@ import { isTauriRuntime } from '../lib/runtime';
 import {readDownloadSnapshot,enqueueLocalDownload,saveLocalDownloadSettings,downloadSettingsPatch,controlLocalDownload,type DownloadAction} from './downloads-local';
 import { captureAccountSession,isAccountSessionCurrent } from './auth';
 import { browserEnqueueIdentity } from './download-enqueue-retry';
+import {localFileUrl} from './resource-uploads';
 export {readDownloadSnapshot} from './downloads-local';
 
 export interface DownloadJob {
@@ -22,7 +23,7 @@ export interface MediaToolStatus { available: boolean; path: string; error?: str
 export interface MediaToolsStatus { yt_dlp: MediaToolStatus; ffmpeg: MediaToolStatus; node: MediaToolStatus; production: boolean; checked_at?:string; cached?:boolean; }
 export type DownloadQuality = 'best'|'1080p'|'720p'|'480p';
 
-export function getLocalMediaUrl(id: string) { const token=getToken(); return apiUrl(`/media-downloads/${id}/media${token ? `?access_token=${encodeURIComponent(token)}` : ''}`); }
+export function getLocalMediaUrl(id: string) { if(isTauriRuntime())return localFileUrl(id)||'';const token=getToken(); return apiUrl(`/media-downloads/${id}/media${token ? `?access_token=${encodeURIComponent(token)}` : ''}`); }
 export function getLocalThumbnailUrl(id: string) { const token=getToken(); return apiUrl(`/media-downloads/${id}/thumbnail${token ? `?access_token=${encodeURIComponent(token)}` : ''}`); }
 export async function getDownloadJobs(): Promise<DownloadJob[]> {
   if(isTauriRuntime()){const snapshot=await readDownloadSnapshot();if(!snapshot.snapshot_complete&&!snapshot.jobs.length)throw new Error('Download queue has not been synchronized to this PC');return snapshot.jobs;}
@@ -91,4 +92,4 @@ export async function getMediaToolsStatus():Promise<MediaToolsStatus>{
   }
   const r=await apiFetch('/media-downloads/tools/status');if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to inspect media tools'));return r.json();
 }
-export async function downloadYouTubeThumbnail(id:string){const r=await apiFetch(`/media-downloads/${id}/thumbnail`,{method:'POST'});if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to download thumbnail'));return r.json();}
+export async function downloadYouTubeThumbnail(id:string){if(isTauriRuntime())throw Error('Desktop previews are synchronized by the resource poster worker');const r=await apiFetch(`/media-downloads/${id}/thumbnail`,{method:'POST'});if(!r.ok)throw new Error(await getApiErrorMessage(r,'Failed to download thumbnail'));return r.json();}

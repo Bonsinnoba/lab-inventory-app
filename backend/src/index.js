@@ -1,7 +1,9 @@
+import {startResourceTitleWorker,stopResourceTitleWorker} from './resource-title-worker.js';
 import assistantProposalsRouter from './routes/assistant-proposals.js';
 import assistantVoiceRouter from './routes/assistant-voice.js';
 import express from 'express';
 import cors from 'cors';
+import {isAllowedOrigin} from './cors-policy.js';
 import dotenv from 'dotenv';
 import fs from 'node:fs/promises';
 import { requestId, securityHeaders, apiRateLimit, requestTimeout } from './middleware/security.js';
@@ -26,7 +28,7 @@ import systemRouter from './routes/system.js'; import experienceRouter from './r
 import { startMediaDownloadWorker, stopMediaDownloadWorker } from './media-downloads.js';
 
 dotenv.config(); const app=express(); app.disable('x-powered-by'); app.use(requestId); app.use(securityHeaders); app.use(requestTimeout(config.requestTimeoutMs)); app.set('trust proxy',process.env.TRUST_PROXY==='true'?1:false);
-app.use(cors({origin(origin,callback){if(!origin||origin==='null'||(origin.startsWith('tauri://')||origin.startsWith('http://tauri.localhost')||origin.startsWith('https://tauri.localhost'))||config.allowedOrigins.includes(origin))return callback(null,true);return callback(new Error('Origin not allowed by CORS'));},maxAge:86400})); app.use(express.json({limit:`${config.maxJsonMb}mb`})); app.use('/api',apiRateLimit());
+app.use(cors({origin(origin,callback){if(isAllowedOrigin(origin,config.allowedOrigins))return callback(null,true);return callback(new Error('Origin not allowed by CORS'));},maxAge:86400})); app.use(express.json({limit:`${config.maxJsonMb}mb`})); app.use('/api',apiRateLimit());
 app.get('/api/health',async(req,res)=>{let database='ok',storage='ok';try{await pool.query('SELECT 1');}catch{database='error'}try{await fs.access(config.storageDir||'./storage');}catch{storage='error'}const healthy=database==='ok'&&storage==='ok';res.setHeader('Cache-Control','no-store');res.status(healthy?200:503).json({status:healthy?'ok':'degraded',version:config.apiVersion,services:{api:'ok',database,storage},timestamp:new Date().toISOString()});});
 app.get('/api/meta',authenticateToken,(req,res)=>res.json({name:'LabOS API',version:config.apiVersion,environment:config.nodeEnv,server_time:new Date().toISOString()})); app.use('/api/auth',authRouter); app.use('/api',authenticateToken);
 app.use('/api/sync',authenticateToken,syncRouter);
@@ -43,5 +45,5 @@ app.use('/api/operations',authenticateToken,operationsProjectBoundary,(req,res,n
 app.use('/api/system',authenticateToken,systemRouter); app.use('/api/experience',authenticateToken,experienceRouter); app.use('/api/phase4',authenticateToken,(req,res,next)=>{if(['GET','HEAD','OPTIONS'].includes(req.method))return hasPermission('inventory.view')(req,res,next);if(req.method==='POST')return hasPermission('inventory.create')(req,res,next);if(['PATCH','PUT'].includes(req.method))return hasPermission('inventory.edit')(req,res,next);if(req.method==='DELETE')return hasPermission('inventory.delete')(req,res,next);return next();},phase4Router);
 app.use('/api/excel',authenticateToken,(req,res,next)=>{if(req.path==='/inventory/export')return hasPermission('inventory.view')(req,res,()=>hasPermission('reports.export')(req,res,next));if(req.path.startsWith('/inventory/')&&req.method==='POST')return hasPermission('inventory.import')(req,res,next);next();},excelRouter); app.use('/api/excel/purchases',authenticateToken,excelPurchasesRouter); app.use('/api/excel/finance',authenticateToken,excelFinanceRouter);
 void requireRole; app.use('/api',notFoundHandler); app.use(errorHandler);
-const server=app.listen(config.port,config.host,()=>{server.requestTimeout=config.requestTimeoutMs;server.headersTimeout=config.requestTimeoutMs+5000;server.keepAliveTimeout=5000;const address=config.publicBaseUrl||`http://${config.host}:${config.port}`;console.log(`LabOS API v${config.apiVersion} running at ${address}`);startMediaDownloadWorker();});
-async function shutdown(signal){console.log(`${signal} received; shutting down gracefully...`);const forceExit=setTimeout(()=>process.exit(1),config.shutdownTimeoutMs);forceExit.unref();await stopMediaDownloadWorker();server.close(async()=>{await pool.end();clearTimeout(forceExit);process.exit(0);});} process.on('SIGTERM',()=>shutdown('SIGTERM'));process.on('SIGINT',()=>shutdown('SIGINT'));
+const server=app.listen(config.port,config.host,()=>{server.requestTimeout=config.requestTimeoutMs;server.headersTimeout=config.requestTimeoutMs+5000;server.keepAliveTimeout=5000;const address=config.publicBaseUrl||`http://${config.host}:${config.port}`;console.log(`LabOS API v${config.apiVersion} running at ${address}`);startMediaDownloadWorker(); startResourceTitleWorker();});
+async function shutdown(signal){console.log(`${signal} received; shutting down gracefully...`);const forceExit=setTimeout(()=>process.exit(1),config.shutdownTimeoutMs);forceExit.unref();stopResourceTitleWorker();await stopMediaDownloadWorker();server.close(async()=>{await pool.end();clearTimeout(forceExit);process.exit(0);});} process.on('SIGTERM',()=>shutdown('SIGTERM'));process.on('SIGINT',()=>shutdown('SIGINT'));

@@ -1,3 +1,5 @@
+import {requireLockedResourceDestination} from '../resource-scope-lock.js';
+import {createResourceDeleter} from '../resource-delete.js';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import {randomUUID} from 'node:crypto';
@@ -8,11 +10,12 @@ const source=readFileSync(new URL('./sync.js',import.meta.url),'utf8');
 const code=source.slice(source.indexOf('const RESOURCE_FIELDS='),source.indexOf('async function applyResourceDownloadJobEntity'));
 function handler(overrides={}){
   return vm.runInNewContext(code+';applyResourceEntity',{
+    requireLockedResourceDestination,requireLockedResourceEditor:async()=>({ok:true}),
     object:v=>v,id:v=>v,fail:(status,code,message)=>{throw Object.assign(Error(message),{status,code});},
     getUserPermissions:async()=>new Set(['resources.create']),
     isVisibility:v=>['lab','restricted','project'].includes(v),
     requireResourceEditor:async()=>({ok:true}),validateResourceParent:async()=>({ok:true}),
-    prepareUploadedResource:async()=> 'fixture/file',writeAuditLog:async()=>{},...overrides,
+    prepareUploadedResource:async()=> 'fixture/file',writeAuditLog:async()=>{},deleteResourceRecord:createResourceDeleter({authorize:async()=>({ok:true}),audit:async()=>{}}),...overrides,
   });
 }
 const intent=(id,operation)=>({change_id:randomUUID(),entity_type:'resource',entity_id:id,operation,payload:{resource:{id,name:'Ordering fixture',kind:'file',file_type:'image',size_bytes:0}}});
@@ -61,6 +64,9 @@ test('real PostgreSQL: failed create -> pending delete -> retry create/delete; n
     vm.runInNewContext(source.slice(source.indexOf("router.post('/push'"),source.indexOf('const NOTE_FIELDS=')),{
       router:{post:(_path,fn)=>{push=fn;}},object:v=>v,
       getUserPermissions:async()=>new Set(['resources.create','resources.delete']),
+      // This probe exercises ordering/receipts with a disposable actor; current
+      // actor and permission locking are covered by the production HTTP probe.
+      authorizeResourceMutation:async()=>{},
       knowledgeEntityType:()=>false,engineeringEntityType:()=>false,projectEntityType:()=>false,FINANCE_CONFIG:{},
       pool:{connect:async()=>routeClient,query:(...args)=>c.query(...args)},
       applyChange:(client,change,userId)=>apply(client,change,{userId,role:'admin'}),

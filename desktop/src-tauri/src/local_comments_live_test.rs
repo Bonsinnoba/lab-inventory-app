@@ -1,7 +1,7 @@
 use super::*;
 use crate::local_system::live_tests::http;
 fn fixture(action:&str,id:&str)->Value{
-    let out=std::process::Command::new("docker").args(["exec","-e","LABOS_PHASE2_COMMENTS_PROBE=1","labos-labos-api-1","node","src/phase2-comments-client-fixture.mjs",action,id]).output().unwrap();
+    let out=std::process::Command::new("docker").args(["exec","-e","LABOS_PHASE2_COMMENTS_PROBE=1",std::env::var("LABOS_LIVE_API_CONTAINER").unwrap_or_else(|_|"labos-labos-api-1".into()).as_str(),"node","src/phase2-comments-client-fixture.mjs",action,id]).output().unwrap();
     assert!(out.status.success(),"{}",String::from_utf8_lossy(&out.stderr));serde_json::from_slice(&out.stdout).unwrap()
 }
 fn initialize(c:&Connection,account:&str,project:&str){

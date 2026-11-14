@@ -36,7 +36,7 @@ pub(crate) fn pending_items(c:&Connection)->Result<HashSet<String>,String>{
     let rows=stmt.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?))).map_err(|e|e.to_string())?;
     for row in rows{
         let (kind,id,op,raw)=row.map_err(|e|e.to_string())?;let payload:Value=serde_json::from_str(&raw).map_err(|e|e.to_string())?;
-        if op=="import"{
+        if ["import","purchase_import"].contains(&op.as_str()){
             for id in target_ids(&kind,id.as_deref(),&op,&payload)?{pending.insert(id);}
         }else if ["bulk_status","bulk_delete","item_bulk_status","item_bulk_delete"].contains(&op.as_str()){
             for id in payload["ids"].as_array().ok_or("Invalid queued inventory batch")?{pending.insert(canonical_id(id.as_str().ok_or("Invalid queued inventory ID")?)?);}
@@ -84,7 +84,7 @@ pub(crate) fn save(c:&mut Connection,input:local_db::LocalSyncWriteInput)->Resul
 }
 
 pub(crate) fn target_ids(kind:&str,entity:Option<&str>,op:&str,payload:&Value)->Result<Vec<String>,String>{
-    let values=if op=="import"{
+    let values=if ["import","purchase_import"].contains(&op){
         payload["rows"].as_array().ok_or("Inventory import rows missing")?.iter().map(|v|v["record"]["id"].as_str().ok_or("Invalid inventory import target")).collect::<Result<Vec<_>,_>>()?
     }else if ["bulk_status","bulk_delete","item_bulk_status","item_bulk_delete"].contains(&op){
         payload["ids"].as_array().ok_or("Inventory batch targets missing")?.iter().map(|v|v.as_str().ok_or("Invalid inventory target")).collect::<Result<Vec<_>,_>>()?
@@ -141,7 +141,9 @@ pub(crate) fn discard_connected(c:&Connection,change:&str,resolution:&str)->Resu
     }
     let retired:HashSet<String>=changes.iter().filter(|(_,ids)|ids.iter().any(|id|targets.contains(id))).map(|(key,_)|key.clone()).collect();
     let reservations=crate::local_inventory::reservations::retire(c,&retired)?;
-    let archived=serde_json::json!({"change_id":change,"account_id":account,"resolution":resolution,"items":rows,"custody":custody,"reservation_issues":reservations,"change_ids":retired});
+    let mut purchase_workbooks=vec![];
+    for key in &retired{let raw:Option<String>=c.query_row("SELECT payload_json FROM active_sync_outbox WHERE change_id=?1 AND operation='purchase_import'",[key],|r|r.get(0)).optional().map_err(|e|e.to_string())?;if let Some(raw)=raw{purchase_workbooks.push(serde_json::json!({"change_id":key,"payload":serde_json::from_str::<Value>(&raw).map_err(|e|e.to_string())?}));}}
+    let archived=serde_json::json!({"change_id":change,"account_id":account,"resolution":resolution,"items":rows,"custody":custody,"reservation_issues":reservations,"change_ids":retired,"purchase_workbooks":purchase_workbooks});
     c.execute("INSERT INTO sync_state(key,value) VALUES(?1,?2)",params![local_db::scoped_state_key(c,&format!("inventory_recovery_{}",uuid::Uuid::new_v4()))?,archived.to_string()]).map_err(|e|e.to_string())?;
     for id in &targets {
         c.execute("INSERT INTO sync_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![local_db::scoped_state_key(c,&format!("inventory_reconciliation_{id}"))?,change]).map_err(|e|e.to_string())?;

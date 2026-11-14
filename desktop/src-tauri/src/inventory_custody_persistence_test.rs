@@ -537,11 +537,11 @@ fn inventory_reserved_consumption_live_http_reconnect(){
     assert_eq!(std::env::var("LABOS_RESERVATION_LIVE").as_deref(),Ok("1"));
     fn fixture(action:&str,account:&str)->Value{
         let source=include_str!("../../../backend/src/reservation-client-fixture.mjs").replace("'./db.js'","'file:///app/src/db.js'").replace("'./config.js'","'file:///app/src/config.js'");
-        let mut child=Command::new("docker").args(["exec","-i","-e",&format!("LABOS_RESERVATION_FIXTURE_ID={account}"),"-e",&format!("LABOS_RESERVATION_FIXTURE_ACTION={action}"),"labos-labos-api-1","node","--input-type=module"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let mut child=Command::new("docker").args(["exec","-i","-e",&format!("LABOS_RESERVATION_FIXTURE_ID={account}"),"-e",&format!("LABOS_RESERVATION_FIXTURE_ACTION={action}"),std::env::var("LABOS_LIVE_API_CONTAINER").unwrap_or_else(|_|"labos-labos-api-1".into()).as_str(),"node","--input-type=module"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
         child.stdin.take().unwrap().write_all(source.as_bytes()).unwrap();let out=child.wait_with_output().unwrap();
         assert!(out.status.success(),"Fixture {action}: {}",String::from_utf8_lossy(&out.stderr));serde_json::from_slice(&out.stdout).unwrap()
     }
-    fn api(action:&str){assert!(Command::new("docker").args([action,"labos-labos-api-1"]).output().unwrap().status.success());}
+    fn api(action:&str){assert!(Command::new("docker").args([action,std::env::var("LABOS_LIVE_API_CONTAINER").unwrap_or_else(|_|"labos-labos-api-1".into()).as_str()]).output().unwrap().status.success());}
     struct Cleanup(String);
     impl Drop for Cleanup{fn drop(&mut self){let result=std::panic::catch_unwind(||fixture("cleanup",&self.0));assert!(result.is_ok(),"Fixture cleanup failed for {}",self.0);}}
     let account=uuid::Uuid::new_v4().to_string();let f=fixture("create",&account);let _cleanup=Cleanup(account.clone());let token=f["token"].as_str().unwrap();
@@ -561,7 +561,7 @@ fn inventory_reserved_consumption_live_http_reconnect(){
     api("start");
     if let Err(e)=offline{std::panic::resume_unwind(e);}
     drop(c);let mut c=disk.reopen();
-    let ready=Command::new("node").args(["-e","(async()=>{for(let i=0;i<60;i++){try{if((await fetch('http://127.0.0.1:4000/api/health')).ok)return;}catch{}await new Promise(r=>setTimeout(r,500));}process.exit(1)})()"] ).status().unwrap();assert!(ready.success());
+    let ready=Command::new("node").args(["-e","(async()=>{for(let i=0;i<60;i++){try{if((await fetch((process.env.LABOS_LIVE_API_URL||'http://127.0.0.1:4000/api')+'/health')).ok)return;}catch{}await new Promise(r=>setTimeout(r,500));}process.exit(1)})()"] ).status().unwrap();assert!(ready.success());
     let device:String=c.query_row("SELECT device_id FROM device_identity",[],|r|r.get(0)).unwrap();
     let (change,payload):(String,String)=c.query_row("SELECT change_id,payload_json FROM sync_outbox",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();let payload:Value=serde_json::from_str(&payload).unwrap();
     let send=||{let r=http("POST","/sync/push",json!({"device_id":device,"changes":[{"change_id":change,"entity_type":"item_movement","entity_id":item_id,"operation":"create","payload":payload}]}),token,"");assert_eq!(r["status"],200);assert_eq!(r["body"]["results"][0]["status"],"synced","{}",r["body"]);r};
@@ -586,7 +586,7 @@ fn inventory_reserved_consumption_live_http_reconnect(){
         let mut p=crate::local_projects::load_all(c).unwrap().remove(0);crate::local_reservations::project(c,&mut p).unwrap();
         p["reservations"].as_array().unwrap().iter().find(|r|r["id"]==id).unwrap().clone()
     };
-    fn wait_ready(){assert!(Command::new("node").args(["-e","(async()=>{for(let i=0;i<60;i++){try{if((await fetch('http://127.0.0.1:4000/api/health')).ok)return;}catch{}await new Promise(r=>setTimeout(r,500));}process.exit(1)})()"] ).status().unwrap().success());}
+    fn wait_ready(){assert!(Command::new("node").args(["-e","(async()=>{for(let i=0;i<60;i++){try{if((await fetch((process.env.LABOS_LIVE_API_URL||'http://127.0.0.1:4000/api')+'/health')).ok)return;}catch{}await new Promise(r=>setTimeout(r,500));}process.exit(1)})()"] ).status().unwrap().success());}
     api("stop");
     let offline=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{
         queue(&mut c,&requested_id,&request_change,"request",json!({"project_id":project_id,"item_id":item_id,"quantity":5,"needed_from":"2026-10-21T00:00:00Z"})).unwrap();
