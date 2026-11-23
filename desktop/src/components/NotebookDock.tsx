@@ -1,8 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { FileText, Plus, Search, ExternalLink, Save, X, Loader2 } from 'lucide-react';
 import { createNote, getNotes, Note, updateNote } from '../api/notes';
 import { getProjects, Project } from '../api/projects';
+import {noteTextExcerpt} from '../lib/noteFormatting';
+const NoteComposer=lazy(()=>import('./NoteComposer'));
 
 interface Props { onClose: () => void; onOpenFull: () => void; }
 type Draft = { id?: string; title: string; body: string; project_id?: string };
@@ -11,6 +13,8 @@ const blankDraft = (): Draft => ({ title: '', body: '' });
 export default function NotebookDock({ onClose, onOpenFull }: Props) {
   const queryClient = useQueryClient();
   const [query, setQuery] = useState('');
+  const [pastePending,setPastePending]=useState(false);
+  const [historyTarget,setHistoryTarget]=useState<HTMLDivElement|null>(null);
   const [draft, setDraft] = useState<Draft>(blankDraft);
   const [editing, setEditing] = useState(false);
   const [savedMessage, setSavedMessage] = useState('');
@@ -36,10 +40,10 @@ export default function NotebookDock({ onClose, onOpenFull }: Props) {
   useEffect(() => {
     if (!editing) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); if (!saveMutation.isPending && (draft.title.trim() || draft.body.trim())) saveMutation.mutate(); }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); if (!pastePending && !saveMutation.isPending && (draft.title.trim() || draft.body.trim())) saveMutation.mutate(); }
     };
     window.addEventListener('keydown', onKeyDown); return () => window.removeEventListener('keydown', onKeyDown);
-  }, [editing, draft.title, draft.body, saveMutation.isPending]);
+  }, [editing, draft.title, draft.body, saveMutation.isPending,pastePending]);
   const startNew = () => { setDraft(blankDraft()); setEditing(true); setSavedMessage(''); };
   const editNote = (note: Note) => { setDraft({ id: note.id, title: note.title, body: note.body, project_id: note.project_id }); setEditing(true); setSavedMessage(''); };
   const cancelEdit = () => { setDraft(blankDraft()); setEditing(false); setSavedMessage(''); };
@@ -50,8 +54,8 @@ export default function NotebookDock({ onClose, onOpenFull }: Props) {
         <div className="flex items-center gap-2">
           <FileText size={17} className="text-accent flex-shrink-0" aria-hidden="true" />
           <div className="min-w-0 flex-1"><h2 className="text-sm font-semibold truncate">Notebook</h2><p className="text-[11px] text-text-secondary mt-0.5">Quick capture & recent notes</p></div>
-          <button type="button" onClick={startNew} title="New note" aria-label="Create a new note" className="p-2 rounded-sm text-text-secondary hover:text-text-primary hover:bg-surface-raised focus:outline-none focus:ring-2 focus:ring-accent/60"><Plus size={16} /></button>
-          <button type="button" onClick={onClose} title="Close Notebook" aria-label="Close Notebook" className="p-2 rounded-sm text-text-secondary hover:text-text-primary hover:bg-surface-raised focus:outline-none focus:ring-2 focus:ring-accent/60"><span aria-hidden="true">×</span></button>
+          <button type="button" onClick={startNew} disabled={pastePending} title="New note" aria-label="Create a new note" className="p-2 rounded-sm text-text-secondary hover:text-text-primary hover:bg-surface-raised focus:outline-none focus:ring-2 focus:ring-accent/60"><Plus size={16} /></button>
+          <button type="button" onClick={onClose} disabled={pastePending} title="Close Notebook" aria-label="Close Notebook" className="p-2 rounded-sm text-text-secondary hover:text-text-primary hover:bg-surface-raised focus:outline-none focus:ring-2 focus:ring-accent/60"><span aria-hidden="true">×</span></button>
         </div>
       </header>
 
@@ -60,16 +64,16 @@ export default function NotebookDock({ onClose, onOpenFull }: Props) {
           <div className="flex-1 min-h-0 flex flex-col gap-2">
             <div className="flex items-center justify-between flex-shrink-0">
               <span className="text-[11px] uppercase tracking-wide text-text-secondary font-medium">Quick note</span>
-              <span className="text-[10px] text-text-secondary">{draft.id ? 'Editing' : 'New'}</span>
+              <div ref={setHistoryTarget} className="flex items-center" aria-label="Note history"/>
             </div>
             <input value={draft.title} onChange={e => setDraft(current => ({ ...current, title: e.target.value }))} placeholder="Note title" aria-label="Note title" autoFocus className="w-full flex-shrink-0 bg-surface-raised border border-border rounded-sm px-3 py-2 text-xs font-medium focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30" />
-            <textarea value={draft.body} onChange={e => setDraft(current => ({ ...current, body: e.target.value }))} placeholder="Capture a thought, task, observation…" aria-label="Note content" className="flex-1 min-h-0 w-full resize-none bg-surface-raised border border-border rounded-sm px-3 py-3 text-xs leading-5 focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30" />
+            <Suspense fallback={<p role="status">Opening note editor…</p>}><NoteComposer key={draft.id||'new'} compact imagePasteBlocked={saveMutation.isPending} onPastePendingChange={setPastePending} historyTarget={historyTarget} noteId={draft.id} projectId={draft.project_id} value={draft.body} onChange={body=>setDraft(current=>({...current,body}))}/></Suspense>
             <div className="flex items-center gap-2 flex-shrink-0">
               <select value={draft.project_id || ''} onChange={e => setDraft(current => ({ ...current, project_id: e.target.value || undefined }))} aria-label="Associate note with project" className="min-w-0 flex-1 bg-surface-raised border border-border rounded-sm px-2.5 py-2 text-[11px] focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30" disabled={projectsQuery.isLoading}>
                 <option value="">No project</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}
               </select>
-              <button type="button" onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending || (!draft.title.trim() && !draft.body.trim())} className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-sm bg-accent text-white text-[11px] font-medium disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-accent/50">{saveMutation.isPending ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}{saveMutation.isPending ? 'Saving…' : 'Save'}</button>
-              <button type="button" onClick={cancelEdit} aria-label="Close note editor" className="p-2 rounded-sm border border-border text-text-secondary hover:text-text-primary hover:bg-surface-raised focus:outline-none focus:ring-2 focus:ring-accent/60"><X size={14} /></button>
+              <button type="button" onClick={() => saveMutation.mutate()} disabled={pastePending || saveMutation.isPending || (!draft.title.trim() && !draft.body.trim())} className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-sm bg-accent text-white text-[11px] font-medium disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-accent/50">{saveMutation.isPending ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}{saveMutation.isPending ? 'Saving…' : 'Save'}</button>
+              <button type="button" onClick={cancelEdit} disabled={pastePending} aria-label="Close note editor" className="p-2 rounded-sm border border-border text-text-secondary hover:text-text-primary hover:bg-surface-raised focus:outline-none focus:ring-2 focus:ring-accent/60"><X size={14} /></button>
             </div>
             <div className="min-h-4 flex-shrink-0 text-[10px]" aria-live="polite">{saveMutation.error ? <span className="text-status-danger">Could not save note. Try again.</span> : savedMessage ? <span className="text-status-success">{savedMessage}</span> : isDirty && <span className="text-text-secondary">Unsaved changes · Ctrl/Cmd+S to save</span>}</div>
           </div>
@@ -91,7 +95,7 @@ export default function NotebookDock({ onClose, onOpenFull }: Props) {
             {notesQuery.isLoading ? <div className="space-y-2">{Array.from({ length: 3 }).map((_, i) => <div key={i} className="p-3 rounded-sm border border-border animate-pulse"><div className="h-3.5 w-3/4 bg-surface-raised rounded" /><div className="h-2.5 w-full bg-surface-raised rounded mt-2" /></div>)}</div>
               : notesQuery.error ? <div className="p-3 text-center border border-status-danger/30 bg-status-danger/5 rounded-sm"><p className="text-xs text-status-danger font-medium">Notes could not be loaded</p><button type="button" onClick={() => notesQuery.refetch()} className="mt-2 px-3 py-1.5 text-xs border border-border rounded-sm hover:border-accent focus:outline-none focus:ring-2 focus:ring-accent/50">Try again</button></div>
               : notes.length === 0 ? <div className="p-4 text-center border border-dashed border-border rounded-sm"><FileText size={20} className="mx-auto text-text-secondary mb-1.5" /><p className="text-xs font-medium">{query ? 'No matching notes' : 'No notes yet'}</p></div>
-              : <div className="space-y-1.5">{notes.map(note => <button key={note.id} type="button" onClick={() => editNote(note)} className={`w-full text-left p-2.5 rounded-sm border transition-colors focus:outline-none focus:ring-2 focus:ring-accent/60 ${draft.id === note.id && editing ? 'border-accent bg-surface-raised' : 'border-border hover:border-accent hover:bg-surface-raised'}`}><div className="flex items-center gap-2"><FileText size={13} className="text-accent flex-shrink-0" /><div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-2"><p className="text-xs font-medium truncate">{note.title || 'Untitled note'}</p><span className="text-[9px] text-text-secondary flex-shrink-0">{new Date(note.updated_at).toLocaleDateString()}</span></div><p className="text-[10px] text-text-secondary truncate mt-0.5">{note.body || 'No content'}</p></div></div></button>)}</div>}
+              : <div className="space-y-1.5">{notes.map(note => <button key={note.id} type="button" onClick={() => editNote(note)} className={`w-full text-left p-2.5 rounded-sm border transition-colors focus:outline-none focus:ring-2 focus:ring-accent/60 ${draft.id === note.id && editing ? 'border-accent bg-surface-raised' : 'border-border hover:border-accent hover:bg-surface-raised'}`}><div className="flex items-center gap-2"><FileText size={13} className="text-accent flex-shrink-0" /><div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-2"><p className="text-xs font-medium truncate">{note.title || 'Untitled note'}</p><span className="text-[9px] text-text-secondary flex-shrink-0">{new Date(note.updated_at).toLocaleDateString()}</span></div><p className="text-[10px] text-text-secondary truncate mt-0.5">{noteTextExcerpt(note.body) || 'No content'}</p></div></div></button>)}</div>}
           </section>
         </>}
       </main>

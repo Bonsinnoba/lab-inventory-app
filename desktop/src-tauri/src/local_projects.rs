@@ -632,11 +632,12 @@ pub fn delete_local_project_attachment(app:AppHandle,project_id:String,attachmen
 }
 
 #[tauri::command]
-pub fn list_local_project_workspace(app:AppHandle,project_id:String)->Result<Value,String>{
+pub async fn list_local_project_workspace(app:AppHandle,project_id:String)->Result<Value,String>{
+    crate::responsive_reads::run("list_local_project_workspace",move||{
     let c=conn(&app)?;let p=load(&c)?.into_iter().find(|p|p.get("id").and_then(Value::as_str)==Some(project_id.as_str())).ok_or("Project not found")?;
     let permissions=current_project_access(&c,&p)?;
     let activity=crate::local_activity::read_project(&c,&project_id).unwrap_or_else(|_|json!({"items":[],"state":"unavailable","last_synced_at":null}));
-    let grants=local_auth::local_current_permissions(app)?;
+    let grants=local_auth::local_current_permissions_blocking(app)?;
     let resources=if grants.iter().any(|p|p=="resources.view") {
         local_auth::require_local_permission(&c,"resources.view")?;
         project_resource_rows(&project_id,crate::local_resources::read_resources(&c)?)
@@ -646,6 +647,7 @@ pub fn list_local_project_workspace(app:AppHandle,project_id:String)->Result<Val
         project_note_rows(&project_id,crate::local_notes::load(&c)?)
     } else { Vec::new() };
     Ok(json!({"members":nested_get(&p,"members"),"tasks":nested_get(&p,"tasks"),"experiments":nested_get(&p,"experiments"),"items":nested_get(&p,"items"),"notes":notes,"resources":resources,"activity":activity["items"],"activity_state":activity["state"],"activity_last_synced_at":activity["last_synced_at"],"blocks":nested_get(&p,"blocks"),"connectors":nested_get(&p,"connectors"),"task_experiments":nested_get(&p,"task_experiments"),"attachments":nested_get(&p,"attachments"),"requirements":nested_get(&p,"requirements"),"permissions":permissions}))
+    }).await
 }
 
 fn project_note_rows(project_id:&str, notes:Vec<Value>)->Vec<Value>{

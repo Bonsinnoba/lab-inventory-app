@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { GoogleGenAI } from '@google/genai';
+import {aiService} from '../ai-service.js';
+import {aiError} from '../ai-settings.js';
 import { pool } from '../db.js';
 import { config } from '../config.js';
 import { writeAuditLog } from '../middleware/audit.js';
@@ -9,8 +10,6 @@ import {assembleProjectContext,searchProjectEvidence} from './context.js';
 import { getUserPermissions, LAB_WIDE_READ_PERMISSIONS, projectFinancialProjection, projectFinancialSummaryProjection, canReadSensitiveFinance } from '../middleware/permissions.js';
 
 const router = Router();
-const ai = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
-const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
 const MAX_MESSAGE_LENGTH = Number(process.env.AI_MAX_MESSAGE_LENGTH || 8000);
 const MAX_TOOL_ROUNDS = Math.min(Math.max(Number(process.env.AI_MAX_TOOL_ROUNDS || 5), 1), 8);
 const MAX_TOOL_RESULT_CHARS = Number(process.env.AI_MAX_TOOL_RESULT_CHARS || 20000);
@@ -446,8 +445,8 @@ async function listRecentActivity({ limit }, user) {
 const toolImplementations={search_project_evidence:async({project_id,query,limit},user)=>{await requireAssistantPermission('projects.view',user);await requireAssistantPermission('notes.view',user);await requireAssistantPermission('resources.view',user);const result=await searchProjectEvidence(project_id,user,query,limit);if(!result)throw new Error('Project not found or access denied');return result;},get_project_context:async({project_id},user)=>{await requireAssistantPermission('projects.view',user);if(!/^[0-9a-f-]{36}$/i.test(String(project_id||'')))throw new Error('Valid project UUID required');const snapshot=await assembleProjectContext(project_id,user);if(!snapshot)throw new Error('Project not found or access denied');return snapshot;},search_global:searchGlobal,search_items:searchItems,get_item:getItem,list_projects:listProjects,get_project:getProject,get_project_workspace:getProjectWorkspace,get_project_financials:getProjectFinancials,get_transaction_summary:getTransactionSummary,list_locations:listLocations,get_location:getLocation,search_knowledge:searchKnowledge,list_notes:listNotes,list_recent_activity:listRecentActivity};
 export { toolImplementations };
 
-async function createRun(userId, conversationId) {
-  const r=await pool.query(`INSERT INTO ai_runs(user_id,conversation_id,model,status) VALUES($1,$2,$3,'running') RETURNING id`,[userId,conversationId,MODEL_NAME]);
+async function createRun(userId, conversationId, model) {
+  const r=await pool.query(`INSERT INTO ai_runs(user_id,conversation_id,model,status) VALUES($1,$2,$3,'running') RETURNING id`,[userId,conversationId,model]);
   return r.rows[0].id;
 }
 
@@ -469,7 +468,8 @@ router.get('/capabilities',async(req,res)=>{
     const permissions = await assistantPermissions(req.user);
     const tools = BASE_TOOLS.filter((tool) => hasToolPermissions(tool.name, permissions)).map(t=>t.name);
     res.setHeader('Cache-Control','no-store');
-    res.json({ enabled:Boolean(ai), mode:'read-only', model:MODEL_NAME, max_message_length:MAX_MESSAGE_LENGTH, tools, context_scopes:[...CONTEXT_SCOPES], can_modify_data:false });
+    const provider=await aiService.descriptor('chat');
+    res.json({ ...provider, mode:'read-only', max_message_length:MAX_MESSAGE_LENGTH, tools, context_scopes:[...CONTEXT_SCOPES], can_modify_data:false });
   } catch (err) {
     res.status(403).json({ error: err instanceof Error ? err.message : 'Unable to read assistant capabilities' });
   }
@@ -482,14 +482,15 @@ router.post('/chat',async(req,res)=>{
   try { await validateContext(context, req.user); } catch(err) { return res.status(400).json({error:err instanceof Error?err.message:'Invalid assistant context'}); }
   if(!message) return res.status(400).json({error:'message is required'});
   if(message.length>MAX_MESSAGE_LENGTH) return res.status(400).json({error:`message is too long (maximum ${MAX_MESSAGE_LENGTH} characters)`});
-  if(!ai) return res.status(503).json({error:{code:'AI_NOT_CONFIGURED',message:'Lab Assistant is not configured. Set GEMINI_API_KEY on the backend.'}});
 
   let conversationId=requestedConversationId;
   let runId=null;
   const abortController=new AbortController();
-  req.on('close',()=>abortController.abort());
+  const disconnect=()=>{if(!res.writableEnded)abortController.abort();};res.on('close',disconnect);
+  const deadline=setTimeout(()=>abortController.abort(),90000);
 
   try {
+    const runtime=await aiService.resolve('chat');
     const availableTools = await toolsForContext(context, req.user);
     if (context.scope !== 'none' && !availableTools.length) return res.status(403).json({error:'No assistant tools are available for your current permissions'});
     if(conversationId){
@@ -500,19 +501,20 @@ router.post('/chat',async(req,res)=>{
       conversationId=created.rows[0].id;
     }
 
-    const messagesResult=await pool.query(`SELECT role,content FROM conversation_messages WHERE conversation_id=$1 AND EXISTS(SELECT 1 FROM conversations WHERE id=$1 AND user_id=$2) ORDER BY created_at ASC`,[conversationId,req.user.userId]);
-    const history=messagesResult.rows.map(row=>({role:row.role,parts:[{text:row.content}]}));
+    const messagesResult=await pool.query(`SELECT role,left(content,64001) AS content FROM conversation_messages WHERE conversation_id=$1 AND EXISTS(SELECT 1 FROM conversations WHERE id=$1 AND user_id=$2) ORDER BY created_at DESC,id DESC LIMIT 40`,[conversationId,req.user.userId]);
+    const recent=[];let historyChars=0;for(const row of messagesResult.rows){if(historyChars+row.content.length>64000)break;historyChars+=row.content.length;recent.unshift(row);}while(recent[0]?.role==='model')recent.shift();
+    const history=recent.map(row=>({role:row.role,parts:[{text:row.content}]}));
 
     await pool.query(`INSERT INTO conversation_messages(conversation_id,role,content) VALUES($1,'user',$2)`,[conversationId,message]);
-    runId=await createRun(req.user.userId,conversationId);
+    runId=await createRun(req.user.userId,conversationId,runtime.model);
 
     res.setHeader('Content-Type','text/event-stream');
     res.setHeader('Cache-Control','no-cache, no-store');
     res.setHeader('Connection','keep-alive');
     res.setHeader('X-Accel-Buffering','no');
 
-    const forceContextTool=/\b(how many|count|exists?|list|show|which|who|when|where|how much|experiment|experiments|task|tasks|note|notes|resource|resources|inventory|item|items|budget|expense|expenses|transaction|transactions|activity|members?|quantity|status|details|project)\b/i.test(message)&&context.scope!=='none';const chatConfig={tools:[{functionDeclarations:availableTools.map(t=>({name:t.name,description:t.description,parametersJsonSchema:t.parameters}))}],systemInstruction:scopedSystemInstruction(context),...(forceContextTool?{toolConfig:{functionCallingConfig:{mode:'ANY'}}}:{})};const chat=ai.chats.create({model:MODEL_NAME,history,config:chatConfig});
-    let response=await chat.sendMessage({message,config:{...chatConfig,abortSignal:abortController.signal}});
+    const forceContextTool=/\b(how many|count|exists?|list|show|which|who|when|where|how much|experiment|experiments|task|tasks|note|notes|resource|resources|inventory|item|items|budget|expense|expenses|transaction|transactions|activity|members?|quantity|status|details|project)\b/i.test(message)&&context.scope!=='none';const chat=aiService.transport.chat(runtime,{history,tools:availableTools.map(t=>({name:t.name,description:t.description,parametersJsonSchema:t.parameters})),systemInstruction:scopedSystemInstruction(context),forceTool:forceContextTool});
+    let response=await chat.sendMessage({message,config:{abortSignal:abortController.signal}});
     let toolCalls=response.functionCalls;
     let toolRounds=0;
     const allSources=[];
@@ -549,10 +551,11 @@ router.post('/chat',async(req,res)=>{
           parts.push({functionResponse:{name:call.name,response:{error:safeMessage}}});
         }
       }
-      response=await chat.sendMessage({message:parts,config:{...chatConfig,abortSignal:abortController.signal}});
+      response=await chat.sendMessage({message:parts,config:{abortSignal:abortController.signal}});
       toolCalls=response.functionCalls;
     }
 
+    if(toolCalls?.length)throw aiError(502,'AI_TOOL_LIMIT','Assistant tool limit reached. Narrow the question and try again.');
     const fullResponse=response.text||'I could not produce an answer from the available lab data.';
     const uniqueSources=[...new Map(allSources.map(s=>[`${s.type}:${s.id}`,s])).values()].slice(0,30);
     const CHUNK_SIZE=48;
@@ -577,10 +580,9 @@ router.post('/chat',async(req,res)=>{
       sendEvent(res,'error',{error:aborted?'Request cancelled':'Assistant is unavailable right now'});
       res.end();
     }else{
-      console.error('Assistant request failed:',err);
-      res.status(500).json({error:'Assistant is unavailable right now'});
+      res.status(err.ai_public?err.status:503).json({error:{code:err.ai_public?err.code:'AI_UNAVAILABLE',message:err.ai_public?err.message:'Assistant is unavailable right now'}});
     }
-  }
+  }finally{clearTimeout(deadline);res.off('close',disconnect);}
 });
 
 router.get('/preferences',async(req,res)=>{

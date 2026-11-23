@@ -1,5 +1,5 @@
 import { API_BASE, API_TIMEOUT_MS } from '../lib/config';
-import { getToken, captureServerRequest, observeServerAuthResponse } from './auth';
+import { getToken, captureServerRequest, isServerRequestCurrent, observeServerAuthResponse } from './auth';
 
 const RETRYABLE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -7,7 +7,9 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+export async function apiFetch(path: string, init: RequestInit = {}, options: {timeoutMs?:number} = {}): Promise<Response> {
+  const requestTimeout=options.timeoutMs??API_TIMEOUT_MS;
+  if(!Number.isFinite(requestTimeout)||requestTimeout<=0||requestTimeout>135000)throw new Error('Invalid API request timeout');
   const headers = new Headers(init.headers || {});
   const token = getToken();
   // Local credentials identify a native session, not a server bearer token.
@@ -25,8 +27,12 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    // Capturing native authority may wait behind other reads. Neither that wait
+    // nor retry backoff may dispatch an old login's bearer after account change.
+    if (authContext && !isServerRequestCurrent(authContext)) throw new Error('Session changed before request dispatch');
+    if (init.signal?.aborted) throw new DOMException('Request cancelled', 'AbortError');
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+    const timeout = window.setTimeout(() => controller.abort(), requestTimeout);
     const signal = init.signal;
     const onAbort = () => controller.abort();
     if (signal) {

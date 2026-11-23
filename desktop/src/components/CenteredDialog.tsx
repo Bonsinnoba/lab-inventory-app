@@ -4,8 +4,8 @@ import { X } from 'lucide-react';
 
 // Mount above workspace/dock stacking contexts rather than inside a transformed
 // page. Keep keyboard focus and scrolling inside the active dialog.
-export default function CenteredDialog({ title, eyebrow, onClose, wide = false, children }: {
-  title: string; eyebrow?: string; onClose: () => void; wide?: boolean; children: ReactNode;
+export default function CenteredDialog({ title, eyebrow, onClose, wide = false, compact = false, children }: {
+  title: string; eyebrow?: string; onClose: () => void; wide?: boolean; compact?: boolean; children: ReactNode;
 }) {
   const id = useId();
   const panel = useRef<HTMLDivElement>(null);
@@ -28,7 +28,7 @@ export default function CenteredDialog({ title, eyebrow, onClose, wide = false, 
         if (!first) { event.preventDefault(); event.currentTarget.focus(); }
         else if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
         else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-      }} tabIndex={-1} className={`centered-dialog ${wide ? 'centered-dialog-wide' : ''}`}>
+      }} tabIndex={-1} className={`centered-dialog ${wide ? 'centered-dialog-wide' : ''} ${compact ? 'centered-dialog-compact' : ''}`}>
     <div className="flex max-h-[inherit] min-h-0 flex-col overflow-hidden">
       <header className="flex shrink-0 items-center justify-between gap-4 border-b border-border px-5 py-3.5">
         <div className="min-w-0">{eyebrow && <div className="text-[10px] font-semibold uppercase tracking-[.16em] text-accent">{eyebrow}</div>}<h2 id={id} className="mt-0.5 truncate text-base font-semibold sm:text-lg">{title}</h2></div>

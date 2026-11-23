@@ -1,9 +1,13 @@
 export type ThemeMode = 'light' | 'dark';
 export type ColorTheme = 'default' | 'red' | 'yellow' | 'green' | 'purple' | 'orange' | 'pink' | 'violet' | 'silver' | 'gold';
+export type BackgroundStyle = 'tinted' | 'plain' | 'custom';
 
 export interface Theme {
   mode: ThemeMode;
   color: ColorTheme;
+  background?: BackgroundStyle;
+  customBackground?: string;
+  customAccent?: string;
 }
 
 // Light mode color schemes
@@ -294,9 +298,41 @@ const darkSchemes = {
   },
 };
 
-export function getThemeColors(mode: ThemeMode, color: ColorTheme) {
-  const schemes = mode === 'light' ? lightSchemes : darkSchemes;
-  return schemes[color];
+export function validThemeHex(value:unknown):value is string {
+  return typeof value==='string' && /^#[0-9a-f]{6}$/i.test(value);
+}
+export function normalizeTheme(input:unknown):Theme {
+  const value=input && typeof input==='object'?input as Partial<Theme>:{};
+  return {mode:value.mode==='light'?'light':'dark',color:Object.hasOwn(darkSchemes,value.color||'')?value.color!:'default',
+    background:value.background==='plain'||value.background==='custom'?value.background:'tinted',
+    ...(validThemeHex(value.customBackground)?{customBackground:value.customBackground.toUpperCase()}:{}),
+    ...(validThemeHex(value.customAccent)?{customAccent:value.customAccent.toUpperCase()}:{}),
+  };
+}
+function rgb(hex:string){return [1,3,5].map(offset=>parseInt(hex.slice(offset,offset+2),16));}
+function mix(base:string,other:string,amount:number){const a=rgb(base),b=rgb(other);return '#'+a.map((value,index)=>Math.round(value*(1-amount)+b[index]*amount).toString(16).padStart(2,'0')).join('').toUpperCase();}
+function luminance(hex:string){const linear=rgb(hex).map(value=>{const channel=value/255;return channel<=.04045?channel/12.92:((channel+.055)/1.055)**2.4;});return .2126*linear[0]+.7152*linear[1]+.0722*linear[2];}
+export function themeContrast(first:string,second:string){const a=luminance(first),b=luminance(second);return (Math.max(a,b)+.05)/(Math.min(a,b)+.05);}
+function foreground(background:string){return themeContrast(background,'#000000')>=themeContrast(background,'#FFFFFF')?'#000000':'#FFFFFF';}
+export function resolvedThemeMode(theme:Theme):ThemeMode {
+  return theme.background==='custom'&&validThemeHex(theme.customBackground)?foreground(theme.customBackground)==='#FFFFFF'?'dark':'light':theme.mode;
+}
+export function getThemeColors(mode: ThemeMode, color: ColorTheme, options:Pick<Theme,'background'|'customBackground'|'customAccent'>={}) {
+  const theme=normalizeTheme({mode,color,...options});
+  const schemes = resolvedThemeMode(theme) === 'light' ? lightSchemes : darkSchemes;
+  const base=schemes[theme.color];
+  const accent=theme.customAccent||base.accent;
+  if(theme.background==='tinted'){
+    const neutral=mode==='light'?'#FFFFFF':'#000000';
+    const tint=theme.customAccent?{bg:mix(neutral,accent,mode==='light'?.04:.12),surface:mix(neutral,accent,mode==='light'?.1:.2),'surface-raised':mix(neutral,accent,mode==='light'?.18:.3),border:mix(neutral,accent,.4),'text-primary':mode==='light'?'#111111':'#FFFFFF','text-secondary':mode==='light'?'#444444':'#CCCCCC'}:{};
+    return {...base,...tint,accent,'accent-dim':theme.customAccent?mix(accent,'#000000',.2):base['accent-dim'],'accent-foreground':foreground(accent)};
+  }
+  const bg=theme.background==='custom'&&theme.customBackground?theme.customBackground:mode==='light'?'#FFFFFF':'#000000';
+  const text=foreground(bg),opposite=text==='#FFFFFF'?'#000000':'#FFFFFF';
+  let secondary=mix(bg,text,.7);
+  if(themeContrast(bg,secondary)<4.5)secondary=text;
+  return {...base,bg,surface:bg,'surface-raised':mix(bg,opposite,.06),border:mix(bg,text,.28),
+    'text-primary':text,'text-secondary':secondary,accent,'accent-dim':mix(accent,'#000000',.2),'accent-foreground':foreground(accent)};
 }
 
 export const themeNames: Record<ColorTheme, string> = {

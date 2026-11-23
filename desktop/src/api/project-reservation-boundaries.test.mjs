@@ -20,6 +20,11 @@ function load(invoke,{desktop=true,signedIn=true,itemApi={},transactionApi={},ht
     if(name==='./http')return{apiFetch:async(...args)=>{requests++;return http?http(...args):{ok:true,json:async()=>[{id:'server'}]}}};
     if(name==='./items')return itemApi;
     if(name==='./local-inventory')return{getLocalInventorySnapshot:async()=>itemApi.getItems?itemApi.getItems():null};
+    if(name==='./read-availability'){
+      const availability={};
+      vm.runInNewContext(ts.transpileModule(readFileSync(new URL('./read-availability.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{...context,exports:availability,setTimeout,clearTimeout});
+      return availability;
+    }
     if(name==='./reservation-review-projection'){
       const projection={};
       vm.runInNewContext(ts.transpileModule(readFileSync(new URL('./reservation-review-projection.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText,{exports:projection});
@@ -68,6 +73,14 @@ test('missing inventory stays unknown and browser review retains server path',as
  assert.equal((await local.api.getReservationReviewQueue()).items[0].current_quantity,null);assert.equal(local.requests(),0);
  const web=load(async()=>{throw Error('native used')},{desktop:false});
  assert.equal((await web.api.getReservationReviewQueue()).source,'server');assert.equal(web.requests(),1);
+});
+
+test('one unavailable project retains readable reservations and marks competing allocations unknown',async()=>{
+ // Distinguish per-project outcomes using the native arguments, not a server retry.
+ const partial=load(async(command,args)=>{if(command==='list_local_projects')return[{id:'p'},{id:'missing',reservations:[]}];if(args.projectId==='missing')throw Error('unavailable');return{id:'p',reservations:[{id:'r',item_id:'i',status:'pending_review'}]};},
+  {itemApi:{getItems:async()=>[{id:'i',current_quantity:3}]}});
+ const result=await partial.api.getReservationReviewQueue();
+ assert.equal(result.missingProjects,1);assert.equal(result.items.length,1);assert.equal(result.items[0].overlapping_confirmed,null);assert.equal(partial.requests(),0);
 });
 test('local project finance preserves known ledger totals when valuation is unavailable',async()=>{
  for(const mode of ['workspace-error','missing-items','missing-cost','missing-item','inventory-error']){

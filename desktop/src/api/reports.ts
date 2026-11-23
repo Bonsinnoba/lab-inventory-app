@@ -5,7 +5,7 @@ import { captureAccountSession } from './auth';
 import { getProjects, getProjectWorkspace } from './projects';
 import { getLocalInventorySnapshot } from './local-inventory';
 import { getAllResourceMetadata } from './resources';
-import { assertReadAccount, readLocalSections, readWithDeadline, type ReadAvailability } from './read-availability';
+import { assertReadAccount, readLocalSections, readLocalCollection, type ReadAvailability } from './read-availability';
 
 export interface ReportCount { status?:string; kind?:string; action?:string; count:number; }
 export interface InventoryReportCount { type:string; status:string; unit:string; count:number; quantity:number; }
@@ -42,18 +42,13 @@ async function getLocalReportsOverview():Promise<ReportsOverview> {
   const tasks:any[]=[],experiments:any[]=[];
   let taskSources=0,experimentSources=0;
   const projects=values.projects??[];
-  // Bound native fan-out for large workspaces. A failed project leaves other
-  // readable projects visible, but its absence must not become a complete total.
-  for(let start=0;start<projects.length;start+=6) {
-    assertReadAccount(session);
-    const workspaces=await Promise.allSettled(projects.slice(start,start+6).map(
-      project=>readWithDeadline(()=>getProjectWorkspace(project.id))));
-    assertReadAccount(session);
-    for(const result of workspaces) {
-      if(result.status!=='fulfilled')continue;
-      if(Array.isArray(result.value.tasks)){tasks.push(...result.value.tasks);taskSources++;}
-      if(Array.isArray(result.value.experiments)){experiments.push(...result.value.experiments);experimentSources++;}
-    }
+  // One deadline for the whole view; a timeout must not start another batch of
+  // still-running invokes or make missing projects into complete zero totals.
+  const workspaces=await readLocalCollection(projects,project=>getProjectWorkspace(project.id),session);
+  for(const {value} of workspaces) {
+    if(!value)continue;
+    if(Array.isArray(value.tasks)){tasks.push(...value.tasks);taskSources++;}
+    if(Array.isArray(value.experiments)){experiments.push(...value.experiments);experimentSources++;}
   }
   const sourceState=(count:number)=>values.projects===null?'unavailable':
     count===projects.length?'available':count>0?'partial':'unavailable';

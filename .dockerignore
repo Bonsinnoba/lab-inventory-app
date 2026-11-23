@@ -8,3 +8,7 @@
 **/.git
 **/_backups
 **/*.log
+**/.labos-secrets
+**/private
+**/master.key
+.tmp

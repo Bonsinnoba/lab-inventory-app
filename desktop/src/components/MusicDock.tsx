@@ -1,189 +1,352 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ListMusic, Pause, Play, SkipBack, SkipForward, Trash2, Upload, Volume2, X, Shuffle, Repeat, Repeat1, Plus, Library, FolderPlus, ChevronUp, ChevronDown, Music2, FolderOpen, ArrowLeft, ListPlus } from 'lucide-react';
+import { ChevronDown, ChevronUp, Music2, Pause, Play, Repeat, Repeat1, Shuffle, SkipBack, SkipForward, Volume2, X } from 'lucide-react';
 import { parseBlob } from 'music-metadata';
 import { useToast } from '../contexts/ToastContext';
 import { useMusicDefaults } from '../hooks/useMusicDefaults';
-import {useMusicTransport} from '../hooks/useMusicTransport';
-import {nextMusicTrack} from '../lib/musicTransport';
-
-type Track = { id: string; name: string; blob: Blob; artwork?: Blob; artworkChecked?: boolean; addedAt?: number; lastModified?: number; collectionId?: string; collectionName?: string; relativePath?: string };
-type Playlist = { id: string; name: string; trackIds: string[]; createdAt: number };
-type Collection = { id: string; name: string; tracks: Track[] };
-type RepeatMode = 'off' | 'all' | 'one';
-const DB = 'labos-local-media'; const VERSION = 2; const TRACK_STORE = 'tracks'; const PLAYLIST_STORE = 'playlists';
-function openDb(): Promise<IDBDatabase> { return new Promise((resolve, reject) => { const r = indexedDB.open(DB, VERSION); r.onupgradeneeded = () => { const db = r.result; if (!db.objectStoreNames.contains(TRACK_STORE)) db.createObjectStore(TRACK_STORE, { keyPath: 'id' }); if (!db.objectStoreNames.contains(PLAYLIST_STORE)) db.createObjectStore(PLAYLIST_STORE, { keyPath: 'id' }); }; r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); }); }
-const readStore = async <T,>(store: string): Promise<T[]> => { const db = await openDb(); return new Promise((resolve, reject) => { const r = db.transaction(store).objectStore(store).getAll(); r.onsuccess = () => resolve(r.result as T[]); r.onerror = () => reject(r.error); }); };
-const writeStore = async (store: string, value: unknown) => { const db = await openDb(); return new Promise<void>((resolve, reject) => { const r = db.transaction(store, 'readwrite').objectStore(store).put(value); r.onsuccess = () => resolve(); r.onerror = () => reject(r.error); }); };
-const removeStore = async (store: string, id: string) => { const db = await openDb(); return new Promise<void>((resolve, reject) => { const r = db.transaction(store, 'readwrite').objectStore(store).delete(id); r.onsuccess = () => resolve(); r.onerror = () => reject(r.error); }); };
-const writeTracks = async (tracks: Track[]) => { const db = await openDb(); return new Promise<void>((resolve, reject) => { const transaction = db.transaction(TRACK_STORE, 'readwrite'); const store = transaction.objectStore(TRACK_STORE); tracks.forEach(track => store.put(track)); transaction.oncomplete = () => resolve(); transaction.onerror = () => reject(transaction.error); transaction.onabort = () => reject(transaction.error || new Error('Music import was cancelled')); }); };
+import { useMusicTransport } from '../hooks/useMusicTransport';
+import MusicLibraryBrowser from './MusicLibraryBrowser';
+import { addMusicIds, deleteMusicTrack, musicLibrary, musicRead, musicWrite, updateMusicTags, updateMusicArtwork, nextQueueTrack, shuffleMusicIds, normalizeMusicQueue, uniqueMusicIds } from '../lib/musicLibrary';
+import type { MusicQueue, MusicState, MusicTrack, MusicPlaylist, StoredMusicTrack } from '../lib/musicLibrary';
+interface Props {
+    onClose: () => void;
+    onMinimize?: () => void;
+    onRestore?: () => void;
+    minimized?: boolean;
+    autoPause: boolean;
+}
+const emptyState: MusicState = { id: 'player', activeId: null, queues: [] };
 const fmt = (seconds: number) => !Number.isFinite(seconds) ? '0:00' : `${Math.floor(seconds / 60)}:${Math.floor(seconds % 60).toString().padStart(2, '0')}`;
-const extractArtwork = async (blob: Blob) => { const picture = (await parseBlob(blob)).common.picture?.[0]; return picture ? new Blob([Uint8Array.from(picture.data).buffer], { type: picture.format }) : undefined; };
-const AUDIO_EXTENSIONS = new Set(['mp3','m4a','aac','wav','flac','ogg','oga','opus','wma','aiff','aif','alac','webm']);
-const isAudioFile = (file: File) => file.type.startsWith('audio/') || AUDIO_EXTENSIONS.has(file.name.split('.').pop()?.toLowerCase() || '');
-interface Props { onClose: () => void; onMinimize?: () => void; onRestore?: () => void; minimized?: boolean; autoPause: boolean; }
 export default function MusicDock({ onClose, onMinimize, onRestore, minimized = false, autoPause }: Props) {
-  const { showToast } = useToast(); const audio = useRef<HTMLAudioElement | null>(null); const urls = useRef<Map<string, string>>(new Map());
-  const artworkUrls = useRef<Map<string, string>>(new Map());
-  const artworkProcessing = useRef(new Set<string>());
-  const [tracks, setTracks] = useState<Track[]>([]); const [playlists, setPlaylists] = useState<Playlist[]>([]); const [currentId, setCurrentId] = useState<string | null>(null); const [queue, setQueue] = useState<string[]>([]); const [tab, setTab] = useState<'library' | 'queue' | 'playlists'>('library'); const [playing, setPlaying] = useState(false); const [volume, setVolume] = useState(.65); const [duration, setDuration] = useState(0); const [position, setPosition] = useState(0); const [search, setSearch] = useState(''); const [shuffle, setShuffle] = useState(false); const [repeat, setRepeat] = useState<RepeatMode>('off'); const [newPlaylist, setNewPlaylist] = useState(''); const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null); const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(null); const [libraryOpen, setLibraryOpen] = useState(false); const [importProgress, setImportProgress] = useState<string | null>(null); const [loading, setLoading] = useState(true); const [error, setError] = useState(false);
-  const current = tracks.find(t => t.id === currentId) || null; const visibleTracks = useMemo(() => tracks.filter(t => t.name.toLowerCase().includes(search.toLowerCase())), [tracks, search]); const collections = useMemo<Collection[]>(() => { const grouped = new Map<string, Collection>(); tracks.forEach(track => { const id = track.collectionId || 'imported-files'; const collection = grouped.get(id) || { id, name: track.collectionName || 'Imported files', tracks: [] }; collection.tracks.push(track); grouped.set(id, collection); }); return [...grouped.values()].sort((a,b) => a.name.localeCompare(b.name)); }, [tracks]); const selectedCollection = collections.find(collection => collection.id === selectedCollectionId) || null; const collectionTracks = selectedCollection?.tracks.filter(track => track.name.toLowerCase().includes(search.toLowerCase())) || []; const queueTracks = queue.map(id => tracks.find(t => t.id === id)).filter(Boolean) as Track[]; const selectedPlaylist = playlists.find(p => p.id === selectedPlaylistId) || null; const src = current ? musicUrl(current) : '';
-  function musicUrl(track:Track){if(!(track.blob instanceof Blob)||!track.blob.size)return '';let url=urls.current.get(track.id);if(!url){url=URL.createObjectURL(track.blob);urls.current.set(track.id,url);}return url;}
-  const playback=useMusicTransport(audio,{source:src,id:currentId,volume,autoPause,ownerId:'music-dock',playing:setPlaying,reset:()=>{setPosition(0);setDuration(0);},error:message=>showToast(message,'error')});
-  const queueRef=useRef(queue);queueRef.current=queue;
-
-  const load = async () => { try { setError(false); const [ts, ps] = await Promise.all([readStore<Track>(TRACK_STORE), readStore<Playlist>(PLAYLIST_STORE)]); ts.sort((a, b) => (a.addedAt || 0) - (b.addedAt || 0)); setTracks(ts); setPlaylists(ps); setCurrentId(id => id || ts[0]?.id || null); } catch { setError(true); } finally { setLoading(false); } };
-  useMusicDefaults(setVolume);
-  useEffect(() => { load(); return () => { urls.current.forEach(URL.revokeObjectURL); artworkUrls.current.forEach(URL.revokeObjectURL); }; }, []);
-  useEffect(() => { if (!libraryOpen) return; const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setLibraryOpen(false); }; window.addEventListener('keydown', closeOnEscape); return () => window.removeEventListener('keydown', closeOnEscape); }, [libraryOpen]);
-  useEffect(() => {
-    const pending = tracks.filter(track => !track.artworkChecked && !artworkProcessing.current.has(track.id));
-    pending.forEach(track => artworkProcessing.current.add(track.id));
-    if (!pending.length) return;
-    void (async () => {
-      for (const track of pending) {
-        try {
-          const artwork = await extractArtwork(track.blob);
-          const updated = { ...track, artwork, artworkChecked: true };
-          await writeStore(TRACK_STORE, updated);
-          setTracks(value => value.map(item => item.id === updated.id ? updated : item));
-        } catch (cause) {
-          artworkProcessing.current.delete(track.id);
-          setTracks(value => value.map(item => item.id === track.id ? { ...item, artworkChecked: true } : item));
-          showToast(cause instanceof Error ? `Unable to read artwork from ${track.name}: ${cause.message}` : `Unable to read artwork from ${track.name}.`, 'error');
+    const { showToast } = useToast();
+    const audio = useRef<HTMLAudioElement | null>(null);
+    const libraryToggle=useRef<HTMLButtonElement>(null);
+    function returnToPlayer(){setLibraryOpen(false);window.requestAnimationFrame(()=>libraryToggle.current?.focus());}
+    const [tracks, setTracks] = useState<MusicTrack[]>([]), [playlists, setPlaylists] = useState<MusicPlaylist[]>([]);
+    const [state, setState] = useState<MusicState>(emptyState), [ready, setReady] = useState(false), [loading, setLoading] = useState(true), [error, setError] = useState(false);
+    const [libraryOpen, setLibraryOpen] = useState(false), [playing, setPlaying] = useState(false), [position, setPosition] = useState(0), [duration, setDuration] = useState(0), [volume, setVolume] = useState(.65);
+    const [selectionVersion, setSelectionVersion] = useState(0);
+    const [loaded, setLoaded] = useState<{
+        id: string | null;
+        url: string;
+    }>({ id: null, url: '' });
+    const [artwork, setArtwork] = useState('');
+    const wanted = useRef(false), mounted = useRef(true), readyRef = useRef(false), stateRef = useRef(state), positionRef = useRef(0);
+    const seek = useRef<{
+        id: string;
+        position: number;
+    } | null>(null), urlRef = useRef(''), artTask = useRef(Promise.resolve()), savedValue = useRef('');
+    const active = state.queues.find(q => q.id === state.activeId), currentId = active?.currentId || null;
+    const current = tracks.find(t => t.id === currentId) || null, shuffle = active?.shuffle || false, repeat = active?.repeat || 'off';
+    stateRef.current = state;
+    const playback = useMusicTransport(audio, { source: loaded.url, id: loaded.id, volume, autoPause, ownerId: 'music-dock', playing: setPlaying, reset: () => { setPosition(0); setDuration(0); }, error: message => showToast(message, 'error') });
+    useMusicDefaults(setVolume);
+    function snapshot() { const s = stateRef.current; return { ...s, queues: s.queues.map(q => q.id === s.activeId ? { ...q, position: positionRef.current } : q) }; }
+    const save = (value: MusicState) => { const serialized = JSON.stringify(value); if (serialized === savedValue.current)
+        return; savedValue.current = serialized; void musicWrite('state', value).catch(() => { savedValue.current = ''; if (mounted.current)
+        showToast('Unable to save music queues on this device', 'error'); }); };
+    function change(value: MusicState, autoplay = false) {
+        const old = stateRef.current;
+        const oldActive = old.queues.find(q => q.id === old.activeId);
+        const next: MusicState = { ...value, queues: value.queues.map(q => normalizeMusicQueue(q, tracks)) };
+        if (next.activeId !== old.activeId) {
+            if (!autoplay)
+                wanted.current = false;
+            next.queues = next.queues.map(q => q.id === old.activeId ? { ...q, position: positionRef.current } : q);
+            playback.transport.current?.pause();
         }
-      }
-    })();
-  }, [tracks]);
-  const playTrack=(id:string,restart=false,remember=true)=>{
-    const track=tracks.find(t=>t.id===id);if(!track)return;
-    const url=musicUrl(track);if(!url){showToast('This audio file is empty or unavailable. Import it again.','error');return;}
-    playback.transport.current?.select(id,url,true,restart,remember);setCurrentId(id);
-  };
-  const toggle=()=>playback.transport.current?.toggle();
-  const advance=(ended=false)=>{
-    const t=playback.transport.current,selected=t?.currentId||currentId;
-    const next=nextMusicTrack(tracks.map(t=>t.id),selected,queueRef.current,shuffle,repeat,ended);
-    queueRef.current=next.queue;setQueue(next.queue);
-    if(next.id)playTrack(next.id,true);else t?.pause();
-  };
-  const previous=()=>{const id=playback.transport.current?.previous(tracks.map(t=>t.id));if(id)playTrack(id,true,false);};
-  const addToQueue=(id:string)=>setQueue(q=>q.includes(id)?q:[...q,id]);
-  const moveQueue=(id:string,delta:number)=>setQueue(q=>{const i=q.indexOf(id),j=i+delta;if(i<0||j<0||j>=q.length)return q;const n=[...q];[n[i],n[j]]=[n[j],n[i]];return n;});
-  const importFiles = async (files: File[], folderImport: boolean) => {
-    if (!files.length) return;
-    const audioFiles = files.filter(isAudioFile);
-    const unsupportedCount = files.length - audioFiles.length;
-    if (!audioFiles.length) { showToast('No supported audio files were found in the selection.', 'error'); return; }
-    const folderName = folderImport ? (audioFiles[0].webkitRelativePath.split('/')[0] || 'Music folder') : 'Imported files';
-    setImportProgress(`Importing ${folderName}…`);
-    try {
-      const existing = await readStore<Track>(TRACK_STORE);
-      const collectionId = folderImport
-        ? existing.find(track => track.collectionName?.toLocaleLowerCase() === folderName.toLocaleLowerCase())?.collectionId || crypto.randomUUID()
-        : 'imported-files';
-      const existingKeys = new Set(existing.map(track => `${(track.collectionName || 'Imported files').toLocaleLowerCase()}|${track.relativePath || track.name}|${track.blob.size}|${track.lastModified ?? (track.blob instanceof File ? track.blob.lastModified : 0)}`));
-      const batch: Track[] = [];
-      let duplicateCount = 0;
-      audioFiles.forEach(file => {
-        const relativePath = folderImport ? (file.webkitRelativePath.split('/').slice(1).join('/') || file.name) : file.name;
-        const duplicateKey = `${folderName.toLocaleLowerCase()}|${relativePath}|${file.size}|${file.lastModified}`;
-        if (existingKeys.has(duplicateKey)) { duplicateCount++; return; }
-        existingKeys.add(duplicateKey);
-        batch.push({ id: crypto.randomUUID(), name: file.name, blob: file, addedAt: Date.now() + Math.random(), lastModified: file.lastModified, collectionId, collectionName: folderName, relativePath });
-      });
-      let artworkReadFailures = 0;
-      for (let offset = 0; offset < batch.length; offset += 50) {
-        const chunk = await Promise.all(batch.slice(offset, offset + 50).map(async track => {
-          try {
-            return { ...track, artwork: await extractArtwork(track.blob), artworkChecked: true };
-          } catch {
-            artworkReadFailures++;
-            return { ...track, artworkChecked: true };
-          }
-        }));
-        await writeTracks(chunk);
-        setImportProgress(`Importing ${folderName}… ${Math.min(offset + chunk.length, batch.length)} of ${batch.length}`);
-      }
-      await load();
-      const result = [`Imported ${batch.length} ${batch.length === 1 ? 'track' : 'tracks'} to ${folderName}`];
-      if (duplicateCount) result.push(`${duplicateCount} duplicate${duplicateCount === 1 ? '' : 's'} skipped`);
-      if (unsupportedCount) result.push(`${unsupportedCount} unsupported file${unsupportedCount === 1 ? '' : 's'} skipped`);
-      if (artworkReadFailures) result.push(`Artwork metadata could not be read from ${artworkReadFailures} track${artworkReadFailures === 1 ? '' : 's'}`);
-      showToast(result.join(' · '));
-      if (folderImport && batch.length) setSelectedCollectionId(collectionId);
-      setTab('library');
-    } catch (cause) {
-      setImportProgress(null);
-      showToast(cause instanceof Error ? `Unable to import audio: ${cause.message}` : 'Unable to import audio.', 'error');
-      return;
+        const q = next.queues.find(q => q.id === next.activeId);
+        if (q?.id !== oldActive?.id || q?.currentId !== oldActive?.currentId)
+            positionRef.current = q?.position || 0;
+        stateRef.current = next;
+        setState(next);
+        if (readyRef.current)
+            save(next);
     }
-    setImportProgress(null);
-  };
-  const addFiles = async (e: React.ChangeEvent<HTMLInputElement>) => { await importFiles(Array.from(e.target.files || []), false); e.target.value = ''; };
-  const addFolder = async (e: React.ChangeEvent<HTMLInputElement>) => { await importFiles(Array.from(e.target.files || []), true); e.target.value = ''; };
-  const addCollectionToQueue = (collectionTracks: Track[]) => { setQueue(q => [...q, ...collectionTracks.map(track => track.id).filter(id => !q.includes(id))]); };
-  const playCollection = (collectionTracks: Track[], shouldShuffle = false) => { if (!collectionTracks.length) return; const ordered = shouldShuffle ? [...collectionTracks].sort(() => Math.random() - 0.5) : collectionTracks; setQueue(ordered.slice(1).map(track => track.id)); void playTrack(ordered[0].id); };
-  const createPlaylistFromCollection = async (collection: Collection) => { const playlist: Playlist = { id: crypto.randomUUID(), name: collection.name, trackIds: collection.tracks.map(track => track.id), createdAt: Date.now() }; try { await writeStore(PLAYLIST_STORE, playlist); setPlaylists(value => [...value, playlist]); setSelectedPlaylistId(playlist.id); setTab('playlists'); showToast(`Created playlist “${playlist.name}”`); } catch (cause) { showToast(cause instanceof Error ? `Unable to create playlist: ${cause.message}` : 'Unable to create playlist.', 'error'); } };
-  const remove = async (id: string) => {
-    try {
-      if (id === currentId) {
+    async function load() { try {
+        setError(false);
+        const data = await musicLibrary();
+        if (!mounted.current)
+            return;
+        setTracks(data.tracks);
+        setPlaylists(data.playlists.map(p => ({ ...p, trackIds: uniqueMusicIds(p.trackIds, data.tracks) })));
+        const s = readyRef.current ? stateRef.current : (await musicRead<MusicState>('state', 'player') || emptyState);
+        if (!mounted.current)
+            return;
+        const next = { ...s, queues: s.queues.map(q => normalizeMusicQueue(q, data.tracks)) };
+        stateRef.current = next;
+        setState(next);
+        if (!readyRef.current) {
+            positionRef.current = next.queues.find(q => q.id === next.activeId)?.position || 0;
+            readyRef.current = true;
+            setReady(true);
+        }
+        save(next);
+    }
+    catch {
+        if (mounted.current)
+            setError(true);
+    }
+    finally {
+        if (mounted.current)
+            setLoading(false);
+    } }
+    useEffect(() => {
+        mounted.current = true;
+        let live = true;
+        void (async () => {
+            try {
+                const data = await musicLibrary(), saved = await musicRead<MusicState>('state', 'player');
+                if (!live)
+                    return;
+                const queues = (saved?.queues || []).map(q => normalizeMusicQueue(q, data.tracks));
+                const restored: MusicState = { id: 'player', queues, activeId: queues.some(q => q.id === saved?.activeId) ? saved!.activeId : queues[0]?.id || null };
+                setTracks(data.tracks);
+                setPlaylists(data.playlists.map(p => ({ ...p, trackIds: uniqueMusicIds(p.trackIds, data.tracks) })));
+                stateRef.current = restored;
+                setState(restored);
+                positionRef.current = restored.queues.find(q => q.id === restored.activeId)?.position || 0;
+                readyRef.current = true;
+                setReady(true);
+                setLoading(false);
+            }
+            catch {
+                if (live) {
+                    setError(true);
+                    setLoading(false);
+                }
+            }
+        })();
+        const timer = window.setInterval(() => { if (readyRef.current)
+            save(snapshot()); }, 5000);
+        return () => { live = false; mounted.current = false; clearInterval(timer); if (readyRef.current)
+            save(snapshot()); if (urlRef.current)
+            URL.revokeObjectURL(urlRef.current); };
+    }, []);
+    useEffect(() => { if (!libraryOpen)
+        return; const close = (event: KeyboardEvent) => { if (event.key === 'Escape')
+        setLibraryOpen(false); }; window.addEventListener('keydown', close); return () => window.removeEventListener('keydown', close); }, [libraryOpen]);
+    useEffect(() => {
+        let live = true;
+        if (!ready)
+            return;
         playback.transport.current?.pause();
-      }
-      await removeStore(TRACK_STORE, id);
-      const url = urls.current.get(id);
-      if (url) { URL.revokeObjectURL(url); urls.current.delete(id); }
-      const artworkUrl = artworkUrls.current.get(id);
-      if (artworkUrl) { URL.revokeObjectURL(artworkUrl); artworkUrls.current.delete(id); }
-      setQueue(q => q.filter(x => x !== id));
-      const next = playlists.map(p => ({ ...p, trackIds: p.trackIds.filter(x => x !== id) }));
-      await Promise.all(next.map(p => writeStore(PLAYLIST_STORE, p)));
-      setPlaylists(next);
-      if (id === currentId) setCurrentId(null);
-      await load();
-    } catch { showToast('Unable to remove this track', 'error'); }
-  };
-  const createPlaylist = async () => { const name = newPlaylist.trim(); if (!name) return; const p = { id: crypto.randomUUID(), name, trackIds: [], createdAt: Date.now() }; await writeStore(PLAYLIST_STORE, p); setPlaylists(ps => [...ps, p]); setSelectedPlaylistId(p.id); setNewPlaylist(''); }; const addToPlaylist = async (trackId: string, playlistId: string) => { const p = playlists.find(x => x.id === playlistId); if (!p || p.trackIds.includes(trackId)) return; const next = { ...p, trackIds: [...p.trackIds, trackId] }; await writeStore(PLAYLIST_STORE, next); setPlaylists(ps => ps.map(x => x.id === p.id ? next : x)); }; const deletePlaylist = async (id: string) => { await removeStore(PLAYLIST_STORE, id); setPlaylists(ps => ps.filter(p => p.id !== id)); if (selectedPlaylistId === id) setSelectedPlaylistId(null); }; const removeFromPlaylist = async (trackId: string) => { if (!selectedPlaylist) return; const next = { ...selectedPlaylist, trackIds: selectedPlaylist.trackIds.filter(x => x !== trackId) }; await writeStore(PLAYLIST_STORE, next); setPlaylists(ps => ps.map(p => p.id === next.id ? next : p)); };
-  const art = (small = false, track?: Track) => { let artworkSrc: string | undefined; if (track?.artwork) { artworkSrc = artworkUrls.current.get(track.id); if (!artworkSrc) { artworkSrc = URL.createObjectURL(track.artwork); artworkUrls.current.set(track.id, artworkSrc); } } return <div className={`${small ? 'music-artwork-mini w-10 h-10 rounded-lg' : 'music-artwork w-[min(70%,190px)] aspect-square rounded-2xl'} shrink-0 border border-border text-accent flex items-center justify-center overflow-hidden shadow-lg`}>{artworkSrc ? <img src={artworkSrc} alt="" className="h-full w-full object-cover"/> : <Music2 size={small ? 17 : 34} strokeWidth={1.4} />}</div>; }; const volumeControl = <div className="shrink-0 px-4 py-3 flex items-center gap-2 text-[10px] text-text-secondary"><Volume2 size={15}/><input aria-label="Volume" className="flex-1 accent-current" type="range" min="0" max="1" step="0.01" value={volume} onChange={e => setVolume(Number(e.target.value))}/><span className="w-8 text-right tabular-nums">{Math.round(volume*100)}%</span></div>;
-  const audioElement=<audio data-labos-music="true" ref={playback.bind} onTimeUpdate={e=>setPosition(e.currentTarget.currentTime)} onLoadedMetadata={e=>setDuration(e.currentTarget.duration)} onEnded={e=>{if(e.currentTarget.ended)advance(true);}}/>;
-  if (minimized) return <div className="fixed right-[68px] bottom-5 z-[80] group" aria-label="Minimized music player"><div className="absolute right-0 bottom-full mb-2 pointer-events-none opacity-0 translate-y-1 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-150"><div className="rounded-lg border border-border bg-surface-raised px-3 py-2 shadow-xl whitespace-nowrap"><div className="text-[10px] uppercase tracking-[0.16em] text-text-secondary">Music</div><div className="text-xs font-semibold max-w-48 truncate">{current?.name || 'Nothing playing'}</div></div></div><button type="button" onClick={onRestore} className="relative w-12 h-12 rounded-full border border-border bg-surface-raised text-text-primary shadow-xl flex items-center justify-center hover:bg-surface focus:outline-none focus:ring-2 focus:ring-accent/60" title="Restore music player" aria-label="Restore music player"><Music2 size={19}/>{playing && <span className="absolute -right-0.5 -top-0.5 w-3 h-3 rounded-full bg-accent border-2 border-surface-raised" aria-hidden="true"/>}</button>{audioElement}</div>;
-  return <section className={`music-player-shell relative min-h-0 flex flex-col bg-surface ${libraryOpen ? 'is-library-open' : ''}`} aria-label="Music player">
+        const target = stateRef.current.queues.find(q => q.id === stateRef.current.activeId);
+        const id = target?.currentId;
+        if (!id) {
+            setLoaded({ id: null, url: '' });
+            if(urlRef.current){URL.revokeObjectURL(urlRef.current);urlRef.current='';}
+            seek.current=null;
+            setPosition(0);
+            positionRef.current = 0;
+            return;
+        }
+        void (async () => {
+            try {
+                const track = await musicRead<StoredMusicTrack>('tracks', id);
+                if (!live)
+                    return;
+                if (!track?.blob?.size)
+                    throw new Error('This song is missing or empty. Remove it from the library and import the file again.');
+                const url = URL.createObjectURL(track.blob);
+                const previous = urlRef.current;
+                urlRef.current = url;
+                seek.current = { id, position: target.position || 0 };
+                setLoaded({ id, url });
+                playback.transport.current?.select(id, url, wanted.current, false, false);
+                wanted.current = false;
+                if (previous)
+                    URL.revokeObjectURL(previous);
+            }
+            catch (cause) {
+                if (live) {
+                    wanted.current = false;
+                    setLoaded({ id: null, url: '' });
+                    if(urlRef.current){URL.revokeObjectURL(urlRef.current);urlRef.current='';}
+                    seek.current=null;
+                    showToast(cause instanceof Error ? cause.message : 'Unable to load this song', 'error');
+                }
+            }
+        })();
+        return () => { live = false; };
+    }, [ready, state.activeId, currentId, selectionVersion]);
+    useEffect(() => {
+        let live = true, url = '';
+        setArtwork('');
+        if (loaded.id)
+            artTask.current = artTask.current.catch(() => { }).then(async () => {
+                if (!live)
+                    return;
+                try {
+                    const track = await musicRead<StoredMusicTrack>('tracks', loaded.id!);
+                    if (!track)
+                        return;
+                    let art = track.artwork;
+                    if (!track.artworkChecked || !track.metadataChecked) {
+                        const metadata = await parseBlob(track.blob);
+                        if(live && !track.metadataChecked){
+                            const tags={title:metadata.common.title,artist:metadata.common.artist,album:metadata.common.album};
+                            if(await updateMusicTags(track.id,tags)){
+                                if(live)setTracks(value=>value.map(item=>item.id===track.id?{...item,...Object.fromEntries(Object.entries(tags).filter(([,value])=>!!value)),metadataChecked:true}:item));
+                            }
+                        }
+                        const picture = metadata.common.picture?.[0];
+                        if (picture && picture.data.byteLength<=4*1024*1024 && /^image\/(jpeg|png|webp|gif)$/i.test(picture.format))
+                            art = new Blob([Uint8Array.from(picture.data).buffer], { type: picture.format });
+                        if(live&&!track.artworkChecked)await updateMusicArtwork(track.id,art);
+                    }
+                    if (live && art) {
+                        url = URL.createObjectURL(art);
+                        setArtwork(url);
+                    }
+                }
+                catch { /* Artwork is optional; audio remains usable. */ }
+            });
+        return () => { live = false; if (url)
+            URL.revokeObjectURL(url); };
+    }, [loaded.id]);
+    function playTrack(id: string, queueId?: string) {
+        id = uniqueMusicIds([id], tracks)[0];
+        if (!id)
+            return;
+        let s = stateRef.current;
+        let q = s.queues.find(q => q.id === (queueId || s.activeId));
+        if (!q) {
+            q = { id: crypto.randomUUID(), name: 'My queue', trackIds: [], currentId: null, position: 0, shuffle: false, repeat: 'off' };
+            s = { ...s, queues: [...s.queues, q] };
+        }
+        const same = s.activeId === q.id && q.currentId === id;
+        wanted.current = true;
+        q = { ...q, trackIds: uniqueMusicIds([...q.trackIds, id], tracks), currentId: id, position: same ? positionRef.current : 0 };
+        change({ ...s, activeId: q.id, queues: s.queues.map(item => item.id === q!.id ? q! : item) }, true);
+        if (same && loaded.id !== id) setSelectionVersion(value=>value+1);
+        if (same && loaded.id === id) {
+            wanted.current = false;
+            playback.transport.current?.play();
+        }
+    }
+    function enqueue(ids: string[], where: 'next' | 'end') {
+        let s = stateRef.current, q = s.queues.find(q => q.id === s.activeId);
+        if (!q) {
+            q = { id: crypto.randomUUID(), name: 'My queue', trackIds: [], currentId: null, position: 0, shuffle: false, repeat: 'off' };
+            s = { ...s, activeId: q.id, queues: [...s.queues, q] };
+        }
+        const updated = addMusicIds(q, ids, where, tracks);
+        change({ ...s, queues: s.queues.map(item => item.id === q!.id ? updated : item) });
+    }
+    function source(name: string, key: string, ids: string[], mode: 'resume' | 'replace' | 'merge', shuffled = false) {
+        let s = stateRef.current, q = s.queues.find(q => q.sourceKey === key);
+        const unique = shuffled ? shuffleMusicIds(uniqueMusicIds(ids, tracks)) : uniqueMusicIds(ids, tracks);
+        if (!unique.length)
+            return;
+        if (!q) {
+            q = { id: crypto.randomUUID(), name, sourceKey: key, trackIds: [], currentId: null, position: 0, shuffle: false, repeat: 'off' };
+            s = { ...s, queues: [...s.queues, q] };
+        }
+        if (mode === 'replace')
+            q = { ...q, trackIds: unique, currentId: unique[0], position: 0, shuffle: shuffled };
+        if (mode === 'merge')
+            q = addMusicIds(q, unique, 'end', tracks);
+        if (!q.currentId)
+            q = { ...q, currentId: q.trackIds[0] || null, position: 0 };
+        const same = s.activeId === q.id && currentId === q.currentId;
+        wanted.current = true;
+        change({ ...s, activeId: q.id, queues: s.queues.map(item => item.id === q!.id ? q! : item) }, true);
+        if (same && loaded.id !== q.currentId) setSelectionVersion(value=>value+1);
+        if (same && loaded.id === q.currentId) {
+            wanted.current = false;
+            if (mode === 'replace' && audio.current) {
+                audio.current.currentTime = 0;
+                positionRef.current = 0;
+                setPosition(0);
+            }
+            playback.transport.current?.play();
+        }
+    }
+    function advance(ended = false) {
+        const q = stateRef.current.queues.find(q => q.id === stateRef.current.activeId);
+        if (!q)
+            return;
+        const id = nextQueueTrack(q, ended);
+        if (id) {
+            if (id === q.currentId && audio.current) {
+                audio.current.currentTime = 0;
+                positionRef.current = 0;
+                setPosition(0);
+                playback.transport.current?.play();
+            }
+            else
+                playTrack(id, q.id);
+        }
+        else {
+            playback.transport.current?.pause();
+            wanted.current = false;
+        }
+    }
+    function previous() {
+        const q = stateRef.current.queues.find(q => q.id === stateRef.current.activeId);
+        if (!q?.trackIds.length)
+            return;
+        if (audio.current && audio.current.currentTime > 3) {
+            audio.current.currentTime = 0;
+            positionRef.current = 0;
+            setPosition(0);
+            return;
+        }
+        const id = playback.transport.current?.previous(q.trackIds);
+        if (id)
+            playTrack(id, q.id);
+    }
+    function toggle() { if (!active?.currentId) {
+        if (active?.trackIds[0])
+            playTrack(active.trackIds[0], active.id);
+        return;
+    } if (loaded.id === currentId)
+        playback.transport.current?.toggle();
+    else
+        playTrack(active.currentId, active.id); }
+    function setShuffle(update:(value:boolean)=>boolean){
+        if(!active)return;const shuffle=update(active.shuffle);
+        change({...stateRef.current,queues:stateRef.current.queues.map(q=>{
+            if(q.id!==active.id)return q;
+            const split=q.currentId?Math.max(0,q.trackIds.indexOf(q.currentId)+1):0;
+            return {...q,shuffle,trackIds:shuffle?[...q.trackIds.slice(0,split),...shuffleMusicIds(q.trackIds.slice(split))]:q.trackIds};
+        })});
+    }
+    function setRepeat(update: (value: MusicQueue['repeat']) => MusicQueue['repeat']) { if (active)
+        change({ ...stateRef.current, queues: stateRef.current.queues.map(q => q.id === active.id ? { ...q, repeat: update(q.repeat) } : q) }); }
+    async function remove(id: string) { await deleteMusicTrack(id); change({ ...stateRef.current, queues: stateRef.current.queues.map(q => ({ ...q, trackIds: q.trackIds.filter(x => x !== id), currentId: q.currentId === id ? null : q.currentId, position: q.currentId === id ? 0 : q.position })) }); await load(); }
+    const art = (small = false, _track?: MusicTrack) => <div className={`${small ? 'music-artwork-mini w-10 h-10 rounded-lg' : 'music-artwork w-[min(70%,190px)] aspect-square rounded-2xl'} shrink-0 border border-border text-accent flex items-center justify-center overflow-hidden shadow-lg`}>{artwork ? <img src={artwork} alt="" className="h-full w-full object-cover"/> : <Music2 size={small ? 17 : 34} strokeWidth={1.4}/>}</div>;
+    const volumeControl = <div className="shrink-0 px-4 py-3 flex items-center gap-2 text-[10px] text-text-secondary"><Volume2 size={15}/><input aria-label="Volume" className="flex-1 accent-current" type="range" min="0" max="1" step="0.01" value={volume} onChange={e => setVolume(Number(e.target.value))}/><span className="w-8 text-right tabular-nums">{Math.round(volume * 100)}%</span></div>;
+    const audioElement = <audio data-labos-music="true" ref={playback.bind} onTimeUpdate={e => { const value = e.currentTarget.currentTime; positionRef.current = value; setPosition(value); }} onPause={() => { if (readyRef.current)
+        save(snapshot()); }} onLoadedMetadata={e => { setDuration(e.currentTarget.duration); const pending = seek.current; if (pending && pending.id === playback.transport.current?.currentId) {
+        const value = Math.max(0, Math.min(pending.position, Number.isFinite(e.currentTarget.duration) ? Math.max(0, e.currentTarget.duration - .05) : pending.position));
+        e.currentTarget.currentTime = value;
+        positionRef.current = value;
+        setPosition(value);
+        seek.current = null;
+    } }} onEnded={e => { if (e.currentTarget.ended)
+        advance(true); }}/>;
+    const actions = useRef({ load, change, playTrack, source, enqueue, remove });
+    actions.current = { load, change, playTrack, source, enqueue, remove };
+    const browserActions = useMemo(() => ({ reload: () => actions.current.load(), change: (s: MusicState) => actions.current.change(s), play: (id: string, q?: string) => actions.current.playTrack(id, q), source: (name: string, key: string, ids: string[], mode: 'resume' | 'replace' | 'merge', shuffled?: boolean) => actions.current.source(name, key, ids, mode, shuffled), enqueue: (ids: string[], where: 'next' | 'end') => actions.current.enqueue(ids, where), remove: (id: string) => actions.current.remove(id), onNowPlaying:()=>{setLibraryOpen(false);window.requestAnimationFrame(()=>libraryToggle.current?.focus());} }), []);
+    if (minimized)
+        return <div className="fixed right-[68px] bottom-5 z-[80] group" aria-label="Minimized music player"><div className="absolute right-0 bottom-full mb-2 pointer-events-none opacity-0 translate-y-1 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-150"><div className="rounded-lg border border-border bg-surface-raised px-3 py-2 shadow-xl whitespace-nowrap"><div className="text-[10px] uppercase tracking-[0.16em] text-text-secondary">Music</div><div className="text-xs font-semibold max-w-48 truncate">{current?.title || current?.name || 'Nothing playing'}</div></div></div><button type="button" onClick={onRestore} className="relative w-12 h-12 rounded-full border border-border bg-surface-raised text-text-primary shadow-xl flex items-center justify-center hover:bg-surface focus:outline-none focus:ring-2 focus:ring-accent/60" title="Restore music player" aria-label="Restore music player"><Music2 size={19}/>{playing && <span className="absolute -right-0.5 -top-0.5 w-3 h-3 rounded-full bg-accent border-2 border-surface-raised" aria-hidden="true"/>}</button>{audioElement}</div>;
+    return <section className={`music-player-shell relative min-h-0 flex flex-col bg-surface ${libraryOpen ? 'is-library-open' : ''}`} aria-label="Music player">
     <header className="music-player-header shrink-0 grid grid-cols-3 items-center px-4 py-1.5"><button type="button" onClick={onMinimize} className="justify-self-start p-2 rounded-full text-text-secondary hover:text-text-primary hover:bg-surface-raised focus:outline-none focus:ring-2 focus:ring-accent/50" title="Minimize music player" aria-label="Minimize music player"><ChevronDown size={19}/></button><div className="text-center text-sm font-medium">Now Playing</div><button type="button" onClick={onClose} className="justify-self-end p-2 rounded-full text-text-secondary hover:text-text-primary hover:bg-surface-raised focus:outline-none focus:ring-2 focus:ring-accent/50" title="Close music player" aria-label="Close music player"><X size={17}/></button></header>
     <div className={`music-now-playing ${libraryOpen ? 'library-open shrink-0' : 'flex-1 min-h-0 justify-center'} px-5 pb-1 pt-0.5 flex flex-col items-center`}>
-      <div className="music-now-playing-details w-full">
+      <div className="music-now-playing-details w-full" aria-hidden={libraryOpen}>
         <div className="music-artwork-frame mt-4 mb-3 flex w-full justify-center">{art(false, current || undefined)}</div>
-        <div className="music-track-details w-full text-center"><div data-track-title className="truncate text-sm font-semibold">{current?.name || 'Nothing playing'}</div><div data-track-subtitle className="mt-1 text-[11px] text-text-secondary">{current ? 'Local audio' : 'Import tracks to get started'}</div></div>
+        <div className="music-track-details w-full text-center"><div data-track-title className="truncate text-sm font-semibold">{current?.title || current?.name || 'Nothing playing'}</div><div data-track-subtitle className="mt-1 text-[11px] text-text-secondary">{current ? (current.artist || active?.name || 'Local audio') : 'Import tracks to get started'}</div></div>
       </div>
-      <div className="music-transport music-progress-row mt-3 flex w-full items-center gap-2 text-[10px] tabular-nums text-text-secondary"><span>{fmt(position)}</span><input aria-label="Track progress" className="min-w-0 flex-1 accent-current" type="range" min="0" max={duration || 0} step="0.1" value={Math.min(position, duration || 0)} onChange={e => { const v = Number(e.target.value); setPosition(v); if (audio.current) audio.current.currentTime = v; }}/><span>{fmt(duration)}</span></div>
-      <div className="music-transport music-transport-controls mt-3 flex w-full items-center justify-between"><button type="button" onClick={() => setShuffle(v => !v)} className={`flex h-8 w-8 items-center justify-center rounded-full hover:bg-surface-raised ${shuffle ? 'text-accent' : 'text-text-secondary'}`} aria-label="Toggle shuffle"><Shuffle size={15}/></button><button type="button" onClick={previous} disabled={!currentId} className="flex h-9 w-9 items-center justify-center rounded-full text-text-primary hover:bg-surface-raised disabled:opacity-40" aria-label="Previous track"><SkipBack size={17} fill="currentColor"/></button><button type="button" onClick={toggle} disabled={!current} className="flex h-12 w-12 items-center justify-center rounded-full border border-border bg-surface-raised text-text-primary shadow-md hover:bg-surface disabled:opacity-40" aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={19} fill="currentColor"/> : <Play size={19} fill="currentColor"/>}</button><button type="button" onClick={()=>advance(false)} disabled={!currentId} className="flex h-9 w-9 items-center justify-center rounded-full text-text-primary hover:bg-surface-raised disabled:opacity-40" aria-label="Next track"><SkipForward size={17} fill="currentColor"/></button><button type="button" onClick={() => setRepeat(r => r === 'off' ? 'all' : r === 'all' ? 'one' : 'off')} className={`flex h-8 w-8 items-center justify-center rounded-full hover:bg-surface-raised ${repeat !== 'off' ? 'text-accent' : 'text-text-secondary'}`} aria-label="Toggle repeat">{repeat === 'one' ? <Repeat1 size={15}/> : <Repeat size={15}/>}</button></div>
+      {libraryOpen && <button type="button" className="music-current-strip" onClick={returnToPlayer} aria-label="Return to now playing"><span className="music-current-glyph"><Music2 size={16}/></span><span className="music-current-copy"><strong>{current?.title||current?.name||'Nothing playing'}</strong><span>{current?.artist||active?.name||'Choose music from your library'}</span></span><span className="music-status-label">{playing?'Playing':'Paused'}</span></button>}
+      <div className="music-transport music-progress-row mt-3 flex w-full items-center gap-2 text-[10px] tabular-nums text-text-secondary"><span>{fmt(position)}</span><input aria-label="Track progress" className="min-w-0 flex-1 accent-current" type="range" min="0" max={duration || 0} step="0.1" value={Math.min(position, duration || 0)} onChange={e => { const v = Number(e.target.value); setPosition(v); positionRef.current = v; if (audio.current)
+        audio.current.currentTime = v; }}/><span>{fmt(duration)}</span></div>
+      <div className="music-transport music-transport-controls mt-3 flex w-full items-center justify-between"><button type="button" onClick={() => setShuffle(v => !v)} className={`flex h-8 w-8 items-center justify-center rounded-full hover:bg-surface-raised ${shuffle ? 'text-accent' : 'text-text-secondary'}`} aria-label="Toggle shuffle"><Shuffle size={15}/></button><button type="button" onClick={previous} disabled={!currentId} className="flex h-9 w-9 items-center justify-center rounded-full text-text-primary hover:bg-surface-raised disabled:opacity-40" aria-label="Previous track"><SkipBack size={17} fill="currentColor"/></button><button type="button" onClick={toggle} disabled={!current} className="flex h-12 w-12 items-center justify-center rounded-full border border-border bg-surface-raised text-text-primary shadow-md hover:bg-surface disabled:opacity-40" aria-label={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={19} fill="currentColor"/> : <Play size={19} fill="currentColor"/>}</button><button type="button" onClick={() => advance(false)} disabled={!currentId} className="flex h-9 w-9 items-center justify-center rounded-full text-text-primary hover:bg-surface-raised disabled:opacity-40" aria-label="Next track"><SkipForward size={17} fill="currentColor"/></button><button type="button" onClick={() => setRepeat(r => r === 'off' ? 'all' : r === 'all' ? 'one' : 'off')} className={`flex h-8 w-8 items-center justify-center rounded-full hover:bg-surface-raised ${repeat !== 'off' ? 'text-accent' : 'text-text-secondary'}`} aria-label="Toggle repeat">{repeat === 'one' ? <Repeat1 size={15}/> : <Repeat size={15}/>}</button></div>
     </div>
-    <button type="button" onClick={() => setLibraryOpen(value => !value)} aria-expanded={libraryOpen} aria-controls="music-library-popup" aria-label={libraryOpen ? 'Close music library' : 'Open music library'} className="music-library-toggle absolute bottom-2 right-2 z-30 flex h-8 w-8 items-center justify-center rounded-full border border-border bg-surface-raised text-text-secondary shadow-sm hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"><ChevronUp size={17} className={`transition-transform duration-200 ${libraryOpen ? 'rotate-180' : ''}`}/></button>
+    <button ref={libraryToggle} type="button" onClick={() => setLibraryOpen(value => !value)} aria-expanded={libraryOpen} aria-controls="music-library-popup" aria-label={libraryOpen ? 'Close music library' : 'Open music library'} className="music-library-toggle absolute bottom-2 right-2 z-30 flex h-8 w-8 items-center justify-center rounded-full border border-border bg-surface-raised text-text-secondary shadow-sm hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"><ChevronUp size={17} className={`transition-transform duration-200 ${libraryOpen ? 'rotate-180' : ''}`}/></button>
     <div id="music-library-popup" aria-hidden={!libraryOpen} className={`music-library-popup flex min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-2xl ${libraryOpen ? 'is-open' : ''}`}>
-    <div className="shrink-0 px-3 py-2 flex items-center gap-2"><div className="flex-1 flex items-center gap-2 rounded-lg border border-border bg-surface-raised/30 px-2.5 py-1.5"><Music2 size={14} className="text-text-secondary"/><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search tracks" aria-label="Search tracks" className="min-w-0 flex-1 bg-transparent text-xs outline-none"/></div><label className="p-2 rounded-lg text-accent hover:text-text-primary hover:bg-surface-raised cursor-pointer" title="Import music folder"><FolderOpen size={16}/><input type="file" multiple className="hidden" // @ts-ignore webkitdirectory is supported by the desktop WebView
-      webkitdirectory="" directory="" onChange={addFolder}/></label><label className="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-surface-raised cursor-pointer" title="Import audio files"><Upload size={16}/><input type="file" accept="audio/*" multiple className="hidden" onChange={addFiles}/></label></div>
-    <div className="shrink-0 grid grid-cols-3 mx-3 rounded-full border border-border bg-surface-raised/30 p-1">{([['library',Library,'Library'],['queue',ListMusic,'Queue'],['playlists',FolderPlus,'Playlists']] as const).map(([id,Icon,label]) => <button key={id} type="button" onClick={() => setTab(id)} className={`rounded-full px-2 py-2 text-[11px] font-medium flex items-center justify-center gap-1.5 ${tab === id ? 'text-accent bg-surface shadow-sm' : 'text-text-secondary hover:text-text-primary'}`}><Icon size={14}/>{label}</button>)}</div>
-    {tab === 'library' && <div className="flex-1 min-h-0 overflow-auto p-3">
-      {loading ? <div className="space-y-2">{[1,2,3,4].map(i => <div key={i} className="h-14 rounded-xl border border-border bg-surface-raised/30 animate-pulse" />)}</div> : error ? <div className="rounded-xl border border-border bg-surface-raised/30 p-5 text-center"><div className="font-semibold text-sm">Unable to load music</div><div className="text-xs text-text-secondary mt-1">Your local library could not be opened.</div><button type="button" onClick={load} className="mt-3 px-3 py-1.5 rounded-lg border border-border text-xs font-medium hover:bg-surface-raised">Try again</button></div> : <>
-        {importProgress && <div className="mb-3 rounded-lg border border-accent/25 bg-accent/5 px-3 py-2 text-[11px] text-text-secondary" role="status">{importProgress}</div>}
-        {selectedCollection ? <div>
-          <div className="mb-3 flex items-center gap-2"><button type="button" onClick={() => setSelectedCollectionId(null)} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-text-secondary hover:bg-surface-raised hover:text-text-primary" aria-label="Back to collections"><ArrowLeft size={15}/></button><div className="min-w-0 flex-1"><div className="truncate text-xs font-semibold">{selectedCollection.name}</div><div className="text-[10px] text-text-secondary">{selectedCollection.tracks.length} tracks</div></div></div>
-          <div className="mb-3 grid grid-cols-2 gap-1.5"><button type="button" onClick={() => playCollection(collectionTracks)} disabled={!collectionTracks.length} className="flex items-center justify-center gap-1 rounded-lg bg-accent px-2 py-2 text-[10px] font-medium text-bg disabled:opacity-40"><Play size={12}/> Play all</button><button type="button" onClick={() => playCollection(collectionTracks,true)} disabled={!collectionTracks.length} className="flex items-center justify-center gap-1 rounded-lg border border-border px-2 py-2 text-[10px] hover:bg-surface-raised disabled:opacity-40"><Shuffle size={12}/> Shuffle</button><button type="button" onClick={() => addCollectionToQueue(collectionTracks)} disabled={!collectionTracks.length} className="flex items-center justify-center gap-1 rounded-lg border border-border px-2 py-2 text-[10px] hover:bg-surface-raised disabled:opacity-40"><ListPlus size={12}/> Add to queue</button><button type="button" onClick={() => void createPlaylistFromCollection(selectedCollection)} disabled={!selectedCollection.tracks.length} className="flex items-center justify-center gap-1 rounded-lg border border-border px-2 py-2 text-[10px] hover:bg-surface-raised disabled:opacity-40"><FolderPlus size={12}/> Create playlist</button></div>
-          <div className="space-y-1.5">{collectionTracks.map(track => <div key={track.id} className={`flex items-center gap-2 rounded-lg border p-2 ${currentId === track.id ? 'border-accent/30 bg-accent/5' : 'border-border bg-surface-raised/20'}`}>{art(true, track)}<button type="button" onClick={() => void playTrack(track.id)} className="min-w-0 flex-1 text-left"><span className="block truncate text-[11px] font-medium">{track.name}</span><span className="block truncate text-[9px] text-text-secondary">{track.relativePath || track.name}</span></button><button type="button" onClick={() => addToQueue(track.id)} className="rounded p-1.5 text-text-secondary hover:bg-surface hover:text-text-primary" aria-label={`Add ${track.name} to queue`}><Plus size={13}/></button><button type="button" onClick={() => void remove(track.id)} className="rounded p-1.5 text-text-secondary hover:bg-surface hover:text-danger" aria-label={`Remove ${track.name}`}><Trash2 size={13}/></button></div>)}</div>
-          {!collectionTracks.length && <div className="py-8 text-center text-xs text-text-secondary">No tracks match your search.</div>}
-        </div> : <div className="space-y-2">
-          {!collections.length && !importProgress && <div className="py-8 text-center text-xs text-text-secondary">No music collections yet. Import a folder to start your library.</div>}
-          {collections.filter(collection => collection.tracks.some(track => track.name.toLowerCase().includes(search.toLowerCase()))).map(collection => {
-            const filteredTracks = collection.tracks.filter(track => track.name.toLowerCase().includes(search.toLowerCase()));
-            return <div key={collection.id} className="flex items-center gap-2 rounded-xl border border-border bg-surface-raised/20 p-2.5">
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent"><FolderOpen size={17}/></div>
-              <button type="button" onClick={() => setSelectedCollectionId(collection.id)} className="min-w-0 flex-1 text-left"><span className="block truncate text-xs font-semibold">{collection.name}</span><span className="block text-[10px] text-text-secondary">{filteredTracks.length} {filteredTracks.length === 1 ? 'track' : 'tracks'}</span></button>
-              <button type="button" onClick={() => addCollectionToQueue(collection.tracks)} className="rounded-lg p-2 text-text-secondary hover:bg-surface hover:text-text-primary" title="Add collection to queue" aria-label={`Add ${collection.name} to queue`}><ListPlus size={15}/></button>
-            </div>;
-          })}
-        </div>}
-      </>}
-    </div>}
-    {tab !== 'library' && <div className="flex-1 min-h-0 overflow-auto p-3">{loading ? <div className="space-y-2">{[1,2,3,4].map(i => <div key={i} className="h-14 rounded-xl border border-border bg-surface-raised/30 animate-pulse" />)}</div> : error ? <div className="rounded-xl border border-border bg-surface-raised/30 p-5 text-center"><div className="font-semibold text-sm">Unable to load music</div><div className="text-xs text-text-secondary mt-1">Your local library could not be opened.</div><button type="button" onClick={load} className="mt-3 px-3 py-1.5 rounded-lg border border-border text-xs font-medium hover:bg-surface-raised">Try again</button></div> : tab === 'queue' ? <div className="space-y-2">{queueTracks.length ? queueTracks.map((t,i) => <div key={t.id} className="flex items-center gap-2 p-2.5 rounded-xl border border-border bg-surface-raised/20"><div className="text-[10px] text-text-secondary w-4">{i+1}</div>{art(true, t)}<button type="button" onClick={() => playTrack(t.id)} className="min-w-0 flex-1 text-left text-xs font-medium truncate">{t.name}</button><button type="button" onClick={() => moveQueue(t.id,-1)} className="p-1.5 rounded text-text-secondary hover:text-text-primary" aria-label="Move up"><ChevronUp size={14}/></button><button type="button" onClick={() => moveQueue(t.id,1)} className="p-1.5 rounded text-text-secondary hover:text-text-primary" aria-label="Move down"><ChevronDown size={14}/></button></div>) : <div className="py-10 text-center text-xs text-text-secondary">Queue is empty.</div>}</div> : <div className="space-y-2">{playlists.map(p => <div key={p.id} className="rounded-xl border border-border bg-surface-raised/20 p-3"><button type="button" onClick={() => setSelectedPlaylistId(p.id)} className="w-full text-left"><div className="text-xs font-semibold">{p.name}</div><div className="text-[10px] text-text-secondary mt-0.5">{p.trackIds.length} tracks</div></button><button type="button" onClick={() => deletePlaylist(p.id)} className="mt-2 p-1.5 rounded text-text-secondary hover:text-danger" aria-label={`Delete ${p.name}`}><Trash2 size={14}/></button></div>)}<div className="flex gap-2 pt-2"><input value={newPlaylist} onChange={e => setNewPlaylist(e.target.value)} placeholder="New playlist" className="min-w-0 flex-1 rounded-lg border border-border bg-surface-raised px-2.5 py-2 text-xs"/><button type="button" onClick={createPlaylist} className="p-2 rounded-lg bg-accent text-bg" aria-label="Create playlist"><Plus size={15}/></button></div>{selectedPlaylist && <div className="mt-3 rounded-xl border border-border p-3"><div className="text-xs font-semibold mb-2">{selectedPlaylist.name}</div>{selectedPlaylist.trackIds.map(id => { const t = tracks.find(x => x.id === id); return t ? <div key={id} className="flex items-center gap-2 py-1.5 text-xs"><span className="truncate flex-1">{t.name}</span><button type="button" onClick={() => removeFromPlaylist(id)} className="text-text-secondary hover:text-danger" aria-label={`Remove ${t.name} from playlist`}><X size={13}/></button></div> : null; })}</div>}</div>}</div>}
-    {libraryOpen && volumeControl}
+      <MusicLibraryBrowser tracks={tracks} playlists={playlists} state={state} currentId={currentId} loading={loading} error={error} isPlaying={playing} {...browserActions}/>
+      {libraryOpen && volumeControl}
     </div>
     {!libraryOpen && <div className="music-volume-dock mt-auto">{volumeControl}</div>}
     {audioElement}

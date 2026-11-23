@@ -171,3 +171,5 @@ deploy/backups/
 
 # Verified documentation history (intentional tracked archive)
 !/docs/archive/history-through-2026-11-08.zip
+# Server-held AI master keys must never enter source control.
+.labos-secrets/

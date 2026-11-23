@@ -5,7 +5,7 @@ import { getItems } from './items';
 import { listMaintenance } from './maintenance';
 import { findMissingBom, enrichOutstandingRequirements } from './operations-calculations';
 import { getProjects, getProjectBom, getProjectRequirements, createProjectRequirement, updateProjectRequirement, deleteProjectRequirement } from './projects';
-import {readLocalSections,readWithDeadline,assertReadAccount,type ReadAvailability} from './read-availability';
+import {readLocalSections,readLocalCollection,assertReadAccount,type ReadAvailability} from './read-availability';
 import {captureAccountSession} from './auth';
 
 export interface OperationsOverview {
@@ -22,10 +22,10 @@ async function localOverview():Promise<OperationsOverview>{
   const session=captureAccountSession();
   const {values,availability}=await readLocalSections({inventory:getItems,projects:getProjects,requirements:()=>getProjectRequirements(),maintenance:()=>listMaintenance()},session);
   const items=values.inventory??[],projects=values.projects??[],requirements=values.requirements??[],maintenance=values.maintenance??[];
-  const bomResults=await Promise.allSettled(projects.map(async project=>({project,lines:await readWithDeadline(()=>getProjectBom(project.id))})));
+  const bomResults=await readLocalCollection(projects,project=>getProjectBom(project.id),session);
   assertReadAccount(session);
-  const bomByProject=bomResults.flatMap(result=>result.status==='fulfilled'?[result.value]:[]);
-  availability.sections.bom=values.inventory===null||values.projects===null?'unavailable':bomResults.some(r=>r.status==='rejected')?'partial':'available';
+  const bomByProject=bomResults.flatMap(({item:project,value:lines})=>Array.isArray(lines)?[{project,lines}]:[]);
+  availability.sections.bom=values.inventory===null||values.projects===null?'unavailable':bomByProject.length===projects.length?'available':bomByProject.length>0?'partial':'unavailable';
   const missing_bom = values.inventory===null?[]:bomByProject.flatMap(({project,lines}) =>
     findMissingBom(lines,items).map(line => ({...line,project_name:project.name,availability:'missing'})));
   const low_stock = items.filter(item => item.status === 'low_stock' || Number(item.current_quantity) <= Number(item.initial_quantity || 0) * 0.2);

@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod responsive_reads;
+mod resource_scan;
 mod performance_probe;
 #[cfg(feature="working-encryption")]
 mod encrypted_database;

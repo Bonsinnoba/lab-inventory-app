@@ -229,38 +229,55 @@ pub fn create_local_pdf_edit_copy(app:AppHandle,expected_account_id:String,expec
     crate::local_resource_attachments::record_native_proof(&tx,&change,"create_copy",&record,&record,&payload)?;
     tx.commit().map_err(err)?;Ok(record)
 }
+struct FileAccessScan {
+    connection: Connection,
+    records: std::iter::Peekable<std::vec::IntoIter<(local_resources::LocalResource,u8)>>,
+    files: serde_json::Map<String,Value>,
+}
+fn file_access_record(app:&AppHandle,c:&Connection,account:&str,record:&local_resources::LocalResource,source:u8)->Result<Option<Value>,String>{
+    if source&2!=0&&crate::local_resource_edits::readable(app,c,&record.id).is_ok(){
+        let pending:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM active_sync_outbox WHERE entity_type='resource' AND entity_id=?1 AND operation='edit_content' AND synced_at IS NULL)",[&record.id],|r|r.get(0)).map_err(err)?;
+        return Ok(Some(json!({"path":format!("{}.{}",record.id,capability(c,&record.id)?),"pending":pending})))
+    }
+    let mut file=None;
+    if source&4!=0&&crate::local_resource_replication::readable_record(app,c,account,record).is_ok(){
+        file=Some(json!({"path":format!("{}.{}",record.id,capability(c,&record.id)?),"pending":false}));
+    }
+    if let Some((owner,change,_,size))=if source&1!=0{readable_file_record(c,account,record).ok()}else{None}{
+        if crate::working_store::len(&file_path(app,&owner,&change)?).map(|n|n==size).unwrap_or(false){
+            let pending:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM active_sync_outbox WHERE change_id=?1 AND synced_at IS NULL)",[change],|r|r.get(0)).map_err(err)?;
+            file=Some(json!({"path":format!("{}.{}",record.id,capability(c,&record.id)?),"pending":pending}));
+        }
+    }
+    Ok(file)
+}
 #[tauri::command]
 pub async fn local_resource_file_access(app:AppHandle,expected_account_id:String)->Result<Value,String>{
-    crate::responsive_reads::run("local_resource_file_access", move || {
-    let mut connection=local_db::open_local_connection(&app)?;schema(&connection)?;
-    local_db::require_sync_account(&connection,&expected_account_id)?;local_auth::require_local_permission(&connection,"resources.view")?;
-    crate::local_resource_edits::schema(&connection)?;crate::local_resource_replication::schema(&connection)?;
-    let snapshot=connection.transaction().map_err(err)?;let c=&snapshot;
-    let candidates=candidate_file_sources(c,&expected_account_id)?;
-    let mut files=serde_json::Map::new();
-    if !candidates.is_empty(){for record in local_resources::read_resources(&c)?{
-        // Presence is only a pruning index, never proof of readability. Keep
-        // every existing authority/session/revision/file check below.
-        let Some(source)=candidates.get(&record.id) else{continue};
-        if *source&2!=0&&crate::local_resource_edits::readable(&app,c,&record.id).is_ok(){
-            let pending:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM active_sync_outbox WHERE entity_type='resource' AND entity_id=?1 AND operation='edit_content' AND synced_at IS NULL)",[&record.id],|r|r.get(0)).map_err(err)?;
-              files.insert(record.id.clone(),json!({"path":format!("{}.{}",record.id,capability(&c,&record.id)?),"pending":pending}));
-              continue;
+    crate::resource_scan::run("local_resource_file_access",||async move{
+        let handle=app.clone();let account=expected_account_id.clone();
+        let mut scan=crate::responsive_reads::run("local_resource_file_access",move||{
+            let connection=local_db::open_local_connection(&handle)?;schema(&connection)?;
+            local_db::require_sync_account(&connection,&account)?;local_auth::require_local_permission(&connection,"resources.view")?;
+            crate::local_resource_edits::schema(&connection)?;crate::local_resource_replication::schema(&connection)?;
+            // Connection is Send, not shared. Moving its owned state between
+            // worker turns keeps this exact read transaction alive throughout.
+            connection.execute_batch("BEGIN DEFERRED").map_err(err)?;
+            let sources=candidate_file_sources(&connection,&account)?;
+            let records=if sources.is_empty(){Vec::new()}else{local_resources::read_resources(&connection)?.into_iter().filter_map(|record|sources.get(&record.id).copied().map(|source|(record,source))).collect()};
+            Ok(FileAccessScan{connection,records:records.into_iter().peekable(),files:serde_json::Map::new()})
+        }).await?;
+        loop{
+            let handle=app.clone();let account=expected_account_id.clone();
+            let (next,done)=crate::responsive_reads::run("local_resource_file_access",move||{
+                let mut scan=scan;let c=&scan.connection;let files=&mut scan.files;
+                let done=crate::resource_scan::batch(&mut scan.records,|(record,source)|{
+                    if let Some(file)=file_access_record(&handle,c,&account,&record,source)?{files.insert(record.id,file);}Ok(())
+                })?;
+                if done{c.execute_batch("COMMIT").map_err(err)?;local_db::require_sync_account(c,&account)?;local_auth::require_local_permission(c,"resources.view")?;}
+                Ok((scan,done))
+            }).await?;
+            scan=next;if done{return Ok(Value::Object(scan.files))}
         }
-        if *source&4!=0&&crate::local_resource_replication::readable_record(&app,c,&expected_account_id,&record).is_ok(){
-            files.insert(record.id.clone(),json!({"path":format!("{}.{}",record.id,capability(&c,&record.id)?),"pending":false}));
-        }
-        if let Some((account,change,_,size))=if *source&1!=0{readable_file_record(c,&expected_account_id,&record).ok()}else{None}{
-            if crate::working_store::len(&file_path(&app,&account,&change)?).map(|n|n==size).unwrap_or(false){
-                let pending:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM active_sync_outbox WHERE change_id=?1 AND synced_at IS NULL)",[change],|r|r.get(0)).map_err(err)?;
-                // Tauri percent-encodes the whole path on Windows. A dot keeps
-                // this two-part capability intact without URL decoding paths.
-                files.insert(record.id.clone(),json!({"path":format!("{}.{}",record.id,capability(&c,&record.id)?),"pending":pending}));
-            }
-        }
-    }}snapshot.commit().map_err(err)?;
-    local_db::require_sync_account(&connection,&expected_account_id)?;local_auth::require_local_permission(&connection,"resources.view")?;Ok(Value::Object(files))
-
     }).await
 }
 #[tauri::command]

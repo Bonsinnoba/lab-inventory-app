@@ -19,6 +19,22 @@ export function readWithDeadline<T>(read:()=>Promise<T>,timeoutMs=5000):Promise<
 export function assertReadAccount(session:AccountSession|null){
   if(!isAccountSessionCurrent(session))throw new Error('Account changed or signed out while loading this view');
 }
+/** One view budget and four pending native reads, even when timed-out invokes
+ * cannot be cancelled. Unstarted/failed rows stay unknown, never empty records. */
+export async function readLocalCollection<T,R>(items:T[],read:(item:T)=>Promise<R>,session=captureAccountSession(),timeoutMs=5000){
+  assertReadAccount(session);
+  const results=items.map(item=>({item,value:null as R|null}));
+  const deadline=Date.now()+timeoutMs;let cursor=0;
+  await Promise.all(Array.from({length:Math.min(4,items.length)},async()=>{
+    while(cursor<items.length&&Date.now()<deadline){
+      assertReadAccount(session);const index=cursor++;
+      try{results[index].value=await readWithDeadline(()=>read(items[index]),Math.max(1,deadline-Date.now()));}
+      catch{/* Failed and unstarted local rows remain explicitly unavailable. */}
+      assertReadAccount(session);
+    }
+  }));
+  assertReadAccount(session);return results;
+}
 export async function readLocalSections<T extends Loaders>(loaders:T,session=captureAccountSession(),timeoutMs=5000){
   assertReadAccount(session);
   const entries=Object.entries(loaders);

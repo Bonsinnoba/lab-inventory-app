@@ -244,3 +244,50 @@ test('desktop restoration obtains a protected native bearer only alongside an au
 });
 
 test('a fresh desktop does not claim its nonexistent cached session has expired',async()=>{const c=load({invoke:async name=>{assert.equal(name,'local_auth_status');return{authenticated:false,bootstrapped:false,user:null,token:null};}});await assert.rejects(c.auth.getCurrentUser('local:'),error=>error.message==='Sign in online to authorize this installation.'&&error.message!==c.auth.DESKTOP_REAUTH_REQUIRED);});
+
+test('queued native guard cannot dispatch an old bearer after switching accounts',async()=>{
+ let release;const c=load({invoke:()=>new Promise(resolve=>release=resolve)});
+ c.auth.setToken('old');c.auth.setStoredUser(serverUser);
+ const pending=c.http().apiFetch('/resources',{method:'POST',body:'{}'});
+ while(!release)await new Promise(resolve=>setTimeout(resolve,0));
+ c.auth.setToken('new');c.auth.setStoredUser({...serverUser,id:'new-account'});
+ release('new-native-guard');await assert.rejects(pending,/Session changed before request dispatch/);
+ assert.equal(c.calls.length,0);assert.equal(c.auth.getToken(),'new');
+});
+
+test('same-account re-entry with the same bearer invalidates a queued HTTP dispatch',async()=>{
+ let release;const c=load({invoke:()=>new Promise(resolve=>release=resolve)});
+ c.auth.setToken('jwt');c.auth.setStoredUser(serverUser);
+ const pending=c.http().apiFetch('/reports/overview');
+ while(!release)await new Promise(resolve=>setTimeout(resolve,0));
+ c.auth.removeToken();c.auth.setToken('jwt');release('new-native-guard');
+ await assert.rejects(pending,/Session changed before request dispatch/);assert.equal(c.calls.length,0);
+ assert.equal(c.auth.getToken(),'jwt');
+});
+
+test('retry backoff cannot resend a previous account bearer',async()=>{
+ let c;c=load({invoke:async()=> 'guard',fetch:async()=>{
+  c.auth.setToken('new');c.auth.setStoredUser({...serverUser,id:'new-account'});
+  return new Response('{}',{status:503});
+ }});c.auth.setToken('old');c.auth.setStoredUser(serverUser);
+ await assert.rejects(c.http().apiFetch('/reports/overview'),/Session changed before request dispatch/);
+ assert.equal(c.calls.length,1);assert.equal(c.auth.getToken(),'new');assert.equal(c.events.includes('labos:auth-expired'),false);
+});
+
+test('cancelled request does not dispatch after its native guard finishes',async()=>{
+ let release;const c=load({invoke:()=>new Promise(resolve=>release=resolve)});
+ c.auth.setToken('jwt');c.auth.setStoredUser(serverUser);const controller=new AbortController();
+ const pending=c.http().apiFetch('/resources',{method:'POST',body:'{}',signal:controller.signal});
+ while(!release)await new Promise(resolve=>setTimeout(resolve,0));
+ controller.abort();release('guard');await assert.rejects(pending,error=>error.name==='AbortError');
+ assert.equal(c.calls.length,0);assert.equal(c.auth.getToken(),'jwt');
+});
+
+test('unchanged session still retries safe reads, never retries a write response',async()=>{
+ let requests=0;const c=load({invoke:async()=> 'guard',fetch:async()=>new Response('{}',{status:++requests===1?503:200})});
+ c.auth.setToken('jwt');c.auth.setStoredUser(serverUser);
+ assert.equal((await c.http().apiFetch('/reports/overview')).status,200);assert.equal(c.calls.length,2);
+ const write=load({invoke:async()=> 'guard',fetch:async()=>new Response('{}',{status:503})});
+ write.auth.setToken('jwt');write.auth.setStoredUser(serverUser);
+ assert.equal((await write.http().apiFetch('/resources',{method:'POST',body:'{}'})).status,503);assert.equal(write.calls.length,1);
+});

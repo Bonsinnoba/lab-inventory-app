@@ -9,8 +9,8 @@ param(
 # paths, window/document titles, audio or other applications' resource totals.
 $ErrorActionPreference = 'Stop'
 $selectedRoot = Get-Process -Id $TargetProcessId
-if ($selectedRoot.ProcessName -notin @('LabOS V2 Preview', 'lab-inventory')) {
-    throw 'Select the V2 Preview or V2 development desktop process, not V1 or another application.'
+if ($selectedRoot.ProcessName -notin @('LabOS V2', 'LabOS V2 Preview', 'lab-inventory')) {
+    throw 'Select the personal V2, V2 Preview or V2 development desktop process, not V1 or another application.'
 }
 $rootStarted = $selectedRoot.StartTime.ToUniversalTime()
 if (Test-Path -LiteralPath $OutputPath) { throw 'Output exists; choose a new filename to preserve earlier measurements.' }

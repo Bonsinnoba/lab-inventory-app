@@ -1,0 +1,14 @@
+# Optional future infrastructure. No runtime/model is installed by LabOS.
+# Combine with docker-compose.yml only after choosing reviewed image/hardware.
+services:
+  labos-model:
+    profiles: [local-ai]
+    image: ${LABOS_LOCAL_MODEL_IMAGE:?Set a reviewed pinned Ollama image before enabling local-ai}
+    restart: unless-stopped
+    volumes:
+      - labos_models:/root/.ollama
+    # No published port: inference is reachable by the API on the private network.
+    cpus: ${LABOS_LOCAL_MODEL_CPUS:-2}
+    mem_limit: ${LABOS_LOCAL_MODEL_MEMORY:-8g}
+volumes:
+  labos_models:

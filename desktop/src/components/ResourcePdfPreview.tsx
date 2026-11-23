@@ -24,8 +24,8 @@ export default function ResourcePdfPreview({ id, revision, url, page, onPages }:
     }).catch(failed);
     return () => { controller.abort(); transport?.abort(); };
   }, [id, revision, local, native]);
-  if (error) return <div role="alert" className="p-6 text-center text-sm text-red-300">{error}</div>;
-  if (native && !source) return <div className="p-6 text-sm text-slate-400">Opening local PDF…</div>;
+  if (error) return <div role="alert" className="p-6 text-center text-sm text-status-danger">{error}</div>;
+  if (native && !source) return <div className="p-6 text-sm text-text-secondary">Opening local PDF…</div>;
   return <Document file={native ? source : url} options={native ? LOCAL_PDF_OPTIONS : undefined}
     onLoadSuccess={({ numPages }) => onPages(numPages)}
     onLoadError={() => { onPages(0); setError('Unable to render this PDF. The saved file is unchanged.'); }}>

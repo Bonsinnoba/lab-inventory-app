@@ -5,7 +5,7 @@ import { getItems } from './items';
 import { getNotes } from './notes';
 import { getAllResourceMetadata } from './resources';
 import {captureAccountSession} from './auth';
-import {readLocalSections,readWithDeadline,assertReadAccount,type ReadAvailability} from './read-availability';
+import {readLocalSections,readLocalCollection,assertReadAccount,type ReadAvailability} from './read-availability';
 
 export interface ExperienceNotification { id:string; type:string; title:string; body:string; entity_type?:string|null; entity_id?:string|null; read_at?:string|null; created_at:string; }
 export interface ExperienceDashboard { availability?:ReadAvailability; metrics:{active_projects:number|null;overdue_tasks:number|null;due_next_7_days:number|null;low_stock:number|null}; projects:any[]; overdue:any[]; due:any[]; recent:any[]; low_stock:any[]; }
@@ -28,17 +28,16 @@ async function getLocalExperienceDashboard(): Promise<ExperienceDashboard> {
 
   const now = Date.now();
   const nextWeek = now + 7*24*60*60*1000;
-  const workspaces = await Promise.all(projects.map(async project => {
-    try { return { project, workspace: await readWithDeadline(()=>getProjectWorkspace(project.id)) }; }
-    catch { return { project, workspace: null }; }
-  }));
+  const workspaces=(await readLocalCollection(projects,project=>getProjectWorkspace(project.id),session)).map(({item:project,value:workspace})=>({project,workspace}));
   assertReadAccount(session);
-  const tasksComplete=values.projects!==null&&workspaces.every(w=>w.workspace!==null);
+  const tasksComplete=values.projects!==null&&workspaces.every(w=>Array.isArray(w.workspace?.tasks));
   availability.sections.tasks=values.projects===null?'unavailable':tasksComplete?'available':'partial';
-  availability.sections.recent=tasksComplete&&values.notes!==null&&values.resources!==null?'available':'partial';
+  const experimentsComplete=values.projects!==null&&workspaces.every(w=>Array.isArray(w.workspace?.experiments));
+  availability.sections.experiments=values.projects===null?'unavailable':experimentsComplete?'available':'partial';
+  availability.sections.recent=tasksComplete&&experimentsComplete&&values.notes!==null&&values.resources!==null?'available':'partial';
 
   const projectRows = workspaces.map(({project,workspace}) => {
-    if(!workspace)return {...project,open_tasks:null,experiment_count:null,health_score:null,health:'unknown'};
+    if(!workspace||!Array.isArray(workspace.tasks)||!Array.isArray(workspace.experiments))return {...project,open_tasks:null,experiment_count:null,health_score:null,health:'unknown'};
     const tasks = Array.isArray(workspace.tasks) ? workspace.tasks : [];
     const openTasks = tasks.filter((t:any) => !['done','cancelled'].includes(String(t.status))).length;
     const overdueCount = tasks.filter((t:any) => {

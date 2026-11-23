@@ -63,7 +63,7 @@ pub fn get_local_managed_users(app:AppHandle,expected_account_id:String)->Result
 pub async fn refresh_native_managed_users(app:AppHandle,expected_account_id:String,expected_session_token:String,server_token:String)->Result<(),String>{
  if server_token.is_empty()||server_token.starts_with("local:"){return Err("Online credentials required for directory refresh".into())}
  {let c=local_db::open_local_connection(&app)?;guard(&c,&expected_account_id,Some(&expected_session_token))?;}
- let authorization_guard=local_auth::local_authorization_guard(app.clone(),expected_account_id.clone())?.ok_or("Directory authorization is unavailable")?;
+ let authorization_guard=local_auth::local_authorization_guard(app.clone(),expected_account_id.clone()).await?.ok_or("Directory authorization is unavailable")?;
  if authorization_guard!=expected_session_token{return Err("Native directory session changed".into())}
  server_authority(&app,&expected_account_id,&server_token,&authorization_guard,"users.view","managed_users").await?;
  let response=native_authorization::client().map_err(|e|e.message)?.get(format!("{}/auth/users",native_authorization::trusted_base().map_err(|e|e.message)?)).bearer_auth(&server_token).send().await.map_err(|_|"Managed-user refresh is unavailable; cached data is preserved")?;
@@ -97,7 +97,7 @@ pub async fn refresh_native_user_permission_profile(app:AppHandle,expected_accou
  if server_token.is_empty()||server_token.starts_with("local:"){return Err("Online credentials required for permission refresh".into())}
  let key=profile_key(&target_user_id)?;let target=uuid::Uuid::parse_str(&target_user_id).map_err(|_|"Invalid target UUID")?.to_string();
  {let c=local_db::open_local_connection(&app)?;guard_for(&c,&expected_account_id,Some(&expected_session_token),"users.manage_permissions")?;}
- let authority_guard=local_auth::local_authorization_guard(app.clone(),expected_account_id.clone())?.ok_or("Permission profile authorization unavailable")?;
+ let authority_guard=local_auth::local_authorization_guard(app.clone(),expected_account_id.clone()).await?.ok_or("Permission profile authorization unavailable")?;
  if authority_guard!=expected_session_token{return Err("Native permission session changed".into())}
  server_authority(&app,&expected_account_id,&server_token,&authority_guard,"users.manage_permissions",&key).await?;
  let response=native_authorization::client().map_err(|e|e.message)?.get(format!("{}/auth/users/{target}/permissions",native_authorization::trusted_base().map_err(|e|e.message)?)).bearer_auth(&server_token).send().await.map_err(|_|"Permission profile refresh unavailable; cached data preserved")?;

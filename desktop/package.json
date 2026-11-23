@@ -12,11 +12,22 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:build": "tauri build",
-    "tauri:build:preview": "node scripts/build-preview.mjs"
+    "tauri:build:preview": "node scripts/build-preview.mjs",
+    "tauri:build:personal": "node scripts/build-personal.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.0.0",
     "@tauri-apps/api": "^1.5.3",
+    "@tiptap/core": "3.34.0",
+    "@tiptap/extension-details": "3.34.0",
+    "@tiptap/extension-image": "3.34.0",
+    "@tiptap/extension-table": "3.34.0",
+    "@tiptap/extension-task-item": "3.34.0",
+    "@tiptap/extension-task-list": "3.34.0",
+    "@tiptap/markdown": "3.34.0",
+    "@tiptap/pm": "3.34.0",
+    "@tiptap/react": "3.34.0",
+    "@tiptap/starter-kit": "3.34.0",
     "clsx": "^2.1.1",
     "lucide-react": "^0.263.1",
     "music-metadata": "^12.0.0",

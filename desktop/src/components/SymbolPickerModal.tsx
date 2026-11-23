@@ -38,6 +38,12 @@ const CATEGORIES: Record<string, string[]> = {
   ],
 };
 
+/** Compact island content: no backdrop or full-screen modal. */
+export function SymbolPickerContent({onInsert}:{onInsert:(symbol:string)=>void}){
+ const [category,setCategory]=useState(Object.keys(CATEGORIES)[0]);
+ return <div className="note-symbol-picker"><label>Symbol group<select aria-label="Symbol group" value={category} onChange={event=>setCategory(event.target.value)}>{Object.keys(CATEGORIES).map(name=><option key={name}>{name}</option>)}</select></label><div className="note-symbol-grid">{CATEGORIES[category].map(symbol=><button type="button" key={symbol} aria-label={`Insert ${symbol}`} title={symbol} onMouseDown={event=>event.preventDefault()} onClick={()=>onInsert(symbol)}>{symbol}</button>)}</div><p>Choose a symbol to insert at your cursor.</p></div>;
+}
+
 export default function SymbolPickerModal({ onInsert, onClose }: SymbolPickerModalProps) {
   const [activeCategory, setActiveCategory] = useState(Object.keys(CATEGORIES)[0]);
 

@@ -14,15 +14,15 @@ export async function writeAuditLog({ req, actorUserId = null, action, entityTyp
         (actor_user_id, action, entity_type, entity_id, old_value, new_value, metadata, ip_address, user_agent, device_id)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
       [
-        actorUserId || req.user?.userId || null,
+        actorUserId || req?.user?.userId || null,
         action,
         entityType,
         entityId,
         oldValue == null ? null : JSON.stringify(oldValue),
         newValue == null ? null : JSON.stringify(newValue),
         Object.keys(auditMetadata).length ? JSON.stringify(auditMetadata) : null,
-        req.ip || null,
-        req.get?.('user-agent') || null,
+        req?.ip || null,
+        req?.get?.('user-agent') || null,
         deviceId || null,
       ]
     );

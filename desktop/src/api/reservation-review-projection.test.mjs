@@ -24,6 +24,11 @@ test('missing inventory remains unknown instead of zero',()=>{
 test('missing project snapshot is distinguished from an empty one',()=>{
  assert.equal(project([{}, {reservations:[]}],[]).missingProjects,1);
 });
+
+test('a missing project can contain competing reservations and prevents a false zero overlap',()=>{
+ const result=project([{reservations:[pending]},{id:'unread-project'}],[item]);
+ assert.equal(result.missingProjects,1);assert.equal(result.items[0].current_quantity,10);assert.equal(result.items[0].overlapping_confirmed,null);
+});
 test('pending decisions remain visible without changing server status',()=>{
  const row=project([{reservations:[{...pending,local_pending_action:'confirm'}]}],[item]).items[0];
  assert.equal(row.status,'pending_review');assert.equal(row.local_pending_action,'confirm');

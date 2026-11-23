@@ -6,13 +6,13 @@ import * as jsx from 'react/jsx-runtime';
 import {renderToStaticMarkup} from 'react-dom/server';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-function render(page,queries){
+function render(page,queries,initialTab){
   const cache={};
   function load(path){
     if(cache[path])return cache[path];const exports={};cache[path]=exports;
     const code=ts.transpileModule(readFileSync(new URL(path,import.meta.url),'utf8'),{compilerOptions:{jsx:ts.JsxEmit.ReactJSX,module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
     vm.runInNewContext(code,{exports,require:p=>{
-      if(p==='react')return React;if(p==='react/jsx-runtime')return jsx;
+      if(p==='react')return {...React,useState:initial=>React.useState(initial==='overview'&&initialTab?initialTab:initial)};if(p==='react/jsx-runtime')return jsx;
       if(p==='@tanstack/react-query')return{useQuery:({queryKey})=>({isLoading:false,refetch:()=>{},...queries[queryKey.join(':')]}),useQueryClient:()=>({}),useMutation:()=>({})};
       if(p==='react-router-dom')return{Link:({children,to,...props})=>React.createElement('a',{href:to,...props},children)};
       if(p==='lucide-react')return new Proxy({},{get:()=>()=>null});
@@ -64,4 +64,28 @@ test('Collaboration shows persisted activity and its original snapshot timestamp
   const html=render('CollaborationPage',{'collaboration-activity':{data:{items:[{id:'e',action:'created',entity_type:'note',actor_username:'Alice',created_at:'2026-10-10T12:00:00Z'}],state:'available',last_synced_at:'2026-10-10T12:01:00Z'}},'notifications':{data:{items:[],unread_count:0}}});
   assert.match(html,/Alice created note/);assert.match(html,/Local activity snapshot from/);
   assert.doesNotMatch(html,/Some collaboration data could not be loaded/);
+});
+
+
+test('Operations retains known shortages when another project BOM is unavailable',()=>{
+  const html=render('OperationsPage',{'operations-overview':{data:{availability:meta({inventory:'available',maintenance:'available',requirements:'available',bom:'partial'}),summary:{total_items:1,low_stock:0,equipment:0,tools:0,stock_value:1},low_stock:[],calibration_due:[],equipment:[],maintenance_due:[],requirements:[],missing_bom:[{id:'b',project_name:'Known project',name:'Required sensor',required_quantity:4,unit:'pcs'}]}},'operations-suppliers':{data:[]}});
+  assert.match(html,/Required sensor/);assert.match(html,/Known project/);assert.match(html,/Partial data/);
+  assert.doesNotMatch(html,/All currently linked BOM lines have sufficient/);
+});
+
+test('Operations partial empty BOM never claims every project is covered',()=>{
+  const html=render('OperationsPage',{'operations-overview':{data:{availability:meta({inventory:'available',maintenance:'available',requirements:'available',bom:'partial'}),summary:{total_items:0,low_stock:0,equipment:0,tools:0,stock_value:0},low_stock:[],calibration_due:[],equipment:[],maintenance_due:[],requirements:[],missing_bom:[]}},'operations-suppliers':{data:[]}});
+  assert.match(html,/other projects remain unknown/);
+  assert.doesNotMatch(html,/No linked BOM shortages detected|All currently linked BOM lines have sufficient/);
+});
+
+test('Operations stock tab cannot turn unavailable inventory into no low-stock items',()=>{
+ const html=render('OperationsPage',{'operations-overview':{data:{availability:meta({inventory:'unavailable'}),summary:{total_items:null,low_stock:null,equipment:null,tools:null,stock_value:null},low_stock:[],calibration_due:[],equipment:[],maintenance_due:[],requirements:[],missing_bom:[]}},'operations-suppliers':{data:[]}},'stock');
+ assert.match(html,/no zero total is assumed/);assert.doesNotMatch(html,/No low-stock items/);
+});
+
+test('Operations preserves partial requirements with unknown quantities',()=>{
+ const html=render('OperationsPage',{'operations-overview':{data:{availability:meta({inventory:'unavailable',requirements:'partial'}),summary:{total_items:null,low_stock:null,equipment:null,tools:null,stock_value:null},low_stock:[],calibration_due:[],equipment:[],maintenance_due:[],missing_bom:[],requirements:[{id:'r',project_name:'Saved project',name:'Saved requirement',quantity:2,unit:'pcs',status:'open',preferred_quantity:null}]}},'operations-suppliers':{data:[]}},'requirements');
+ assert.match(html,/Saved requirement/);assert.match(html,/Partial data/);assert.match(html,/— available/);
+ assert.doesNotMatch(html,/>0 available/);
 });

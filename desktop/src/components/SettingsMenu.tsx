@@ -1,3 +1,4 @@
+import AppearanceBackground from './AppearanceBackground';
 import { useTheme } from '../contexts/ThemeContext';
 import { Sun, Moon, X } from 'lucide-react';
 import { ColorTheme, themeNames } from '../lib/themes';
@@ -89,7 +90,7 @@ export default function SettingsMenu({ onClose }: SettingsMenuProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
       <div 
-        className="bg-surface border border-border rounded-md p-6 w-full max-w-md shadow-xl"
+        className="bg-surface border border-border rounded-md p-6 w-full max-w-md max-h-[90dvh] overflow-y-auto shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-6">
@@ -138,20 +139,22 @@ export default function SettingsMenu({ onClose }: SettingsMenuProps) {
                 key={color}
                 onClick={() => setColor(color)}
                 className={`w-10 h-10 rounded-sm transition-all hover:scale-110 flex items-center justify-center ${
-                  theme.color === color
+                  !theme.customAccent && theme.color === color
                     ? 'ring-2 ring-accent'
                     : 'ring-1 ring-border'
                 }`}
                 style={{ backgroundColor: themeColors[color] }}
                 title={themeNames[color]}
               >
-                {theme.color === color && (
+                {!theme.customAccent && theme.color === color && (
                   <div className="w-4 h-4 bg-white rounded-full" />
                 )}
               </button>
             ))}
           </div>
         </div>
+
+        <div className="mb-6"><AppearanceBackground/></div>
 
         <form onSubmit={saveProfile} className="mb-6 border-t border-border pt-5 space-y-3">
           <label className="block text-text-secondary text-sm">Profile</label>

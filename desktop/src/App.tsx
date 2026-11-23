@@ -1,3 +1,4 @@
+import {createDesktopLeaseMonitor} from './lib/desktopLeaseMonitor';
 import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { lazy, Suspense, useState, useEffect } from "react";
 import { HashRouter, Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
@@ -34,16 +35,16 @@ const EngineeringToolsPage = lazy(() => import("./pages/EngineeringToolsPage"));
 const ReportsPage = lazy(() => import("./pages/ReportsPage"));
 const AutomationPage = lazy(() => import("./pages/AutomationPage"));
 const OperationsPage = lazy(() => import("./pages/OperationsPage"));
-const DailyUsePanel = lazy(() => import("./components/DailyUsePanel"));
 import MediaManager from "./components/MediaManager";
 import audioFocusCoordinator from "./lib/audioFocus";
 import LoginPage from "./pages/LoginPage";
 import ReauthenticationGate from './components/ReauthenticationGate';
 import {installQueryAvailability,lockQueryAvailability,unlockQueryAvailability} from './lib/queryAvailability';
 import CommandPalette from "./components/CommandPalette";
+import ComponentDecoderWindow from "./components/ComponentDecoderWindow";
 const LabIntelligencePage = lazy(() => import("./pages/LabIntelligencePage"));
 const DownloadsPage = lazy(() => import("./pages/DownloadsPage"));
-import { getToken, setToken, removeToken, getStoredUser, setStoredUser, removeStoredUser, getCurrentUser, getCurrentPermissions, getLocalAuthStatus, logout, captureAccountSession, isAccountSessionCurrent, DESKTOP_REAUTH_REQUIRED } from "./api/auth";
+import { getToken, setToken, removeToken, getStoredUser, setStoredUser, removeStoredUser, getCurrentUser, getCurrentPermissions, logout, captureAccountSession, isAccountSessionCurrent, DESKTOP_REAUTH_REQUIRED } from "./api/auth";
 import type { User } from "./api/auth";
 import { getDailyUsePreferences } from './api/system';
 import { syncPendingChanges,getSyncRunSequence,markSyncServerUnavailable } from './api/sync';
@@ -102,37 +103,25 @@ function AppContent() {
     return () => window.removeEventListener('labos:auth-expired', expired);
   }, [queryClient,workspaceOwner]);
 
-  // An offline login can expire while the workspace is already open. Native
-  // reads correctly deny access at the lease boundary, but without this check
-  // the shell would stay on data pages showing repeated load errors. Check on
-  // resume and periodically, and return to sign-in while preserving SQLite and
-  // its pending changes.
+  // Every desktop read requires native authority, even when the renderer holds
+  // a server JWT. Lease expiry must lock the workspace rather than degrade into
+  // repeated unavailable pages. Resume/timer bursts share one in-flight check.
   useEffect(() => {
-    if (!isAuthenticated) return;
-    let active = true;
-    const checkOfflineLease = async () => {
-      const token = getToken();
-      if (!token?.startsWith('local:')) return;
-      try {
-        const status = await getLocalAuthStatus();
-        if (!active || getToken() !== token || !status || status.authenticated) return;
-        setSignInNotice(DESKTOP_REAUTH_REQUIRED);
-        removeToken();
-        window.dispatchEvent(new Event('labos:auth-expired'));
-      } catch {
-        // A transient SQLite read failure does not itself prove lease expiry.
-      }
-    };
-    const onResume = () => { void checkOfflineLease(); };
-    void checkOfflineLease();
-    const timer = window.setInterval(onResume, 10_000);
-    window.addEventListener('focus', onResume);
-    document.addEventListener('visibilitychange', onResume);
-    return () => {
-      active = false;
-      window.clearInterval(timer);
-      window.removeEventListener('focus', onResume);
-      document.removeEventListener('visibilitychange', onResume);
+    if (!isAuthenticated || !(window as any).__TAURI_IPC__) return;
+    const monitor=createDesktopLeaseMonitor(()=>{
+      setSignInNotice(DESKTOP_REAUTH_REQUIRED);
+      removeToken();
+      window.dispatchEvent(new Event('labos:auth-expired'));
+    });
+    const onResume=()=>{void monitor.check();};
+    onResume();
+    const timer=window.setInterval(onResume,10_000);
+    window.addEventListener('focus',onResume);
+    document.addEventListener('visibilitychange',onResume);
+    return()=>{
+      monitor.stop();window.clearInterval(timer);
+      window.removeEventListener('focus',onResume);
+      document.removeEventListener('visibilitychange',onResume);
     };
   }, [isAuthenticated, user?.id]);
 
@@ -197,7 +186,7 @@ function AppContent() {
       setMusicMinimized(false);
     };
     const e = () => setEngineeringToolsOpen(true);
-    const mm = () => setRightPanelContent((c) => c === 'media' ? null : 'media');
+    const mm = () => navigate('/daily-use');
     window.addEventListener('labos:music-player', m);
     window.addEventListener('labos:engineering-tools', e);
     window.addEventListener('labos:media-manager', mm);
@@ -206,7 +195,7 @@ function AppContent() {
       window.removeEventListener('labos:engineering-tools', e);
       window.removeEventListener('labos:media-manager', mm);
     };
-  }, []);
+  }, [navigate]);
 
   useEffect(() => {
     const t = getToken();
@@ -288,6 +277,7 @@ function AppContent() {
     if (p.startsWith('/settings')) return 'Settings';
     if (p.startsWith('/reports')) return 'Reports';
     if (p.startsWith('/automation')) return 'Automation';
+    if (p.startsWith('/daily-use')) return 'Media & System';
     return 'Inventory';
   };
 
@@ -298,10 +288,11 @@ function AppContent() {
     notebook: 'Notebook',
     search: 'Search',
     music: 'Music Player',
-    media: 'Media Manager',
+    media: 'Media & System',
   };
 
   const selectDock = (content: DockableContent) => {
+    if (content === 'media') { navigate('/daily-use'); return; }
     if (content === 'music') {
       setMusicDockOpen(true);
       setMusicMinimized(false);
@@ -346,7 +337,7 @@ function AppContent() {
         onOpenFull={() => { setRightPanelContent(null); navigate('/search'); }}
       />;
     }
-    return <MediaManager open onClose={() => setRightPanelContent(null)} onOpenMusic={() => selectDock('music')} />;
+    return null;
   };
 
   return (
@@ -396,17 +387,17 @@ function AppContent() {
                 <Route path="/settings" element={<SettingsPage />} />
                 <Route path="/reports" element={<ReportsPage />} />
                 <Route path="/automation" element={<AutomationPage />} />
-                <Route path="/daily-use" element={<DailyUsePanel />} />
+                <Route path="/daily-use" element={<MediaManager open onOpenMusic={() => selectDock('music')} canManageDownloads={permissions.includes('resources.edit')} />} />
               </Routes>
             </div>
           </main>
         </div>
-        {rightPanelContent && rightPanelContent !== 'music' && (
+        {rightPanelContent && rightPanelContent !== 'music' && rightPanelContent !== 'media' && (
           <RightPanel title={rightPanelTitles[rightPanelContent]} hideHeader onClose={() => setRightPanelContent(null)}>
             {renderRightPanelContent()}
           </RightPanel>
         )}
-        <ActivityRail active={rightPanelContent} engineeringOpen={engineeringToolsOpen} musicOpen={musicDockOpen && !musicMinimized} mediaOpen={rightPanelContent === 'media'} onSelect={selectDock} onToggleMusic={toggleMusic} />
+        <ActivityRail active={rightPanelContent} engineeringOpen={engineeringToolsOpen} musicOpen={musicDockOpen && !musicMinimized} mediaOpen={location.pathname === '/daily-use'} onSelect={selectDock} onToggleMusic={toggleMusic} />
       </div>
 
       {musicDockOpen && (
@@ -416,6 +407,7 @@ function AppContent() {
       )}
       {musicDockOpen && musicMinimized && <MusicMiniPlayer onRestore={restoreMusic} onClose={closeMusic} />}
       {engineeringToolsOpen && <EngineeringToolsPage open minimized={engineeringToolsMinimized} onClose={() => setEngineeringToolsOpen(false)} onMinimize={setEngineeringToolsMinimized} />}
+      {!reauthenticating && user?.id && <ComponentDecoderWindow key={user.id} accountId={user.id} />}
       <MobileNav />
       {mobileScanOpen && <ScanLookupModal onClose={() => setMobileScanOpen(false)} />}
       {desktopScanOpen && <ScanLookupModal onClose={() => setDesktopScanOpen(false)} />}

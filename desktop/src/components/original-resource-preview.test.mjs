@@ -11,7 +11,8 @@ function harness(){
   vm.runInNewContext(compile('../lib/originalResourceSource.ts'),{exports:sourceExports,URL});
   const window={addEventListener:(k,f)=>listeners.set(k,f),removeEventListener:k=>listeners.delete(k),open:()=>calls.push('browser')};
   const navigator={onLine:true};const exports={};
-  vm.runInNewContext(compile('./OriginalResourcePreview.tsx'),{exports,window,navigator,require:name=>{
+  const modules=new Map();
+  const componentRequire=name=>{
     if(name==='react')return{useState:initial=>{const i=cursor++;if(!(i in slots))slots[i]=typeof initial==='function'?initial():initial;return[slots[i],v=>slots[i]=v];},useEffect:(fn,deps)=>{const i=cursor++;const old=effects[i];if(!old||deps.some((d,j)=>!Object.is(d,old.deps[j]))){old?.cleanup?.();effects[i]={deps,cleanup:fn()};}}};
     if(name==='react/jsx-runtime')return{jsx:(type,props)=>({type,props}),jsxs:(type,props)=>({type,props})};
     if(name==='@tauri-apps/api/shell')return{open:async url=>calls.push(url)};
@@ -19,9 +20,17 @@ function harness(){
     if(name==='../lib/originalResourceSource')return sourceExports;
     if(name==='../lib/runtime')return{isTauriRuntime:()=>true};
     if(name==='./FocusedResourceMedia')return{default:'local-media'};
+    if(name==='./MediaAspectFrame'||name==='../lib/mediaFrame'){
+      if(!modules.has(name)){
+        const loaded={};modules.set(name,loaded);
+        vm.runInNewContext(compile(name==='./MediaAspectFrame'?'./MediaAspectFrame.tsx':'../lib/mediaFrame.ts'),{exports:loaded,require:componentRequire});
+      }
+      return modules.get(name);
+    }
     if(name==='../lib/audioFocus')return{default:{acquire:options=>{calls.push(options);return{id:options.id,generation:1};},isOwner:()=>true,release:()=>calls.push('release')}};
     throw Error(name);
-  }});
+  };
+  vm.runInNewContext(compile('./OriginalResourcePreview.tsx'),{exports,window,navigator,require:componentRequire});
   let props={resource:{id:'r',kind:'link',name:'Video',url:'https://youtu.be/M7lc1UVf-VE',local_media_filename:'video.mp4'},localUrl:'',aspect:'auto'};
   const render=updates=>{props={...props,...updates};cursor=0;return exports.default(props);};
   const flatten=node=>!node||typeof node!=='object'?[]:[node,...[node.props?.children].flat(Infinity).flatMap(flatten)];

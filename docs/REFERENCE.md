@@ -1,6 +1,44 @@
 # LabOS architecture and operations
 
-Updated: 2026-11-14. Progress lives only in [PLAN](PLAN.md); evidence in [WORK_LOG](WORK_LOG.md). This file records current contracts, operations and website content, not a competing task list.
+Updated: 2026-11-20. Progress lives only in [PLAN](PLAN.md); evidence in [WORK_LOG](WORK_LOG.md). This file records current contracts, operations and website content, not a competing task list.
+
+Current installer: `desktop/src-tauri/target/release/bundle/nsis/LabOS V2_2.3.21_x64-setup.exe`, 34,256,196 bytes, SHA-256 `c360f164ee45006f15468a2adcf9cb41e6144b41117569846e93fe25020bc738`. The earlier 2.3.20 delivery below is historical.
+
+## Assistant context controls (personal 2.3.21, November 20)
+
+Open context from the composer chip. The selector stays above that composer inside the assistant panel; the workspace remains available. Choose a scope, then its project or custom data sources, and click Apply context. Missing selections show neutral guidance and disable Apply. Scope/project clicks alone do not change the active context or issue a preferences request. Cancel, Escape or clicking outside discards the draft. While applying, duplicate submission and dismissal are blocked. A failed or mismatched confirmation retains the previous active context; session changes discard late acknowledgements. Sending waits until the selector is closed and context saving has finished. Existing server authorization remains authoritative.
+
+History opens below the header without a full-screen backdrop. Selector, composer and suggestions use appearance tokens, muted borders and a soft visible focus halo, including pure black/white. Short panels scroll the selector body to retain its footer. These changes are installed in personal 2.3.21. Isolated browser checks passed; full native/outage/performance acceptance remains separate.
+
+## AI providers: cloud now, server-local infrastructure later (personal 2.3.21)
+
+Personal 2.3.21 and its coordinated API are installed. The additive 20261120_ai_provider_settings migration is applied; existing PostgreSQL/storage are preserved and credentials use the separate labos_personal_v2_ai_secrets_20261120 volume at /app/private. No real cloud key has been configured/tested and no local inference engine/model is installed.
+
+Administrators use Settings → AI & Models. For cloud, choose Google Gemini or an OpenAI-compatible endpoint, enter the exact provider model names and select Encrypted server credential to enter/replace an API key. Save changes with the profile disabled, run Test saved connection, then enable and save. Assign chat, planning and optional transcription independently to a profile or Disabled. Chat probes perform a complete synthetic function-call/result roundtrip; planning probes validate synthetic JSON. Audio still needs an actual consented recording acceptance test. Only Gemini audio currently has an adapter; local/compatible audio is unavailable. Changing model/credentials/endpoint invalidates prior readiness. Blank managed-key input preserves a compatible saved key; choosing credential source None removes it. Environment mode uses the server's GEMINI_API_KEY and is supported only for Gemini. Unsaved installations retain legacy environment bootstrap. No configuration/credential request is queued offline.
+
+Every model request goes through the authenticated LabOS API, not directly from a desktop to a model service. Existing read permissions/context scopes and planning approval remain authoritative. There is no automatic cloud/local fallback; changing assignments is an explicit administrator action. Local inference can work without internet while the PC still reaches the lab server. A PC disconnected from the lab server cannot use a model hosted there.
+
+Provider credentials are server-only encrypted database fields. The encryption key is generated in LABOS_AI_SECRET_DIR/master.key (0600 on Linux), or supplied as a canonical base64-encoded 32-byte LABOS_AI_MASTER_KEY. The normal Compose file persists /app/private in labos_ai_secrets; manually managed containers must mount equivalent persistent private storage before credential configuration. Protect and recover this master key separately from PostgreSQL: a database dump alone cannot decrypt credentials, and the desktop recovery package does not automatically include this server volume. Never put this key in source control, a container image, public resource storage or client sync. Stored credentials cannot be displayed; replacement is write-only. Remote administration containing a new API key requires HTTPS, or use loopback on the server PC. A Docker port published exclusively on host loopback may relay the PC connection through a gateway address. Only for that verified deployment, set LABOS_AI_TRUSTED_LOOPBACK_PEERS to the exact observed relay IP (never a private subnet or wildcard); the request must also use a loopback hostname. The default trusts no relay. Do not use this opt-in with a publicly/LAN-published HTTP port, and do not trust forwarded headers. This personal deployment uses 127.0.0.1:4010 and the explicitly verified 172.21.0.1 relay.
+
+Compatible cloud endpoints default to https://api.openai.com/v1. Additional cloud origins require the operator's LABOS_AI_CLOUD_ORIGINS. Local defaults cover labos-model:11434, localhost/127.0.0.1:11434 and host.docker.internal:11434; approve a different server origin through LABOS_AI_LOCAL_ORIGINS. Endpoint URLs are interpreted on the API server, not the desktop. Approved-origin policy, fixed /v1 paths and redirect refusal protect the key-bearing request boundary.
+
+Future local setup: choose hardware/runtime/model first. The optional deploy/docker-compose.local-ai.yml overlays the main Compose file under profile local-ai. It requires LABOS_LOCAL_MODEL_IMAGE with a reviewed pinned image; no default image is pulled and no model is downloaded automatically. LABOS_LOCAL_MODEL_CPUS and LABOS_LOCAL_MODEL_MEMORY bound the service (defaults 2 CPUs / 8 GiB; review against actual hardware before use). Its model files persist separately, and no inference port is published. Configure/load the selected model separately, save the disabled local profile, test it and enable only after acceptance. GPU provisioning, actual model choice/download and hardware throughput remain future work.
+
+Runtime limits apply to both provider types: 1–4 concurrent requests, 0–32 queued, 5–60 seconds per call including waits, and 256–8192 output tokens. Local inference also has a single active-request ceiling. Probes use synthetic data, a 256-token ceiling per call and a 120-second overall deadline. Recent chat history is limited to 40 messages / 64,000 characters. These bounds and container separation do not constitute measured responsiveness or server load sign-off.
+
+## Notebook and resource viewer controls
+
+**Included in personal 2.3.21 (November 20):** Undo/Redo move to the notebook header; Delete moves under Note actions with confirmation. Symbols open a compact island popover. In the rich note body, paste a screenshot from Windows+Shift+S with Ctrl+V. PNG/JPEG/WebP/GIF clipboard files are supported up to four at once / 20 MiB each. The desktop saves them through managed local resources/outbox; the browser needs connectivity. Save the note after insertion to retain its reference. Removing or undoing an image reference does not delete its file from Resources; a saved image also remains there if a paste is cancelled. Existing-note pastes attach to that note; new unsaved notes use a selected project if present, otherwise retain standalone resource files. Preview requires the current account's authorized file copy; an unavailable image can be retried after synchronization. Installed/native OS clipboard acceptance is not claimed by the synthetic browser checks; the owner authorized the 2.3.21 installation.
+
+**Visual-editor correction delivered in 2.3.20:** the toolbar now applies visible marks and structured editable blocks directly in the editor. Fonts apply to selected text/future typing and persist. Read mode displays the same document; authors need not type or inspect markup. Markdown remains the internal save representation for compatibility with the existing string body and sync contract. The earlier source/preview description below records 2.3.19 behavior and is superseded by the installed 2.3.20 visual editor. A large-note fallback is explicitly source-only, retains all text and disables rich editing above 200,000 characters / 4,000 lines. Current delivery status remains in PLAN.
+
+These changes and the visual-editor correction are included in personal **2.3.20**, installed/reopened November 20. Installer: `desktop/src-tauri/target/release/bundle/nsis/LabOS V2_2.3.20_x64-setup.exe`, 34,257,245 bytes, SHA-256 `fe1f727702eafdf67e4dd75040f7dc4921a2075023391a34dae91caec5b3f7a5`. Identity remains `com.labos.personal.v2`, API `http://localhost:4010/api`. Closed data profiles were preserved; the existing server was unchanged. Startup observation is not full native/offline/performance acceptance or public stable release sign-off.
+
+The November 19 source notebook composer retains existing plain-text note bodies and the normal authorized Save path. Its bottom island inserts Markdown for paragraph/headings, bold/italic/underline/strike, lists/checklists, table templates, quotes, dividers, code and collapsible sections. Edit shows the stored source; Preview renders the supported subset without executing arbitrary HTML. Checking a preview task changes the draft and still requires Save. Font choices affect the current editor display, not persisted inline typography. Preview has explicit character/line limits for responsiveness; the complete source remains editable. This is not a full WYSIWYG/CommonMark editor.
+
+Existing LabOS resource insertion creates a stable reference, leaving file location and permissions unchanged; selecting it opens the existing authorized viewer. Upload new files through Resources. External image/video/link URLs are not copied or made available offline by inserting them, require their source connection, and remain subject to the existing app content-security/host/codec policy. Do not broaden CSP or bypass the managed-file path to make arbitrary remote media load. Existing managed resources are the reliable offline reference path. Videos never autoplay from note preview.
+
+The owner-refined viewer keyboard contract is contextual: plain Left/Right changes loaded PDF pages, stopping at page boundaries, or changes immediate sibling files for non-PDF folder contents. An unloaded PDF cannot fall through into another file. Shift+Left/Right moves through the supplied outer collection, using the originating folder's position when leaving an inner file. Compare panes retain separate sibling lists and outer anchors; pointer/focus chooses the active pane. Repeat copies both contexts; explicit Change resets them. Inputs/selectors/buttons/editable text and focused media keep their own controls. Closing the viewer preserves the underlying folder-browser location. Package/installed availability is listed in PLAN, not inferred from this source contract.
 
 ## Architecture and write contract
 
@@ -17,6 +55,14 @@ Stable entity UUIDs/change IDs persist across retry. Business state and outbox c
 
 Authorized local deletion records a durable intention; server confirmation/tombstones later propagate it. Metadata deletion is not permission to purge shared bytes, sole recovery proofs or unacknowledged versions. Cached relationships/rows are not positive authorization grants.
 
+## Bounded overview reads and server performance measurements
+
+Dashboard, Reports, Operations, Automation and local reservation review use one five-second collection budget and at most four pending native project reads per view. Failed, timed-out and unstarted records remain unknown; later completions cannot alter the published snapshot. Each scheduled read and publication checks the current account. The deadline does not cancel an already-running native invoke. It stops new scheduling, avoiding another wave of timed-out work. Readable sections remain visible; partial reservation coverage makes competing allocations unknown rather than zero. These are read projections, with no outbox mutations or HTTP fallback.
+
+Updated API source supports `LABOS_SERVER_PERFORMANCE_PROBE=1`; the default is disabled. Enable it only in an updated server deployment when collecting a controlled measurement. Every ten seconds it writes a `LABOS_PERFORMANCE` JSON record to the private server console: numeric process memory/CPU, event-loop delay/utilization, pool total/idle/waiting counts, active requests and fixed API-group completion/error/throttle/abort counters. No diagnostic HTTP endpoint is exposed. It records no request URLs, SQL, identifiers, headers, tokens, documents or audio. Per-group latency percentiles use only the last 512 completions in that interval; counts and maximum cover all interval completions. CPU percentage represents core usage and can exceed 100%. This is bounded observational instrumentation, not a full query-plan profiler or proof that release performance budgets passed. The personal live API was not rebuilt or reconfigured by the November 18 acceptance runs.
+
+Renderer measurements reset their heartbeat baseline when a window becomes visible, so background timer throttling is not mislabeled as a foreground freeze. Unsupported WebView performance observers are marked unavailable and disconnected; heartbeat measurement and normal app startup remain usable. None of these measurements replaces the required sustained mixed-use/device tests.
+
 ## Original-source online viewing
 
 Server download completion, verified PC availability and online provider playback are separate states. The viewer defaults to a verified native copy. When a link has no verified PC copy, an explicit user action may load a recognized YouTube embed directly from YouTube; other supported HTTPS links open the original site in the external browser. Provider embedding restrictions, login requirements or WebView referrer checks can require that browser fallback. LabOS does not proxy or stream the server's downloaded media for this feature, does not pass LabOS tokens to providers and does not mark online viewing as a local download. Browser link previews likewise do not substitute LabOS server media streams for PC copies. No blanket CSP relaxation is permitted.
@@ -30,6 +76,10 @@ Authority protocol 4 carries at most 100 unique resource IDs per request, retain
 The bulk authority transport has a 20-second total deadline and five-second connection deadline; ordinary authentication keeps its five-second total deadline. Body limits and all authority validation remain unchanged. HTTP 429 is throttling, not positive authority or permission to fall back to cached login. Failed-password cooldown starts after password verification, so expensive hashing cannot consume its own backoff period.
 
 Resource list defaults remain shallow. Explicit `include_descendants=true` requests all authorized nested rows only when no narrower item/project/note/parent filter was supplied. Ancestor authorization still applies. Desktop overview/report projections use account-fenced metadata reads without waiting for file scans; metadata never establishes local byte availability.
+
+Native availability and copy-status scans retain one SQLite read transaction across cooperative worker turns. At most two scans retain snapshot state, with at most 64 outstanding requests; excess requests return a retryable busy error without changing saved work. Each turn examines at most 16 records or approximately 75 ms, yielding between records so other responsive reads can run. A single record may exceed the time target. Existing per-file authorization, encrypted-byte identity, origin, revision and path checks remain; completion commits the read transaction and rechecks current account/lease/permission before publishing the complete result. Failure/cancellation drops the connection without publishing partial results. Concurrent observational client reads may share an in-flight scan only within the same account session; post-write refreshes still request fresh work. Total scan duration remains distinct from worker occupancy, and neither metadata nor scheduling hints grant file access.
+
+The desktop Resources page reads authorized SQLite metadata separately from the slower file-proof query. Metadata controls membership, titles, ancestry and current revision; matching scan results can supply only local availability/pending/copy fields. A changed revision, kind or downloaded-media identity discards the older availability result. Missing proof is NOT VERIFIED, never proof of a running copy or readable bytes. Filters for local files require positive verification. Independent availability and copy-status scans start concurrently, with existing same-session coalescing and native scheduling bounds retained. Manual refresh requests both metadata and file proofs; background copy invalidation reaches both queries. Browser reads retain their existing online transport. Deployment and acceptance evidence belong in WORK_LOG.
 
 The synchronization resource pull authorizes at most four rows concurrently, preserving query order and each full access/ancestor check. Any failed check aborts the response; a partially checked visibility list must not be applied as a complete snapshot. This bounds database pressure and avoids serial per-resource latency, without creating a cross-request authority cache.
 
@@ -50,7 +100,7 @@ The independent renderer queue (see WORK_LOG for installed-version acceptance) c
 
 ## Working encryption and owner recovery
 
-V2 Preview explicitly selects Cargo feature `working-encryption`; personal V1 2.2.5 does not. Never test experimental V2 encryption against personal V1 data.
+V2 Preview and personal V2 explicitly select Cargo feature `working-encryption`; legacy personal V1 2.2.5 does not. Personal V2 uses a verified migrated copy; never test new encryption against the preserved V1 originals.
 
 SQLCipher protects working SQLite/WAL; SQLite temporary storage is memory-only. An origin-bound random workspace key is current-user DPAPI-protected. Managed files use bounded authenticated chunks and path-derived keys. An exclusive profile lease precedes WebView/database access. Keys precede reads; missing/bad keys, schema or markers enter recovery rather than creating an empty replacement.
 
@@ -110,27 +160,37 @@ DOCX native execution uses the verified bundled engines with a startup handshake
 | Preferences | Notifications per account through versioned SQLite/outbox/server rules. Music volume/auto-pause device-local within the account; intentionally no sync event. |
 | Legacy ownership | Never infer ownership of unattributed rows from current login. The historical owner-requested reset was one-time, not ongoing reset permission. |
 
-## Personal V1 and isolated V2
+## Daily personal V2 and isolated historical environments
 
 | Environment | Endpoint / identity | Boundary |
 |---|---|---|
-| Personal V1 2.2.5 | `http://localhost:4010/api`; `com.lab-inventory.app.v1` | Pinned existing API image; private PostgreSQL/storage. Preserve data/pending work. |
-| Current V2 acceptance | `http://127.0.0.1:4000/api`; DB `labos_phase2_acceptance_20261106`; encrypted acceptance profile `com.labos.phase2.encryptionacceptance` | Namespaced test fixtures; separate from ordinary Preview and V1. |
+| Daily personal V2 2.3.21 | `http://localhost:4010/api`; `com.labos.personal.v2` | Installed/reopened November 20. Registry/executable match the candidate; closed comparison preserved 874 roaming / 1216 WebView entries and selected critical hashes. Existing personal PostgreSQL/storage preserved, AI settings additive migration deployed. Cloud key/local model not configured; native, outage and sustained client/server acceptance remain open. |
+| Historical V1 2.2.5 | `com.lab-inventory.app.v1`; original port 4010 | Retired November 17 by owner decision. Old API/database containers, API images and V1 volumes removed. Not a runnable rollback. File-backup deletion remains blocked. |
+| Historical V2 acceptance (November 6) | `http://127.0.0.1:4000/api`; DB `labos_phase2_acceptance_20261106`; encrypted acceptance profile `com.labos.phase2.encryptionacceptance` | Namespaced test fixtures; separate from ordinary Preview and V1. |
 | Standard Preview build | Wrapper pins frontend/native/CSP; isolated Preview identity | Never install over V1 or reuse its database for tests. |
 | Installed 2.3.1 Preview (November 13) | `http://127.0.0.1:4020/api`; `com.labos.preview.v2rc20261113`; DB `labos_v2_preview_20261113` | Separate encrypted profile, restricted role and `labos_v2_preview_storage_20261113` volume; testing preview only. |
 
-Start existing personal V1 services without rebuilding WIP source:
+With Docker Desktop running, start the existing migrated personal server from the repository root:
 
 ```powershell
-docker start labos-v1-db-1
-# Wait for database health before starting the API.
-docker start labos-v1-api-1
-Invoke-RestMethod http://localhost:4010/api/health
+& ./deploy/scripts/start-personal-v2.ps1
 ```
 
-Open **LabOS V1** using its installed shortcut. Last verified version: 2.2.5; repository package.json is not the installed-version source of truth. Last observed launch reached login after lease expiry; no bypass/reset was performed.
+This starts only `labos-personal-v2-db-20261114`, waits for PostgreSQL readiness, starts `labos-personal-v2-api-20261114` and checks `http://localhost:4010/api/health`. It never seeds, rebuilds or deletes volumes. If an existing container is missing, investigate rather than creating an empty replacement.
 
-Open **LabOS V2 Preview** using its installed shortcut or `%LOCALAPPDATA%\LabOS V2 Preview\LabOS V2 Preview.exe`. This candidate contains synthetic fixtures, not a copy of V1 work. Keep V1 for daily-use data until stable acceptance and a separately verified migration/backup plan. Never copy its profile over V1.
+Open **LabOS V2** from its desktop shortcut, targeting `%LOCALAPPDATA%\LabOS V2\LabOS V2.exe`. The normal Windows profile is `%APPDATA%\com.labos.personal.v2`. Launch from the ordinary Windows shortcut: launching from the packaged Codex process can redirect AppData into the Codex package cache. Do not copy keys/databases between redirected and ordinary profiles to work around that boundary.
+
+Personal V2 is the current baseline. On November 17 the owner requested retirement of historical backups, retaining the documented transition. V1 server containers, old API images and original V1 volumes were removed; the old V1 installation/profile alone cannot serve as a verified rollback. Historical workspace backup folders/dumps remain because automatic approval review blocked their deletion. Preview remains an isolated test environment; never substitute its fixtures for personal lab data.
+
+Reproducible personal build, from `desktop`:
+
+```powershell
+npm run tauri:build:personal
+```
+
+The wrapper selects `tauri.personal.conf.json` and `working-encryption`, validates matching frontend/native API origins, and defaults to `http://localhost:4010/api`. Personal and Preview identities remain separate. Eleven shared/personal build-environment regression checks passed. Personal 2.3.14 and subsequent packages use this wrapper; source edits alone do not replace an installed executable. Verify the version and installer receipt for each update.
+
+Migration backups and receipts are private in `.tmp/personal-v2-migration-20261114/`. They include real data and secrets: do not commit, publish or distribute the directory. They are machine-local, not verified off-machine disaster recovery. Original V1 server volumes were removed November 17; do not use earlier retention statements as current rollback instructions.
 
 With Docker Desktop running, start the existing preview without rebuilding/resetting:
 
@@ -148,7 +208,7 @@ For outage acceptance, stop only the selected V2 API, leave its PostgreSQL/volum
 
 ## Responsiveness diagnostics
 
-The final release protocol is in PLAN. `desktop/scripts/measure-desktop.ps1` is an opt-in Windows resource sampler for an explicitly selected V2 Preview/development process and its descendants. It refuses V1/other process names and refuses to overwrite an existing report. Supply the actual process ID, duration and a new output filename; for example, with the installed Preview running:
+The final release protocol is in PLAN. `desktop/scripts/measure-desktop.ps1` is an opt-in Windows resource sampler for an explicitly selected personal V2, V2 Preview or development process and its descendants. It refuses V1/other process names and refuses to overwrite an existing report. Supply the actual process ID, duration and a new output filename; for example, with the installed Preview running:
 
 ```powershell
 $previewProcess = @(Get-Process -Name 'LabOS V2 Preview')
@@ -173,7 +233,7 @@ From `desktop`, `npm run dev` serves the web frontend and `npm run dev:tauri` st
 3. Install a uniquely versioned update preserving profile/endpoint. Compare data BEFORE reopening; pending work must remain.
 4. Reopen; verify installed version/window and service health. Distinguish source tests from signed-in desktop acceptance. Restore only through a reviewed procedure that preserves newer work.
 
-Last verified local backup: `.tmp/v1-install-backup-20261107`; receipts: `.tmp/v1-stable-20261107`. These ignored machine-local paths are not portable release assets. Server backups need matching PostgreSQL and storage; test restore in an isolated destination. Never use volume removal, storage deletion or outbox clearing for updates.
+Historical backup evidence: `.tmp/v1-install-backup-20261107`; receipts: `.tmp/v1-stable-20261107`. Owner requested historical backup deletion November 17; filesystem cleanup was blocked and must not be assumed complete. These ignored machine-local paths are not portable release assets. Server backups need matching PostgreSQL and storage; test restore in an isolated destination. Never use volume removal, storage deletion or outbox clearing for updates.
 
 ## Website content and new-lab configuration
 
@@ -201,3 +261,17 @@ Publish tested release-specific installer/server links and checksums when availa
 Maintain only PLAN, WORK_LOG and REFERENCE; README is the short entry point. Status belongs in PLAN, dated evidence in WORK_LOG, decisions/runbooks here. No new per-change/helper Markdown reports.
 
 [History archive](archive/history-through-2026-11-08.zip) contains exact previous central files, README, website copy and earlier reports at original relative paths. `_MANIFEST.json` records lengths/SHA-256. Extract/verify in a separate inspection directory. Old five-phase plans, status tables and helper assignments are history; they cannot reopen or close current work. No historical scope/evidence was discarded.
+
+## Device-local music organization
+
+Active implementation: MusicDock + MusicLibraryBrowser, with musicLibrary.ts storage/queue helpers. IndexedDB `labos-local-media` version 3 preserves existing `tracks` and `playlists`, adding `state` and a content lookup index. Imported music is copied onto this device; music is not implicitly published through lab-resource synchronization. Files/folders are reviewed before import. Identical-byte fingerprints prevent duplicate imports; membership is unique within each queue/playlist, while the same track may belong to multiple playlists. Queue position/order/preferences persist and restore paused. Use explicit Resume, Replace or Merge for an existing folder/playlist queue. Deleting a playlist/queue does not delete library audio. Removing library audio updates stored references atomically and leaves original source files unchanged.
+
+Developer acceptance fixture: run desktop Vite on loopback port 15317, then open `/test-fixtures/music-library/index.html`. Its guard restricts seeding to that dedicated origin and uses generated audio only. It exercises old-store upgrade and committed transaction behavior before mounting the real player. Never use this fixture to seed the installed personal app or a live-data origin. Native OS folder-drop routing remains a separate acceptance check.
+
+## Appearance background preferences
+
+In Settings → Appearance, select Tinted theme, Pure white / black, or Custom background. Accent selection is separate; choose a named accent to leave custom-accent mode. Pure white/black follows light/dark mode. Custom backgrounds choose readable text/control color scheme automatically. Preferences stay on this device in the existing `lab-inventory-theme` browser setting; old mode/color records retain the tinted look. No server write or outbox event is needed for these device-local choices.
+
+The shared Resource Viewer uses the same variables for its shell, panes, file headers, picker and navigation. Original document/media colors are preserved. Embedded third-party playback has its own provider appearance. Developer fixture: loopback port 15318, `/test-fixtures/appearance/index.html`; synthetic resource only, with controls to change the actual viewer live. It is not a production HTML entry.
+
+Music presentation: the library's Player tab returns to Now Playing; folder/song views expose imports, while queue/playlist views prioritize their contents. The header + creates a queue/playlist. Row … opens extra song actions; queue … contains rename/clear/delete. Embedded title/artist/album tags are cached when the selected song is inspected, with original filename/path retained. Queue grips support dragging and adjacent up/down controls provide a keyboard alternative. Import review/summary stays inside the scrollable library, and the selection toolbar stays visible while scrolling. These source changes still require a coordinated installed update.

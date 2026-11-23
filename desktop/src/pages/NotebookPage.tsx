@@ -2,15 +2,16 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getNotes, getAllTags, createNote, updateNote, deleteNote, Note } from '../api/notes';
 import { getProjects, Project } from '../api/projects';
 import {
-  Plus, Search, X, Trash2, Tag as TagIcon, Mic, Volume2, Sigma, Save, Square, Pause, Play,
+  Plus, Search, X, Trash2, Tag as TagIcon, Mic, Volume2, MoreHorizontal, Save, Square, Pause, Play,
   ChevronLeft, ChevronRight,
 } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
 import { useToast } from '../contexts/ToastContext';
-import SymbolPickerModal from '../components/SymbolPickerModal';
 import NoteRevisionsPanel from '../components/NoteRevisionsPanel';
 import VoiceInputModal from '../components/VoiceInputModal';
 import {FocusedSpeech} from '../lib/focusedSpeech';
+import NoteComposer,{type NoteComposerHandle} from '../components/NoteComposer';
+import {noteTextExcerpt} from '../lib/noteFormatting';
 
 type Draft = { id: string | 'new' | null; title: string; body: string; tags: string[]; project_id?: string | null };
 const EMPTY_DRAFT: Draft = { id: null, title: '', body: '', tags: [], project_id: null };
@@ -22,13 +23,14 @@ export default function NotebookPage() {
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
   const [tagInput, setTagInput] = useState('');
-  const [showSymbolPicker, setShowSymbolPicker] = useState(false);
+  const [pastePending,setPastePending]=useState(false);
+  const [historyTarget,setHistoryTarget]=useState<HTMLDivElement|null>(null);
   const [isListCollapsed, setIsListCollapsed] = useState(false);
   const [showVoice, setShowVoice] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const { data: projects = [] } = useQuery<Project[]>({ queryKey: ['projects-for-notebook'], queryFn: getProjects, staleTime: 30000 });
-  const bodyRef = useRef<HTMLTextAreaElement>(null);
+  const composerRef = useRef<NoteComposerHandle>(null);
   const voiceDraft=useRef<Draft|null>(null);
   const currentDraft=useRef(draft);currentDraft.current=draft;
 
@@ -95,6 +97,7 @@ export default function NotebookPage() {
   });
 
   const confirmDiscardIfDirty = () => {
+    if(pastePending){showToast('Wait for the image paste to finish before changing notes','error');return false;}
     if (!isDirty) return true;
     return window.confirm('Discard unsaved changes to this note?');
   };
@@ -112,6 +115,7 @@ export default function NotebookPage() {
   };
 
   const handleSave = () => {
+    if(pastePending){showToast('Wait for the image paste to finish before saving','error');return;}
     if (!draft.title.trim()) {
       showToast('Give the note a title before saving', 'error');
       return;
@@ -124,6 +128,7 @@ export default function NotebookPage() {
   };
 
   const handleDelete = () => {
+    if(pastePending||createMutation.isPending||updateMutation.isPending){showToast('Wait for the current save to finish before deleting','error');return;}
     if (draft.id && draft.id !== 'new' && window.confirm('Delete this note? This can\'t be undone.')) {
       deleteMutation.mutate(draft.id);
     }
@@ -135,24 +140,6 @@ export default function NotebookPage() {
       setDraft({ ...draft, tags: [...draft.tags, trimmed] });
     }
     setTagInput('');
-  };
-
-  // Inserts a symbol at the current cursor position in the body textarea,
-  // then restores focus and cursor placement right after it.
-  const insertSymbol = (symbol: string) => {
-    const el = bodyRef.current;
-    if (!el) {
-      setDraft({ ...draft, body: draft.body + symbol });
-      return;
-    }
-    const start = el.selectionStart ?? draft.body.length;
-    const end = el.selectionEnd ?? draft.body.length;
-    const newBody = draft.body.slice(0, start) + symbol + draft.body.slice(end);
-    setDraft({ ...draft, body: newBody });
-    requestAnimationFrame(() => {
-      el.focus();
-      el.selectionStart = el.selectionEnd = start + symbol.length;
-    });
   };
 
   // Text-to-speech ("read aloud") -- a plain browser API, no hardware
@@ -170,12 +157,9 @@ export default function NotebookPage() {
     }
 
     let textToRead = '';
-    const el = bodyRef.current;
-    if (el && el.selectionStart != null && el.selectionEnd != null && el.selectionStart !== el.selectionEnd) {
-      textToRead = el.value.substring(el.selectionStart, el.selectionEnd).trim();
-    }
+    textToRead=composerRef.current?.getSelectedText().trim()||'';
     if (!textToRead) {
-      textToRead = `${draft.title ? draft.title + '. ' : ''}${draft.body}`.trim();
+      textToRead = `${draft.title ? draft.title + '. ' : ''}${composerRef.current?.getText()||''}`.trim();
     }
 
     if (!textToRead) {
@@ -266,7 +250,7 @@ export default function NotebookPage() {
                   }`}
                 >
                   <p className="text-sm text-text-primary font-medium truncate">{note.title}</p>
-                  <p className="text-xs text-text-secondary truncate mt-0.5">{note.body || 'No content'}</p>
+                  <p className="text-xs text-text-secondary truncate mt-0.5">{noteTextExcerpt(note.body) || 'No content'}</p>
                 </button>
               ))}
             </div>
@@ -317,40 +301,23 @@ export default function NotebookPage() {
                   </button>
                 )}
                 <button
-                  onClick={() => setShowSymbolPicker(true)}
-                  title="Insert symbol"
-                  className="p-1.5 hover:bg-surface-raised rounded-sm transition-colors text-text-secondary hover:text-text-primary"
-                >
-                  <Sigma size={16} />
-                </button>
-                <button
                   onClick={handleSave}
-                  disabled={isSaving}
+                  disabled={isSaving||pastePending}
                   title="Save"
                   className="p-1.5 hover:bg-surface-raised rounded-sm transition-colors text-text-secondary hover:text-status-ok disabled:opacity-50"
                 >
                   <Save size={16} />
                 </button>
-                {draft.id !== 'new' && (
-                  <button
-                    onClick={handleDelete}
-                    title="Delete"
-                    className="p-1.5 hover:bg-surface-raised rounded-sm transition-colors text-text-secondary hover:text-status-danger"
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                )}
+                <div ref={setHistoryTarget} className="flex items-center" aria-label="Note history"/>
+                {draft.id !== 'new' && <details key={draft.id} className="note-actions" onBlur={event=>{if(!event.currentTarget.contains(event.relatedTarget as Node|null))event.currentTarget.open=false;}} onKeyDown={event=>{if(event.key==='Escape'){event.currentTarget.open=false;event.currentTarget.querySelector('summary')?.focus();}}}>
+                  <summary title="Note actions" aria-label="Note actions"><MoreHorizontal size={16}/></summary>
+                  <div className="note-actions-menu"><button type="button" disabled={deleteMutation.isPending||pastePending||isSaving} onClick={event=>{event.currentTarget.closest('details')?.removeAttribute('open');handleDelete();}}><Trash2 size={14}/> Delete note…</button></div>
+                </details>}
               </div>
             </div>
 
             <div className="flex-1 min-h-0 flex flex-col">
-              <textarea
-                ref={bodyRef}
-                placeholder="Start writing…"
-                value={draft.body}
-                onChange={(e) => setDraft({ ...draft, body: e.target.value })}
-                className="w-full flex-1 min-h-0 p-6 bg-transparent text-text-primary placeholder:text-text-secondary focus:outline-none resize-none leading-relaxed overflow-y-auto"
-              />
+              <NoteComposer key={draft.id} editorRef={composerRef} value={draft.body} onChange={body=>setDraft(previous=>({...previous,body}))} onSave={handleSave} historyTarget={historyTarget} imagePasteBlocked={isSaving} onPastePendingChange={setPastePending} noteId={draft.id==='new'?undefined:draft.id||undefined} projectId={draft.project_id||undefined}/>
             </div>
 
             <div className="px-4 py-2 border-t border-border flex-shrink-0">
@@ -387,13 +354,8 @@ export default function NotebookPage() {
         )}
       </div>
 
-      {showVoice&&<VoiceInputModal onClose={()=>setShowVoice(false)} onInsert={text=>{const base=voiceDraft.current;if(currentDraft.current!==base)return false;setDraft(previous=>previous===base?{...previous,body:previous.body?`${previous.body} ${text}`:text}:previous);return true;}}/>}
-      {showSymbolPicker && (
-        <SymbolPickerModal
-          onInsert={insertSymbol}
-          onClose={() => setShowSymbolPicker(false)}
-        />
-      )}
+      {showVoice&&<VoiceInputModal onClose={()=>setShowVoice(false)} onInsert={text=>{if(currentDraft.current!==voiceDraft.current)return false;return composerRef.current?.insertText(text)||false;}}/>}
+
     </div>
   );
 }

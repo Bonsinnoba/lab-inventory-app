@@ -24,3 +24,9 @@ test('missing metadata and unknown selections remain finite and bounded',()=>{
     const result=fit(0,0,aspect,natural);assert.ok(Number.isFinite(result.width)&&Number.isFinite(result.height));assert.ok(result.width>0&&result.height>0);
   }
 });
+
+test('invalid transient viewport measurements cannot create infinite/NaN CSS sizes',()=>{
+  for(const width of [NaN,Infinity,-Infinity,-5,0])for(const height of [NaN,Infinity,-Infinity,-5,0]){
+    const result=fit(width,height,'16/9',2);assert.ok(Number.isFinite(result.width)&&Number.isFinite(result.height));assert.ok(result.width>0&&result.height>0);
+  }
+});

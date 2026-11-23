@@ -1,0 +1,28 @@
+{
+  "package": {
+    "productName": "LabOS V2",
+    "version": "2.3.21"
+  },
+  "tauri": {
+    "bundle": {
+      "identifier": "com.labos.personal.v2",
+      "targets": [
+        "nsis"
+      ],
+      "windows": {
+        "nsis": {
+          "installMode": "currentUser"
+        }
+      }
+    },
+    "windows": [
+      {
+        "title": "LabOS V2 \u2014 Personal Lab",
+        "fileDropEnabled": false
+      }
+    ]
+  },
+  "build": {
+    "beforeBuildCommand": "npm run build"
+  }
+}

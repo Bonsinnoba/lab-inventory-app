@@ -10,7 +10,7 @@ export async function startPerformanceProbe():Promise<void>{
  let inputs=0,longTasks=0,longMax=0,heartbeatMax=0,last=performance.now(),stopped=false,flushing=false;
  const observers:PerformanceObserver[]=[];
  const supported=typeof PerformanceObserver==='undefined'?[]:PerformanceObserver.supportedEntryTypes||[];
- const eventSupported=supported.includes('event'),longSupported=supported.includes('longtask');
+ let eventSupported=supported.includes('event'),longSupported=supported.includes('longtask');
  if(eventSupported){
   const observer=new PerformanceObserver(list=>{for(const entry of list.getEntries()){
    const id=(entry as PerformanceEntry&{interactionId?:number}).interactionId;
@@ -18,15 +18,18 @@ export async function startPerformanceProbe():Promise<void>{
    interactions.set(id,Math.max(interactions.get(id)||0,entry.duration));
    if(interactions.size>4096)interactions.delete(interactions.keys().next().value!);
   }});
-  observer.observe({type:'event',buffered:false,durationThreshold:16} as PerformanceObserverInit);observers.push(observer);
+  try{observer.observe({type:'event',buffered:false,durationThreshold:16} as PerformanceObserverInit);observers.push(observer);}catch{observer.disconnect();eventSupported=false;}
  }
  if(longSupported){
   const observer=new PerformanceObserver(list=>{for(const entry of list.getEntries()){longTasks++;longMax=Math.max(longMax,entry.duration);}});
-  observer.observe({type:'longtask',buffered:false});observers.push(observer);
+  try{observer.observe({type:'longtask',buffered:false});observers.push(observer);}catch{observer.disconnect();longSupported=false;}
  }
  const input=()=>{inputs++;};window.addEventListener('pointerdown',input,true);window.addEventListener('keydown',input,true);
+ // Background timer throttling is not a visible UI freeze. Start a fresh
+ // heartbeat baseline when visibility changes, retaining genuine earlier stalls.
+ const visibility=()=>{last=performance.now();};document.addEventListener('visibilitychange',visibility);
  const heartbeat=window.setInterval(()=>{const now=performance.now();if(document.visibilityState==='visible')heartbeatMax=Math.max(heartbeatMax,Math.max(0,now-last-100));last=now;},100);
- const stop=()=>{if(stopped)return;stopped=true;window.clearInterval(heartbeat);window.clearInterval(flush);observers.forEach(observer=>observer.disconnect());window.removeEventListener('pointerdown',input,true);window.removeEventListener('keydown',input,true);window.removeEventListener('beforeunload',stop);};
+ const stop=()=>{if(stopped)return;stopped=true;window.clearInterval(heartbeat);window.clearInterval(flush);observers.forEach(observer=>observer.disconnect());window.removeEventListener('pointerdown',input,true);window.removeEventListener('keydown',input,true);window.removeEventListener('beforeunload',stop);document.removeEventListener('visibilitychange',visibility);};
  const flush=window.setInterval(async()=>{
   if(flushing||stopped)return;flushing=true;
   try{

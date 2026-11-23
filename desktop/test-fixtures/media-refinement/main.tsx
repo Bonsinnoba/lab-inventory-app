@@ -1,0 +1,21 @@
+import React,{useState,useRef} from 'react';
+import {createRoot} from 'react-dom/client';
+import {ThemeProvider,useTheme} from '../../src/contexts/ThemeContext';
+import ResourceViewerModal from '../../src/components/ResourceViewerModal';
+import FocusedResourceMedia from '../../src/components/FocusedResourceMedia';
+import MediaAspectFrame from '../../src/components/MediaAspectFrame';
+import type {Resource} from '../../src/api/resources';
+import type {MediaDisplayFit} from '../../src/lib/mediaFrame';
+import '../../src/styles/tokens.css';
+import '../../src/styles/ui2.css';
+if(location.hostname!=='127.0.0.1'||location.port!=='15320')throw Error('Isolated media fixture requires port 15320');
+const resources=[{id:'frame-fixture-image',name:'Wide reference.svg',original_filename:'Wide reference.svg',kind:'file',file_type:'other',created_at:'2026-11-18T00:00:00Z'},{id:'frame-fixture-second',name:'Second reference.svg',original_filename:'Second reference.svg',kind:'file',file_type:'image',created_at:'2026-11-18T00:00:00Z'}] as Resource[];
+function Fixture(){
+ const [viewer,setViewer]=useState(false),[aspect,setAspect]=useState('auto'),[fit,setFit]=useState<MediaDisplayFit>('contain'),[video,setVideo]=useState(''),[status,setStatus]=useState('No synthetic clip yet');const {setTheme}=useTheme();const videoUrl=useRef('');
+ async function generate(){
+  setStatus('Recording synthetic canvas clip…');const canvas=document.createElement('canvas');canvas.width=300;canvas.height=150;const context=canvas.getContext('2d')!;context.fillStyle='#2563eb';context.fillRect(0,0,300,150);context.fillStyle='#facc15';context.fillRect(0,0,80,150);
+  const stream=canvas.captureStream(8),recorder=new MediaRecorder(stream,MediaRecorder.isTypeSupported('video/webm;codecs=vp8')?{mimeType:'video/webm;codecs=vp8'}:undefined),chunks:Blob[]=[];let frame=0;const animation=window.setInterval(()=>{context.fillStyle=++frame%2?'#2563eb':'#334155';context.fillRect(80,0,220,150);},80);recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data);};recorder.onstop=()=>{window.clearInterval(animation);stream.getTracks().forEach(t=>t.stop());if(videoUrl.current)URL.revokeObjectURL(videoUrl.current);videoUrl.current=URL.createObjectURL(new Blob(chunks,{type:recorder.mimeType}));setVideo(videoUrl.current);setStatus('Synthetic clip ready');};recorder.start();window.setTimeout(()=>recorder.stop(),1800);
+ }
+ return <main className="min-h-screen bg-bg p-5 text-text-primary"><h1 className="text-xl">Media framing acceptance · synthetic files only</h1><div className="my-3 flex flex-wrap gap-3 text-xs"><button onClick={()=>setViewer(true)}>Open resource viewer</button><button onClick={()=>setTheme({mode:'light',color:'purple',background:'plain'})}>Pure white</button><button onClick={()=>setTheme({mode:'dark',color:'green',background:'plain'})}>Pure black</button><button onClick={()=>setTheme({mode:'dark',color:'pink',background:'tinted'})}>Tinted</button><button onClick={()=>void generate()}>Generate synthetic video</button></div><p role="status">{status}</p><label>Fixture frame ratio<select aria-label="Fixture frame ratio" value={aspect} onChange={e=>setAspect(e.target.value)}>{['auto','16/9','4/3','1/1','9/16'].map(v=><option key={v}>{v}</option>)}</select></label><label>Fixture fit<select aria-label="Fixture fit" value={fit} onChange={e=>setFit(e.target.value as MediaDisplayFit)}><option value="contain">Fit</option><option value="cover">Fill</option></select></label><button className="mx-3" onClick={()=>{const player=document.querySelector('video');if(player){player.loop=true;void player.play();}}}>Play synthetic video</button><div className="grid grid-cols-2 gap-4"><div style={{width:440,height:320}}>{video&&<FocusedResourceMedia kind="video" src={video} aspect={aspect} fit={fit}/>}</div><div style={{width:440,height:320}}><MediaAspectFrame aspect={aspect}><iframe title="Synthetic original-source frame" src="about:blank" className="h-full w-full"/></MediaAspectFrame></div></div>{viewer&&<ResourceViewerModal resource={resources[0]} resources={resources} onClose={()=>setViewer(false)}/>}</main>;
+}
+createRoot(document.getElementById('root')!).render(<ThemeProvider><Fixture/></ThemeProvider>);

@@ -5,6 +5,9 @@ import {
   Folder, Layers, Search, Settings, Users, X, Zap, Music2,
 } from 'lucide-react';
 
+import { decoderSuggestions } from '../lib/componentDecoder';
+import { openComponentDecoder } from './DecoderSearchSuggestions';
+
 interface CommandPaletteProps { open: boolean; onClose: () => void; }
 
 type CommandItem = {
@@ -28,8 +31,7 @@ const COMMANDS: CommandItem[] = [
   { id: 'assistant', label: 'Lab Assistant', hint: 'Ask the lab', path: '/assistant', icon: Bot, keywords: 'ai assistant help' },
   { id: 'reports', label: 'Reports', hint: 'Analytics & exports', path: '/reports', icon: BarChart3, keywords: 'analytics csv reporting statistics' },
   { id: 'automation', label: 'Automation', hint: 'Reminders & due work', path: '/automation', icon: Zap, keywords: 'reminders notifications automation' },
-  { id: 'media', label: 'Media Manager', hint: 'Local media & music', path: '#media-manager', icon: Music2, keywords: 'music audio media player local' },
-  { id: 'daily-use', label: 'Daily Use & System', hint: 'Health, export & preferences', path: '/daily-use', icon: ShieldCheck, keywords: 'health backup export notifications voice' },
+  { id: 'media', label: 'Media & System', hint: 'Music, daily preferences, health & export', path: '/daily-use', icon: Music2, keywords: 'music audio media manager player local daily use system health backup export notifications voice' },
   { id: 'collaboration', label: 'Collaboration', hint: 'Team activity', path: '/collaboration', icon: Users, keywords: 'team comments activity' },
   { id: 'settings', label: 'Settings', hint: 'Account & appearance', path: '/settings', icon: Settings, keywords: 'profile password theme preferences' },
 ];
@@ -42,7 +44,9 @@ export default function CommandPalette({ open, onClose }: CommandPaletteProps) {
   const [activeIndex, setActiveIndex] = useState(0);
 
   const activate = (item: CommandItem) => {
-    if (item.id === 'engineering') {
+    if (item.id.startsWith('decoder:')) {
+      openComponentDecoder(item.id === 'decoder:capacitor' ? 'capacitor' : 'resistor');
+    } else if (item.id === 'engineering') {
       window.dispatchEvent(new CustomEvent('labos:engineering-tools'));
     } else if (item.id === 'media') {
       window.dispatchEvent(new CustomEvent('labos:media-manager'));
@@ -55,7 +59,8 @@ export default function CommandPalette({ open, onClose }: CommandPaletteProps) {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return COMMANDS;
-    return COMMANDS.filter((item) => `${item.label} ${item.hint} ${item.keywords}`.toLowerCase().includes(q));
+    const tools:CommandItem[] = decoderSuggestions(q).map(s=>({id:`decoder:${s.family}`,label:s.label,hint:`Offline reference · ${s.hint}`,path:'',icon:Calculator,keywords:''}));
+    return [...tools,...(q.startsWith('@')?[]:COMMANDS.filter((item) => `${item.label} ${item.hint} ${item.keywords}`.toLowerCase().includes(q)))];
   }, [query]);
 
   useEffect(() => {
@@ -127,7 +132,7 @@ export default function CommandPalette({ open, onClose }: CommandPaletteProps) {
               </button>
             );
           }) : (
-            <div className="command-palette-empty"><Search size={22} /><span>No matching LabOS destination.</span></div>
+            <div className="command-palette-empty"><Search size={22} /><span>No matching destination. Type @ for supported component decoders.</span></div>
           )}
         </div>
         <div className="command-palette-footer"><span>LABOS COMMAND CENTER</span><span>{filtered.length} destination{filtered.length === 1 ? '' : 's'}</span></div>

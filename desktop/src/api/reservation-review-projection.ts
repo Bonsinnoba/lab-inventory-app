@@ -8,7 +8,7 @@ export function projectReservationReview(projects: any[], items: any[]) {
   const missingProjects = projects.filter(project => !Array.isArray(project.reservations)).length;
   const rows = reservations.filter(row => row.status === 'pending_review').map(row => {
     const item = inventory.get(row.item_id);
-    let overlap: number | null = item ? 0 : null;
+    let overlap: number | null = item && missingProjects===0 ? 0 : null;
     for (const other of reservations) {
       if (other.item_id !== row.item_id || other.status !== 'confirmed') continue;
       const reusable = ['equipment','instrument','tool'].includes(item?.type);

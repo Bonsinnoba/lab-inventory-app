@@ -1,3 +1,4 @@
+import AppearanceBackground from './AppearanceBackground';
 import { useTheme } from '../contexts/ThemeContext';
 import { Palette, Sun, Moon } from 'lucide-react';
 import { ColorTheme, themeNames } from '../lib/themes';
@@ -21,7 +22,7 @@ export default function ThemeSelector() {
   };
 
   return (
-    <div className="flex items-center gap-4">
+    <div className="flex flex-wrap items-center gap-4">
       {/* Light/Dark Mode Toggle */}
       <div className="flex items-center gap-2">
         <button
@@ -57,7 +58,7 @@ export default function ThemeSelector() {
               key={color}
               onClick={() => setColor(color)}
               className={`w-6 h-6 rounded-sm transition-all hover:scale-110 ${
-                theme.color === color
+                !theme.customAccent && theme.color === color
                   ? 'ring-2 ring-accent ring-offset-2'
                   : 'ring-1 ring-border'
               }`}
@@ -67,6 +68,7 @@ export default function ThemeSelector() {
           ))}
         </div>
       </div>
+      <div className="w-full"><AppearanceBackground/></div>
     </div>
   );
 }

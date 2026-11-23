@@ -7,6 +7,7 @@ import { getItems, createItemMovement } from './items';
 import { captureAccountSession, isAccountSessionCurrent } from './auth';
 import { getLocalInventorySnapshot } from './local-inventory';
 import { projectReservationReview } from './reservation-review-projection';
+import {readLocalCollection} from './read-availability';
 
 function isTauriRuntime(): boolean { return typeof window !== 'undefined' && !!(window as any).__TAURI_IPC__; }
 async function localInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T | null> {
@@ -260,9 +261,9 @@ export async function getReservationReviewQueue():Promise<ReservationReviewQueue
  if(isTauriRuntime()){
   const session=captureAccountSession();if(!session)throw new Error('Sign in to read reservation review');
   const projects=await getProjects();
-  const [records,items]=await Promise.all([Promise.all(projects.map(project=>localInvoke<any>('get_local_project',{projectId:project.id}))),getLocalInventorySnapshot()]);
+  const [records,items]=await Promise.all([readLocalCollection(projects,project=>localInvoke<any>('get_local_project',{projectId:project.id}),session),getLocalInventorySnapshot()]);
   if(!isAccountSessionCurrent(session))throw new Error('Account changed while reading reservation review');
-  return projectReservationReview(records.filter(Boolean),items??[]);
+  return projectReservationReview(records.map(({item,value})=>value??{...item,reservations:undefined}),items??[]);
  }
  const r=await apiFetch('/projects/reservations/review-queue');
  if(!r.ok)throw new Error(await getApiErrorMessage(r,'Unable to load reservation review queue'));

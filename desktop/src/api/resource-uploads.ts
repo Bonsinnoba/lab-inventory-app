@@ -7,16 +7,29 @@ import { convertFileSrc } from '@tauri-apps/api/tauri';
 const CHUNK=1024*1024;
 let fileAccess:{session:ReturnType<typeof captureAccountSession>;files:Record<string,{path:string;pending:boolean}>}|null=null;
 let fileAccessRequest=0;
-export async function refreshLocalFileAccess():Promise<void>{
+let fileAccessInFlight:{session:ReturnType<typeof captureAccountSession>;promise:Promise<void>}|null=null;
+export async function refreshLocalFileAccess(options:{reuseInFlight?:boolean}={}):Promise<void>{
+  const session=captureAccountSession();
+  if(!session){fileAccessRequest++;fileAccess=null;fileAccessInFlight=null;return;}
+  const running=fileAccessInFlight;
+  // Only observational callers may join a scan already in progress. A writer
+  // must start after its own commit so it cannot receive a pre-commit snapshot.
+  if(options.reuseInFlight&&running&&isAccountSessionCurrent(running.session)&&
+    running.session?.accountId===session.accountId&&running.session.token===session.token&&running.session.generation===session.generation){
+    return running.promise;
+  }
   const request=++fileAccessRequest;
-  const session=captureAccountSession();if(!session){fileAccess=null;return;}
+  const flight={session,promise:Promise.resolve()};
+  fileAccessInFlight=flight;
   // Keep the current session's capabilities visible during the read. The native
   // protocol still checks authorization on every request; failure clears access.
-  try{
+  flight.promise=(async()=>{try{
     const files=await localBackend.invoke<Record<string,{path:string;pending:boolean}>>('local_resource_file_access',{expectedAccountId:session.accountId});
     if(!isAccountSessionCurrent(session))throw new Error('Account changed while reading local file access');
     if(request===fileAccessRequest)fileAccess={session,files};
   }catch(error){if(request===fileAccessRequest)fileAccess=null;throw error;}
+  finally{if(fileAccessInFlight===flight)fileAccessInFlight=null;}})();
+  return flight.promise;
 }
 export function localFileUrl(id:string):string|null{
   if(!fileAccess||!isAccountSessionCurrent(fileAccess.session))return null;

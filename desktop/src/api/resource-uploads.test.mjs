@@ -8,7 +8,7 @@ function load(options={}){
   const calls=[],http=[],exports={};let current=true;
   const source=ts.transpileModule(readFileSync(new URL('./resource-uploads.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
   vm.runInNewContext(source,{exports,Uint8Array,AbortController,setTimeout,clearTimeout,require:p=>{
-    if(p==='./auth')return {captureAccountSession:()=>options.signedOut?null:{accountId:'account'},isAccountSessionCurrent:()=>current};
+    if(p==='./auth')return {captureAccountSession:()=>options.signedOut?null:(options.session??{accountId:'account'}),isAccountSessionCurrent:session=>current&&!options.signedOut&&(!options.session||(session?.accountId===options.session.accountId&&session?.token===options.session.token&&session?.generation===options.session.generation))};
     if(p==='@tauri-apps/api/tauri')return{convertFileSrc:(path,scheme)=>`http://${scheme}.localhost/${encodeURIComponent(path)}`};
     if(p==='./local-backend')return {localBackend:{invoke:async(command,args)=>{
       calls.push({command,args});if(options.failAt===command)throw Error('LOCAL_FAILED');
@@ -32,6 +32,42 @@ function load(options={}){
 const file={name:'test.txt',type:'text/plain',size:3,slice:()=>({arrayBuffer:async()=>new Uint8Array([1,2,3]).buffer})};
 const change={change_id:'change',entity_type:'resource',entity_id:'resource',operation:'create',payload:{resource:{id:'resource',kind:'file'},upload:{protocol:1,size_bytes:3,sha256:'a'.repeat(64)}}};
 
+test('overlapping observational capability reads share one native scan, with no completed-result cache',async()=>{
+  let finish;const options={fileAccess:()=>new Promise(resolve=>{finish=resolve;})};const c=load(options);
+  const reads=Array.from({length:30},()=>c.api.refreshLocalFileAccess({reuseInFlight:true}));
+  assert.equal(c.calls.filter(call=>call.command==='local_resource_file_access').length,1);
+  finish({resource:{path:'resource.capability',pending:false}});await Promise.all(reads);
+  options.fileAccess=()=>({});await c.api.refreshLocalFileAccess({reuseInFlight:true});
+  assert.equal(c.calls.filter(call=>call.command==='local_resource_file_access').length,2);assert.equal(c.api.localFileUrl('resource'),null);assert.equal(c.http.length,0);
+});
+
+test('post-write fresh scan never joins a pre-commit observational read; late old result cannot overwrite it',async()=>{
+  const finishes=[];const c=load({fileAccess:()=>new Promise(resolve=>finishes.push(resolve))});
+  const old=c.api.refreshLocalFileAccess({reuseInFlight:true});const fresh=c.api.refreshLocalFileAccess();
+  const observer=c.api.refreshLocalFileAccess({reuseInFlight:true});
+  assert.equal(finishes.length,2);
+  finishes[1]({resource:{path:'new.capability',pending:false}});await fresh;await observer;
+  finishes[0]({resource:{path:'old.capability',pending:true}});await old;
+  assert.ok(c.api.localFileUrl('resource').includes('new.capability'));assert.equal(c.api.localFilePending('resource'),false);
+});
+
+test('coalesced failure rejects every observer and clears previous capabilities',async()=>{
+  const options={};const c=load(options);await c.api.refreshLocalFileAccess();
+  let fail;options.fileAccess=()=>new Promise((_,reject)=>{fail=reject;});
+  const reads=Array.from({length:12},()=>c.api.refreshLocalFileAccess({reuseInFlight:true}));
+  const observed=Promise.allSettled(reads);fail(Error('permission denied'));const results=await observed;
+  assert.ok(results.every(result=>result.status==='rejected'));assert.equal(c.api.localFileUrl('resource'),null);assert.equal(c.http.length,0);
+});
+
+test('same-account session renewal cannot join or be cleared by an older generation scan',async()=>{
+  const finishes=[];const options={session:{accountId:'account',token:'first',generation:1},fileAccess:()=>new Promise(resolve=>finishes.push(resolve))};const c=load(options);
+  const old=c.api.refreshLocalFileAccess({reuseInFlight:true});const oldResult=assert.rejects(old,/Account changed/);
+  options.session={accountId:'account',token:'second',generation:2};const next=c.api.refreshLocalFileAccess({reuseInFlight:true});
+  assert.equal(finishes.length,2);finishes[1]({resource:{path:'new.capability',pending:false}});await next;
+  finishes[0]({resource:{path:'old.capability',pending:false}});await oldResult;
+  assert.ok(c.api.localFileUrl('resource').includes('new.capability'));
+});
+
 test('content edits transfer their immutable version under the edit permission namespace',async()=>{
   const c=load();const edit={...change,operation:'edit_content'};
   assert.equal(c.api.isResourceUpload(edit),true);
@@ -54,6 +90,17 @@ test('saving a desktop upload uses native staging then finalization and never HT
   assert.equal(r.id,'resource');assert.equal(c.http.length,0);
   assert.deepEqual(c.calls.map(x=>x.command),['local_authorization_guard','begin_local_resource_upload','write_local_resource_upload_chunk','finish_local_resource_upload']);
   assert.equal(c.calls[2].args.expectedSessionToken,'native-session');assert.equal(progress.at(-1),100);
+});
+
+test('pasted screenshot bytes and note attachment metadata follow local staging without an HTTP write',async()=>{
+  const c=load(),bytes=new Uint8Array([137,80,78,71,13,10,26,10]);
+  const screenshot={name:'Screenshot.png',type:'image/png',size:bytes.length,slice:(from,to)=>({arrayBuffer:async()=>bytes.slice(from,to).buffer})};
+  await c.api.stageResourceFile(screenshot,{note_id:'saved-note',name:'Screenshot.png'});
+  const begin=c.calls.find(call=>call.command==='begin_local_resource_upload');
+  assert.equal(begin.args.metadata.note_id,'saved-note');assert.equal(begin.args.metadata.mime_type,'image/png');
+  assert.deepEqual(Array.from(c.calls.find(call=>call.command==='write_local_resource_upload_chunk').args.bytes),Array.from(bytes));
+  assert.equal(c.calls.filter(call=>call.command==='finish_local_resource_upload').length,1);
+  assert.equal(c.http.length,0);
 });
 test('native failure never falls back to a server write or falsely completes',async()=>{
   for(const failAt of ['begin_local_resource_upload','write_local_resource_upload_chunk','finish_local_resource_upload']){

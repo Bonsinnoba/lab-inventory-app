@@ -1,0 +1,4 @@
+import {defineConfig,mergeConfig} from 'vite';
+import baseConfig from '../../vite.config';
+const svg='<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="600"><rect width="1200" height="600" fill="#2563eb"/><rect x="10" y="10" width="1180" height="580" fill="none" stroke="#fff" stroke-width="20"/><circle cx="600" cy="300" r="160" fill="#facc15"/><text x="25" y="70" font-size="40" fill="#fff">LEFT EDGE</text><text x="920" y="560" font-size="40" fill="#fff">RIGHT EDGE</text></svg>';
+export default defineConfig(async()=>mergeConfig(await baseConfig(),{server:{host:'127.0.0.1',port:15320,strictPort:true},plugins:[{name:'isolated-media-fixtures',configureServer(server){server.middlewares.use((req,res,next)=>{if(/^\/api\/resources\/frame-fixture-(image|second)\/download(?:\?|$)/.test(req.url||'')){res.setHeader('Content-Type','image/svg+xml');res.end(svg);return;}next();});}}]}));

@@ -10,8 +10,8 @@ const items: { id: Exclude<DockableContent, null | 'music' | 'media'>; icon: typ
 const buttonClass = 'relative w-9 h-9 flex items-center justify-center rounded-lg border border-transparent transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-1 focus-visible:ring-offset-surface';
 const activeClass = 'bg-accent/12 text-accent border-accent/20';
 const idleClass = 'text-text-secondary hover:text-text-primary hover:bg-surface-raised hover:border-border';
-function ToolButton({ label, active = false, onClick, children }: { label: string; active?: boolean; onClick: () => void; children: React.ReactNode }) {
-  return <button type="button" onClick={onClick} title={active ? `Close ${label}` : label} aria-label={active ? `Close ${label}` : label} aria-pressed={active} className={`${buttonClass} ${active ? activeClass : idleClass}`}>
+function ToolButton({ label, active = false, onClick, children, workspace = false }: { label: string; active?: boolean; onClick: () => void; children: React.ReactNode; workspace?: boolean }) {
+  return <button type="button" onClick={onClick} title={active && !workspace ? `Close ${label}` : label} aria-label={active && !workspace ? `Close ${label}` : label} aria-pressed={workspace ? undefined : active} aria-current={workspace && active ? 'page' : undefined} className={`${buttonClass} ${active ? activeClass : idleClass}`}>
     {active && <span aria-hidden="true" className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-r-full bg-accent" />}{children}
   </button>;
 }
@@ -26,7 +26,7 @@ export default function ActivityRail({ active, onSelect, onToggleMusic, engineer
     </div>
     <div className="mt-auto pt-2 border-t border-border/80 w-8 flex flex-col items-center gap-1" role="group" aria-label="Media tools">
       <ToolButton label="Music Player" active={musicOpen} onClick={onToggleMusic}><Music2 size={18} strokeWidth={musicOpen ? 2.2 : 2} aria-hidden="true" /></ToolButton>
-      <ToolButton label="Media Manager" active={mediaOpen} onClick={() => onSelect(mediaOpen ? null : 'media')}><FolderOpen size={18} strokeWidth={mediaOpen ? 2.2 : 2} aria-hidden="true" /></ToolButton>
+      <ToolButton label="Media & System" workspace active={mediaOpen} onClick={() => onSelect('media')}><FolderOpen size={18} strokeWidth={mediaOpen ? 2.2 : 2} aria-hidden="true" /></ToolButton>
     </div>
   </aside>;
 }

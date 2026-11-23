@@ -137,10 +137,10 @@ export default function UsersPage() {
       {users.isLoading ? <div className="space-y-3 p-5" aria-busy="true">{[1, 2, 3].map(row => <div key={row} className="h-12 animate-pulse rounded-md bg-surface-raised"/>)}</div> :
         users.error ? <div role="alert" className="m-4 rounded-md border border-status-danger/30 bg-status-danger/5 p-4 text-sm"><p className="font-medium text-status-danger">Unable to load users</p><p className="mt-1 text-text-secondary">{users.error.message}</p><button type="button" onClick={()=>manualRefresh.refresh(refreshUsers)} className="mt-3 text-accent hover:underline">Try again</button></div> :
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[420px] text-left text-sm">
+            <table className="user-directory-table w-full text-left text-sm">
               <thead className="bg-surface-raised/50 text-xs text-text-secondary border-b border-border"><tr><th scope="col" className="px-4 py-2.5 font-medium">User</th><th scope="col" className="px-3 py-2.5 font-medium">Role</th><th scope="col" className="user-secondary-column px-3 py-2.5 font-medium">Last activity</th><th scope="col" className="px-3 py-2.5 font-medium">Status</th><th scope="col" className="px-4 py-2.5 text-right font-medium"> </th></tr></thead>
               <tbody className="divide-y divide-border">
-                {filteredUsers.map(user => <tr key={user.id} className="transition-colors hover:bg-surface-raised/40">
+                {filteredUsers.map(user => <tr key={user.id} className="user-directory-row transition-colors hover:bg-surface-raised/40">
                   <td className="px-4 py-2.5"><div className="flex items-center gap-2.5"><span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent/10 text-xs font-semibold uppercase text-accent">{user.username.slice(0, 1)}</span><span className="font-medium text-text-primary truncate max-w-[200px]">{user.username}{user.id === me.id && <span className="ml-1.5 rounded-full bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">You</span>}</span></div></td>
                   <td className="px-3 py-2.5 text-xs capitalize text-text-secondary">{readable(user.role)}</td>
                   <td className="user-secondary-column px-3 py-2.5 text-xs text-text-secondary">{user.last_login_at ? <time dateTime={user.last_login_at} title={new Date(user.last_login_at).toLocaleString()}>{new Date(user.last_login_at).toLocaleDateString()}</time> : 'Never'}</td>
@@ -162,7 +162,7 @@ export default function UsersPage() {
       </form>
     </CenteredDialog>}
 
-    {selected && <CenteredDialog eyebrow="User management" title={selected.username} onClose={() => setSelected(null)} wide>
+    {selected && <CenteredDialog eyebrow="User management" title={selected.username} onClose={() => setSelected(null)} wide compact={selected.role === 'admin'}>
       <div className="grid min-h-0 gap-4 md:flex-1 md:grid-cols-[minmax(0,16rem)_minmax(0,1fr)] md:grid-rows-[minmax(0,1fr)]">
         <div className="space-y-4 md:min-h-0 md:overflow-y-auto">
           <section className="rounded-lg border border-border bg-bg/40 p-4">

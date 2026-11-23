@@ -28,6 +28,23 @@ export interface Resource {
 export interface ResourceManifest { folder: string; files: Array<{ id: string; kind?:'file'|'folder'|'link'; relative_path: string; original_filename: string; size_bytes: number; mime_type: string; }>; }
 export interface ResourceAccessGrant { user_id:string; username?:string; access_level:'view'|'edit'; created_at?:string; created_by?:string|null; }
 
+type ResourceCopyStatuses=Record<string,NonNullable<Resource['local_copy']>>;
+let copyStatusRead:{session:AccountSession;promise:Promise<ResourceCopyStatuses>}|null=null;
+async function readDesktopCopyStatuses(session:AccountSession):Promise<ResourceCopyStatuses>{
+  requireResourceReadSession(session);
+  const running=copyStatusRead;
+  if(running&&isAccountSessionCurrent(running.session)&&running.session.accountId===session.accountId&&
+    running.session.token===session.token&&running.session.generation===session.generation)return running.promise;
+  const flight={session,promise:Promise.resolve({} as ResourceCopyStatuses)};
+  copyStatusRead=flight;
+  flight.promise=(async()=>{try{
+    const statuses=await localInvoke<ResourceCopyStatuses>('local_resource_copy_status',{expectedAccountId:session.accountId});
+    requireResourceReadSession(session);
+    return statuses;
+  }finally{if(copyStatusRead===flight)copyStatusRead=null;}})();
+  return flight.promise;
+}
+
 const localMediaResourceIds = new Set<string>();
 let mediaAccount:string|null=null;
 function rememberDesktopMedia(rows:Resource[],accountId:string,replace=false){
@@ -303,8 +320,10 @@ async function readDesktopResources(filters?:Record<string,unknown>,withFiles=tr
   rememberDesktopMedia(rows,session.accountId,!filters||filters.includeDescendants===true);
   if(!withFiles)return rows;
   // File capability failure must not hide otherwise available SQLite metadata.
-  await refreshLocalFileAccess().catch(()=>undefined);
-  const copies:Record<string,NonNullable<Resource['local_copy']>>=await localInvoke<Record<string,NonNullable<Resource['local_copy']>>>('local_resource_copy_status',{expectedAccountId:session.accountId}).catch(()=>({}));
+  const [,copies]=await Promise.all([
+    refreshLocalFileAccess({reuseInFlight:true}).catch(()=>undefined),
+    readDesktopCopyStatuses(session).catch(()=>({} as ResourceCopyStatuses)),
+  ]);
   if(!isAccountSessionCurrent(session))throw new Error('Account changed while reading resources');
   // Synced resource records already contain media metadata. Reading them must
   // neither wait for server job enrichment nor hide a failed native read.

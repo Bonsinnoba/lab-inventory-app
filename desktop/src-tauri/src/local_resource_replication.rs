@@ -410,53 +410,60 @@ fn readable_impl(app:&AppHandle,c:&Connection,account:&str,id:&str,snapshot:Opti
     Ok((path,mime,size as u64))
 }
 
+struct CopyStatusScan {
+    connection: Connection,
+    records: std::iter::Peekable<std::vec::IntoIter<local_resources::LocalResource>>,
+    origin: String,
+    result: serde_json::Map<String,Value>,
+}
 #[tauri::command]
-pub async fn local_resource_copy_status(
-    app: AppHandle,
-    expected_account_id: String,
-) -> Result<Value, String> {
-    crate::responsive_reads::run("local_resource_copy_status", move || {
-    let mut connection=local_db::open_local_connection(&app)?;schema(&connection)?;
-    local_db::require_sync_account(&connection,&expected_account_id)?;local_auth::require_local_permission(&connection,"resources.view")?;
-    let origin=native_authorization::trusted_base().map_err(|e|e.message)?;
-    let snapshot=connection.transaction().map_err(err)?;
-    let result=copy_status_snapshot(&snapshot,&expected_account_id,&origin,|record|readable_record(&app,&snapshot,&expected_account_id,record).is_ok())?;
-    snapshot.commit().map_err(err)?;
-    // Leave the snapshot before the final account/lease check.
-    local_db::require_sync_account(&connection,&expected_account_id)?;local_auth::require_local_permission(&connection,"resources.view")?;
-    Ok(result)
+pub async fn local_resource_copy_status(app:AppHandle,expected_account_id:String)->Result<Value,String>{
+    crate::resource_scan::run("local_resource_copy_status",||async move{
+        let handle=app.clone();let account=expected_account_id.clone();
+        let mut scan=crate::responsive_reads::run("local_resource_copy_status",move||{
+            let connection=local_db::open_local_connection(&handle)?;schema(&connection)?;
+            local_db::require_sync_account(&connection,&account)?;local_auth::require_local_permission(&connection,"resources.view")?;
+            let origin=native_authorization::trusted_base().map_err(|e|e.message)?;
+            connection.execute_batch("BEGIN DEFERRED").map_err(err)?;
+            let candidates=status_candidate_ids(&connection,&account)?;
+            let records=if candidates.is_empty(){Vec::new()}else{local_resources::read_resources(&connection)?.into_iter().filter(|r|candidates.contains(&r.id)).collect()};
+            Ok(CopyStatusScan{connection,records:records.into_iter().peekable(),origin,result:serde_json::Map::new()})
+        }).await?;
+        loop{
+            let handle=app.clone();let account=expected_account_id.clone();
+            let (next,done)=crate::responsive_reads::run("local_resource_copy_status",move||{
+                let mut scan=scan;let c=&scan.connection;let result=&mut scan.result;let origin=&scan.origin;
+                let done=crate::resource_scan::batch(&mut scan.records,|record|{
+                    if let Some((id,value))=copy_status_record(c,&account,origin,&record,&mut |r|readable_record(&handle,c,&account,r).is_ok())?{result.insert(id,value);}Ok(())
+                })?;
+                if done{c.execute_batch("COMMIT").map_err(err)?;local_db::require_sync_account(c,&account)?;local_auth::require_local_permission(c,"resources.view")?;}
+                Ok((scan,done))
+            }).await?;
+            scan=next;if done{return Ok(Value::Object(scan.result))}
+        }
     }).await
 }
+fn status_candidate_ids(c:&Connection,account:&str)->Result<std::collections::HashSet<String>,String>{
+    let mut statement=c.prepare("SELECT resource_id FROM local_resource_copies WHERE account_id=?1 UNION SELECT resource_id FROM local_resource_copy_errors WHERE account_id=?1").map_err(err)?;
+    let rows=statement.query_map([account],|row|row.get::<_,String>(0)).map_err(err)?;
+    rows.collect::<Result<_,_>>().map_err(err)
+}
+fn copy_status_record(c:&Connection,account:&str,origin:&str,r:&local_resources::LocalResource,available:&mut impl FnMut(&local_resources::LocalResource)->bool)->Result<Option<(String,Value)>,String>{
+    if authorize_record(c,account,r,None).is_err(){return Ok(None)}
+    let row:Option<(String,i64,i64,Option<String>,String,String)>=c.query_row("SELECT state,verified_bytes,size_bytes,last_error,revision,origin FROM local_resource_copies WHERE account_id=?1 AND resource_id=?2",params![account,r.id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(err)?;
+    let last_error:Option<String>=c.query_row("SELECT message FROM local_resource_copy_errors WHERE account_id=?1 AND resource_id=?2",params![account,r.id],|r|r.get(0)).optional().map_err(err)?;
+    if let Some((state,bytes,size,error,revision,copy_origin))=row{
+        let identity_current=copy_origin==origin&&crate::local_resource_authority::verified_copy_revision(c,r,&revision)?;
+        let available=identity_current&&state=="ready"&&available(r);
+        Ok(Some((r.id.clone(),json!({"state":copy_display_state(&state,identity_current,available),"verified_bytes":if identity_current{bytes}else{0},"size_bytes":if identity_current{Some(size)}else{None},"error":last_error.or(error)}))))
+    }else{Ok(last_error.map(|message|(r.id.clone(),json!({"state":"incomplete","verified_bytes":0,"size_bytes":null,"error":message}))))}
+}
+#[cfg(test)]
 fn copy_status_snapshot(c:&Connection,expected_account_id:&str,origin:&str,mut available:impl FnMut(&local_resources::LocalResource)->bool)->Result<Value,String>{
-    local_db::require_sync_account(c,expected_account_id)?;
-    local_auth::require_local_permission(c,"resources.view")?;
-    let candidates={
-        let mut statement=c.prepare("SELECT resource_id FROM local_resource_copies WHERE account_id=?1 UNION SELECT resource_id FROM local_resource_copy_errors WHERE account_id=?1").map_err(err)?;
-        let rows=statement.query_map([&expected_account_id],|row|row.get::<_,String>(0)).map_err(err)?;
-        rows.collect::<Result<std::collections::HashSet<_>,_>>().map_err(err)?
-    };
-    let mut result = serde_json::Map::new();
-    if !candidates.is_empty(){for r in local_resources::read_resources(c)? {
-        if !candidates.contains(&r.id){continue;}
-        if authorize_record(c,expected_account_id,&r,None).is_err() {
-            continue;
-        }
-        let row:Option<(String,i64,i64,Option<String>,String,String)>=c.query_row("SELECT state,verified_bytes,size_bytes,last_error,revision,origin FROM local_resource_copies WHERE account_id=?1 AND resource_id=?2",params![expected_account_id,r.id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(err)?;
-        let last_error:Option<String>=c.query_row("SELECT message FROM local_resource_copy_errors WHERE account_id=?1 AND resource_id=?2",params![expected_account_id,r.id],|r|r.get(0)).optional().map_err(err)?;
-        if let Some((state, bytes, size, error, revision, copy_origin)) = row {
-            let identity_current = copy_origin == origin && crate::local_resource_authority::verified_copy_revision(c,&r,&revision)?;
-            let available = identity_current && state == "ready" && available(&r);
-            result.insert(r.id,json!({"state":copy_display_state(&state,identity_current,available),"verified_bytes":if identity_current{bytes}else{0},"size_bytes":if identity_current{Some(size)}else{None},"error":last_error.or(error)}));
-        } else if let Some(message) = last_error {
-            result.insert(
-                r.id,
-                json!({"state":"incomplete","verified_bytes":0,"size_bytes":null,"error":message}),
-            );
-        }
-    }}
-    local_db::require_sync_account(c,expected_account_id)?;
-    Ok(Value::Object(result))
-
+    local_db::require_sync_account(c,expected_account_id)?;local_auth::require_local_permission(c,"resources.view")?;
+    let candidates=status_candidate_ids(c,expected_account_id)?;let mut result=serde_json::Map::new();
+    if !candidates.is_empty(){for r in local_resources::read_resources(c)?{if candidates.contains(&r.id){if let Some((id,value))=copy_status_record(c,expected_account_id,origin,&r,&mut available)?{result.insert(id,value);}}}}
+    local_db::require_sync_account(c,expected_account_id)?;Ok(Value::Object(result))
 }
 
 fn copy_display_state(state: &str, identity_current: bool, available: bool) -> &str {

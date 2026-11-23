@@ -3,7 +3,7 @@ import {localBackend} from './local-backend';
 import {captureAccountSession,isAccountSessionCurrent,getToken} from './auth';
 import {getItems} from './items';
 import {getProjects,getProjectWorkspace} from './projects';
-import {readLocalSections,readWithDeadline,assertReadAccount,type ReadAvailability} from './read-availability';
+import {readLocalSections,readLocalCollection,assertReadAccount,type ReadAvailability} from './read-availability';
 export interface AutomationDue {maintenance:any[];calibration:any[];tasks:any[];availability?:ReadAvailability;}
 export interface AutomationRun {run_id:string;queued?:boolean;executed:boolean;created?:number;}
 export interface AutomationState {pending:AutomationRun[];last_confirmation:AutomationRun|null;}
@@ -12,13 +12,12 @@ export async function getAutomationDue():Promise<AutomationDue>{
  const s=session();
  if(localBackend.isAvailable()){
   const {values,availability}=await readLocalSections({inventory:getItems,projects:getProjects},s);
-  const workspaces=await Promise.all((values.projects??[]).map(async project=>{
-   try{return {project,workspace:await readWithDeadline(()=>getProjectWorkspace(project.id))};}catch{return {project,workspace:null};}
-  }));assertReadAccount(s);
-  availability.sections.tasks=values.projects===null?'unavailable':workspaces.every(w=>w.workspace!==null)?'available':'partial';
+  const workspaces=(await readLocalCollection(values.projects??[],project=>getProjectWorkspace(project.id),s)).map(({item:project,value:workspace})=>({project,workspace}));assertReadAccount(s);
+  const taskSources=workspaces.filter(w=>Array.isArray(w.workspace?.tasks)).length;
+  availability.sections.tasks=values.projects===null?'unavailable':taskSources===workspaces.length?'available':taskSources>0?'partial':'unavailable';
   const now=new Date(),day=(offset:number)=>{const date=new Date(now);date.setDate(date.getDate()+offset);return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;};
   const due=(value:unknown,offset:number)=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}/.test(value)&&value.slice(0,10)<=day(offset);
-  return {maintenance:(values.inventory??[]).filter(i=>due(i.next_maintenance_date,7)),calibration:(values.inventory??[]).filter(i=>due(i.next_calibration_date,30)),tasks:workspaces.flatMap(({project,workspace})=>(workspace?.tasks??[]).filter((t:any)=>!['done','cancelled'].includes(t.status)&&due(t.due_date,0)).map((t:any)=>({...t,project_name:project.name}))),availability};
+  return {maintenance:(values.inventory??[]).filter(i=>due(i.next_maintenance_date,7)),calibration:(values.inventory??[]).filter(i=>due(i.next_calibration_date,30)),tasks:workspaces.flatMap(({project,workspace})=>(Array.isArray(workspace?.tasks)?workspace.tasks:[]).filter((t:any)=>!['done','cancelled'].includes(t.status)&&due(t.due_date,0)).map((t:any)=>({...t,project_name:project.name}))),availability};
  }
  const r=await apiFetch('/automation/due',{cache:'no-store'});if(!r.ok)throw new Error(await getApiErrorMessage(r));const result=await r.json();assertReadAccount(s);if(!result||!['maintenance','calibration','tasks'].every(key=>Array.isArray(result[key])))throw new Error('Automation due snapshot is incomplete');return result;
 }

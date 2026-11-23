@@ -179,9 +179,11 @@ fn authorization_guard(c:&rusqlite::Connection,account:&str)->Result<Option<Stri
 pub(crate) fn local_session_guard(c:&rusqlite::Connection,account:&str)->Result<Option<String>,String>{authorization_guard(c,account)}
 
 #[tauri::command]
-pub fn local_authorization_guard(app:AppHandle,expected_account_id:String)->Result<Option<String>,String>{
+pub async fn local_authorization_guard(app:AppHandle,expected_account_id:String)->Result<Option<String>,String>{
+    crate::responsive_reads::run("local_authorization_guard",move||{
     let c=open_local_connection(&app)?;ensure_auth_schema(&c)?;
     authorization_guard(&c,&expected_account_id)
+    }).await
 }
 
 pub(crate) fn invalidate_authorization(c:&mut rusqlite::Connection,account:&str,expected_token:&str)->Result<bool,String>{
@@ -205,7 +207,11 @@ pub fn invalidate_local_authorization(app:AppHandle,expected_account_id:String,e
 }
 
 #[tauri::command]
-pub fn local_auth_status(app:AppHandle)->Result<serde_json::Value,String>{
+pub async fn local_auth_status(app:AppHandle)->Result<serde_json::Value,String>{
+    crate::responsive_reads::run("local_auth_status",move||local_auth_status_blocking(app)).await
+}
+
+fn local_auth_status_blocking(app:AppHandle)->Result<serde_json::Value,String>{
     let connection=open_local_connection(&app)?; ensure_auth_schema(&connection)?;
     let c=connection.unchecked_transaction().map_err(|e|e.to_string())?;
     let count:i64=c.query_row(
@@ -389,13 +395,15 @@ fn login_cached_timed(connection:&mut rusqlite::Connection,username:&str,passwor
 }
 
 #[tauri::command]
-pub fn local_current_user(app:AppHandle)->Result<Option<LocalUser>,String>{
+pub async fn local_current_user(app:AppHandle)->Result<Option<LocalUser>,String>{
+    crate::responsive_reads::run("local_current_user",move||{
     let c=open_local_connection(&app)?;ensure_auth_schema(&c)?;
     c.query_row(
         "SELECT u.id,u.central_user_id,u.username,u.role,u.display_name,u.email,u.is_active,u.offline_expires_at
          FROM local_users u JOIN local_session s ON s.user_id=u.id WHERE s.id=1 AND u.central_user_id IS NOT NULL AND u.is_active=1 AND u.offline_expires_at IS NOT NULL AND datetime('now') < datetime(u.offline_expires_at)",
         [],map_user
     ).optional().map_err(|e|format!("Unable to read local session: {e}"))
+    }).await
 }
 
 #[tauri::command]
@@ -433,7 +441,13 @@ pub(crate) fn refresh_permissions(c:&rusqlite::Connection,central_user_id:&str,r
 }
 
 #[tauri::command]
-pub fn local_current_permissions(app:AppHandle)->Result<Vec<String>,String>{
+pub async fn local_current_permissions(app:AppHandle)->Result<Vec<String>,String>{
+    crate::responsive_reads::run("local_current_permissions",move||local_current_permissions_blocking(app)).await
+}
+
+// Native composite readers already running in a read worker must not acquire
+// another lane while holding one. Keep the same database/lease checks here.
+pub(crate) fn local_current_permissions_blocking(app:AppHandle)->Result<Vec<String>,String>{
     let c=open_local_connection(&app)?;ensure_auth_schema(&c)?;
     let (permissions,expires):(String,Option<String>)=c.query_row(
         "SELECT u.permissions_json,u.offline_expires_at FROM local_users u JOIN local_session s ON s.user_id=u.id WHERE s.id=1 AND u.central_user_id IS NOT NULL AND u.is_active=1",
